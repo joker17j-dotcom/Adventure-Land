@@ -1,0 +1,2075 @@
+// ============================================================================
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v4
+// ============================================================================
+// ============================================================================
+// COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
+// 'performance' global that a real browser tab (or plain Node.js) would.
+// Every performance.now() call below is just for cooldown/cache-TTL timing
+// at millisecond granularity, so Date.now() is a fully safe substitute -
+// no behavior changes, just makes this actually load on Mainframe.
+// ============================================================================
+if (typeof performance === 'undefined') {
+	globalThis.performance = { now: () => Date.now() };
+}
+
+// ============================================================================
+// CONFIGURATION - Toggle features here instead of editing code
+// ============================================================================
+// home/mobMap are no longer hardcoded here - Dexon (Ranger.js) is the
+// source of truth and broadcasts them via a 'farm_spot' CODE message. These
+// start null and get populated once that message arrives - see on_cm below.
+let home = null;
+let mobMap = null;
+const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'greenjr', 'grinch', 'icegolem', 'jr', 'mrgreen', 'mrpumpkin', 'phoenix', 'rgoo', 'wabbit'];
+
+const CONFIG = {
+	combat: {
+		curse: true,
+		zapper: true,
+		zapSwap: false,
+		// home used to be baked in here, but it isn't known yet at load time
+		// now - it's added dynamically wherever zapperMobs is actually used
+		// (see updateHomeDependentSets() and handleCurse()).
+		zapperMobs: [...allBosses, "sparkbot"],
+		zapSpam: {
+			enabled: true,
+			mob: 'bscorpion',
+			minMp: 2000
+		},
+		targetPriority: ['FatherToken'],
+		allBosses,
+	},
+
+	movement: {
+		enabled: true,
+		circleWalk: true,
+		circleRadius: 35,
+		kiting: {
+			enabled: false,
+			avoidTypes: ['bscorpion'],
+			avoidRadius: 300,
+			rangeBuffer: 65,
+			boundaryBox: [-650, -1385, -220, -1165], // [x1, y1, x2, y2]
+
+			// Movement tuning
+			moveThrottle: 50,  // ms between moves
+			moveDistance: 50, // how far to move per step
+			sampleAngles: 120, // directions to test (more = smoother)
+
+			// Weighting
+			goalWeight: 0.1, // how much to prefer moving toward goal
+			safetyWeight: 1.0, // how much to prefer moving away from danger
+			debug: true
+		},
+	},
+
+	healing: {
+		partyHealThreshold: 0.65,
+		healOthers: true,
+		healOthersThresh: 0.8,
+		partyHealMinMp: 2000,
+		absorb: true,
+		darkBlessing: true
+	},
+
+	looting: {
+		lootSet: "dreturn",
+		enabled: true,
+		chestThreshold: 1,
+		targetCount: 55,
+		equipGoldGear: true,
+		lootCooldown: 3000
+	},
+
+	equipment: {
+		autoSwapSets: true,
+		bossLuckSwitch: true,
+		bossHpThresholds: {
+			mrpumpkin: 300000,
+			mrgreen: 300000,
+			bscorpion: 75000,
+			ent: 75000,
+			crabxx: 40000,
+			dragold: 200000,
+			wabbit: 5000,
+		},
+		temporal: {
+			enabled: true,
+			targetMob: 'bscorpion',
+			orbName: 'orboftemporal',
+			skillName: 'temporalsurge',
+			characters: ['FatherToken', 'Dexon', 'MageofOz'], // Rotation order
+			storageKey: 'temporal_surge_rotation'
+		}
+	},
+
+	potions: {
+		autoBuy: true,
+		hpThreshold: 400,
+		mpThreshold: 500,
+		minStock: 1000
+	},
+
+	party: {
+		autoManage: true,
+		groupMembers: ['Dexon', 'MageofOz', 'FatherToken']
+	},
+
+	muling: {
+		enabled: true,
+		muleName: 'Dexon',
+		fallbackMuleName: 'Meltymerch',
+		goldReserve: 500000,
+		excludeItems: new Set(['hpot0', 'hpot1', 'mpot0', 'mpot1', 'luckbooster', 'goldbooster', 'xpbooster', 'elixirluck', 'xptome', 'essenceoflife']),
+	},
+};
+
+// ============================================================================
+// CONSTANTS - Named values instead of magic numbers
+// ============================================================================
+const TICK_RATE = {
+	main: 100,         // Main game loop
+	action: 1,         // Combat/skill actions
+	maintenance: 2000  // Inventory, potions, etc
+};
+const MERCHANT_WAIT_TIMEOUT_MS = 90000; // safety net if merchant_done never arrives (e.g. merchant died mid-summon)
+
+const COOLDOWNS = {
+	equipSwap: 300,
+	zapperSwap: 100,
+	cc: 125
+};
+
+const EVENT_LOCATIONS = [
+	{ name: 'dragold', map: 'cave', x: 1150, y: -850 },
+	//{ name: 'crabxx', map: 'main', x: -961, y: 1780, join: true },
+	{ name: 'mrgreen', map: 'spookytown', x: 610, y: 1000 },
+	{ name: 'mrpumpkin', map: 'halloween', x: -222, y: 720 }
+];
+
+const getDynamicEvents = () => {
+	const w = parent.S?.wabbit;
+	return w?.live ? [...EVENT_LOCATIONS, { name: 'wabbit', map: w.map, x: w.x, y: w.y }] : EVENT_LOCATIONS;
+}
+
+const CACHE_TTL = 50; // Cache validity in ms
+
+// ============================================================================
+// STATE & CACHE
+// ============================================================================
+const state = {
+	current: 'idle', // idle, looting, moving
+	skinReady: false,
+	lastEquipTime: 0,
+	lastLootTime: 0,
+	angle: 0,
+	lastAngleUpdate: performance.now(),
+	waitingForMerchant: false,
+	waitingForMerchantSince: 0,
+};
+
+const cache = {
+	target: null,
+	healTarget: null,
+	zapTargets: [],
+	partyMembers: [],
+	nearestBoss: null,
+	lastUpdate: 0,
+
+	isValid() {
+		return performance.now() - this.lastUpdate < CACHE_TTL;
+	},
+
+	invalidate() {
+		this.lastUpdate = 0;
+	}
+};
+
+// ============================================================================
+// LOCATION & EQUIPMENT DATA
+// ============================================================================
+const locations = {
+	bat: [{ x: 1200, y: -782 }],
+	bigbird: [{ x: 1258, y: -69 }],
+	bluefairy: [{ x: -344, y: -680 }],
+	bscorpion: [{ x: -555, y: -1158 }],
+	boar: [{ x: 19, y: -1109 }],
+	cgoo: [{ x: -221, y: -274 }],
+	crab: [{ x: -11840, y: -37 }],
+	dryad: [{ x: 403, y: -347 }],
+	// 'ent' removed - no longer hardcoded here, comes from Dexon's
+	// 'farm_spot' message instead (see destination, set in on_cm).
+	fireroamer: [{ x: 222, y: -827 }],
+	ghost: [{ x: -405, y: -1642 }],
+	gscorpion: [{ x: 390, y: -1422 }],
+	iceroamer: [{ x: 823, y: -45 }],
+	mechagnome: [{ x: 0, y: 0 }],
+	mole: [{ x: 14, y: -1072 }],
+	mummy: [{ x: 256, y: -1417 }],
+	odino: [{ x: -52, y: 756 }],
+	oneeye: [{ x: -544, y: 94 }],
+	pinkgoblin: [{ x: 485, y: 157 }],
+	poisio: [{ x: -121, y: 1360 }],
+	prat: [{ x: 11, y: 84 }],
+	pppompom: [{ x: 292, y: -189 }],
+	plantoid: [{ x: -780, y: -387 }],
+	rat: [{ x: 6, y: 430 }],
+	scorpion: [{ x: -495, y: 685 }],
+	stoneworm: [{ x: 830, y: 7 }],
+	sparkbot: [{ x: -544, y: -275 }],
+	spider: [{ x: 895, y: -145 }],
+	squig: [{ x: -1175, y: 422 }],
+	targetron: [{ x: -544, y: -275 }],
+	wolf: [{ x: 433, y: -2745 }],
+	wolfie: [{ x: 113, y: -2014 }],
+	xscorpion: [{ x: -495, y: 685 }]
+};
+
+
+// destination used to be built from a local locations[home] lookup - now
+// it's set directly from Dexon's 'farm_spot' message (see on_cm below),
+// since he's the authoritative source for where the farm spot is.
+let destination = null;
+
+const equipmentSets = {
+	zapOn: [
+		{ itemName: "zapper", slot: "ring2", level: 2, l: "u" }
+	],
+	zapOff: [
+		{ itemName: "ringofluck", slot: "ring2", level: 2, l: "l" }
+	],
+	luck: [
+		{ itemName: "xhelmet", slot: "helmet", level: 9, l: "l" },
+		//{ itemName: "vattire", slot: "chest", level: 8, l: "l" },
+		{ itemName: "tshirt88", slot: "chest", level: 4, l: "l" },
+		{ itemName: "starkillers", slot: "pants", level: 9, l: "l" },
+		{ itemName: "wingedboots", slot: "shoes", level: 9, l: "l" },
+		{ itemName: "mpxgloves", slot: "gloves", level: 7, l: "l" },
+		{ itemName: "sbelt", slot: "belt", level: 3, l: "l" },
+		{ itemName: "lmace", slot: "mainhand", level: 9, l: "l" },
+		{ itemName: "mshield", slot: "offhand", level: 10, l: "l" },
+		{ itemName: "ringofluck", slot: "ring1", level: 2, l: "u" },
+		{ itemName: "ringofluck", slot: "ring2", level: 2, l: "l" },
+		{ itemName: "rabbitsfoot", slot: "orb", level: 3, l: "l" },
+		{ itemName: "mpxamulet", slot: "amulet", level: 1, l: "l" },
+		//{ itemName: "spookyamulet", slot: "amulet", level: 3, l: "l" },
+		{ itemName: "bcape", slot: "cape", level: 8, l: "l" },
+		{ itemName: "mearring", slot: "earring1", level: 2, l: "l" },
+		{ itemName: "mearring", slot: "earring2", level: 1, l: "u" }
+	],
+	maxLuck: [
+		{ itemName: "eears", slot: "helmet", level: 5, l: "l" },
+		{ itemName: "tshirt88", slot: "chest", level: 4, l: "l" },
+		{ itemName: "xmaspants", slot: "pants", level: 3, l: "l" },
+		{ itemName: "wingedboots", slot: "shoes", level: 9, l: "l" },
+		{ itemName: "mpxgloves", slot: "gloves", level: 7, l: "l" },
+		{ itemName: "santasbelt", slot: "belt", level: 3, l: "l" },
+		{ itemName: "lmace", slot: "mainhand", level: 9, l: "l" },
+		{ itemName: "mshield", slot: "offhand", level: 10, l: "l" },
+		{ itemName: "ringofluck", slot: "ring1", level: 2, l: "u" },
+		{ itemName: "ringofluck", slot: "ring2", level: 2, l: "l" },
+		{ itemName: "rabbitsfoot", slot: "orb", level: 3, l: "l" },
+		{ itemName: "spookyamulet", slot: "amulet", level: 3, l: "l" },
+		//{ itemName: "mpxamulet", slot: "amulet", level: 1, l: "l" },
+		{ itemName: "ecape", slot: "cape", level: 8, l: "l" },
+		{ itemName: "mearring", slot: "earring1", level: 2, l: "l" },
+		{ itemName: "mearring", slot: "earring2", level: 1, l: "u" }
+	],
+	maxR: [
+		{ itemName: "xhelmet", slot: "helmet", level: 9, l: "l" },
+		{ itemName: "vattire", slot: "chest", level: 8, l: "l" },
+		{ itemName: "starkillers", slot: "pants", level: 9, l: "l" },
+		{ itemName: "wingedboots", slot: "shoes", level: 10, l: "l" },
+		{ itemName: "mpxgloves", slot: "gloves", level: 7, l: "l" },
+		{ itemName: "intbelt", slot: "belt", level: 6, l: "l" },
+		{ itemName: "lmace", slot: "mainhand", level: 9, l: "s" },
+		{ itemName: "wbookhs", slot: "offhand", level: 5, l: "l" },
+		{ itemName: "zapper", slot: "ring1", level: 2, l: "l" },
+		{ itemName: "zapper", slot: "ring2", level: 2, l: "u" },
+		{ itemName: "jacko", slot: "orb", level: 5, l: "l" },
+		{ itemName: "t2stramulet", slot: "amulet", level: 4, l: "l" },
+		{ itemName: "gcape", slot: "cape", level: 9, l: "l" },
+		{ itemName: "cearring", slot: "earring1", level: 4, l: "l" },
+		{ itemName: "cearring", slot: "earring2", level: 5, l: "u" }
+	],
+	gold: [
+		{ itemName: "wcap", slot: "helmet", level: 6, l: "l" },
+		{ itemName: "wattire", slot: "chest", level: 6, l: "l" },
+		{ itemName: "wbreeches", slot: "pants", level: 6, l: "l" },
+		{ itemName: "wshoes", slot: "shoes", level: 6, l: "l" },
+		{ itemName: "handofmidas", slot: "gloves", level: 9, l: "l" },
+		{ itemName: "goldring", slot: "ring1", level: 1, l: "l" },
+		{ itemName: "goldring", slot: "ring2", level: 1, l: "u" },
+		{ itemName: "spookyamulet", slot: "amulet", level: 3, l: "l" },
+		{ itemName: "horsecapeg", slot: "cape", level: 10, l: "l" },
+	],
+	dps: [
+		{ itemName: "spikedhelmet", slot: "helmet", level: 9, l: "l" },
+		{ itemName: "vattire", slot: "chest", level: 8, l: "l" },
+		{ itemName: "starkillers", slot: "pants", level: 9, l: "l" },
+		{ itemName: "wingedboots", slot: "shoes", level: 10, l: "l" },
+		{ itemName: "mpxgloves", slot: "gloves", level: 7, l: "l" },
+		{ itemName: "intbelt", slot: "belt", level: 6, l: "l" },
+		{ itemName: "firestaff", slot: "mainhand", level: 9, l: "s" },
+		{ itemName: "wbook0", slot: "offhand", level: 6, l: "l" },
+		{ itemName: "zapper", slot: "ring1", level: 2, l: "l" },
+		{ itemName: "zapper", slot: "ring2", level: 2, l: "u" },
+		{ itemName: "jacko", slot: "orb", level: 5, l: "l" },
+		{ itemName: "mpxamulet", slot: "amulet", level: 1, l: "l" },
+		{ itemName: "bcape", slot: "cape", level: 8, l: "l" },
+		{ itemName: "cearring", slot: "earring1", level: 4, l: "l" },
+		{ itemName: "cearring", slot: "earring2", level: 5, l: "u" }
+	],
+	dreturn: [
+		{ itemName: "spikedhelmet", slot: "helmet", level: 9, l: "l" },
+		{ itemName: "cdragon", slot: "chest", l: "l" },
+		{ itemName: "starkillers", slot: "pants", level: 9, l: "l" },
+		{ itemName: "wingedboots", slot: "shoes", level: 10, l: "l" },
+		{ itemName: "mpxgloves", slot: "gloves", level: 7, l: "l" },
+		{ itemName: "sbelt", slot: "belt", level: 3, l: "l" },
+		{ itemName: "lmace", slot: "mainhand", level: 9, l: "s" },
+		{ itemName: "sshield", slot: "offhand", level: 10, l: "l" },
+		{ itemName: "zapper", slot: "ring1", level: 2, l: "u" },
+		{ itemName: "zapper", slot: "ring2", level: 2, l: "l" },
+		{ itemName: "rabbitsfoot", slot: "orb", level: 3, l: "l" },
+		{ itemName: "mpxamulet", slot: "amulet", level: 1, l: "l" },
+		{ itemName: "bcape", slot: "cape", level: 8, l: "l" },
+		{ itemName: "cearring", slot: "earring1", level: 4, l: "l" },
+		{ itemName: "cearring", slot: "earring2", level: 5, l: "u" }
+	],
+};
+
+// ============================================================================
+// CORE UTILITIES
+// ============================================================================
+const BOSS_SET = new Set(allBosses);
+let ZAPPER_MOB_SET = new Set(CONFIG.combat.zapperMobs);
+
+// Rebuilds home-dependent derived structures - called once home is first
+// set, and again any time it changes via a later 'farm_spot' message.
+function updateHomeDependentSets() {
+	ZAPPER_MOB_SET = new Set([...CONFIG.combat.zapperMobs, home]);
+}
+
+function updateCache() {
+	if (!cache.isValid()) {
+		cache.target = findBestTarget();
+		cache.zapTargets = findZapTargets();
+		cache.nearestBoss = findNearestBoss();
+		cache.partyMembers = getPartyMembers();
+		cache.lastUpdate = performance.now();
+	}
+
+	cache.healTarget = findHealTarget();
+}
+
+function findBestTarget() {
+	if (!home) return null; // farm spot not received from Dexon yet
+
+	for (const bossType of BOSS_SET) {
+		const boss = get_nearest_monster_v2({
+			type: bossType,
+			max_distance: character.range
+		});
+		if (boss) return boss;
+	}
+
+	for (const name of CONFIG.combat.targetPriority) {
+		const target = get_nearest_monster_v2({
+			target: name,
+			statusEffects: ['cursed'],
+			max_distance: character.range
+		});
+		if (target) return target;
+	}
+
+	for (const name of CONFIG.combat.targetPriority) {
+		const target = get_nearest_monster_v2({
+			type: home,
+			max_distance: character.range
+		});
+		if (target) return target;
+	}
+
+	return null;
+}
+
+function findHealTarget() {
+	let lowest = character;
+	let lowestPct = character.hp / character.max_hp;
+	let lowestOutsider = null;
+	let lowestOutsiderPct = 1;
+
+	const partyNames = Object.keys(get_party() || {});
+
+	for (const name of partyNames) {
+		const ally = get_player(name);
+		if (!ally || ally.rip) continue;
+
+		const pct = ally.hp / ally.max_hp;
+		if (pct < lowestPct) {
+			lowestPct = pct;
+			lowest = ally;
+		}
+	}
+
+	if (CONFIG.healing.healOthers && lowestPct >= CONFIG.healing.healOthersThresh) {
+		for (const id in parent.entities) {
+			const entity = parent.entities[id];
+			if (entity.type !== 'character' || entity.rip || entity.npc) continue;
+			if (partyNames.includes(entity.name)) continue;
+			if (!is_in_range(entity, 'heal')) continue;
+
+			const pct = entity.hp / entity.max_hp;
+			if (pct < lowestOutsiderPct) {
+				lowestOutsiderPct = pct;
+				lowestOutsider = entity;
+			}
+		}
+
+		if (lowestOutsider && lowestOutsiderPct < CONFIG.healing.healOthersThresh) {
+			return lowestOutsider;
+		}
+	}
+
+	return lowest;
+}
+
+function findZapTargets() {
+	if (!CONFIG.combat.zapper) return [];
+
+	const targets = [];
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e && e.type === 'monster' && !e.target && !e.dead && e.visible &&
+			ZAPPER_MOB_SET.has(e.mtype) && is_in_range(e, 'zapperzap')) {
+			targets.push(e);
+		}
+	}
+	return targets;
+}
+
+function getPartyMembers() {
+	return Object.keys(get_party() || {});
+}
+
+function findNearestBoss() {
+	for (const bossType of BOSS_SET) {
+		const boss = get_nearest_monster_v2({ type: bossType, check_min_hp: true });
+		if (boss) return { mob: boss, type: bossType };
+	}
+	return null;
+}
+
+// ============================================================================
+// MAIN TICK LOOP - Handles state updates, caching, movement
+// ============================================================================
+async function mainLoop() {
+	try {
+		if (is_disabled(character)) {
+			return setTimeout(mainLoop, 250);
+		}
+		if (state.waitingForMerchant) {
+			if (Date.now() - state.waitingForMerchantSince > MERCHANT_WAIT_TIMEOUT_MS) {
+				state.waitingForMerchant = false;
+				game_log('Gave up waiting on the merchant - resuming on my own', 'red');
+			} else {
+				return setTimeout(mainLoop, 250);
+			}
+		}
+		if (!home || !mobMap || !destination) {
+			return setTimeout(mainLoop, 250); // haven't heard from Dexon yet
+		}
+
+		updateCache();
+
+		if (shouldLoot()) {
+			await handleLooting();
+		}
+		if (shouldHandleEvents()) {
+			handleEvents();
+		}
+		else if (CONFIG.movement.enabled) {
+			if (!get_nearest_monster({ type: home })) {
+				handleReturnHome();
+			} else if (CONFIG.movement.kiting.enabled) {
+				await kiter();
+			} else if (CONFIG.movement.circleWalk) {
+				walkInCircle();
+			}
+		}
+
+		if (CONFIG.equipment.autoSwapSets && state.skinReady) {
+			handleEquipmentSwap();
+		}
+
+	} catch (e) {
+		console.error('mainLoop error:', e);
+	}
+
+	setTimeout(mainLoop, TICK_RATE.main);
+}
+
+// ============================================================================
+// ACTION LOOP - Combat and healing only
+// ============================================================================
+async function actionLoop() {
+	try {
+		if (is_disabled(character)) return setTimeout(actionLoop, 25);
+		updateCache();
+		const ms = ms_to_next_skill('attack') - 1.5;
+		if (ms < 3) {
+			if (ms > 0) { const until = performance.now() + ms; while (performance.now() < until); }
+			const healed = await tryHeal();
+			if (!healed) {
+				const target = cache.target;
+				if (target && is_in_range(target) && !smart.moving) await use_skill('attack', target);
+			}
+			return setTimeout(actionLoop, 0);
+		}
+		return setTimeout(actionLoop, ms > 8 ? ms - 6 : 1);
+	} catch { return setTimeout(actionLoop, 1); }
+}
+
+// ============================================================================
+// SKILL LOOP - Independent skill management
+// ============================================================================
+async function skillLoop() {
+	const delay = 40;
+
+	try {
+		if (is_disabled(character)) {
+			return setTimeout(skillLoop, 250);
+		}
+
+		updateCache();
+
+		const penalty = character.s?.penalty_cd?.ms || 0;
+
+		if (CONFIG.combat.curse) {
+			await handleCurse();
+		}
+
+		// Level-gated, and wrapped: absorb (lvl 55) and darkblessing (lvl 70)
+		// used to be attempted unconditionally. A rejected use_skill() throws
+		// into this try block, which was skipping partyheal/zapper for the
+		// rest of that tick every time either skill failed below its level -
+		// darkblessing in particular has no cooldown once it fails, so it
+		// was throwing on essentially every tick.
+		if (CONFIG.healing.absorb && penalty < 500 && character.level >= (G.skills.absorb?.level || 0)) {
+			try {
+				await handleAbsorb();
+			} catch (e) {
+				console.error('handleAbsorb error:', e);
+			}
+		}
+
+		if (character.party) {
+			await handlePartyHeal();
+		}
+
+		if (CONFIG.healing.darkBlessing && character.level >= (G.skills.darkblessing?.level || 0) && !is_on_cooldown('darkblessing')) {
+			try {
+				await use_skill('darkblessing');
+			} catch (e) {
+				console.error('darkblessing error:', e);
+			}
+		}
+
+		if (CONFIG.combat.zapper && state.current === 'idle') {
+			await handleZapper();
+		}
+		if (CONFIG.combat.zapSpam?.enabled && state.current === 'idle') {
+			await handleZapSpam();
+		}
+
+	} catch (e) {
+		console.error('skillLoop error:', e);
+	}
+
+	setTimeout(skillLoop, delay);
+}
+
+async function tryHeal() {
+	const healTarget = cache.healTarget;
+	if (!healTarget) return false;
+
+	const healThreshold = healTarget.max_hp - character.heal / 1.33;
+
+	if (healTarget.hp < healThreshold && is_in_range(healTarget)) {
+		await use_skill("heal", healTarget);
+		return true;
+	}
+
+	return false;
+}
+
+async function handleCurse() {
+	if (is_on_cooldown('curse') || smart.moving) return;
+	if (!home || !destination) return; // farm spot not received yet
+
+	const X = destination.x;
+	const Y = destination.y;
+
+	let target = null;
+
+	for (const b of BOSS_SET) {
+		const mb = get_nearest_monster_v2({ type: b });
+		if (mb) {
+			target = mb;
+			break;
+		}
+	}
+
+	if (!target) {
+		target = get_nearest_monster_v2({
+			type: [...CONFIG.combat.zapperMobs, home],
+			check_min_hp: true,
+			max_distance: 175,
+			point_for_distance_check: [X, Y]
+		});
+	}
+
+	if (target && target.hp >= target.max_hp * 0.01 && !target.immune && is_in_range(target, 'curse')) {
+		await use_skill('curse', target);
+	}
+}
+
+async function handleAbsorb() {
+	if (is_on_cooldown('absorb')) return;
+
+	const mapsToExclude = ['level2n'];
+	if (mapsToExclude.includes(character.map)) return;
+
+	const boss = get_nearest_monster_v2({ type: BOSS_SET });
+	if (boss?.target && boss.target !== character.name) {
+		const targetPlayer = get_player(boss.target);
+		if (targetPlayer) {
+			await use_skill('absorb', boss.target);
+			game_log(`Boss Absorb → ${boss.mtype} from ${boss.target}`, '#FF3333');
+			return;
+		}
+	}
+
+	if (!character.party) return;
+
+	const partyNames = Object.keys(get_party());
+	const allies = partyNames.filter(n => n !== character.name);
+	if (!allies.length) return;
+
+	for (let id in parent.entities) {
+		const entity = parent.entities[id];
+		if (!entity || entity.type !== 'monster' || entity.dead) continue;
+
+		if (entity.target && allies.includes(entity.target) && entity.target !== character.name) {
+			await use_skill('absorb', entity.target);
+			game_log(`Absorbing ${entity.target}`, '#FFA600');
+			return;
+		}
+	}
+}
+
+async function handlePartyHeal() {
+	const threshold = character.map !== mobMap ? 0.99 : CONFIG.healing.partyHealThreshold;
+
+	if (character.mp <= CONFIG.healing.partyHealMinMp || is_on_cooldown('partyheal')) return;
+
+	for (const name of cache.partyMembers) {
+		const ally = get_player(name);
+		if (!ally || ally.rip || ally.hp >= ally.max_hp * threshold) continue;
+
+		await use_skill('partyheal');
+		break;
+	}
+}
+
+async function handleZapper() {
+	const now = performance.now();
+	const hasZapper = character.slots.ring2?.name === 'zapper';
+	const canSwap = now - state.lastEquipTime > COOLDOWNS.zapperSwap;
+	const hasEnoughMp = character.mp > (G?.skills?.zapperzap?.mp || 0) + 1950;
+
+	if (smart.moving || character.cc > COOLDOWNS.cc) return;
+
+	const zapTargets = findZapTargets();
+
+	if (CONFIG.combat.zapSwap && zapTargets.length > 0 && !hasZapper && canSwap && hasEnoughMp && character.map === mobMap) {
+		try {
+			await equipSet('zapOn');
+			state.lastEquipTime = now;
+		} catch (e) {
+			console.error('Failed to equip zapper:', e);
+		}
+	}
+
+	if (zapTargets.length > 0 && hasZapper && hasEnoughMp && !is_on_cooldown('zapperzap')) {
+		for (const entity of zapTargets) {
+			if (is_on_cooldown('zapperzap')) break;
+
+			try {
+				await use_skill('zapperzap', entity);
+			} catch (e) {
+				console.error('handleZapper error:', e);
+			}
+		}
+	}
+	if (CONFIG.combat.zapSwap && zapTargets.length === 0 && hasZapper && canSwap && character.map === mobMap) {
+		try {
+			await equipSet('zapOff');
+			state.lastEquipTime = now;
+		} catch (e) {
+			console.error('Failed to unequip zapper:', e);
+		}
+	}
+}
+
+async function handleZapSpam() {
+	const cfg = CONFIG.combat.zapSpam;
+	if (!cfg?.enabled || character.cc > COOLDOWNS.cc) return;
+	if (character.slots.ring2?.name !== 'zapper' || character.mp < cfg.minMp || is_on_cooldown('zapperzap')) return;
+
+	const target = get_nearest_monster_v2({ type: cfg.mob });
+	if (!target || target.dead || !target.visible || !is_in_range(target, 'zapperzap')) return;
+
+	try {
+		await use_skill('zapperzap', target);
+	} catch (e) {
+		console.error('handleZapSpam error:', e);
+	}
+}
+
+// ============================================================================
+// MAINTENANCE LOOP - Inventory, potions, party management
+// ============================================================================
+async function maintenanceLoop() {
+	try {
+		if (CONFIG.potions.autoBuy) {
+			autoBuyPotions();
+		}
+
+		if (CONFIG.party.autoManage) {
+			partyMaker();
+		}
+
+		if (CONFIG.muling.enabled) clearInventory();
+		inventorySorter();
+		elixirUsage();
+
+		if (character.rip) {
+			respawn();
+		}
+
+	} catch (e) {
+		console.error('maintenanceLoop error:', e);
+	}
+
+	setTimeout(maintenanceLoop, TICK_RATE.maintenance);
+}
+
+// ============================================================================
+// POTION HANDLER - Separate from maintenance for faster response
+// ============================================================================
+async function potionLoop() {
+	let delay = 100;
+
+	try {
+		const hpThreshold = character.max_hp - CONFIG.potions.hpThreshold;
+		const mpThreshold = character.max_mp - CONFIG.potions.mpThreshold;
+
+		if (character.mp < mpThreshold && !is_on_cooldown('use_mp')) {
+			use_skill('use_mp');
+			reduce_cooldown('use_mp', character.ping * 0.95);
+			delay = ms_to_next_skill('use_mp');
+		} else if (character.hp < hpThreshold && !is_on_cooldown('use_hp')) {
+			use_skill('use_hp');
+			reduce_cooldown('use_hp', character.ping * 0.95);
+			delay = ms_to_next_skill('use_hp');
+		}
+	} catch (e) {
+		console.error('potionLoop error:', e);
+	}
+
+	setTimeout(potionLoop, delay || 2000);
+}
+
+// ============================================================================
+// MOVEMENT FUNCTIONS
+// ============================================================================
+function shouldHandleEvents() {
+	const holidaySpirit = parent?.S?.holidayseason && !character?.s?.holidayspirit;
+	const hasHandleableEvent = getDynamicEvents().some(e => parent?.S?.[e.name]?.live);
+	return holidaySpirit || hasHandleableEvent;
+}
+
+function handleEvents() {
+	if (parent?.S?.holidayseason && !character?.s?.holidayspirit) {
+		if (!smart.moving) {
+			smart_move({ to: 'town' }, () => {
+				parent.socket.emit('interaction', { type: 'newyear_tree' });
+			});
+		}
+		return;
+	}
+
+	let target = null, bestRatio = Infinity;
+	for (const e of getDynamicEvents()) {
+		const d = parent.S[e.name];
+		if (!d?.live) continue;
+		const r = d.hp / d.max_hp;
+		if (r < bestRatio) { bestRatio = r; target = e; }
+	}
+	if (!target) return;
+
+	if (target.join === true && character.map !== target.map) {
+		parent.socket.emit('join', { name: target.name });
+		return;
+	}
+
+	if (!smart.moving) {
+		handleSpecificEvent(target.name, target.map, target.x, target.y);
+	}
+}
+
+async function handleSpecificEvent(eventType, mapName, x, y) {
+	if (!parent?.S?.[eventType]?.live) return;
+
+	const monster = get_nearest_monster({ type: eventType });
+	if (!monster) {
+		smart_move({ x, y, map: mapName });
+		return;
+	}
+
+	if (BOSS_SET.has(eventType)) {
+		if (!is_in_range(monster) && !smart.moving) {
+			const dx = monster.x - character.x;
+			const dy = monster.y - character.y;
+			const dist = Math.hypot(dx, dy);
+			const targetDist = character.range * 0.8;
+			await xmove(
+				character.x + dx * (1 - targetDist / dist),
+				character.y + dy * (1 - targetDist / dist)
+			);
+		}
+		return;
+	}
+
+	const halfway_x = character.x + (monster.x - character.x) / 2;
+	const halfway_y = character.y + (monster.y - character.y) / 2;
+	if (!is_in_range(monster, 'attack') && !smart.moving) {
+		await xmove(halfway_x, halfway_y);
+	}
+}
+
+function handleReturnHome() {
+	if (distance(character, destination) < 20) return;
+
+	if (!smart.moving) {
+		smart_move(destination);
+	}
+}
+
+async function walkInCircle() {
+	if (smart.moving) return;
+	const center = destination, r = CONFIG.movement.circleRadius, now = performance.now();
+	const dt = Math.min((now - state.lastAngleUpdate) / 1000, 0.5);
+	state.lastAngleUpdate = now;
+	state.angle = (state.angle + (character.speed / r) * dt) % (2 * Math.PI);
+	if (!character.moving) await xmove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
+}
+
+// ============================================================================
+// TEMPORAL SURGE COORDINATION
+// ============================================================================
+function getTemporalRotation() {
+	// get()/set() are the game's own storage functions - unlike localStorage
+	// (a browser-only Web API), these work identically in a real browser tab
+	// and on Mainframe's sandboxed runtime.
+	const stored = get(CONFIG.equipment.temporal.storageKey);
+	if (!stored) {
+		const initial = {
+			lastUser: null,
+			nextIndex: 0,
+			lastKillTime: 0
+		};
+		set(CONFIG.equipment.temporal.storageKey, initial);
+		return initial;
+	}
+	return stored;
+}
+
+function updateTemporalRotation() {
+	const rotation = getTemporalRotation();
+	rotation.lastUser = character.name;
+	rotation.nextIndex = (rotation.nextIndex + 1) % CONFIG.equipment.temporal.characters.length;
+	rotation.lastKillTime = Date.now();
+	set(CONFIG.equipment.temporal.storageKey, rotation);
+}
+
+function isMyTurnForTemporal() {
+	const rotation = getTemporalRotation();
+	const myIndex = CONFIG.equipment.temporal.characters.indexOf(character.name);
+
+	if (myIndex === -1) return false;
+
+	return rotation.lastUser === null || rotation.nextIndex === myIndex;
+}
+
+async function handleTemporalSurge() {
+	if (!CONFIG.equipment.temporal.enabled) return;
+	if (!isMyTurnForTemporal()) return;
+
+	const orbSlot = character.items.findIndex(i => i?.name === 'orboftemporal');;
+	if (orbSlot === -1) {
+		game_log(`Missing ${CONFIG.equipment.temporal.orbName}!`, 'red');
+		return;
+	}
+
+	try {
+		equip(orbSlot, 'orb');
+		use_skill(CONFIG.equipment.temporal.skillName);
+		game_log(`⏰ Temporal Surge used on ${CONFIG.equipment.temporal.targetMob}!`, '#00FFFF');
+		updateTemporalRotation();
+		equip(orbSlot, 'orb');
+	} catch (e) {
+		game_log(`Temporal surge failed: ${e}`, 'red');
+		console.error('Temporal surge error:', e);
+	}
+}
+
+parent.socket.on('kill_credit', async (data) => {
+	if (!CONFIG.equipment.temporal.enabled) return;
+	if (data.mtype !== CONFIG.equipment.temporal.targetMob) return;
+
+	if (!is_on_cooldown("temporalsurge")) {
+		await handleTemporalSurge();
+	}
+});
+
+// ============================================================================
+// KITING SYSTEM 
+// ============================================================================
+let lastMove = 0;
+
+function kiter() {
+	const cfg = CONFIG.movement.kiting;
+	if (!cfg?.enabled) return;
+	if (cfg.debug) {
+		const [x1, y1, x2, y2] = cfg.boundaryBox;
+		clear_drawings();
+		draw_line(x1, y1, x1, y2, 2, 0xfc031c);
+		draw_line(x2, y1, x2, y2, 2, 0xfc031c);
+		draw_line(x1, y2, x2, y2, 2, 0xfc031c);
+		draw_line(x1, y1, x2, y1, 2, 0xfc031c);
+	}
+	avoidMobs(cfg);
+}
+
+function avoidMobs(cfg) {
+	const cx = character.real_x, cy = character.real_y;
+	const R2 = cfg.avoidRadius * cfg.avoidRadius;
+	const types = cfg.avoidTypes;
+	const box = cfg.boundaryBox;
+
+	let threats = null, inDanger = false;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e.type !== 'monster' || !types.includes(e.mtype)) continue;
+		const mx = e.real_x, my = e.real_y;
+		const dx = cx - mx, dy = cy - my;
+		const d2 = dx * dx + dy * dy;
+		if (d2 >= R2) continue;
+		const r = parent.G.monsters[e.mtype].range + cfg.rangeBuffer;
+		const danger = d2 < r * r;
+		(threats ??= []).push({ mx, my, r, d2, danger });
+		if (danger) inDanger = true;
+	}
+	if (!inDanger) return;
+
+	const avoidRanges = [];
+	for (const t of threats) {
+		const tang = findTangents(cx, cy, t.mx, t.my, t.r);
+		if (!tang) continue;
+		const a1 = Math.atan2(cy - tang[0].y, cx - tang[0].x) + Math.PI;
+		const a2 = Math.atan2(cy - tang[1].y, cx - tang[1].x) + Math.PI;
+		avoidRanges.push(a1 < a2 ? [a1, a2] : [a2, a1]);
+		if (cfg.debug) {
+			draw_line(cx, cy, tang[0].x, tang[0].y, 1, 0x17F20D);
+			draw_line(cx, cy, tang[1].x, tang[1].y, 1, 0x17F20D);
+			draw_circle(t.mx, t.my, t.r, 1, 0x17F20D);
+		}
+	}
+
+	const n = cfg.sampleAngles * 2, step = Math.PI / cfg.sampleAngles;
+	let bestW = -Infinity, bestX = 0, bestY = 0, found = false;
+	for (let i = 0, a = 0; i < n; i++, a += step) {
+		const px = cx + 75 * Math.cos(a), py = cy + 75 * Math.sin(a);
+		if (px < box[0] || px > box[2] || py < box[1] || py > box[3]) continue;
+		if (angleIntersectsMonsters(avoidRanges, a)) continue;
+		if (!can_move_to(px, py)) continue;
+
+		let weight = 0;
+		for (const t of threats) {
+			if (!t.danger) continue;
+			const dpx = px - t.mx, dpy = py - t.my;
+			const dp2 = dpx * dpx + dpy * dpy;
+			if (dp2 > t.d2) weight += Math.sqrt(dp2) - Math.sqrt(t.d2);
+		}
+		if (weight > bestW) { bestW = weight; bestX = px; bestY = py; found = true; }
+	}
+	if (!found) return;
+
+	const now = performance.now();
+	if (now - lastMove > cfg.moveThrottle) {
+		lastMove = now;
+		const moveX = cx + (bestX - cx) / 3, moveY = cy + (bestY - cy) / 3;
+		move(moveX, moveY);
+		if (cfg.debug) draw_line(cx, cy, moveX, moveY, 2, 0xF20D0D);
+	}
+}
+
+function angleIntersectsMonsters(ranges, angle) {
+	for (const r of ranges) if (isBetween(r[1], r[0], angle)) return true;
+	return false;
+}
+
+function isBetween(angle1, angle2, target) {
+	if (angle1 <= angle2) {
+		if (angle2 - angle1 <= Math.PI) return target >= angle1 && target <= angle2;
+		return target >= angle2 || target <= angle1;
+	}
+	if (angle1 - angle2 <= Math.PI) return target >= angle2 && target <= angle1;
+	return target >= angle1 || target <= angle2;
+}
+
+function findTangents(px, py, cx, cy, r) {
+	const dx = cx - px, dy = cy - py;
+	const dd = Math.hypot(dx, dy);
+	if (dd <= r) return null;
+	const a = Math.asin(r / dd), b = Math.atan2(dy, dx);
+	const t1 = b - a, t2 = b + a;
+	return [
+		{ x: cx + r * Math.sin(t1), y: cy - r * Math.cos(t1) },
+		{ x: cx - r * Math.sin(t2), y: cy + r * Math.cos(t2) }
+	];
+}
+
+// ============================================================================
+// LOOTING
+// ============================================================================
+function shouldLoot() {
+	if (!CONFIG.looting.enabled || !state.skinReady || character.cc > COOLDOWNS.cc) return false;
+
+	const now = performance.now();
+	const storedChestCount = Object.keys(loadChestMap()).length;
+	const penalty = character.s?.penalty_cd?.ms || 0;
+	const cooldownPass = now - state.lastLootTime > CONFIG.looting.lootCooldown;
+
+	return (
+		storedChestCount >= CONFIG.looting.chestThreshold &&
+		character.targets < CONFIG.looting.targetCount &&
+		cooldownPass &&
+		penalty === 0 &&
+		state.current !== 'looting'
+	);
+}
+
+async function handleLooting() {
+	state.lastLootTime = performance.now();
+	state.current = 'looting';
+
+	try {
+		if (CONFIG.looting.equipGoldGear && !isSetEquipped('gold')) {
+			equipSet('gold');
+			swapBooster('luckbooster', 'goldbooster');
+			await sleep(150);
+		}
+
+		let looted = 0;
+		const maxLoots = CONFIG.looting.chestThreshold * 5;
+
+		const storedChests = loadChestMap();
+		for (const chestId in storedChests) {
+			if (looted >= maxLoots) break;
+			parent.open_chest(chestId);
+			looted++;
+		}
+
+		await sleep(75);
+
+		if (CONFIG.looting.equipGoldGear) {
+			swapBooster('goldbooster', 'luckbooster');
+		}
+	} catch (e) {
+		console.error('Looting error:', e);
+	} finally {
+		state.current = 'idle';
+	}
+}
+
+const CHEST_STORAGE_KEY = "loot_chest_ids";
+function loadChestMap() {
+	const data = get(CHEST_STORAGE_KEY);
+	return typeof data === "object" && data !== null ? data : {};
+}
+
+function removeChestId(id) {
+	const stored = loadChestMap();
+	if (stored[id]) {
+		delete stored[id];
+		saveChestMap(stored);
+	}
+}
+
+function saveChestMap(map) {
+	set(CHEST_STORAGE_KEY, map);
+}
+// ============================================================================
+// EQUIPMENT MANAGEMENT
+// ============================================================================
+function handleEquipmentSwap() {
+	if (!CONFIG.equipment.autoSwapSets || character.cc > COOLDOWNS.cc) return;
+	if (cache.zapTargets.length > 0) return;
+
+	const now = performance.now();
+	if (now - state.lastEquipTime < COOLDOWNS.equipSwap) return;
+
+	let targetSet = CONFIG.looting.lootSet;
+
+	if (CONFIG.equipment.bossLuckSwitch && cache.nearestBoss) {
+		const { mob, type } = cache.nearestBoss;
+		const threshold = CONFIG.equipment.bossHpThresholds[type] || 0;
+		targetSet = mob.hp < threshold ? 'maxLuck' : CONFIG.looting.lootSet;
+	}
+
+	if (!isSetEquipped(targetSet)) {
+		state.lastEquipTime = now;
+		equipSet(targetSet);
+	}
+}
+
+function isSetEquipped(setName) {
+	const set = equipmentSets[setName];
+	if (!set) return false;
+
+	return set.every(item =>
+		character.slots[item.slot]?.name === item.itemName &&
+		character.slots[item.slot]?.level === item.level
+	);
+}
+
+function equipSet(setName) {
+	const set = equipmentSets[setName];
+	if (set) {
+		equipBatch(set);
+	}
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+function clearInventory() {
+	const cfg = CONFIG.muling;
+	let lootMule = get_player(cfg.muleName) || get_player(cfg.fallbackMuleName);
+	if (!lootMule) return;
+
+	if (character.gold > cfg.goldReserve) {
+		send_gold(lootMule, character.gold - cfg.goldReserve);
+	}
+
+	for (let i = 0; i < character.items.length; i++) {
+		const item = character.items[i];
+		if (item && !cfg.excludeItems.has(item.name) && !item.l && !item.s) {
+			if (is_in_range(lootMule, 300)) {
+				send_item(lootMule.id, i, item.q ?? 1);
+			}
+		}
+	}
+}
+
+function inventorySorter() {
+	const slotMap = {
+		tracker: 0,
+		computer: 1,
+		hpot1: 2,
+		mpot1: 3,
+		luckbooster: 4,
+		elixirluck: 5,
+		xptome: 6
+	};
+
+	for (let i = 0; i < character.items.length; i++) {
+		const item = character.items[i];
+		if (!item) continue;
+
+		const targetSlot = slotMap[item.name];
+		if (targetSlot !== undefined && i !== targetSlot) {
+			swap(i, targetSlot);
+		}
+	}
+}
+
+
+function autoBuyPotions() {
+	if (quantity('hpot1') < CONFIG.potions.minStock) buy('hpot1', CONFIG.potions.minStock);
+	if (quantity('mpot1') < CONFIG.potions.minStock) buy('mpot1', CONFIG.potions.minStock);
+
+	const totalHp = quantity('hpot0') + quantity('hpot1');
+	const totalMp = quantity('mpot0') + quantity('mpot1');
+	if (totalHp < 500) send_cm('Meltymerch', { message: 'low_potions', potion: 'hp', quantity: totalHp, x: character.x, y: character.y, map: character.map });
+	if (totalMp < 500) send_cm('Meltymerch', { message: 'low_potions', potion: 'mp', quantity: totalMp, x: character.x, y: character.y, map: character.map });
+}
+
+function elixirUsage() {
+	const required = 'elixirluck';
+	const currentElixir = character.slots.elixir?.name;
+	const currentQty = quantity(required);
+
+	if (currentElixir !== required) {
+		const slot = locate_item(required);
+		if (slot !== -1) use(slot);
+	}
+
+	if (currentQty < 2) {
+		buy(required, 2 - currentQty);
+	}
+}
+
+function swapBooster(current, target) {
+	const slot = locate_item(current);
+	if (slot !== -1) shift(slot, target);
+}
+
+function partyMaker() {
+	if (!CONFIG.party.autoManage) return;
+
+	const group = CONFIG.party.groupMembers;
+	const partyLead = get_entity(group[0]);
+	const currentParty = character.party;
+	const healer = get_entity('FatherToken');
+
+	if (character.name === group[0]) {
+		for (let i = 1; i < group.length; i++) {
+			send_party_invite(group[i]);
+		}
+	} else {
+		if (currentParty && currentParty !== group[0] && healer) {
+			leave_party();
+		}
+
+		if (!currentParty && partyLead) {
+			send_party_request(group[0]);
+		}
+	}
+}
+
+function sleep(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+setInterval(() => {
+	if (character?.afk && !parent?.paused) pause();
+	else if (!character?.afk && parent?.paused) pause();
+}, 50);
+
+// ============================================================================
+// ESSENTIAL HELPER FUNCTIONS
+// ============================================================================
+
+function get_nearest_monster_v2(args = {}) {
+	let min_d = 999999;
+	let target = null;
+	let optimal_hp = args.check_max_hp ? 0 : 999999999;
+
+	for (let id in parent.entities) {
+		let current = parent.entities[id];
+		if (current.type !== 'monster' || !current.visible || current.dead) continue;
+
+		if (args.type) {
+			if (Array.isArray(args.type)) {
+				if (!args.type.includes(current.mtype)) continue;
+			} else {
+				if (current.mtype !== args.type) continue;
+			}
+		}
+
+		if (args.min_level !== undefined && current.level < args.min_level) continue;
+		if (args.max_level !== undefined && current.level > args.max_level) continue;
+		if (args.target && !args.target.includes(current.target)) continue;
+		if (args.no_target && current.target && current.target !== character.name) continue;
+		if (args.statusEffects && !args.statusEffects.every(effect => current.s[effect])) continue;
+		if (args.min_xp !== undefined && current.xp < args.min_xp) continue;
+		if (args.max_xp !== undefined && current.xp > args.max_xp) continue;
+		if (args.max_att !== undefined && current.attack > args.max_att) continue;
+		if (args.path_check && !can_move_to(current)) continue;
+
+		let c_dist = args.point_for_distance_check
+			? Math.hypot(args.point_for_distance_check[0] - current.x, args.point_for_distance_check[1] - current.y)
+			: parent.distance(character, current);
+
+		if (args.max_distance !== undefined && c_dist > args.max_distance) continue;
+
+		if (args.check_min_hp || args.check_max_hp) {
+			let c_hp = current.hp;
+			if ((args.check_min_hp && c_hp < optimal_hp) || (args.check_max_hp && c_hp > optimal_hp)) {
+				optimal_hp = c_hp;
+				target = current;
+			}
+			continue;
+		}
+
+		if (c_dist < min_d) {
+			min_d = c_dist;
+			target = current;
+		}
+	}
+
+	return target;
+}
+
+function ms_to_next_skill(skill) {
+	const next_skill = parent.next_skill[skill];
+	if (next_skill === undefined) return 0;
+	const ping = parent.pings?.length ? Math.min(...parent.pings) : 0;
+	const ms = next_skill.getTime() - Date.now() - ping;
+	return ms < 0 ? 0 : ms;
+}
+
+async function equipBatch(data) {
+	if (!Array.isArray(data)) {
+		return Promise.reject({ reason: 'invalid', message: 'Not an array' });
+	}
+	if (data.length > 15) {
+		return Promise.reject({ reason: 'invalid', message: 'Too many items' });
+	}
+
+	let validItems = [];
+
+	for (let i = 0; i < data.length; i++) {
+		let itemName = data[i].itemName;
+		let slot = data[i].slot;
+		let level = data[i].level;
+		let l = data[i].l;
+
+		if (!itemName) continue;
+
+		let found = false;
+		if (parent.character.slots[slot]) {
+			let slotItem = parent.character.items[parent.character.slots[slot]];
+			if (slotItem && slotItem.name === itemName && slotItem.level === level && slotItem.l === l) {
+				found = true;
+			}
+		}
+
+		if (found) continue;
+
+		for (let j = 0; j < parent.character.items.length; j++) {
+			const item = parent.character.items[j];
+			if (item && item.name === itemName && item.level === level && item.l === l) {
+				validItems.push({ num: j, slot: slot });
+				break;
+			}
+		}
+	}
+
+	if (validItems.length === 0) return;
+
+	try {
+		parent.socket.emit('equip_batch', validItems);
+		await parent.push_deferred('equip_batch');
+	} catch (error) {
+		console.error('equipBatch error:', error);
+		return Promise.reject({ reason: 'invalid', message: 'Failed to equip' });
+	}
+}
+
+// ============================================================================
+// SKIN CHANGER
+// ============================================================================
+
+const skinConfigs = {
+	priest: {
+		skin: 'tm_white',
+		skinRing: { name: 'tristone', level: 0, locked: 'l' },
+		normalRing: { name: 'ringofluck', level: 2, locked: 'u' }
+	},
+};
+
+function skinNeeded(ringName, ringLevel, slot = 'ring1', locked = 'l', ccThreshold = 135) {
+	if (character.cc <= ccThreshold) {
+		if (character.slots[slot]?.name !== ringName || character.slots[slot]?.level !== ringLevel) {
+			equipIfNeeded(ringName, slot, ringLevel, locked);
+		}
+		parent.socket.emit('activate', { slot });
+	}
+}
+
+async function equipIfNeeded(itemName, slotName, level, l) {
+	let name = null;
+
+	if (typeof itemName === 'object') {
+		name = itemName.name;
+		level = itemName.level;
+		l = itemName.l;
+	} else {
+		name = itemName;
+	}
+
+	if (character.slots[slotName] != null) {
+		let slotItem = character.slots[slotName];
+		if (slotItem.name === name && slotItem.level === level && slotItem.l === l) {
+			return;
+		}
+	}
+
+	for (let i = 0; i < character.items.length; i++) {
+		const item = character.items[i];
+		if (item != null && item.name === name && item.level === level && item.l === l) {
+			return equip(i, slotName);
+		}
+	}
+}
+
+async function skinChanger() {
+	const config = skinConfigs[character.ctype];
+	if (!config) {
+		console.warn(`No skin config for type: ${character.ctype}`);
+		state.skinReady = true;
+		return;
+	}
+
+	if (character.skin !== config.skin) {
+		console.log(`Applying skinRing: ${config.skinRing.name} lvl ${config.skinRing.level}`);
+		skinNeeded(config.skinRing.name, config.skinRing.level, 'ring1', config.skinRing.locked);
+		await sleep(500);
+		return skinChanger();
+	}
+
+	const slot = character.slots.ring1;
+	if (slot?.name !== config.normalRing.name || slot?.level !== config.normalRing.level) {
+		console.log(`Equipping normalRing: ${config.normalRing.name} lvl ${config.normalRing.level}`);
+		equipIfNeeded(config.normalRing.name, 'ring1', config.normalRing.level, config.normalRing.locked);
+		await sleep(500);
+		return skinChanger();
+	}
+
+	state.skinReady = true;
+	console.log(`Skin ready! ${character.ctype} has skin ${character.skin} and ring ${slot.name}`);
+}
+
+skinChanger();
+
+// ============================================================================
+// EVENT HANDLERS
+// ============================================================================
+
+function on_cm(name, data) {
+	if (name == "Dexon") {
+		if (data.message === 'farm_spot') {
+			const changed = home !== data.home || mobMap !== data.mobMap;
+			home = data.home;
+			mobMap = data.mobMap;
+			destination = { map: data.mobMap, x: data.x, y: data.y };
+			if (changed) {
+				updateHomeDependentSets();
+				game_log(`Farm spot set: ${data.home} @ ${data.mobMap} (${data.x}, ${data.y})`, '#00FF00');
+			}
+		}
+		if (data.message == "location") {
+			respawn();
+			smart_move({ x: data.x, y: data.y, map: data.map });
+			game_log("Repsawning & Moving");
+		}
+		if (data.message == "dragold_hop") {
+			try {
+				change_server(data.region, data.name);
+				game_log(`🐉 Following Dexon to ${data.region}${data.name} for dragold`, '#FFD700');
+			} catch (e) {
+				game_log(`dragold_hop follow failed: ${e}`, 'red');
+			}
+		}
+	}
+	if (name == "Meltymerch") {
+		if (data.message == "Heal Merch") {
+			use_skill("partyheal");
+			game_log("Party Healing Meltymerch");
+		}
+		if (data.message === 'come_to_merchant') {
+			state.waitingForMerchant = true;
+			state.waitingForMerchantSince = Date.now();
+			game_log('Meltymerch needs me to come to him', '#FFD700');
+			smart_move({ x: data.x, y: data.y, map: data.map });
+		}
+		if (data.message === 'merchant_done') {
+			state.waitingForMerchant = false;
+			game_log('Merchant business done - resuming', '#00FF00');
+		}
+	}
+}
+
+function on_party_request(name) {
+	if (CONFIG.party.groupMembers.includes(name)) {
+		console.log('Accepting party request from ' + name);
+		accept_party_request(name);
+	}
+}
+
+function on_party_invite(name) {
+	if (CONFIG.party.groupMembers.includes(name)) {
+		console.log('Accepting party invite from ' + name);
+		accept_party_invite(name);
+	}
+}
+
+game.on('death', data => {
+	const mob = parent.entities[data.id];
+	if (!mob) return;
+
+	const mobName = mob.mtype;
+	const mobTarget = mob.target;
+
+	const partyMembers = Object.keys(get_party() || {});
+
+	if (mobTarget === character.name || partyMembers.includes(mobTarget)) {
+		const luckDisplay = mob.cooperative ? character.luckm : data.luckm;
+		const msg = `${mobName} died with ${luckDisplay} luck`;
+		game_log(msg, '#96a4ff');
+		//console.log(msg);
+	}
+});
+
+character.on('loot', data => {
+	if (data.id) {
+		console.log(`${data.opener} looted chest goldm: ${data.goldm}`);
+		game_log(`${data.opener} looted chest goldm: ${data.goldm}`, 'gold');
+
+
+		setTimeout(() => {
+			removeChestId(data.id);
+		}, 2000);
+	}
+});
+
+function sendUpdates() {
+	// This action refreshes a UI panel in a real browser tab and is rejected
+	// outright on Mainframe ("Action send_updates is unavailable") - not
+	// harmful, but spams the log every 20s for no benefit there.
+	if (!parent.$) return;
+	parent.socket.emit('send_updates', {});
+}
+setInterval(sendUpdates, 20000);
+
+// ============================================================================
+// DPS SELF-REPORT - feeds Dexon's dynamic farm spot search, since he can't
+// see FatherToken's exact live stats directly.
+// ============================================================================
+function reportDps() {
+	const dps = (character.attack || 0) * (character.frequency || 0);
+	send_cm('Dexon', { message: 'dps_report', damageType: 'magical', dps });
+}
+setInterval(reportDps, 10000);
+reportDps();
+
+// ============================================================================
+// START ALL LOOPS
+// ============================================================================
+
+mainLoop();
+actionLoop();
+skillLoop();
+maintenanceLoop();
+potionLoop();
+
+// ============================================================================
+// BROWSER-ONLY UI EXTRAS (Kill Tracker, Gold Meter, Game Log Filter, DPS
+// Meter v4, Party Frames) - these render DOM/jQuery UI and do nothing
+// useful on Mainframe (per the game's own docs on UI/button functions), so
+// this entire block is skipped there rather than erroring. Each piece is
+// wrapped in its own IIFE so none of their internal variable names can
+// collide with each other or with anything else in this script.
+// ============================================================================
+if (parent.$) {
+
+	// --- Kill Tracker ---
+	(function () {
+		if (parent.killTrackerInitialized) return; // guard against duplicate 'death' listeners if this script ever re-runs without a full page reload
+		parent.killTrackerInitialized = true;
+
+		let deaths = 0; // Variable to track the number of deaths
+		const killTime = new Date(); // Start time to calculate elapsed time
+
+		game.on('death', function (data) {
+			if (parent.entities[data.id]) { // Check if the entity exists
+				const mob = parent.entities[data.id];
+				const mobName = mob.type;
+
+				// Check if the mob is a monster
+				if (mobName === 'monster') {
+					const mobTarget = mob.target; // Get the mob's target
+					const party = get_party(); // Get your party members
+
+					// If party exists, extract party member names into an array
+					const partyMembers = party ? Object.keys(party) : [];
+
+					// Check if the mob's target was the player or someone in the party
+					if (mobTarget === character.name || partyMembers.includes(mobTarget)) {
+						console.log(data); // Log the death event
+						deaths++; // Increment the death count
+						killHandler(); // Call the killHandler function
+					}
+				}
+			}
+		});
+
+		function killHandler() {
+			const elapsed = (new Date() - killTime) / 1000; // Calculate elapsed time in seconds
+			if (elapsed > 0) { // Prevent division by zero
+				const deathsPerSec = deaths / elapsed; // Calculate deaths per second
+				const dailyKillRate = calculateKillRate(deathsPerSec); // Calculate deaths based on interval
+
+				add_top_button("kpm", Math.round(dailyKillRate.kpm).toLocaleString() + ' kpm'); // Deaths per minute
+				add_top_button("kph", Math.round(dailyKillRate.kph).toLocaleString() + ' kph'); // Deaths per hour
+				add_top_button("kpd", Math.round(dailyKillRate.kpd).toLocaleString() + ' kpd'); // Deaths per day
+			} else {
+				console.warn("Elapsed time is zero, cannot calculate rates.");
+			}
+		}
+
+		// Function to calculate deaths based on the interval
+		function calculateKillRate(deathsPerSec) {
+			let kpm = deathsPerSec * 60; // Convert to deaths per minute
+			let kph = kpm * 60; // Convert to deaths per hour
+			let kpd = kph * 24; // Convert to deaths per day
+			return { kpm, kph, kpd };
+		}
+	})();
+
+	// --- Gold Meter ---
+	(function () {
+		if (parent.goldMeterInitialized) return; // guard against duplicate 'loot' listeners if this script ever re-runs without a full page reload
+		parent.goldMeterInitialized = true;
+
+		let sumGold = 0, largestGoldDrop = 0, interval = 'hour';
+		const startTime = performance.now();
+		const intervals = { minute: 60000, hour: 3600000, day: 86400000 };
+
+		const init = () => {
+			const $ = parent.$;
+			$('#bottomrightcorner').find('#goldtimer').remove();
+			const container = $('<div id="goldtimer"></div>').css({ fontSize: '25px', color: 'white', textAlign: 'center', display: 'table', overflow: 'hidden', marginBottom: '-5px', width: "100%" });
+			$('<div id="goldtimercontent"></div>').css({ display: 'table-cell', verticalAlign: 'middle' }).appendTo(container);
+			$('#bottomrightcorner').children().first().after(container);
+
+			const countPartyChars = () => {
+				let count = 0;
+				for (const name in parent.party) {
+					if (name === character.name || parent.entities[name]?.owner === character.owner) count++;
+				}
+				return count;
+			};
+
+			character.on("loot", d => {
+				if (d.gold && typeof d.gold === 'number' && !Number.isNaN(d.gold)) {
+					const myGold = Math.round(d.gold * countPartyChars());
+					sumGold += myGold;
+					if (myGold > largestGoldDrop) largestGoldDrop = myGold;
+				}
+			});
+
+			setInterval(() => {
+				const elapsed = performance.now() - startTime;
+				const divisor = elapsed / intervals[interval];
+				const avg = divisor > 0 ? (sumGold / divisor | 0) : 0;
+				$('#goldtimercontent').html(`<div>${avg.toLocaleString('en')} Gold/${interval[0].toUpperCase() + interval.slice(1)}</div><div>${largestGoldDrop.toLocaleString('en')} Jackpot</div>`).css({ backgroundColor: 'rgba(0,0,0,1)', border: 'solid gray', borderWidth: '4px 4px', height: '50px', lineHeight: '25px', fontSize: '25px', color: '#FFD700', textAlign: 'center' });
+			}, 500);
+		};
+
+		const setGoldInterval = i => ['minute', 'hour', 'day'].includes(i) ? interval = i : console.warn("Invalid interval. Use 'minute', 'hour', or 'day'.");
+		setTimeout(init, 1000);
+	})();
+
+	// --- Game Log Filter ---
+	(function () {
+		const FILTERS = {
+			kills: { show: false, regex: /killed/, label: 'Kills' },
+			gold: { show: true, regex: /gold/, label: 'Gold' },
+			party: { show: true, regex: /party/, label: 'Party' },
+			items: { show: true, regex: /found/, label: 'Items' },
+			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgr.' },
+			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' }
+		};
+
+		const COLORS = {
+			active: ['#151342', '#1D1A5C'],
+			inactive: ['#222', '#333'],
+			activeText: '#FFF',
+			inactiveText: '#999'
+		};
+
+		const TRUNCATE_AT = 1000;
+		const TRUNCATE_TO = 720;
+
+		function padZero(num, length = 2) {
+			return num.toString().padStart(length, '0');
+		}
+
+		function getTimestamp() {
+			const now = new Date();
+			return `${padZero(now.getHours())}:${padZero(now.getMinutes())}:${padZero(now.getSeconds())}`;
+		}
+
+		function createFilterBar() {
+			const existingBar = parent.document.getElementById('gamelog-tab-bar');
+			if (existingBar) existingBar.remove();
+
+			const bar = parent.document.createElement('div');
+			bar.id = 'gamelog-tab-bar';
+			bar.className = 'enableclicks';
+			Object.assign(bar.style, {
+				border: '5px solid gray',
+				height: '24px',
+				background: 'black',
+				margin: '-5px 0',
+				display: 'flex',
+				fontSize: '20px',
+				fontFamily: 'pixel'
+			});
+
+			Object.entries(FILTERS).forEach(([key, filter], index) => {
+				const tab = parent.document.createElement('div');
+				tab.id = `gamelog-tab-${key}`;
+				tab.className = 'gamelog-tab enableclicks';
+				tab.textContent = filter.label;
+
+				const colors = filter.show ? COLORS.active : COLORS.inactive;
+				const textColor = filter.show ? COLORS.activeText : COLORS.inactiveText;
+
+				Object.assign(tab.style, {
+					height: '100%',
+					width: `${100 / Object.keys(FILTERS).length}%`,
+					textAlign: 'center',
+					lineHeight: '24px',
+					cursor: 'default',
+					background: colors[index % 2],
+					color: textColor
+				});
+
+				tab.addEventListener('click', () => toggleFilter(key));
+				bar.appendChild(tab);
+			});
+
+			const gamelog = parent.document.getElementById('gamelog');
+			gamelog.parentElement.insertBefore(bar, gamelog);
+		}
+
+		function toggleFilter(key) {
+			FILTERS[key].show = !FILTERS[key].show;
+
+			const tab = parent.document.getElementById(`gamelog-tab-${key}`);
+			const index = Array.from(tab.parentElement.children).indexOf(tab);
+			const colors = FILTERS[key].show ? COLORS.active : COLORS.inactive;
+			const textColor = FILTERS[key].show ? COLORS.activeText : COLORS.inactiveText;
+
+			tab.style.background = colors[index % 2];
+			tab.style.color = textColor;
+
+			filterGamelog();
+			scrollGamelogToBottom();
+		}
+
+		function filterGamelog() {
+			const entries = parent.document.querySelectorAll('.gameentry');
+			entries.forEach(entry => {
+				let shouldShow = true;
+				for (const filter of Object.values(FILTERS)) {
+					if (filter.regex.test(entry.innerHTML)) {
+						shouldShow = filter.show;
+						break;
+					}
+				}
+				entry.style.display = shouldShow ? 'block' : 'none';
+			});
+		}
+
+		function scrollGamelogToBottom() {
+			const gamelog = parent.document.getElementById('gamelog');
+			gamelog.scrollTop = gamelog.scrollHeight;
+		}
+
+		function addLogEntry(message, color = 'white') {
+			if (parent.mode?.dom_tests || parent.inside === 'payments') return;
+
+			const gamelog = parent.document.getElementById('gamelog');
+
+			if (parent.game_logs.length > TRUNCATE_AT) {
+				parent.game_logs = parent.game_logs.slice(-TRUNCATE_TO);
+
+				const truncateMsg = "<div class='gameentry' style='color: gray'>- Truncated -</div>";
+				const entries = parent.game_logs.map(([msg, clr]) =>
+					`<div class='gameentry' style='color: ${clr || 'white'}'>${msg}</div>`
+				).join('');
+
+				gamelog.innerHTML = truncateMsg + entries;
+			}
+
+			parent.game_logs.push([message, color]);
+
+			let display = 'block';
+			for (const filter of Object.values(FILTERS)) {
+				if (filter.regex.test(message)) {
+					display = filter.show ? 'block' : 'none';
+					break;
+				}
+			}
+
+			const entry = parent.document.createElement('div');
+			entry.className = 'gameentry';
+			entry.style.color = color;
+			entry.style.display = display;
+			entry.innerHTML = message;
+
+			gamelog.appendChild(entry);
+			scrollGamelogToBottom();
+		}
+
+		function initTimestamps() {
+			if (parent.socket.hasListeners('game_log')) {
+				parent.socket.removeListener('game_log');
+			}
+
+			parent.socket.on('game_log', data => {
+				parent.draw_trigger(() => {
+					const timestamp = getTimestamp();
+
+					if (typeof data === 'string') {
+						addLogEntry(`${timestamp} | ${data}`, 'gray');
+					} else {
+						if (data.sound) sfx(data.sound);
+						addLogEntry(`${timestamp} | ${data.message}`, data.color);
+					}
+				});
+			});
+		}
+
+		createFilterBar();
+		filterGamelog();
+		initTimestamps();
+	})();
+
+	// --- DPS Meter v4 ---
+	(function () {
+		// All currently supported damageTypes: "Base", "Blast", "Burn", "HPS", "MPS", "DR", "RF" "DPS"
+		const damageTypes = ["Base", "Blast", "HPS", "DPS"];
+		let displayClassTypeColors = true, displayDamageTypeColors = true, showOverheal = false, showOverManasteal = true;
+
+		const damageTypeColors = { Base: '#A92000', Blast: '#782D33', Burn: '#FF7F27', HPS: '#9A1D27', MPS: '#353C9C', DR: '#E94959', RF: '#D880F0', DPS: '#FFD700', "Dmg Taken": '#FF4C4C' };
+		const classColors = { mage: '#3FC7EB', paladin: '#F48CBA', priest: '#FFFFFF', ranger: '#AAD372', rogue: '#FFF468', warrior: '#C69B6D' };
+
+		const METER_START = performance.now();
+		const playerData = {};
+
+		const getEntry = id => playerData[id] || (playerData[id] = { t: performance.now(), bD: 0, blD: 0, baD: 0, h: 0, m: 0, dr: 0, rf: 0, dtP: 0, dtM: 0 });
+
+		const fmt = v => v.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+		parent.$('#bottomrightcorner').find('#dpsmeter').remove();
+		const container = parent.$("<div id='dpsmeter'></div>").css({ fontSize: '20px', color: 'white', textAlign: 'center', display: 'table', overflow: 'hidden', marginBottom: '-3px', width: '100%', backgroundColor: 'rgba(0,0,0,1)' });
+		container.append(parent.$("<div id='dpsmetercontent'></div>").css({ display: 'table-cell', verticalAlign: 'middle', padding: '2px', border: '4px solid grey' }));
+		parent.$('#bottomrightcorner').children().first().after(container);
+
+		parent.socket.on('hit', d => {
+			const inParty = id => parent.party_list.includes(id);
+			if (!inParty(d.hid) && !inParty(d.id)) return;
+
+			try {
+				const dmg = d.damage || 0, isPlayer = get_player(d.id), isAttacker = get_player(d.hid);
+
+				// Damage taken tracking
+				if (dmg && isPlayer) {
+					const e = getEntry(d.id);
+					d.damage_type === 'physical' ? e.dtP += dmg : e.dtM += dmg;
+				}
+				if (d.dreturn && isAttacker) getEntry(d.hid).dtP += d.dreturn;
+				if (d.reflect && isAttacker) getEntry(d.hid).dtM += d.reflect;
+
+				// DR/RF attribution (only mob→player)
+				if (d.dreturn && isPlayer && !get_player(d.hid)) getEntry(d.id).dr += d.dreturn;
+				if (d.reflect && isPlayer && !get_player(d.hid)) getEntry(d.id).rf += d.reflect;
+
+				// Attacker actions
+				if (isAttacker) {
+					const e = getEntry(d.hid);
+
+					// Damage breakdown
+					if (dmg) {
+						d.source === 'burn' ? e.bD += dmg : d.splash ? e.blD += dmg : e.baD += dmg;
+					}
+
+					// Healing
+					if (d.heal || d.lifesteal) {
+						const target = get_player(d.id);
+						e.h += showOverheal ? (d.heal || 0) + (d.lifesteal || 0) :
+							(d.heal ? Math.min(d.heal, (target?.max_hp || 0) - (target?.hp || 0)) : 0) +
+							(d.lifesteal ? Math.min(d.lifesteal, isAttacker.max_hp - isAttacker.hp) : 0);
+					}
+
+					// Mana steal
+					if (d.manasteal) {
+						e.m += showOverManasteal ? d.manasteal : Math.min(d.manasteal, isAttacker.max_mp - isAttacker.mp);
+					}
+				}
+			} catch (err) {
+				console.error('hit handler error', err);
+			}
+		});
+
+		const calcVal = (type, e, elapsed) => {
+			const r = 1000 / elapsed;
+			const vals = {
+				DPS: (e.baD + e.blD + e.bD + e.dr + e.rf) * r,
+				Burn: e.bD * r,
+				Blast: e.blD * r,
+				Base: e.baD * r,
+				HPS: e.h * r,
+				MPS: e.m * r,
+				DR: e.dr * r,
+				RF: e.rf * r,
+				'Dmg Taken': { phys: e.dtP * r | 0, mag: e.dtM * r | 0 }
+			};
+			return type === 'Dmg Taken' ? vals[type] : vals[type] | 0;
+		};
+
+		setInterval(() => {
+			const $ = parent.$, c = $('#dpsmetercontent');
+			if (!c.length) return;
+
+			const now = performance.now(), elapsed = now - METER_START;
+			const hrs = elapsed / 3600000 | 0, mins = (elapsed % 3600000) / 60000 | 0;
+
+			let html = `<div>👑 Elapsed Time: ${hrs}h ${mins}m 👑</div><table border="1" style="width:100%"><tr><th></th>`;
+			damageTypes.forEach(t => html += `<th style='color:${displayDamageTypeColors ? damageTypeColors[t] || 'white' : 'white'}'>${t}</th>`);
+			html += '</tr>';
+
+			// Sort by DPS
+			const sorted = Object.entries(playerData).map(([id, e]) => ({ id, e, dps: calcVal('DPS', e, now - e.t) })).sort((a, b) => b.dps - a.dps);
+
+			sorted.forEach(({ id, e }) => {
+				const p = get_player(id);
+				if (!p) return;
+				html += `<tr><td style='color:${displayClassTypeColors ? classColors[p.ctype.toLowerCase()] || '#FFF' : '#FFF'}'>${p.name}</td>`;
+				damageTypes.forEach(t => {
+					const v = calcVal(t, e, now - e.t);
+					html += t === 'Dmg Taken' ? `<td><span style='color:#F44'>${fmt(v.phys)}</span> | <span style='color:#6CF'>${fmt(v.mag)}</span></td>` : `<td>${fmt(v)}</td>`;
+				});
+				html += '</tr>';
+			});
+
+			// Totals
+			html += `<tr><td style='color:${damageTypeColors.DPS}'>Total DPS</td>`;
+			damageTypes.forEach(t => {
+				if (t === 'Dmg Taken') {
+					let totP = 0, totM = 0;
+					Object.values(playerData).forEach(e => {
+						const v = calcVal(t, e, now - e.t);
+						totP += v.phys; totM += v.mag;
+					});
+					html += `<td><span style='color:#F44'>${fmt(totP)}</span> | <span style='color:#6CF'>${fmt(totM)}</span></td>`;
+				} else {
+					let tot = 0;
+					Object.values(playerData).forEach(e => tot += calcVal(t, e, now - e.t));
+					html += `<td>${fmt(tot)}</td>`;
+				}
+			});
+			html += '</tr></table>';
+			c.html(html);
+		}, 250);
+	})();
+
+	// --- Party Frames ---
+	(function () {
+		if (parent.party_style_prepared) parent.$('#style-party-frames').remove();
+
+		parent.$('head').append(`<style id="style-party-frames">
+.party-container {position: absolute; top: 55px; left: -25%; width: 1000px; height: 300px; font-family: 'pixel';}
+</style>`);
+		parent.party_style_prepared = true;
+
+		const DISPLAY_BARS = ['hp', 'mp', 'xp']; // <-- Add 'cc', 'ping', 'share' as needed
+		const FRAME_WIDTH = 80;
+		const INCLUDE = ['mp', 'max_mp', 'hp', 'max_hp', 'name', 'max_xp', 'xp', 'level', 'share', 'cc', 'max_cc'];
+		const SHOW_IMG = true;
+
+		const extractInfo = (char) => {
+			const info = {};
+			for (const key of INCLUDE) if (key in char) info[key] = char[key];
+			for (const key of character.read_only) if (key in char) info[key] = char[key];
+			return info;
+		};
+
+		setInterval(() => set(character.name + '_newparty_info', { ...extractInfo(character), lastSeen: Date.now() }), 200);
+
+		const getIFramedChar = (name) => {
+			for (const iframe of top.$('iframe')) {
+				const char = iframe.contentWindow.character;
+				if (char?.name === name) return char;
+			}
+		};
+
+		const barHTML = (text, val, width, color) =>
+			`<div style="position:relative;width:100%;height:20px;text-align:center;margin-top:3px;">
+<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-weight:bold;font-size:17px;z-index:1;white-space:nowrap;text-shadow:-1px 0 black,0 2px black,2px 0 black,0 -1px black;">${text}: ${val}</div>
+<div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:20px;border:1px solid grey;"></div>
+</div>`;
+
+		const barConfigs = {
+			hp: { color: 'red', calc: (i) => ({ val: i.hp, width: i.hp / i.max_hp * 100 }) },
+			mp: { color: 'blue', calc: (i) => ({ val: i.mp, width: i.mp / i.max_mp * 100 }) },
+			xp: {
+				color: 'green', calc: (i) => {
+					const pct = i.xp / G.levels[i.level] * 100;
+					return { val: pct.toFixed(2) + '%', width: pct };
+				}
+			},
+			cc: { color: 'grey', calc: (i) => ({ val: i.cc?.toFixed(2) ?? i.cc, width: i.cc / (i.max_cc || 200) * 100 }) },
+			ping: { color: 'black', calc: () => ({ val: character.ping?.toFixed(0) ?? '??', width: 0 }) },
+			share: {
+				color: 'teal', calc: (i, partyData) => {
+					const share = partyData?.share;
+					return share != null ? { val: (share * 100).toFixed(2) + '%', width: share * 300 } : { val: '??', width: 0 };
+				}
+			}
+		};
+
+		setInterval(() => {
+			const partyFrame = parent.$('#newparty').addClass('party-container');
+			if (!partyFrame.length) return;
+
+			const members = Object.keys(parent.party);
+			partyFrame.children().each((x, el) => {
+				const name = members[x];
+				let info = get(name + '_newparty_info');
+
+				if (!info || Date.now() - info.lastSeen > 1000) {
+					const iframed = getIFramedChar(name);
+					info = iframed ? extractInfo(iframed) : (get_player(name) || { name });
+				}
+
+				const partyData = parent.party[name];
+				let html = `<div style="width:${FRAME_WIDTH}px;height:20px;margin-top:3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${info.name}</div>`;
+
+				for (const key of DISPLAY_BARS) {
+					const cfg = barConfigs[key];
+					const { val, width } = cfg.calc(info, partyData);
+					if (val !== undefined && val !== '??') {
+						html += barHTML(key.toUpperCase(), val, width, cfg.color);
+					}
+				}
+
+				parent.$(el).children().first().css('display', SHOW_IMG ? 'inherit' : 'none');
+				parent.$(el).children().last().html(`<div style="font-size:22px;" onclick='pcs(event);party_click("${name}");'>${html}</div>`);
+			});
+		}, 250);
+
+		parent.$('#party-props-toggles').remove();
+	})();
+
+}
