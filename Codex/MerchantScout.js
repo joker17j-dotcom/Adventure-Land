@@ -261,17 +261,34 @@ const PRICE_FNS = [
 let priceFnName = null;
 
 function gameItemValue(it) {
+	/* calculate_item_value() returns what Ponty PAID for the item, not what he
+	   charges - it already has buy_to_sell baked in. His asking price is that
+	   times secondhands_mult. Confirmed against four independent observations:
+
+	     throwingstars  g  72,000 -> 86,400     snowflakes  g  92,000 -> 110,400
+	     mcape          g 480,000 -> 576,000    ringsj      g  24,000 ->  28,800
+
+	   all of which are g * buy_to_sell * secondhands_mult = g * 1.2, matching
+	   both the in-game display and community notes. Returning the raw value
+	   would report half price and roughly double every Ponty spread. */
+	const mult = (parent && parent.G && parent.G.multipliers
+		&& parent.G.multipliers.secondhands_mult);
+	if (typeof mult !== 'number' || !isFinite(mult)) return null;
+
 	for (const n of PRICE_FNS) {
 		const f = parent && parent[n];
 		if (typeof f !== 'function') continue;
 		try {
+			/* Pass the whole item through, level and all. The function handles
+			   level, grade and upgrade-vs-compound internally, which is the part
+			   no formula derived from samples could get right. */
 			const v = f(it);
 			if (typeof v === 'number' && isFinite(v) && v > 0) {
 				if (priceFnName !== n) {
 					priceFnName = n;
-					log('pricing via parent.' + n + '()', '#7FD98A');
+					log(`pricing via parent.${n}() x${mult}`, '#7FD98A');
 				}
-				return Math.round(v);
+				return Math.round(v * mult);
 			}
 		} catch (e) { }
 	}
