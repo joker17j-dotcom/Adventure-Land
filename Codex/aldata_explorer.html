@@ -348,6 +348,39 @@ function pontyToggle(onChange) {
     box, el("span", { class: "dim" }, "include Ponty"));
 }
 
+/* What Ponty charges for an item.
+
+   His socket payload carries no price - the client computes it - and the two
+   numbers needed are already in design/multipliers.py, which this page loads:
+
+       buy_to_sell      0.6   what an NPC pays a player for an item
+       secondhands_mult 2     Ponty's markup on what he paid
+
+   So his asking price is g * 0.6 * 2, i.e. 1.2x base value, which is exactly
+   what his own dialogue describes: "They sell them. I buy them. You buy them
+   from me for higher prices." Verified against the live game - Dracul's Attire
+   (mcape, g=480,000) displays as 576,000 gold in Ponty's window, and
+   480000 * 0.6 * 2 = 576000.
+
+   Read from G.multipliers rather than hardcoded, so a rebalance follows
+   automatically.
+
+   LEVEL > 0 RETURNS NULL ON PURPOSE. An upgraded item is worth more, and
+   nothing in the public design data says by how much. Pricing one at its
+   level 0 value would understate the buy side and inflate every spread built
+   on it, which costs real gold. Unknown beats wrong here. */
+function pontyPrice(it) {
+  if (!it || !it.name) return null;
+  if ((it.level || 0) > 0) return null;
+  const item = G.items && G.items[it.name];
+  const g = item && item.g;
+  if (typeof g !== "number" || !isFinite(g)) return null;
+  const m = G.multipliers || {};
+  const b = m.buy_to_sell, k = m.secondhands_mult;
+  if (typeof b !== "number" || typeof k !== "number") return null;
+  return Math.round(g * b * k);
+}
+
 /* {shard: {at, items[]}} -> one pseudo-merchant per shard, in merchant shape. */
 function pontyMerchants(data) {
   const out = [];
@@ -363,8 +396,11 @@ function pontyMerchants(data) {
     const slots = {};
     items.forEach((it, i) => {
       if (!it || !it.name) return;
+      /* A real price from the payload always wins; the derivation is the
+         fallback for the (current) case where the game sends none. */
+      const real = (typeof it.price === "number" && isFinite(it.price)) ? it.price : null;
       slots["ponty" + i] = {
-        name: it.name, price: it.price, b: false,
+        name: it.name, price: real != null ? real : pontyPrice(it), b: false,
         q: it.q || 1, level: it.level || 0, p: it.p || null,
       };
     });

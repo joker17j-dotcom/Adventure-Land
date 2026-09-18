@@ -303,10 +303,18 @@ tab("ponty", "Ponty Stock", (host) => {
           el("span", { class: "dim" }, " " + r.name)) },
       { key: "level", label: "Lv", num: true, get: (r) => r.level,
         render: (r) => el("span", { class: r.level ? "warn" : "dim" }, String(r.level || 0)) },
-      { key: "price", label: "Price", num: true, get: (r) => r.price,
-        render: (r) => r.price == null
-          ? el("span", { class: "dim", title: "Ponty's payload carried no price for this item" }, "—")
-          : el("span", { class: "gold" }, fmt(r.price)) },
+      { key: "price", label: "Price", num: true,
+        get: (r) => (typeof r.price === "number" ? r.price : pontyPrice(r)),
+        render: (r) => {
+          const v = (typeof r.price === "number" ? r.price : pontyPrice(r));
+          if (v != null) return el("span", { class: "gold", title: "base value x buy_to_sell x secondhands_mult" }, fmt(v));
+          return el("span", {
+            class: "dim",
+            title: (r.level || 0) > 0
+              ? "upgraded item - the public data does not say how level scales value, so this is left unpriced rather than guessed"
+              : "no base value for this item in the game data",
+          }, (r.level || 0) > 0 ? "lv>0" : "—");
+        } },
       /* Reference only, and deliberately NOT fed to the spread tables. This is
          design/items.py's base gold value, which is what the item is nominally
          worth - not what Ponty charges for it. He sells at a markup nobody here
