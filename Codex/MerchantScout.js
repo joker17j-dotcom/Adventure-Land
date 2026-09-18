@@ -45,6 +45,9 @@ const CONFIG = {
 	pontyEveryMs: 10 * 60 * 1000,// per-shard Ponty re-check interval
 	minHopIntervalMs: 30000,     // floor between change_server calls
 	pontyTimeoutMs: 8000,
+	// Logs the field names in Ponty's first reply, once per scan. Leave on
+	// until the price is mapping correctly, then turn off.
+	debugPonty: true,
 
 	// Where to stand while scanning. Empty = derive from the game's own map
 	// data (see deriveScanSpots). Override with explicit
@@ -199,13 +202,34 @@ function normalisePonty(data) {
 	const list = Array.isArray(data) ? data
 		: (data && Array.isArray(data.items) ? data.items : null);
 	if (!list) return null;
+
+	/* One-shot dump of the real payload shape. The price is arriving null in
+	   practice, which means the field is not called "price" on this version of
+	   the game (or is not sent at all and the client computes it). Rather than
+	   guess, print what actually came back and map it for certain. */
+	if (CONFIG.debugPonty && list.length) {
+		log('Ponty raw item keys: ' + Object.keys(list[0] || {}).join(', '), '#E9C46A');
+		try { console.log('[scout] Ponty raw sample:', list[0]); } catch (e) { }
+	}
+
+	/* Probe the plausible spellings instead of only "price". Anything
+	   non-numeric stays null - a wrong price is far worse than no price,
+	   because the spread tables would quote it as real profit. */
+	const priceOf = (it) => {
+		for (const k of ['price', 'cost', 'g', 'value', 'gold']) {
+			const v = it[k];
+			if (typeof v === 'number' && isFinite(v)) return v;
+		}
+		return null;
+	};
+
 	const out = [];
 	for (const it of list) {
 		if (!it || !it.name) continue;
 		out.push({
 			name: it.name,
 			level: it.level || 0,
-			price: it.price != null ? it.price : null,
+			price: priceOf(it),
 			q: it.q || 1,
 			p: it.p || null,
 			rid: it.rid || null,

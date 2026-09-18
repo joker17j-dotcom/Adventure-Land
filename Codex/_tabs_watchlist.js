@@ -49,11 +49,21 @@ function summarizeMarket(rows, keep) {
     (r.buying ? g.buys : g.sells).push(r);
   }
   return [...by.values()].map((g) => {
-    const cheapest = g.sells.length ? g.sells.reduce((a, c) => (c.price < a.price ? c : a)) : null;
-    const best = g.buys.length ? g.buys.reduce((a, c) => (c.price > a.price ? c : a)) : null;
+    /* A row with no usable price must never reach the min/max reduce. null
+       loses every numeric comparison, so a priceless listing would win
+       "cheapest" outright and then "best.price - null" would report the buy
+       order's full value as profit - an invented spread on a trade that does
+       not exist. Ponty entries can arrive priceless, so this is load-bearing.
+       The listing still shows in the market table; it just cannot price one. */
+    const priced = (r) => typeof r.price === "number" && isFinite(r.price);
+    const sells = g.sells.filter(priced);
+    const buys = g.buys.filter(priced);
+    const cheapest = sells.length ? sells.reduce((a, c) => (c.price < a.price ? c : a)) : null;
+    const best = buys.length ? buys.reduce((a, c) => (c.price > a.price ? c : a)) : null;
     return {
       item: g.item, level: g.level, special: g.special,
-      nSell: g.sells.length, nBuy: g.buys.length,
+      nSell: sells.length, nBuy: buys.length,
+      unpriced: (g.sells.length - sells.length) + (g.buys.length - buys.length),
       cheapest: cheapest ? cheapest.price : null,
       cheapestWho: cheapest ? `${cheapest.merchant} (${cheapest.server})` : null,
       cheapestSeen: cheapest ? cheapest.lastSeen : null,
