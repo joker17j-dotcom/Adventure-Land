@@ -287,6 +287,11 @@ const CONFIG = {
 		enabled: true, // primary source is now parent.S.anniversary - confirmed reliable via live testing 2026-09-17
 		checkIntervalMs: 5000,
 		townMap: 'main', // only hunts while already in town, not mid-delivery/farm-support travel
+		// When this character IS the featured player there is nobody to go and
+		// kiss - others come here. Hold scouting for this long from the moment
+		// that is established, so the merchant is actually present and reachable
+		// for the people travelling to it. Everything else carries on as normal.
+		selfFeaturedHoldMs: 5 * 60 * 1000,
 	},
 
 	// The Bank is its own map, reached via a door off 'main' - confirmed via
@@ -303,6 +308,8 @@ const state = {
 	standOpen: false,
 	lastHealRequest: 0,
 	kissAttemptedFor: null, // name of the featured player already attempted this round - avoids retrying the same one
+	selfFeaturedFor: null,  // the round in which WE were the featured player
+	selfFeaturedAt: 0,      // when that was established
 };
 
 function sleep(ms) {
@@ -1744,7 +1751,18 @@ async function anniversaryKissLoop() {
 		if (CONFIG.anniversaryKiss.enabled && !state.busy && isInTown()) {
 			const name = findFeaturedPlayerName();
 
-			if (name && state.kissAttemptedFor !== name) {
+			// Being the target ourselves is not a kiss we can perform: get_player
+			// does not resolve our own name, so attemptKiss fell through to
+			// smart_move-to-where-we-already-are and span there for the whole
+			// round - with state.busy held the entire time, which also blocked
+			// deliveries, the stand and scouting. Record it and do nothing.
+			if (name && name === character.name) {
+				if (state.selfFeaturedFor !== name) {
+					state.selfFeaturedFor = name;
+					state.selfFeaturedAt = Date.now();
+					game_log('Anniversary: we are the featured player - staying put for others to reach us', '#FF69B4');
+				}
+			} else if (name && state.kissAttemptedFor !== name) {
 				state.busy = true;
 				const wasStandOpen = state.standOpen;
 				if (wasStandOpen) await ensureStandClosed();
@@ -2033,6 +2051,13 @@ function scoutKissNext() {
 }
 
 function scoutKissHoldsUsHome() {
+	// Being the featured player outranks the schedule: people are travelling
+	// here to reach us, so wandering off mid-round would waste their trip.
+	if (state.selfFeaturedAt
+		&& Date.now() - state.selfFeaturedAt < CONFIG.anniversaryKiss.selfFeaturedHoldMs) {
+		return true;
+	}
+
 	const next = scoutKissNext();
 	if (next == null) {
 		scout.homeFor = null;
