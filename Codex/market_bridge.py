@@ -47,6 +47,10 @@ REASSIGN_MARGIN = 1.25
 # Activity observations decay: a shard seen busy 40 minutes ago is not evidence
 # that it is busy now.
 ACTIVITY_HALFLIFE = 15 * 60
+# Relayed party messages are dropped after this. Long enough that a character
+# reconnecting or hopping shards still collects what it missed, short enough
+# that nobody acts on a half-hour-old "I need potions".
+MESSAGE_TTL = 10 * 60
 
 
 def now() -> float:
@@ -71,6 +75,12 @@ class Store:
         self.ponty: dict[str, dict] = {}       # shard -> {at, items}
         self.bots: dict[str, dict] = {}        # character -> {role, shard, last, assigned}
         self.activity: dict[str, dict] = {}    # shard -> {stands, listings, at}
+        # Party relay. send_cm cannot cross shards, so the same message is sent
+        # both ways: instantly in-game when the target is on the same shard, and
+        # through here always. Receivers dedupe on msg id, so a double delivery
+        # is harmless and neither channel is load-bearing on its own.
+        self.messages: list[dict] = []
+        self.seq = 0
         self.load()
 
     # ---------------------------------------------------------------- disk
@@ -228,6 +238,42 @@ class Store:
             self._evict(t)
             return list(self.merchants.values())
 
+    # -------------------------------------------------------------- relay
+    def post_message(self, body: dict) -> dict:
+        frm = str(body.get("from") or "?")
+        to = body.get("to")
+        if isinstance(to, str):
+            to = [to]
+        elif not isinstance(to, list):
+            to = None                      # None = broadcast to everyone
+        t = now()
+        with self.lock:
+            self.seq += 1
+            self.messages.append({
+                "seq": self.seq, "at": iso(t), "ts": t, "frm": frm,
+                "to": [str(x) for x in to] if to else None,
+                "id": str(body.get("id") or f"{frm}-{self.seq}"),
+                "payload": body.get("payload"),
+            })
+            cutoff = t - MESSAGE_TTL
+            self.messages = [m for m in self.messages if m["ts"] >= cutoff]
+            return {"ok": True, "seq": self.seq}
+
+    def get_messages(self, who: str, since: int) -> dict:
+        t = now()
+        with self.lock:
+            cutoff = t - MESSAGE_TTL
+            self.messages = [m for m in self.messages if m["ts"] >= cutoff]
+            out = [
+                {k: m[k] for k in ("seq", "at", "frm", "id", "payload")}
+                for m in self.messages
+                # Never hand a character its own message back: it already acted
+                # on it locally, and the dedupe set may have expired by now.
+                if m["seq"] > since and m["frm"] != who
+                and (m["to"] is None or who in m["to"])
+            ]
+            return {"ok": True, "cursor": self.seq, "messages": out}
+
     def status(self) -> dict:
         t = now()
         with self.lock:
@@ -245,6 +291,13 @@ class Store:
                          for c, b in sorted(self.bots.items())},
                 "ponty": {k: {"at": v.get("at"), "items": len(v.get("items") or [])}
                           for k, v in sorted(self.ponty.items())},
+                "relay": {
+                    "queued": len(self.messages),
+                    "seq": self.seq,
+                    "recent": [{"at": m["at"], "from": m["frm"], "to": m["to"],
+                                "message": (m.get("payload") or {}).get("message")}
+                               for m in self.messages[-8:]],
+                },
             }
 
 
@@ -281,6 +334,18 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/") or "/"
         if path == "/merchants":
             self._send(self.store.merchant_rows())
+        elif path == "/msg":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            who = (q.get("to") or [""])[0]
+            try:
+                since = int((q.get("since") or ["0"])[0])
+            except ValueError:
+                since = 0
+            if not who:
+                self._send({"ok": False, "error": "to= is required"}, 400)
+            else:
+                self._send(self.store.get_messages(who, since))
         elif path == "/ponty":
             with self.store.lock:
                 self._send(self.store.ponty)
@@ -293,7 +358,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path != "/scan":
+        if path not in ("/scan", "/msg"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
             return
         try:
@@ -306,7 +371,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"ok": False, "error": "body must be an object"}, 400)
             return
         try:
-            self._send(self.store.ingest(body))
+            self._send(self.store.post_message(body) if path == "/msg"
+                       else self.store.ingest(body))
         except Exception as e:
             self._send({"ok": False, "error": str(e)}, 500)
 
@@ -322,6 +388,7 @@ def main():
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
+    print(f"[bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
     try:
         srv.serve_forever()
