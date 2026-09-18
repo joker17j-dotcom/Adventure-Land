@@ -1826,6 +1826,34 @@ const scout = {
 	lastReply: null,        // the bridge's most recent rotation/parked hints
 };
 
+/* change_server RELOADS THE PAGE in a browser tab - the script is destroyed and
+   re-run from the top. Nothing after the hop in the same function ever executes,
+   and every in-memory field resets. Anything that must outlive a hop therefore
+   goes through the game's own CODE storage, and the loop is arranged so a hop is
+   always the LAST thing a cycle does. */
+function scoutSave(k, v) { try { set('scout_' + k, v); } catch (e) { } }
+function scoutLoad(k, dflt) {
+	try { const v = get('scout_' + k); return (v === null || v === undefined) ? dflt : v; }
+	catch (e) { return dflt; }
+}
+
+/* Unsent findings, flattened so they survive a reload. */
+function scoutSaveBuffer() {
+	const out = [];
+	for (const [k, e] of scout.shards) {
+		out.push({ k, shard: e.shard, stands: [...e.stands.values()], ponty: e.ponty });
+	}
+	scoutSave('buf', out);
+}
+function scoutRestoreBuffer() {
+	for (const e of scoutLoad('buf', [])) {
+		if (!e || !e.shard) continue;
+		const b = scoutBufferFor(e.shard);
+		for (const row of (e.stands || [])) b.stands.set(row.id, row);
+		if (e.ponty) b.ponty = e.ponty;
+	}
+}
+
 function scoutBufferFor(shard) {
 	const k = String(shard.region) + String(shard.name);
 	let e = scout.shards.get(k);
@@ -2205,26 +2233,51 @@ async function scoutGoToScanSpot() {
 	return await travelTo(CONFIG.stand.map, spot.x, spot.y);
 }
 
+/* Two phases, never in one continuation, because a hop ends the script.
+
+   TICK A - we are somewhere unscanned: travel, sweep, read Ponty, report, and
+            record the shard as done. No hop.
+   TICK B - this shard is already reported: hop. Whatever follows is unreachable
+            in a browser tab, so nothing follows.
+
+   The previous single-pass version did hop-then-scan, so in a tab it hopped,
+   the page reloaded, and the scan and report were simply never reached. It
+   rotated shards forever and posted nothing - matching exactly what was
+   observed: constant hopping, zero POSTs, and the only report being the one
+   scoutGoHome sends BEFORE its hop. */
 async function scoutVisitNextShard() {
+	const here = mShardKey();
+	const done = scoutLoad('scanned', null);
+
+	if (done !== here) {
+		state.busy = true;
+		scout.cycleStartedAt = Date.now();
+		try {
+			if (state.standOpen) await ensureStandClosed();
+			// Travel BEFORE settling: the sweep measures whether the entity list
+			// has finished streaming, which only means anything once standing
+			// where the read will happen.
+			await scoutGoToScanSpot();
+			await scoutSettleScan();
+			if (scoutPontyDue()) await scoutPontyCheck();
+			const r = await scoutReportConfirmed();
+			if (r && r.reply) scout.lastReply = r.reply;
+			if (r && r.confirmed) scoutSave('scanned', here);
+			scoutSaveBuffer();
+		} finally { state.busy = false; scout.cycleStartedAt = 0; }
+		return;                       // hop on the NEXT tick, not this one
+	}
+
 	const target = scoutNextShard();
 	if (!target) return;
 	state.busy = true;
-	scout.cycleStartedAt = Date.now();
 	try {
 		if (state.standOpen) await ensureStandClosed();
-		if (!await mHopTo(target)) return;
-		// Travel BEFORE settling: the settle sweep measures whether the entity
-		// list has finished streaming in, which only means anything once we are
-		// standing where we intend to read from.
-		await scoutGoToScanSpot();
-		await scoutSettleScan();
-		if (scoutPontyDue()) await scoutPontyCheck();
-		const r = await scoutReportConfirmed();
-		// Keep the hints for the next hop. Only from an answered post - a failed
-		// one carries no rotation, and overwriting with null would silently drop
-		// us back to round-robin.
-		if (r && r.reply) scout.lastReply = r.reply;
-	} finally { state.busy = false; scout.cycleStartedAt = 0; }
+		scoutSaveBuffer();            // anything unsent must survive the reload
+		scoutSave('rot', scout.rotIdx);
+		scoutSave('ponty_seen', scout.pontySeen);
+		await mHopTo(target);         // in a browser tab the script ends here
+	} finally { state.busy = false; }
 }
 
 async function scoutLoop() {
@@ -2297,6 +2350,12 @@ async function resumeInterruptedTrip() {
 }
 
 resumeInterruptedTrip();
+/* Pick up where the pre-hop script left off: a reload wiped every in-memory
+   field, but the findings, rotation position and Ponty timers were written to
+   storage before the hop. */
+scoutRestoreBuffer();
+scout.rotIdx = scoutLoad('rot', 0);
+scout.pontySeen = scoutLoad('ponty_seen', {}) || {};
 openStandAtBestSpot();
 scoutLoop();
 gearProgressionLoop();
