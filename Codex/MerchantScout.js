@@ -49,12 +49,17 @@ const CONFIG = {
 	// through. Only applies where delivery is confirmed (the roamer before a
 	// hop); a parked scout just tries again on its next beat.
 	postConfirmRetries: 3,
-	// How long a roamer works one shard. Sized against the real server list:
-	// 11 non-PVP shards (Europas I-IV, Americas I-V, Eastlands I-II), so a full
-	// rotation is 11 x (travel + Ponty + dwell + hop). At 90s that was ~27 min,
-	// longer than the bridge's merchant TTL - shards expired before the roamer
-	// returned and flickered in and out. 60s puts the rotation near 18 min.
-	roamDwellMs: 60000,
+	// A roamer does not linger. scanStands() reads parent.entities in one
+	// synchronous pass, so 30 stands cost the same as 3 and standing around
+	// afterwards adds nothing - it is the same snapshot, re-taken.
+	//
+	// The one real hazard is scanning too EARLY: after a change_server the
+	// client needs a moment to receive the entity list, and a single instant
+	// scan can catch it half-populated. So rather than a fixed dwell, sweep
+	// until the count stops growing. On an already-loaded shard that settles in
+	// two passes; it is a stability check, not a timer.
+	settleMs: 1500,
+	maxSettlePasses: 5,
 	pontyEveryMs: 10 * 60 * 1000,// per-shard Ponty re-check interval
 	minHopIntervalMs: 30000,     // floor between change_server calls
 	pontyTimeoutMs: 8000,
@@ -587,20 +592,22 @@ async function roamerLoop() {
 			if (items) { buffer.ponty = items; pontySeen[key] = Date.now(); }
 		}
 
-		const until = Date.now() + CONFIG.roamDwellMs;
-		let spotIdx = 0;
-		while (Date.now() < until) {
+		// Sweep until the visible set stops growing, so a shard that is still
+		// streaming entities in is not read half-empty. Exits as soon as two
+		// passes agree - typically ~1.5s, not a fixed wait.
+		let seen = -1;
+		for (let pass = 0; pass < CONFIG.maxSettlePasses; pass++) {
 			absorb(scanStands());
 			if (CONFIG.driftBetweenSpots && spots.length > 1) {
-				spotIdx = (spotIdx + 1) % spots.length;
-				await goTo(spots[spotIdx]);
+				await goTo(spots[(pass + 1) % spots.length]);
 			}
-			await new Promise((r) => setTimeout(r, CONFIG.scanIntervalMs));
+			if (buffer.stands.size === seen) break;
+			seen = buffer.stands.size;
+			await new Promise((r) => setTimeout(r, CONFIG.settleMs));
 		}
 
-		// One last sweep, then hand everything over and confirm it landed BEFORE
-		// leaving. A hop with an unacknowledged scan throws the whole dwell away.
-		absorb(scanStands());
+		// Hand it over and confirm it landed BEFORE leaving. Hopping with an
+		// unacknowledged scan throws the whole visit away.
 		const { reply } = await reportConfirmed();
 
 		if (!canHop()) {                       // single-shard mode: just keep sweeping
