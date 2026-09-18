@@ -527,23 +527,37 @@ async function hopTo(target) {
    spent on the blind spots. */
 function nextShard(reply) {
 	const cur = shardKey(currentShard());
-	const parked = new Set(Object.values((reply && reply.parked) || {}).filter(Boolean));
-
-	const fromBridge = (reply && Array.isArray(reply.rotation)) ? reply.rotation : [];
 	const own = serverList().map(shardKey);
-	const all = fromBridge.length ? [...new Set([...fromBridge, ...own])] : own;
 
-	const candidates = all.filter((k) => k !== cur && !parked.has(k));
-	const pool = candidates.length ? candidates : all.filter((k) => k !== cur);
-	if (!pool.length) return null;
+	const parked = new Set(Object.values((reply && reply.parked) || {}).filter(Boolean));
+	const fromBridge = (reply && Array.isArray(reply.rotation)) ? reply.rotation : [];
 
-	// Round-robin through whatever pool we ended up with, persisted so a hop
-	// does not reset us to the top of the list every time.
-	const i = SS.get('roamIdx', 0) % pool.length;
+	const toServer = (key) => {
+		for (const s of serverList()) if (shardKey(s) === key) return s;
+		return null;
+	};
+
+	if (fromBridge.length) {
+		// Shards the bridge has never heard of come first: no observation at all
+		// is staler than any timestamp. Then its rotation, which is already
+		// ordered oldest-first - so the head IS the shard most worth visiting,
+		// and stepping an index through it would throw that ordering away.
+		const known = new Set(fromBridge);
+		const unseen = own.filter((k) => !known.has(k));
+		const pool = [...unseen, ...fromBridge]
+			.filter((k) => k !== cur && own.includes(k) && !parked.has(k));
+		if (pool.length) return toServer(pool[0]);
+	}
+
+	// No hints, or every other shard is parked-covered: round-robin so an
+	// outage or a full fleet never leaves the roamer sitting still. The index
+	// is persisted because change_server wipes runtime state in a browser tab,
+	// and restarting at the top of the list each hop would re-walk the same few.
+	const any = own.filter((k) => k !== cur);
+	if (!any.length) return null;
+	const i = SS.get('roamIdx', 0) % any.length;
 	SS.set('roamIdx', i + 1);
-	const key = pool[i];
-	for (const s of serverList()) if (shardKey(s) === key) return s;
-	return null;
+	return toServer(any[i]);
 }
 
 // -------------------------------------------------------------------- loops
