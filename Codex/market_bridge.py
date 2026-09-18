@@ -128,6 +128,9 @@ class Store:
                 "region": region, "name": name,
             }
 
+            stored_m = 0
+            stored_p = 0
+
             seen = body.get("merchants")
             # A scan that reports no merchants array at all is a heartbeat, not
             # an observation - it must not wipe a shard we have good data for.
@@ -135,6 +138,7 @@ class Store:
                 for row in seen:
                     if not isinstance(row, dict) or not row.get("id"):
                         continue
+                    stored_m += 1
                     self.merchants[f"{key}|{row['id']}"] = {
                         "id": row["id"],
                         "serverRegion": region,
@@ -152,9 +156,15 @@ class Store:
             pon = body.get("ponty")
             if isinstance(pon, list):
                 self.ponty[key] = {"at": iso(t), "items": pon}
+                stored_p = len(pon)
 
             self._evict(t)
             reply = self._plan(char, t)
+            # What was actually written, so the scout can confirm its payload
+            # landed rather than trusting that an HTTP 200 meant anything. A
+            # mismatch tells it to resend instead of moving on and losing the
+            # scan.
+            reply["accepted"] = {"merchants": stored_m, "ponty": stored_p}
         self.save()
         return reply
 

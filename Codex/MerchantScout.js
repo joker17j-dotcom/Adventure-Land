@@ -40,7 +40,15 @@ const CONFIG = {
 	},
 
 	scanIntervalMs: 4000,        // how often to sweep visible entities
-	postIntervalMs: 15000,       // how often to ship findings to the bridge
+	postIntervalMs: 20000,       // parked scouts: scan and post on this beat
+	// Never post twice inside this window. A hop, a dwell ending and a heartbeat
+	// can otherwise land together and hammer the bridge with three writes in a
+	// second, which tells it nothing it did not already know.
+	minPostGapMs: 7000,
+	// How many times to resend before accepting that a scan is not getting
+	// through. Only applies where delivery is confirmed (the roamer before a
+	// hop); a parked scout just tries again on its next beat.
+	postConfirmRetries: 3,
 	// How long a roamer works one shard. Sized against the real server list:
 	// 11 non-PVP shards (Europas I-IV, Americas I-V, Eastlands I-II), so a full
 	// rotation is 11 x (travel + Ponty + dwell + hop). At 90s that was ~27 min,
@@ -405,7 +413,25 @@ function drain() {
 	return { stands, ponty };
 }
 
+let lastPostAt = 0;
+
+/* Hold until minPostGapMs has passed since this scout's own last post. Per
+   scout, not global - two scouts posting a second apart is fine, one scout
+   posting twice in a second is noise. */
+async function respectPostGap() {
+	if (!lastPostAt) return;
+	const since = Date.now() - lastPostAt;
+	if (since >= CONFIG.minPostGapMs) return;
+	const wait = CONFIG.minPostGapMs - since;
+	log(`holding ${(wait / 1000).toFixed(1)}s before posting (min gap)`);
+	await new Promise((r) => setTimeout(r, wait));
+}
+
+/* Returns {reply, confirmed, stands, ponty}. `confirmed` means the bridge
+   acknowledged storing exactly what was sent - not merely that the request
+   returned. An HTTP 200 with a short count means the scan did not land. */
 async function report(extra) {
+	await respectPostGap();
 	const { stands, ponty } = drain();
 	const payload = {
 		character: myName(),
@@ -417,15 +443,52 @@ async function report(extra) {
 		...(extra || {}),
 	};
 	const reply = await bridge.post(payload);
-	if (!reply) {
-		// Put it back so nothing is lost while the bridge is down. The stand map
-		// is keyed by merchant, so re-absorbing cannot double-count.
+	lastPostAt = Date.now();
+
+	const sentM = stands.length;
+	const sentP = ponty ? ponty.length : 0;
+	const acc = reply && reply.accepted;
+	const confirmed = !!(reply && acc
+		&& acc.merchants === sentM && acc.ponty === sentP);
+
+	if (!reply || !confirmed) {
+		// Put it back so nothing is lost. The stand map is keyed by merchant, so
+		// re-absorbing cannot double-count, and an unconfirmed post is treated
+		// exactly like a failed one.
 		absorb(stands);
 		if (ponty) buffer.ponty = ponty;
 	}
-	log(`${stands.length} stands${ponty ? ` + ${ponty.length} Ponty items` : ''} on `
-		+ `${shardKey(currentShard())}${reply ? '' : ' (buffered, bridge down)'}`);
-	return reply;
+
+	const where = shardKey(currentShard());
+	if (confirmed) {
+		log(`${sentM} stands${sentP ? ` + ${sentP} Ponty items` : ''} on ${where} - confirmed`);
+	} else if (reply) {
+		log(`${where}: bridge took ${acc ? acc.merchants : '?'}/${sentM} stands - resending`, 'orange');
+	} else {
+		log(`${sentM} stands${sentP ? ` + ${sentP} Ponty items` : ''} on ${where} (buffered, bridge down)`);
+	}
+	return { reply, confirmed, stands: sentM, ponty: sentP };
+}
+
+/* Post, and keep resending until the bridge confirms it stored the scan. Used
+   before a hop: leaving a shard with an unacknowledged scan means the data was
+   collected and then quietly dropped.
+
+   Bounded on purpose. If the bridge is simply down, the findings are already
+   back in the buffer and will go out when it returns, so blocking the rotation
+   forever would cost coverage and save nothing. */
+async function reportConfirmed() {
+	for (let i = 0; i < CONFIG.postConfirmRetries; i++) {
+		const r = await report();
+		if (r.confirmed) return r;
+		if (!r.reply) {
+			log('bridge unreachable - carrying the scan forward, will send when it returns', 'orange');
+			return r;
+		}
+		log(`post not acknowledged (${i + 1}/${CONFIG.postConfirmRetries})`, 'orange');
+	}
+	log('giving up on confirmation for now - scan stays buffered', 'orange');
+	return { reply: null, confirmed: false, stands: 0, ponty: 0 };
 }
 
 // ---------------------------------------------------------------- hop guard
@@ -440,7 +503,7 @@ async function hopTo(target) {
 	const last = SS.get('lastHop', 0);
 	if (Date.now() - last < CONFIG.minHopIntervalMs) return false;
 
-	await report();                     // never carry findings across a hop
+	await reportConfirmed();            // never carry findings across a hop
 	SS.set('lastHop', Date.now());
 	log(`hopping ${shardKey(cur)} -> ${shardKey(target)}`, '#E9C46A');
 	try {
@@ -490,7 +553,7 @@ async function parkedLoop() {
 		absorb(scanStands());
 
 		if (Date.now() - lastPost > CONFIG.postIntervalMs) {
-			const reply = await report();
+			const { reply } = await report();
 			lastPost = Date.now();
 			if (reply && reply.assignment) await hopTo(reply.assignment);
 		}
@@ -535,7 +598,11 @@ async function roamerLoop() {
 			await new Promise((r) => setTimeout(r, CONFIG.scanIntervalMs));
 		}
 
-		const reply = await report();
+		// One last sweep, then hand everything over and confirm it landed BEFORE
+		// leaving. A hop with an unacknowledged scan throws the whole dwell away.
+		absorb(scanStands());
+		const { reply } = await reportConfirmed();
+
 		if (!canHop()) {                       // single-shard mode: just keep sweeping
 			await new Promise((r) => setTimeout(r, CONFIG.scanIntervalMs));
 			continue;
