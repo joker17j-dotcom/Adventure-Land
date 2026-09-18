@@ -171,6 +171,13 @@ const CONFIG = {
 	// How long to wait for a change_server to actually land before treating the
 	// hop as failed and requeueing the work.
 	hopTimeoutMs: 30000,
+	// The shard this merchant lives on. FIXED, never learned - matches Ranger's
+	// homeServer. A cross-shard trip always comes back here, and opening a stand
+	// somewhere else never changes where "here" is.
+	homeServer: 'USIV',
+	// How many times to retry the journey home before giving up for now. The
+	// trip record is kept on failure, so a later batch or restart tries again.
+	homeReturnAttempts: 3,
 
 	// Ernis sells HP/MP potions in Mainland, beside Gabriel.
 	npc: { name: 'Ernis', map: 'main', x: -35, y: -162 },
@@ -382,33 +389,22 @@ function mCanHop() {
 const TRIP_KEY = 'merch_trip';
 
 function mLoadTrip() {
-	try { const v = get(TRIP_KEY); if (v && v.home) return v; } catch (e) { }
+	try { const v = get(TRIP_KEY); if (v && Array.isArray(v.pending)) return v; } catch (e) { }
 	return null;
 }
-function mSaveTrip(pending, home) {
-	try { set(TRIP_KEY, { pending: pending || [], home, at: Date.now() }); } catch (e) { }
+function mSaveTrip(pending) {
+	try { set(TRIP_KEY, { pending: pending || [], at: Date.now() }); } catch (e) { }
 }
 function mClearTrip() {
 	try { set(TRIP_KEY, null); } catch (e) { }
 }
 
-/* Where to return to once the trip is done. */
+/* Where to return to once the trip is done. Read straight from CONFIG and
+   never written: home is a decision, not an observation. Learning it from
+   wherever the stand happened to open meant one failed return could redefine
+   where the merchant lived, and it would then believe it was already home. */
 function mHomeShard() {
-	const trip = mLoadTrip();
-	if (trip && trip.home) return trip.home;
-	try {
-		const v = get('merch_home_shard');
-		if (v) return v;
-	} catch (e) { }
-	return mShardKey();
-}
-/* Refuses to move home while a trip is open. Without this guard the stand
-   opening on a remote shard mid-trip would rewrite home to that shard, and the
-   merchant would never come back - it would simply believe it was already
-   where it belonged. */
-function mSetHomeShard(key) {
-	if (mLoadTrip()) return;
-	try { set('merch_home_shard', key); } catch (e) { }
+	return CONFIG.homeServer || mShardKey();
 }
 
 /* change_server() drops the connection and reconnects. Mainframe keeps the
@@ -567,7 +563,7 @@ async function processBatch() {
 				if (served.has(sh)) continue;
 				for (const [, jobs] of (byShard.get(sh) || [])) pending.push(...jobs);
 			}
-			mSaveTrip(pending, home);
+			mSaveTrip(pending);
 
 			if (!await mHopTo(shard)) {
 				// Requeue rather than drop: the requester still needs this, and a
@@ -589,9 +585,17 @@ async function processBatch() {
 	// 4. Back to the home shard, then reopen the stand ONCE - after every stop
 	// in the batch, not after each recipient.
 	if (mShardKey() !== home) {
-		if (!await mHopTo(home)) {
-			game_log(`Could not return to ${home} - opening the stand on ${mShardKey()} instead`, 'red');
-			mSetHomeShard(mShardKey());
+		let back = false;
+		for (let i = 0; i < CONFIG.homeReturnAttempts && !back; i++) {
+			back = await mHopTo(home);
+			if (!back) game_log(`Return to ${home} failed (${i + 1}/${CONFIG.homeReturnAttempts})`, 'red');
+		}
+		if (!back) {
+			// Keep the trip record open so startup and the next batch both keep
+			// trying. Home stays CONFIG.homeServer either way - being stuck
+			// somewhere is not the same as living there.
+			mSaveTrip([]);
+			game_log(`Still off-home on ${mShardKey()}; will keep trying to reach ${home}`, 'red');
 		}
 	}
 	await openStandAtBestSpot();
@@ -799,11 +803,6 @@ async function travelToRecipient(job) {
 // STAND MANAGEMENT
 // ============================================================================
 async function openStandAtBestSpot() {
-	// Wherever the merchant settles and trades IS home - that is the shard a
-	// cross-shard trip has to come back to, and the one the stand belongs on.
-	// Recorded here rather than guessed at, so it survives a change_server.
-	mSetHomeShard(mShardKey());
-
 	const slot = locate_item('stand0');
 	if (slot === -1) {
 		game_log('No stand0 item owned - cannot open a stand', 'red');
@@ -1763,10 +1762,11 @@ async function resumeInterruptedTrip() {
 	if (pending.length) {
 		game_log(`Resuming ${pending.length} job(s) interrupted by a server change`, '#FFD700');
 	}
-	if (!state.queue.length && mShardKey() !== trip.home) {
-		game_log(`Nothing left to do here - returning to ${trip.home}`, '#FFD700');
+	const home = mHomeShard();
+	if (!state.queue.length && mShardKey() !== home) {
+		game_log(`Nothing left to do here - returning to ${home}`, '#FFD700');
 		mClearTrip();
-		await mHopTo(trip.home);
+		await mHopTo(home);
 		return;
 	}
 	mClearTrip();
