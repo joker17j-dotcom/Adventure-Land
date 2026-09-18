@@ -53,6 +53,14 @@ const CONFIG = {
 	// data (see deriveScanSpots). Override with explicit
 	// [{map,x,y}, ...] if you know a better pitch on your servers.
 	scanSpots: [],
+	// Walk between scan spots, or hold the first one.
+	//
+	// Entity visibility was measured at 699+ units and still climbing when the
+	// sampling stopped, which comfortably covers the whole main-map merchant
+	// plaza from a single pitch - so drifting buys nothing there and costs time
+	// that could be spent scanning. Left on by default because a bigger or more
+	// spread-out venue may still need it; turn it off for main.
+	driftBetweenSpots: true,
 
 	// PVP shards are excluded: a scout parked there is a free kill and the
 	// stands there are not a market you can safely trade in.
@@ -160,6 +168,11 @@ function scanStands() {
 	for (const id in ents) {
 		const e = ents[id];
 		if (!e || e.type !== 'character') continue;
+		// NPCs really are in parent.entities - measured, not assumed - so exclude
+		// them explicitly rather than relying on the stand check below to do it.
+		// Several NPCs are themselves vendors, and nothing guarantees their shape
+		// stays distinguishable from a player stand forever.
+		if (e.npc) continue;
 		if (e.name === me) continue;                 // our own stand is not market data
 		if (!e.stand) continue;                      // stand closed = not trading
 		const slots = {};
@@ -478,8 +491,9 @@ async function parkedLoop() {
 		}
 
 		// Drift between anchor points: entity visibility is a radius, so one
-		// fixed pitch silently misses stands parked on the far side of the square.
-		if (spots.length > 1 && Math.random() < 0.25) {
+		// fixed pitch can miss stands parked beyond it. Measured at 699+ units,
+		// which covers the main plaza, so this is for venues that are larger.
+		if (CONFIG.driftBetweenSpots && spots.length > 1 && Math.random() < 0.25) {
 			spotIdx = (spotIdx + 1) % spots.length;
 			await goTo(spots[spotIdx]);
 		}
@@ -509,7 +523,7 @@ async function roamerLoop() {
 		let spotIdx = 0;
 		while (Date.now() < until) {
 			absorb(scanStands());
-			if (spots.length > 1) {
+			if (CONFIG.driftBetweenSpots && spots.length > 1) {
 				spotIdx = (spotIdx + 1) % spots.length;
 				await goTo(spots[spotIdx]);
 			}
