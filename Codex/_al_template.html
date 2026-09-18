@@ -58,6 +58,7 @@
   }
   .tag.buy { color: #0d1117; background: var(--accent); border-color: var(--accent); font-weight: 600; }
   .tag.sell { color: #0d1117; background: var(--accent2); border-color: var(--accent2); font-weight: 600; }
+  .tag.npc { color: #0d1117; background: var(--gold); border-color: var(--gold); font-weight: 600; }
   canvas.icon { image-rendering: pixelated; vertical-align: middle; background: #0e1219; border-radius: 3px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
   .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 10px; }
@@ -316,6 +317,72 @@ let SOURCE = (() => {
 })();
 let SOURCE_NOTE = "";          // what actually happened on the last pull
 
+/* Ponty is folded into the market tables as a pseudo-merchant rather than kept
+   in its own silo, because for pricing purposes that is exactly what he is: a
+   seller with stock, a price and a level. The one thing that makes him
+   different is worth keeping visible - he is an NPC, so he is still standing
+   there in five minutes, which no player merchant guarantees. Rows carry
+   npc:true and render as a PONTY chip.
+
+   He only ever sells; he posts no buy orders. So he can lower a "cheapest
+   sell" and create a spread, but never fill one. */
+let INCLUDE_PONTY = (() => {
+  try { return localStorage.getItem("al_include_ponty") !== "0"; }
+  catch (e) { return true; }
+})();
+
+function setIncludePonty(v) {
+  INCLUDE_PONTY = !!v;
+  try { localStorage.setItem("al_include_ponty", v ? "1" : "0"); } catch (e) {}
+  MERCHANTS = null;
+}
+
+/* A checkbox for any tab that pulls market rows. Independent of the source
+   selector on purpose: Ponty only ever comes from the bridge, so pairing
+   ALData merchants with local Ponty stock is a perfectly sensible combination. */
+function pontyToggle(onChange) {
+  const box = el("input", { type: "checkbox" });
+  box.checked = INCLUDE_PONTY;
+  box.addEventListener("change", () => { setIncludePonty(box.checked); onChange(); });
+  return el("label", { class: "row", style: "gap:6px;cursor:pointer" },
+    box, el("span", { class: "dim" }, "include Ponty"));
+}
+
+/* {shard: {at, items[]}} -> one pseudo-merchant per shard, in merchant shape. */
+function pontyMerchants(data) {
+  const out = [];
+  for (const shard in (data || {})) {
+    const rec = data[shard] || {};
+    const items = rec.items || [];
+    if (!items.length) continue;
+    // Split "US" + "II". Regions are a closed set, so a prefix test is safe.
+    let region = shard, name = "";
+    for (const r of ["ASIA", "US", "EU"]) {
+      if (shard.startsWith(r)) { region = r; name = shard.slice(r.length); break; }
+    }
+    const slots = {};
+    items.forEach((it, i) => {
+      if (!it || !it.name) return;
+      slots["ponty" + i] = {
+        name: it.name, price: it.price, b: false,
+        q: it.q || 1, level: it.level || 0, p: it.p || null,
+      };
+    });
+    if (!Object.keys(slots).length) continue;
+    out.push({
+      id: "Ponty", npc: true, serverRegion: region, serverIdentifier: name,
+      map: "main", x: null, y: null, lastSeen: rec.at, slots,
+    });
+  }
+  return out;
+}
+
+async function loadPonty() {
+  const r = await fetch(BRIDGE + "/ponty");
+  if (!r.ok) throw new Error("ponty " + r.status);
+  return await r.json();
+}
+
 function setSource(v) {
   SOURCE = v;
   try { localStorage.setItem("al_market_source", v); } catch (e) {}
@@ -394,6 +461,21 @@ async function loadMerchants(force) {
     SOURCE_NOTE = "ALData";
   }
 
+  if (INCLUDE_PONTY) {
+    /* Never let a stopped bridge cost you the merchant data you already have -
+       Ponty is additive, so a failure here is a note, not an error. */
+    try {
+      const rows = pontyMerchants(await loadPonty());
+      if (rows.length) {
+        MERCHANTS = MERCHANTS.concat(rows);
+        const n = rows.reduce((a, m) => a + Object.keys(m.slots).length, 0);
+        SOURCE_NOTE += ` + Ponty ${fmt(n)} on ${rows.length} shard${rows.length > 1 ? "s" : ""}`;
+      }
+    } catch (e) {
+      SOURCE_NOTE += " (no Ponty: bridge unreachable)";
+    }
+  }
+
   try {
     sessionStorage.setItem(cacheKey, JSON.stringify(
       { timestamp: new Date().toISOString(), merchants: MERCHANTS }));
@@ -411,7 +493,7 @@ function marketRows(list) {
         item: s.name, price: s.price, buying: !!s.b, qty: s.q || 1,
         level: s.level || 0, special: s.p || null, statType: s.stat_type || null,
         merchant: m.id, server: `${m.serverRegion} ${m.serverIdentifier}`,
-        map: m.map, x: m.x, y: m.y, lastSeen: m.lastSeen, slot,
+        map: m.map, x: m.x, y: m.y, lastSeen: m.lastSeen, slot, npc: !!m.npc,
       });
     }
   }
@@ -700,7 +782,7 @@ function renderMarket(host, opts) {
       el("b", {}, "1.5m"), " or ", el("b", {}, "1,500,000"), ". An item with no target is still ",
       "filtered and listed, it just never alerts."),
     el("div", { class: "row", style: "margin-top:9px" }, side, server,
-      sourceSelect(() => go(true)), apply, refresh, status),
+      sourceSelect(() => go(true)), pontyToggle(() => go(true)), apply, refresh, status),
     el("div", { class: "row", style: "margin-top:9px" }, armLabel, armInfo,
       el("button", { class: "act sec", onclick: () => { ta.value = defaultFilter; saveFilter(); renderTargets(); draw(); updateArmInfo(); } }, "Reset filter")));
   host.append(ctl);
@@ -978,8 +1060,10 @@ function renderMarket(host, opts) {
         render: (r) => el("span", {}, el("span", {}, itemName(r.item)),
           el("span", { class: "dim" }, " " + r.item)) },
       { key: "level", label: "Lv", num: true, get: (r) => r.level },
-      { key: "side", label: "Side", get: (r) => (r.buying ? "buy" : "sell"),
-        render: (r) => el("span", { class: "tag " + (r.buying ? "buy" : "sell") }, r.buying ? "BUYING" : "SELLING") },
+      { key: "side", label: "Side", get: (r) => (r.buying ? "buy" : r.npc ? "npc" : "sell"),
+        render: (r) => r.npc
+          ? el("span", { class: "tag npc", title: "NPC stock - still there later" }, "PONTY")
+          : el("span", { class: "tag " + (r.buying ? "buy" : "sell") }, r.buying ? "BUYING" : "SELLING") },
       { key: "price", label: "Price", num: true, get: (r) => r.price,
         render: (r) => {
           const th = targetFor(r.item);

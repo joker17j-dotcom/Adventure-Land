@@ -85,6 +85,13 @@ Open `al_market_watchlist.html`, and on any tab change the dropdown from
 The **Ponty Stock** tab is bridge-only and will populate once the roamer has
 stood in front of Ponty at least once.
 
+Ponty's stock is also folded into the market, summary and arbitrage tables as a
+pseudo-merchant, tagged **PONTY**, controlled by the *include Ponty* checkbox
+next to the source selector. This matters for arbitrage: Ponty is an NPC, so
+unlike a player stand he is still there when you get back, and only the buy side
+of such a spread can evaporate. He sells but never posts buy orders, so he can
+create a spread but never fill one.
+
 ---
 
 ## Full setup — 3 parked + 1 roamer

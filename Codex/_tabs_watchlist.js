@@ -57,6 +57,10 @@ function summarizeMarket(rows, keep) {
       cheapest: cheapest ? cheapest.price : null,
       cheapestWho: cheapest ? `${cheapest.merchant} (${cheapest.server})` : null,
       cheapestSeen: cheapest ? cheapest.lastSeen : null,
+      /* An NPC seller does not log off. When the cheap side of a spread is
+         Ponty, only the buy order can evaporate, so the trade is materially
+         more likely to complete than a player-to-player one. */
+      cheapestNpc: cheapest ? !!cheapest.npc : false,
       best: best ? best.price : null,
       bestWho: best ? `${best.merchant} (${best.server})` : null,
       bestSeen: best ? best.lastSeen : null,
@@ -94,9 +98,16 @@ function summaryColumns() {
       render: (r) => el("span", { class: r.cheapest ? "gold" : "dim" },
         r.cheapest ? fmt(r.cheapest) : (r.listed ? "none" : "not listed")) },
     { key: "cheapestWho", label: "From", get: (r) => r.cheapestWho,
-      render: (r) => el("span", { class: "dim" }, r.cheapestWho || "—") },
+      render: (r) => r.cheapestWho
+        ? el("span", {},
+            r.cheapestNpc ? el("span", { class: "tag npc", style: "margin-right:5px" }, "PONTY") : null,
+            el("span", { class: "dim" }, r.cheapestWho))
+        : el("span", { class: "dim" }, "—") },
     { key: "cheapestSeen", label: "Sell seen", get: (r) => seenSort(r.cheapestSeen),
-      render: (r) => seenCell(r.cheapestSeen) },
+      render: (r) => r.cheapestNpc
+        ? el("span", { class: "dim", title: "NPC - stock rotates, but he is always there" },
+            ago(r.cheapestSeen))
+        : seenCell(r.cheapestSeen) },
     { key: "best", label: "Best buy offer", num: true, get: (r) => r.best,
       render: (r) => el("span", { class: r.best ? "good" : "dim" }, r.best ? fmt(r.best) : "none") },
     { key: "bestWho", label: "By", get: (r) => r.bestWho,
@@ -124,7 +135,7 @@ function renderSummary(host, opts) {
     el("div", { class: "src", style: "margin-bottom:8px" }, opts.blurb || ""),
     el("div", { class: "row" },
       el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA"),
-      sourceSelect(() => go(true)), status));
+      sourceSelect(() => go(true)), pontyToggle(() => go(true)), status));
   const out = el("div", { class: "panel" });
   host.append(ctl, out);
 
@@ -154,8 +165,10 @@ function renderSummary(host, opts) {
     const pills = keep
       ? [`${present.size} of ${opts.items.length} tracked items listed right now`]
       : [`${fmt(present.size)} distinct items on the market`];
+    const npcBacked = summary.filter((x) => x.cheapestNpc && x.spread != null && x.spread > 0).length;
     if (positiveOnly) {
       pills.push(`${fmt(summary.length)} of ${fmt(groupsScanned)} groups have a positive spread`);
+      if (npcBacked) pills.push(`${npcBacked} bought from Ponty (seller can't vanish)`);
     } else {
       pills.push(`${fmt(groupsScanned)} item/level groups`);
       pills.push(`${positives} with a positive level-matched spread`);
