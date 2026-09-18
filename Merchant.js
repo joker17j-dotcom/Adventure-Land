@@ -830,7 +830,24 @@ async function travelToRecipient(job) {
 // ============================================================================
 // STAND MANAGEMENT
 // ============================================================================
+/* A stand only belongs on the home shard.
+
+   Every hop reloads the page, so STARTUP now runs on whatever shard the scout
+   just landed on - and startup opened a stand there. That is the eight
+   "Stand opened at (100, 0)" lines seen across one rotation: a stand raised on
+   a remote shard nobody is looking at, closed again by the next tick, and
+   raised again after the next hop. Pointless work, and it advertises the
+   merchant somewhere it will not be in thirty seconds. */
+function shouldHoldStand() {
+	return mShardKey() === mHomeShard();
+}
+
 async function openStandAtBestSpot() {
+	if (!shouldHoldStand()) {
+		// Not an error: mid-rotation is the normal case for this path now.
+		return;
+	}
+
 	const slot = locate_item('stand0');
 	if (slot === -1) {
 		game_log('No stand0 item owned - cannot open a stand', 'red');
@@ -2356,6 +2373,8 @@ resumeInterruptedTrip();
 scoutRestoreBuffer();
 scout.rotIdx = scoutLoad('rot', 0);
 scout.pontySeen = scoutLoad('ponty_seen', {}) || {};
+// Guarded inside openStandAtBestSpot: a reload on a remote shard is mid-
+// rotation, and no stand goes up there.
 openStandAtBestSpot();
 scoutLoop();
 gearProgressionLoop();
