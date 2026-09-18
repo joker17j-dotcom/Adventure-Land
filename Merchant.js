@@ -175,6 +175,24 @@ const CONFIG = {
 	// homeServer. A cross-shard trip always comes back here, and opening a stand
 	// somewhere else never changes where "here" is.
 	homeServer: 'USIV',
+	scout: {
+		enabled: true,
+		bridge: 'http://127.0.0.1:8787',
+		tickMs: 5000,
+		timeoutMs: 1500,
+		reprobeMs: 60000,
+		settleMs: 1500,
+		maxSettlePasses: 5,
+		pontyEveryMs: 10 * 60 * 1000,
+		pontyTimeoutMs: 8000,
+		minPostGapMs: 7000,
+		postConfirmRetries: 3,
+		// Be home this long before an anniversary round starts. S.anniversary.next
+		// is the round's start time, on the hour, so this is a real deadline
+		// rather than a guess.
+		kissGuardMs: 6 * 60 * 1000,
+		skipServers: ['PVP'],
+	},
 	// How many times to retry the journey home before giving up for now. The
 	// trip record is kept on failure, so a later batch or restart tries again.
 	homeReturnAttempts: 3,
@@ -1749,6 +1767,358 @@ async function anniversaryKissLoop() {
 anniversaryKissLoop();
 
 // ============================================================================
+// MARKET SCOUTING
+// ============================================================================
+// Folds MerchantScout's roaming scan into the merchant, as a strictly lower
+// priority than everything it already does.
+//
+// GATE: scouting runs only when the local bridge answers AND change_server is
+// available. On Mainframe the bridge lives on the operator's PC and is
+// unreachable by construction, so this never engages there and the merchant
+// behaves exactly as it did before - no flag to set, no separate build.
+//
+// PRIORITY, highest first:
+//   1. queued delivery/pickup work      - scouting stands down entirely
+//   2. the anniversary round            - home kissGuardMs early, stays until
+//                                         the round has rolled over
+//   3. scouting                         - only with nothing else to do
+//
+// While out scouting the stand is closed, so this trades stand uptime for
+// market coverage. It comes home for anything that matters and reopens.
+// ============================================================================
+const scout = {
+	up: false,
+	probedAt: 0,
+	lastPostAt: 0,
+	stands: new Map(),      // merchant id -> row, deduped across sweeps
+	ponty: null,
+	pontySeen: {},          // shard -> when Ponty was last read there
+	rotIdx: 0,
+	homeFor: null,          // the anniversary `next` we came home for
+};
+
+function scoutLog(msg, color) {
+	try { game_log('[scout] ' + msg, color || '#8b98ab'); } catch (e) { }
+}
+
+function scoutShards() {
+	const raw = parent && parent.X && parent.X.servers;
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.filter((s) => s && !CONFIG.scout.skipServers.includes(s.name))
+		.map((s) => String(s.region) + String(s.name));
+}
+
+function scoutFetch(path, opts) {
+	if (typeof fetch !== 'function') return Promise.reject(new Error('no fetch'));
+	const o = Object.assign({}, opts || {});
+	let stop = null;
+	if (typeof AbortController === 'function') {
+		const ac = new AbortController();
+		o.signal = ac.signal;
+		stop = setTimeout(() => { try { ac.abort(); } catch (e) { } }, CONFIG.scout.timeoutMs);
+	}
+	return Promise.race([
+		fetch(CONFIG.scout.bridge + path, o),
+		new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), CONFIG.scout.timeoutMs + 200)),
+	]).then((r) => {
+		if (stop) clearTimeout(stop);
+		if (!r.ok) throw new Error('HTTP ' + r.status);
+		return r.json();
+	}, (e) => { if (stop) clearTimeout(stop); throw e; });
+}
+
+async function scoutProbe() {
+	scout.probedAt = Date.now();
+	const was = scout.up;
+	try {
+		await scoutFetch('/health');
+		scout.up = true;
+		if (!was) scoutLog('bridge up - scouting enabled', '#7FD98A');
+	} catch (e) {
+		if (was) scoutLog('bridge lost - scouting suspended', 'orange');
+		scout.up = false;
+	}
+	return scout.up;
+}
+
+function scoutCanRun() {
+	if (!CONFIG.scout.enabled) return false;
+	if (typeof change_server !== 'function') return false;
+	if (!scoutShards().length) return false;
+	return scout.up;
+}
+
+/* Every open player stand in view. NPCs are in parent.entities too - measured,
+   not assumed - so they are excluded explicitly rather than left to the stand
+   check. Trade goods live in trade1..N; a player's other slots are equipment. */
+function scoutScanStands() {
+	const out = [];
+	const ents = (parent && parent.entities) || {};
+	const me = character.name;
+	for (const id in ents) {
+		const e = ents[id];
+		if (!e || e.type !== 'character') continue;
+		if (e.npc) continue;
+		if (e.name === me) continue;
+		if (!e.stand) continue;
+		const slots = {};
+		const raw = e.slots || {};
+		for (const k in raw) {
+			if (k.indexOf('trade') !== 0) continue;
+			const s = raw[k];
+			if (!s || !s.name) continue;
+			slots[k] = {
+				name: s.name, price: s.price, b: !!s.b, q: s.q || 1,
+				level: s.level || 0, p: s.p || null, stat_type: s.stat_type || null,
+			};
+		}
+		if (!Object.keys(slots).length) continue;
+		out.push({
+			id: e.name || e.id || id,
+			map: e.map || character.map,
+			x: Math.round(e.real_x != null ? e.real_x : e.x),
+			y: Math.round(e.real_y != null ? e.real_y : e.y),
+			slots,
+		});
+	}
+	return out;
+}
+
+/* Sweep until the visible set stops growing. After a change_server the client
+   is still streaming entities in, and one instant scan can read it half-empty.
+   Exits as soon as two passes agree - a convergence test, not a dwell. */
+async function scoutSettleScan() {
+	let seen = -1;
+	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
+		for (const row of scoutScanStands()) scout.stands.set(row.id, row);
+		if (scout.stands.size === seen) break;
+		seen = scout.stands.size;
+		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
+	}
+}
+
+/* Ponty answers only while standing next to him. Never read through
+   parent.alert() - it freezes every character in the tab, not just this one. */
+function scoutPontyQuery() {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (v) => {
+			if (settled) return;
+			settled = true;
+			try { parent.socket.off('secondhands', onData); } catch (e) { }
+			resolve(v);
+		};
+		const onData = (data) => {
+			const list = Array.isArray(data) ? data
+				: (data && Array.isArray(data.items) ? data.items : null);
+			if (!list) return finish(null);
+			finish(list.filter((it) => it && it.name).map((it) => ({
+				name: it.name, level: it.level || 0, q: it.q || 1,
+				p: it.p || null, price: scoutItemPrice(it),
+			})));
+		};
+		try {
+			parent.socket.on('secondhands', onData);
+			parent.socket.emit('secondhands');
+		} catch (e) { return finish(null); }
+		setTimeout(() => finish(null), CONFIG.scout.pontyTimeoutMs);
+	});
+}
+
+/* calculate_item_value() returns what Ponty PAID - buy_to_sell is already in
+   it - so his asking price is that times secondhands_mult. Verified against
+   four observations: mcape 480,000 -> 576,000, ringsj 24,000 -> 28,800, and
+   two community samples. Passing the whole item lets the game handle level,
+   grade and upgrade-vs-compound, which no formula fitted to samples could. */
+function scoutItemPrice(it) {
+	const mult = parent && parent.G && parent.G.multipliers
+		&& parent.G.multipliers.secondhands_mult;
+	if (typeof mult !== 'number') return null;
+	if (typeof parent.calculate_item_value !== 'function') return null;
+	try {
+		const v = parent.calculate_item_value(it);
+		if (typeof v === 'number' && isFinite(v) && v > 0) return Math.round(v * mult);
+	} catch (e) { }
+	return null;
+}
+
+async function scoutPontyCheck() {
+	const m = parent && parent.G && parent.G.maps && parent.G.maps.main;
+	const npc = m && (m.npcs || []).find((n) => n && n.id === 'secondhands');
+	if (!npc || !Array.isArray(npc.position)) return;
+	try { await smart_move({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
+	catch (e) { return; }
+	const items = await scoutPontyQuery();
+	if (items) {
+		scout.ponty = items;
+		scout.pontySeen[mShardKey()] = Date.now();
+		scoutLog(`Ponty: ${items.length} items on ${mShardKey()}`, '#5ED6A8');
+	}
+}
+
+function scoutPontyDue() {
+	const last = scout.pontySeen[mShardKey()];
+	return !last || Date.now() - last > CONFIG.scout.pontyEveryMs;
+}
+
+/* Never two posts inside minPostGapMs from this character. */
+async function scoutPostGap() {
+	if (!scout.lastPostAt) return;
+	const since = Date.now() - scout.lastPostAt;
+	if (since >= CONFIG.scout.minPostGapMs) return;
+	await new Promise((r) => setTimeout(r, CONFIG.scout.minPostGapMs - since));
+}
+
+/* `confirmed` means the bridge acknowledged storing exactly what was sent, not
+   merely that the request returned. A short count means the scan did not land. */
+async function scoutReport() {
+	await scoutPostGap();
+	const stands = [...scout.stands.values()];
+	const ponty = scout.ponty;
+	scout.stands.clear();
+	scout.ponty = null;
+
+	let reply = null;
+	try {
+		reply = await scoutFetch('/scan', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				character: character.name, role: 'roamer',
+				shard: { region: parent.server_region, name: parent.server_identifier },
+				at: new Date().toISOString(), merchants: stands, ponty: ponty,
+			}),
+		});
+	} catch (e) { scout.up = false; scout.probedAt = Date.now(); }
+	scout.lastPostAt = Date.now();
+
+	const acc = reply && reply.accepted;
+	const confirmed = !!(acc && acc.merchants === stands.length
+		&& acc.ponty === (ponty ? ponty.length : 0));
+	if (!confirmed) {
+		for (const row of stands) scout.stands.set(row.id, row);
+		if (ponty) scout.ponty = ponty;
+	}
+	return { reply, confirmed, count: stands.length };
+}
+
+/* Resend until acknowledged. Bounded: with the bridge down the findings are
+   already back in the buffer and go out when it returns, so blocking the
+   rotation forever would cost coverage and save nothing. */
+async function scoutReportConfirmed() {
+	for (let i = 0; i < CONFIG.scout.postConfirmRetries; i++) {
+		const r = await scoutReport();
+		if (r.confirmed) {
+			scoutLog(`${r.count} stands on ${mShardKey()} - confirmed`);
+			return r;
+		}
+		if (!r.reply) {
+			scoutLog('bridge unreachable - carrying the scan forward', 'orange');
+			return r;
+		}
+	}
+	scoutLog('scan not acknowledged - staying buffered', 'orange');
+	return { reply: null, confirmed: false, count: 0 };
+}
+
+// ------------------------------------------------------- anniversary guard
+/* S.anniversary carries {active, live, next} where next is the round's start,
+   on the hour. That is a real schedule, so the merchant can be home BEFORE the
+   round rather than discovering it late from another shard. */
+function scoutKissNext() {
+	const a = parent && parent.S && parent.S.anniversary;
+	if (!a || !a.active || typeof a.next !== 'number') return null;
+	return a.next;
+}
+
+function scoutKissHoldsUsHome() {
+	const next = scoutKissNext();
+	if (next == null) {
+		scout.homeFor = null;
+		return false;
+	}
+	// Inside the guard window before a round starts.
+	if (next - Date.now() <= CONFIG.scout.kissGuardMs) {
+		if (scout.homeFor == null) scout.homeFor = next;
+		return true;
+	}
+	// Came home for a round that has not rolled over yet. `next` advancing past
+	// the value we returned for is the confirmation the round is done - more
+	// reliable than trying to catch `live` going false between 5s polls.
+	if (scout.homeFor != null) {
+		if (next > scout.homeFor) {
+			scoutLog('anniversary round complete - resuming scouting', '#7FD98A');
+			scout.homeFor = null;
+			return false;
+		}
+		return true;
+	}
+	return false;
+}
+
+// ------------------------------------------------------------------ driving
+async function scoutGoHome(reason) {
+	const home = mHomeShard();
+	if (mShardKey() === home) return;
+	state.busy = true;
+	try {
+		await scoutReportConfirmed();       // never carry findings across a hop
+		scoutLog(`standing down (${reason}) - returning to ${home}`, '#FFD700');
+		if (await mHopTo(home)) await openStandAtBestSpot();
+	} finally { state.busy = false; }
+}
+
+function scoutNextShard() {
+	const all = scoutShards();
+	const here = mShardKey();
+	const pool = all.filter((k) => k !== here);
+	if (!pool.length) return null;
+	const k = pool[scout.rotIdx % pool.length];
+	scout.rotIdx++;
+	return k;
+}
+
+async function scoutVisitNextShard() {
+	const target = scoutNextShard();
+	if (!target) return;
+	state.busy = true;
+	try {
+		if (state.standOpen) await ensureStandClosed();
+		if (!await mHopTo(target)) return;
+		await scoutSettleScan();
+		if (scoutPontyDue()) await scoutPontyCheck();
+		await scoutReportConfirmed();
+	} finally { state.busy = false; }
+}
+
+async function scoutLoop() {
+	try {
+		if (Date.now() - scout.probedAt > CONFIG.scout.reprobeMs) await scoutProbe();
+
+		if (!state.busy) {
+			if (!scoutCanRun()) {
+				// Never leave the merchant parked off-home with scouting disabled.
+				await scoutGoHome('scouting unavailable');
+			} else if (state.queue.length) {
+				// Deliveries outrank scouting. processBatch routes to each
+				// requester's shard itself and returns home, so nothing to do but
+				// stay out of its way.
+				await scoutGoHome('jobs queued');
+			} else if (scoutKissHoldsUsHome()) {
+				await scoutGoHome('anniversary round due');
+			} else {
+				await scoutVisitNextShard();
+			}
+		}
+	} catch (e) {
+		console.error('scoutLoop error:', e);
+		state.busy = false;
+	}
+	setTimeout(scoutLoop, CONFIG.scout.tickMs);
+}
+
+// ============================================================================
 // STARTUP
 // ============================================================================
 /* If a change_server restarted the script mid-trip, put the unfinished jobs
@@ -1774,5 +2144,6 @@ async function resumeInterruptedTrip() {
 
 resumeInterruptedTrip();
 openStandAtBestSpot();
+scoutLoop();
 gearProgressionLoop();
 maintenanceLoop();
