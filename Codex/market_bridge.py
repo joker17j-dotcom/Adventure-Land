@@ -36,7 +36,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # A stand that has not been re-confirmed in this long is dropped from /merchants.
 # Long enough to survive a roamer's full rotation, short enough that the page is
 # not quoting prices from merchants who logged off an hour ago.
-MERCHANT_TTL = 20 * 60
+#
+# Sized against the real server list: 11 non-PVP shards at roughly 97s each is
+# an 18 minute rotation, so 20 minutes left no margin at all - a shard's stands
+# expired at almost exactly the moment the roamer came back to refresh them,
+# and rows flickered. 30 minutes clears a full rotation with room to spare.
+MERCHANT_TTL = 30 * 60
 # A scout that has not POSTed in this long has its shard assignment released so
 # another scout can take it.
 BOT_TIMEOUT = 3 * 60

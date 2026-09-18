@@ -41,7 +41,12 @@ const CONFIG = {
 
 	scanIntervalMs: 4000,        // how often to sweep visible entities
 	postIntervalMs: 15000,       // how often to ship findings to the bridge
-	roamDwellMs: 90000,          // how long a roamer works one shard
+	// How long a roamer works one shard. Sized against the real server list:
+	// 11 non-PVP shards (Europas I-IV, Americas I-V, Eastlands I-II), so a full
+	// rotation is 11 x (travel + Ponty + dwell + hop). At 90s that was ~27 min,
+	// longer than the bridge's merchant TTL - shards expired before the roamer
+	// returned and flickered in and out. 60s puts the rotation near 18 min.
+	roamDwellMs: 60000,
 	pontyEveryMs: 10 * 60 * 1000,// per-shard Ponty re-check interval
 	minHopIntervalMs: 30000,     // floor between change_server calls
 	pontyTimeoutMs: 8000,
@@ -60,7 +65,7 @@ const CONFIG = {
 	// plaza from a single pitch - so drifting buys nothing there and costs time
 	// that could be spent scanning. Left on by default because a bigger or more
 	// spread-out venue may still need it; turn it off for main.
-	driftBetweenSpots: true,
+	driftBetweenSpots: false,
 
 	// PVP shards are excluded: a scout parked there is a free kill and the
 	// stands there are not a market you can safely trade in.
