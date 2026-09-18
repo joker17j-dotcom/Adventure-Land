@@ -369,17 +369,45 @@ function mCanHop() {
 	return typeof change_server === 'function';
 }
 
-/* Where to return to once the trip is done. Persisted because change_server
-   wipes runtime state in a browser tab, and coming back to the wrong shard
-   would strand the stand somewhere nobody is looking for it. */
+/* A cross-shard trip has to survive the hop itself.
+
+   change_server() wipes runtime state in a browser tab - the script restarts -
+   and processBatch has already spliced the whole queue OUT of state.queue into
+   a local variable by then, so an in-flight batch would be lost twice over. The
+   browser tab is also the ONLY place this feature runs, since the relay needs
+   the bridge, so that is not an edge case, it is the normal case.
+
+   So before every hop the not-yet-served jobs and the real home shard are
+   written to storage, and a restart puts them back. */
+const TRIP_KEY = 'merch_trip';
+
+function mLoadTrip() {
+	try { const v = get(TRIP_KEY); if (v && v.home) return v; } catch (e) { }
+	return null;
+}
+function mSaveTrip(pending, home) {
+	try { set(TRIP_KEY, { pending: pending || [], home, at: Date.now() }); } catch (e) { }
+}
+function mClearTrip() {
+	try { set(TRIP_KEY, null); } catch (e) { }
+}
+
+/* Where to return to once the trip is done. */
 function mHomeShard() {
+	const trip = mLoadTrip();
+	if (trip && trip.home) return trip.home;
 	try {
 		const v = get('merch_home_shard');
 		if (v) return v;
 	} catch (e) { }
 	return mShardKey();
 }
+/* Refuses to move home while a trip is open. Without this guard the stand
+   opening on a remote shard mid-trip would rewrite home to that shard, and the
+   merchant would never come back - it would simply believe it was already
+   where it belonged. */
 function mSetHomeShard(key) {
+	if (mLoadTrip()) return;
 	try { set('merch_home_shard', key); } catch (e) { }
 }
 
@@ -526,11 +554,21 @@ async function processBatch() {
 	}
 
 	const order = [here, ...[...byShard.keys()].filter(k => k !== here)];
+	const served = new Set();
 	for (const shard of order) {
 		const stops = byShard.get(shard);
 		if (!stops || !stops.length) continue;
 
 		if (shard !== mShardKey()) {
+			// Everything still outstanding, this shard's stops included, goes to
+			// storage before the connection drops.
+			const pending = [];
+			for (const sh of order) {
+				if (served.has(sh)) continue;
+				for (const [, jobs] of (byShard.get(sh) || [])) pending.push(...jobs);
+			}
+			mSaveTrip(pending, home);
+
 			if (!await mHopTo(shard)) {
 				// Requeue rather than drop: the requester still needs this, and a
 				// later batch may find the shard reachable.
@@ -544,7 +582,9 @@ async function processBatch() {
 		for (const [recipientName, jobs] of stops) {
 			await visitOneStop(recipientName, jobs);
 		}
+		served.add(shard);
 	}
+	mClearTrip();
 
 	// 4. Back to the home shard, then reopen the stand ONCE - after every stop
 	// in the batch, not after each recipient.
@@ -1712,6 +1752,27 @@ anniversaryKissLoop();
 // ============================================================================
 // STARTUP
 // ============================================================================
+/* If a change_server restarted the script mid-trip, put the unfinished jobs
+   back and, with nothing left to do, go home. Without this the merchant sits
+   on whichever shard it last hopped to, with no memory of why it went. */
+async function resumeInterruptedTrip() {
+	const trip = mLoadTrip();
+	if (!trip) return;
+	const pending = trip.pending || [];
+	for (const j of pending) enqueueJob(j);
+	if (pending.length) {
+		game_log(`Resuming ${pending.length} job(s) interrupted by a server change`, '#FFD700');
+	}
+	if (!state.queue.length && mShardKey() !== trip.home) {
+		game_log(`Nothing left to do here - returning to ${trip.home}`, '#FFD700');
+		mClearTrip();
+		await mHopTo(trip.home);
+		return;
+	}
+	mClearTrip();
+}
+
+resumeInterruptedTrip();
 openStandAtBestSpot();
 gearProgressionLoop();
 maintenanceLoop();
