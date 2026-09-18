@@ -1,0 +1,11 @@
+# Python bytecode, generated on import
+__pycache__/
+*.py[cod]
+
+# market_bridge.py --state writes collected scan data here. Local runtime
+# state: shard activity and merchant sightings from whoever ran it, stale the
+# moment it is written, and meaningless in anyone else's clone.
+scouts.json
+Codex/scouts.json
+# Atomic-save scratch file from the same writer.
+*.tmp
