@@ -2104,6 +2104,24 @@ function scoutNextShard() {
 	return k;
 }
 
+/* Stand where the stands are before reading them.
+
+   Entity visibility is a radius - measured at 699+ units - so WHERE the scan
+   happens decides what it sees. change_server drops the character wherever it
+   left off, and an anniversary kiss can end anywhere on the map, so without
+   this the scout would hop and scan from some arbitrary corner and report a
+   near-empty shard as fact.
+
+   Reuses CONFIG.stand.candidates rather than deriving a spot: that list is
+   already tuned to the merchant plaza on this account, and it is where the
+   stands being scanned actually are. */
+async function scoutGoToScanSpot() {
+	const spot = CONFIG.stand.candidates[0];
+	if (!spot) return false;
+	if (character.map === CONFIG.stand.map && distance(character, spot) <= 60) return true;
+	return await travelTo(CONFIG.stand.map, spot.x, spot.y);
+}
+
 async function scoutVisitNextShard() {
 	const target = scoutNextShard();
 	if (!target) return;
@@ -2111,6 +2129,10 @@ async function scoutVisitNextShard() {
 	try {
 		if (state.standOpen) await ensureStandClosed();
 		if (!await mHopTo(target)) return;
+		// Travel BEFORE settling: the settle sweep measures whether the entity
+		// list has finished streaming in, which only means anything once we are
+		// standing where we intend to read from.
+		await scoutGoToScanSpot();
 		await scoutSettleScan();
 		if (scoutPontyDue()) await scoutPontyCheck();
 		await scoutReportConfirmed();
@@ -2132,6 +2154,11 @@ async function scoutLoop() {
 				await scoutGoHome('jobs queued');
 			} else if (scoutKissHoldsUsHome()) {
 				await scoutGoHome('anniversary round due');
+				// A kiss can finish anywhere on the map, and openStandAtBestSpot
+				// only runs afterwards if the stand happened to be open before it.
+				// Walk back to the plaza either way so the merchant is where
+				// people expect it, and where the next scan will read from.
+				if (!state.busy && !state.standOpen) await scoutGoToScanSpot();
 			} else {
 				await scoutVisitNextShard();
 			}
