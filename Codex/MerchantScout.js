@@ -402,21 +402,39 @@ const bridge = {
 };
 
 // --------------------------------------------------------------- scan buffer
-/* Stands seen since the last successful post, keyed so a merchant re-seen on
-   several sweeps is reported once with its latest stock. */
-const buffer = { stands: new Map(), ponty: null };
+/* Findings not yet accepted by the bridge, BUCKETED BY SHARD.
+
+   Keying only by merchant id was wrong: a post that failed left the stands
+   buffered, and the next successful post stamped the payload with wherever the
+   scout had since hopped to. Nine merchants scanned on EU I would be filed
+   under US II - the bridge takes the shard from the payload, so the wrong
+   attribution is what the watchlist then quotes, and acting on it means
+   travelling to a shard the merchant was never on. Ponty stock had the same
+   flaw. Each bucket now carries the shard it was actually observed on. */
+const buffer = { shards: new Map() };
+
+function bufferFor(shard) {
+	const k = shardKey(shard);
+	let e = buffer.shards.get(k);
+	if (!e) { e = { shard, stands: new Map(), ponty: null }; buffer.shards.set(k, e); }
+	return e;
+}
 
 function absorb(stands) {
-	for (const s of stands) buffer.stands.set(s.id, s);
+	const e = bufferFor(currentShard());
+	for (const s of stands) e.stands.set(s.id, s);
 }
 
-function drain() {
-	const stands = [...buffer.stands.values()];
-	const ponty = buffer.ponty;
-	buffer.stands.clear();
-	buffer.ponty = null;
-	return { stands, ponty };
+function absorbPonty(items) {
+	bufferFor(currentShard()).ponty = items;
 }
+
+function bufferedCount() {
+	let n = 0;
+	for (const e of buffer.shards.values()) n += e.stands.size;
+	return n;
+}
+
 
 let lastPostAt = 0;
 
@@ -432,48 +450,58 @@ async function respectPostGap() {
 	await new Promise((r) => setTimeout(r, wait));
 }
 
-/* Returns {reply, confirmed, stands, ponty}. `confirmed` means the bridge
-   acknowledged storing exactly what was sent - not merely that the request
-   returned. An HTTP 200 with a short count means the scan did not land. */
+/* Posts every buffered shard, each stamped with the shard it was observed on -
+   never with wherever the scout happens to be standing now. A bucket is only
+   cleared once the bridge acknowledges storing exactly what was sent; anything
+   unconfirmed stays put, still attributed correctly, and goes out next time.
+
+   `confirmed` is true only when every bucket landed. */
 async function report(extra) {
-	await respectPostGap();
-	const { stands, ponty } = drain();
-	const payload = {
-		character: myName(),
-		role: myRole(),
-		shard: currentShard(),
-		at: new Date().toISOString(),
-		merchants: stands,
-		ponty: ponty,
-		...(extra || {}),
-	};
-	const reply = await bridge.post(payload);
-	lastPostAt = Date.now();
+	const buckets = [...buffer.shards.entries()];
 
-	const sentM = stands.length;
-	const sentP = ponty ? ponty.length : 0;
-	const acc = reply && reply.accepted;
-	const confirmed = !!(reply && acc
-		&& acc.merchants === sentM && acc.ponty === sentP);
-
-	if (!reply || !confirmed) {
-		// Put it back so nothing is lost. The stand map is keyed by merchant, so
-		// re-absorbing cannot double-count, and an unconfirmed post is treated
-		// exactly like a failed one.
-		absorb(stands);
-		if (ponty) buffer.ponty = ponty;
+	// Nothing seen yet: still post, so the bridge knows this scout is alive and
+	// where it is, and hands back its rotation hints.
+	if (!buckets.length) {
+		await respectPostGap();
+		const reply = await bridge.post({
+			character: myName(), role: myRole(), shard: currentShard(),
+			at: new Date().toISOString(), merchants: [], ponty: null,
+			...(extra || {}),
+		});
+		lastPostAt = Date.now();
+		return { reply, confirmed: !!reply, stands: 0, ponty: 0 };
 	}
 
-	const where = shardKey(currentShard());
-	if (confirmed) {
-		log(`${sentM} stands${sentP ? ` + ${sentP} Ponty items` : ''} on ${where} - confirmed`);
-	} else if (reply) {
-		log(`${where}: bridge took ${acc ? acc.merchants : '?'}/${sentM} stands - resending`, 'orange');
-	} else {
-		log(`${sentM} stands${sentP ? ` + ${sentP} Ponty items` : ''} on ${where} (buffered, bridge down)`);
+	let lastReply = null, allOk = true, sent = 0;
+	for (const [key, e] of buckets) {
+		await respectPostGap();
+		const stands = [...e.stands.values()];
+		const ponty = e.ponty;
+		const reply = await bridge.post({
+			character: myName(), role: myRole(),
+			shard: e.shard,                       // where it was SEEN, not where we are
+			at: new Date().toISOString(),
+			merchants: stands, ponty: ponty,
+			...(extra || {}),
+		});
+		lastPostAt = Date.now();
+		lastReply = reply || lastReply;
+
+		const acc = reply && reply.accepted;
+		const ok = !!(acc && acc.merchants === stands.length
+			&& acc.ponty === (ponty ? ponty.length : 0));
+		if (ok) {
+			buffer.shards.delete(key);            // accepted, stop carrying it
+			sent += stands.length;
+			log(`${stands.length} stands${ponty ? ` + ${ponty.length} Ponty items` : ''} on ${key} - confirmed`);
+		} else {
+			allOk = false;
+			log(`${key}: not acknowledged, held for retry`, 'orange');
+		}
 	}
-	return { reply, confirmed, stands: sentM, ponty: sentP };
+	return { reply: lastReply, confirmed: allOk, stands: sent, ponty: 0 };
 }
+
 
 /* Post, and keep resending until the bridge confirms it stored the scan. Used
    before a hop: leaving a shard with an unacknowledged scan means the data was
@@ -603,7 +631,7 @@ async function roamerLoop() {
 		// Ponty first: it is a fixed walk and the answer is the same all dwell.
 		if (!pontySeen[key] || Date.now() - pontySeen[key] > CONFIG.pontyEveryMs) {
 			const items = await pontyCheck();
-			if (items) { buffer.ponty = items; pontySeen[key] = Date.now(); }
+			if (items) { absorbPonty(items); pontySeen[key] = Date.now(); }
 		}
 
 		// Sweep until the visible set stops growing, so a shard that is still
@@ -615,8 +643,8 @@ async function roamerLoop() {
 			if (CONFIG.driftBetweenSpots && spots.length > 1) {
 				await goTo(spots[(pass + 1) % spots.length]);
 			}
-			if (buffer.stands.size === seen) break;
-			seen = buffer.stands.size;
+			if (bufferedCount() === seen) break;
+			seen = bufferedCount();
 			await new Promise((r) => setTimeout(r, CONFIG.settleMs));
 		}
 

@@ -1808,13 +1808,36 @@ const scout = {
 	up: false,
 	probedAt: 0,
 	lastPostAt: 0,
-	stands: new Map(),      // merchant id -> row, deduped across sweeps
-	ponty: null,
+	/* Findings not yet accepted by the bridge, BUCKETED BY SHARD. Keying only
+	   by merchant id was wrong: a failed post left stands buffered, and the next
+	   successful one stamped the payload with wherever the scout had since
+	   hopped to, so merchants scanned on EU I were filed under US II. The bridge
+	   takes the shard from the payload, so that mis-attribution is what the
+	   watchlist quotes - and acting on it means travelling to a shard the
+	   merchant was never on. Ponty had the same flaw. */
+	shards: new Map(),      // shardKey -> {shard, stands:Map, ponty}
 	pontySeen: {},          // shard -> when Ponty was last read there
 	rotIdx: 0,
 	homeFor: null,          // the anniversary `next` we came home for
 	lastReply: null,        // the bridge's most recent rotation/parked hints
 };
+
+function scoutBufferFor(shard) {
+	const k = String(shard.region) + String(shard.name);
+	let e = scout.shards.get(k);
+	if (!e) { e = { shard, stands: new Map(), ponty: null }; scout.shards.set(k, e); }
+	return e;
+}
+
+function scoutHere() {
+	return { region: parent.server_region, name: parent.server_identifier };
+}
+
+function scoutBufferedCount() {
+	let n = 0;
+	for (const e of scout.shards.values()) n += e.stands.size;
+	return n;
+}
 
 function scoutLog(msg, color) {
 	try { game_log('[scout] ' + msg, color || '#8b98ab'); } catch (e) { }
@@ -1910,9 +1933,10 @@ function scoutScanStands() {
 async function scoutSettleScan() {
 	let seen = -1;
 	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
-		for (const row of scoutScanStands()) scout.stands.set(row.id, row);
-		if (scout.stands.size === seen) break;
-		seen = scout.stands.size;
+		const bucket = scoutBufferFor(scoutHere());
+		for (const row of scoutScanStands()) bucket.stands.set(row.id, row);
+		if (scoutBufferedCount() === seen) break;
+		seen = scoutBufferedCount();
 		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
 	}
 }
@@ -1970,7 +1994,7 @@ async function scoutPontyCheck() {
 	catch (e) { return; }
 	const items = await scoutPontyQuery();
 	if (items) {
-		scout.ponty = items;
+		scoutBufferFor(scoutHere()).ponty = items;
 		scout.pontySeen[mShardKey()] = Date.now();
 		scoutLog(`Ponty: ${items.length} items on ${mShardKey()}`, '#5ED6A8');
 	}
@@ -1989,37 +2013,57 @@ async function scoutPostGap() {
 	await new Promise((r) => setTimeout(r, CONFIG.scout.minPostGapMs - since));
 }
 
-/* `confirmed` means the bridge acknowledged storing exactly what was sent, not
-   merely that the request returned. A short count means the scan did not land. */
+/* Posts every buffered shard, each stamped with the shard it was observed on -
+   never with wherever the merchant happens to be standing now. A bucket clears
+   only once the bridge acknowledges storing exactly what was sent; anything
+   unconfirmed stays put, still attributed correctly, and goes out next time. */
 async function scoutReport() {
-	await scoutPostGap();
-	const stands = [...scout.stands.values()];
-	const ponty = scout.ponty;
-	scout.stands.clear();
-	scout.ponty = null;
+	const buckets = [...scout.shards.entries()];
 
-	let reply = null;
-	try {
-		reply = await scoutFetch('/scan', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({
-				character: character.name, role: 'roamer',
-				shard: { region: parent.server_region, name: parent.server_identifier },
-				at: new Date().toISOString(), merchants: stands, ponty: ponty,
-			}),
-		});
-	} catch (e) { scout.up = false; scout.probedAt = Date.now(); }
-	scout.lastPostAt = Date.now();
+	const send = async (shard, stands, ponty) => {
+		await scoutPostGap();
+		let reply = null;
+		try {
+			reply = await scoutFetch('/scan', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					character: character.name, role: 'roamer', shard,
+					at: new Date().toISOString(), merchants: stands, ponty: ponty,
+				}),
+			});
+		} catch (e) { scout.up = false; scout.probedAt = Date.now(); }
+		scout.lastPostAt = Date.now();
+		return reply;
+	};
 
-	const acc = reply && reply.accepted;
-	const confirmed = !!(acc && acc.merchants === stands.length
-		&& acc.ponty === (ponty ? ponty.length : 0));
-	if (!confirmed) {
-		for (const row of stands) scout.stands.set(row.id, row);
-		if (ponty) scout.ponty = ponty;
+	// Nothing seen yet: still post, so the bridge knows this scout is alive and
+	// hands back its rotation hints.
+	if (!buckets.length) {
+		const reply = await send(scoutHere(), [], null);
+		return { reply, confirmed: !!reply, count: 0 };
 	}
-	return { reply, confirmed, count: stands.length };
+
+	let lastReply = null, allOk = true, sent = 0;
+	for (const [key, e] of buckets) {
+		const stands = [...e.stands.values()];
+		const ponty = e.ponty;
+		const reply = await send(e.shard, stands, ponty);
+		lastReply = reply || lastReply;
+
+		const acc = reply && reply.accepted;
+		const ok = !!(acc && acc.merchants === stands.length
+			&& acc.ponty === (ponty ? ponty.length : 0));
+		if (ok) {
+			scout.shards.delete(key);
+			sent += stands.length;
+			scoutLog(`${stands.length} stands on ${key} - confirmed`);
+		} else {
+			allOk = false;
+			scoutLog(`${key}: not acknowledged, held for retry`, 'orange');
+		}
+	}
+	return { reply: lastReply, confirmed: allOk, count: sent };
 }
 
 /* Resend until acknowledged. Bounded: with the bridge down the findings are
@@ -2028,10 +2072,7 @@ async function scoutReport() {
 async function scoutReportConfirmed() {
 	for (let i = 0; i < CONFIG.scout.postConfirmRetries; i++) {
 		const r = await scoutReport();
-		if (r.confirmed) {
-			scoutLog(`${r.count} stands on ${mShardKey()} - confirmed`);
-			return r;
-		}
+		if (r.confirmed) return r;
 		if (!r.reply) {
 			scoutLog('bridge unreachable - carrying the scan forward', 'orange');
 			return r;
