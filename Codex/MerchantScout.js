@@ -209,7 +209,9 @@ function normalisePonty(data) {
 	   guess, print what actually came back and map it for certain. */
 	if (CONFIG.debugPonty && list.length) {
 		log('Ponty raw item keys: ' + Object.keys(list[0] || {}).join(', '), '#E9C46A');
-		try { console.log('[scout] Ponty raw sample:', list[0]); } catch (e) { }
+		const fns = probePricingFns();
+		log('pricing-ish functions on the page: ' + (fns.join(', ') || 'none found'), '#E9C46A');
+		try { console.log('[scout] Ponty raw sample:', list[0], '\npricing fns:', fns); } catch (e) { }
 	}
 
 	/* Probe the plausible spellings instead of only "price". Anything
@@ -220,7 +222,7 @@ function normalisePonty(data) {
 			const v = it[k];
 			if (typeof v === 'number' && isFinite(v)) return v;
 		}
-		return null;
+		return gameItemValue(it);          // fall back to the client's own maths
 	};
 
 	const out = [];
@@ -236,6 +238,57 @@ function normalisePonty(data) {
 		});
 	}
 	return out;
+}
+
+/* What Ponty charges, straight from the client that renders his window.
+
+   The page can derive a LEVEL 0 price exactly - base value x buy_to_sell x
+   secondhands_mult, confirmed against Dracul's Attire at 576,000 - but levelled
+   items do not follow from that. Observed: Rugged Pants +1 is 1.43x its base,
+   Rugged Helmet +2 is 3.08x, and Stinger +4 is only 2.21x. A +4 costing less
+   than a +2 rules out any function of level alone; grade and upgrade-vs-compound
+   both feed in. Rather than fit a curve to a handful of samples and quote the
+   result as profit, ask the game, which is computing the exact number to paint
+   "42,400 GOLD" on screen anyway.
+
+   Function names differ across builds, so try the plausible ones and take the
+   first that returns a sane number. Returns null if none exist, which leaves
+   levelled items unpriced rather than wrong. */
+const PRICE_FNS = [
+	'calculate_item_value', 'item_value', 'calculate_value',
+	'item_price', 'calculate_item_price', 'item_worth',
+];
+let priceFnName = null;
+
+function gameItemValue(it) {
+	for (const n of PRICE_FNS) {
+		const f = parent && parent[n];
+		if (typeof f !== 'function') continue;
+		try {
+			const v = f(it);
+			if (typeof v === 'number' && isFinite(v) && v > 0) {
+				if (priceFnName !== n) {
+					priceFnName = n;
+					log('pricing via parent.' + n + '()', '#7FD98A');
+				}
+				return Math.round(v);
+			}
+		} catch (e) { }
+	}
+	return null;
+}
+
+/* One-shot listing of anything in the page that looks like a pricing helper, so
+   the right name can be added above if none of the guesses land. */
+function probePricingFns() {
+	const found = [];
+	try {
+		for (const k in parent) {
+			if (typeof parent[k] !== 'function') continue;
+			if (/value|price|cost|worth/i.test(k)) found.push(k);
+		}
+	} catch (e) { }
+	return found;
 }
 
 function scanPonty() {
