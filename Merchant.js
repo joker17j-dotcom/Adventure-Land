@@ -191,6 +191,9 @@ const CONFIG = {
 		// is the round's start time, on the hour, so this is a real deadline
 		// rather than a guess.
 		kissGuardMs: 6 * 60 * 1000,
+		// Longest a single shard visit may take before the loop assumes it has
+		// hung and takes its lock back. Generous: a hop alone can take 30s.
+		maxCycleMs: 3 * 60 * 1000,
 		skipServers: ['PVP'],
 	},
 	// How many times to retry the journey home before giving up for now. The
@@ -1818,6 +1821,7 @@ const scout = {
 	shards: new Map(),      // shardKey -> {shard, stands:Map, ponty}
 	pontySeen: {},          // shard -> when Ponty was last read there
 	rotIdx: 0,
+	cycleStartedAt: 0,      // when the current scout cycle took state.busy
 	homeFor: null,          // the anniversary `next` we came home for
 	lastReply: null,        // the bridge's most recent rotation/parked hints
 };
@@ -1935,9 +1939,17 @@ async function scoutSettleScan() {
 	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
 		const bucket = scoutBufferFor(scoutHere());
 		for (const row of scoutScanStands()) bucket.stands.set(row.id, row);
-		if (scoutBufferedCount() === seen) break;
-		seen = scoutBufferedCount();
+		const n = scoutBufferedCount();
+		// Two passes agreeing means the list has settled - EXCEPT at zero, where
+		// "nothing yet" and "nothing here" look identical. Reading an empty
+		// entity list twice in 1.5s said a shard was empty and reported it as
+		// fact. Zero only counts once every pass has been spent.
+		if (n > 0 && n === seen) break;
+		seen = n;
 		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
+	}
+	if (scoutBufferedCount() === 0) {
+		scoutLog(`${mShardKey()}: no stands after ${CONFIG.scout.maxSettlePasses} sweeps`, 'orange');
 	}
 }
 
@@ -2197,6 +2209,7 @@ async function scoutVisitNextShard() {
 	const target = scoutNextShard();
 	if (!target) return;
 	state.busy = true;
+	scout.cycleStartedAt = Date.now();
 	try {
 		if (state.standOpen) await ensureStandClosed();
 		if (!await mHopTo(target)) return;
@@ -2211,12 +2224,26 @@ async function scoutVisitNextShard() {
 		// one carries no rotation, and overwriting with null would silently drop
 		// us back to round-robin.
 		if (r && r.reply) scout.lastReply = r.reply;
-	} finally { state.busy = false; }
+	} finally { state.busy = false; scout.cycleStartedAt = 0; }
 }
 
 async function scoutLoop() {
 	try {
 		if (Date.now() - scout.probedAt > CONFIG.scout.reprobeMs) await scoutProbe();
+
+		// A scout cycle awaits smart_move and change_server, and smart_move can
+		// hang indefinitely on an unreachable path. state.busy is the merchant's
+		// only mutual exclusion, so one stuck await silently freezes deliveries,
+		// the stand and the anniversary kiss along with scouting - which is
+		// precisely what an 8 minute silence after a single post looks like.
+		// Release the lock and let the next tick start over; the abandoned
+		// promise clearing it again later is harmless.
+		if (scout.cycleStartedAt
+			&& Date.now() - scout.cycleStartedAt > CONFIG.scout.maxCycleMs) {
+			scoutLog(`cycle stuck for ${Math.round((Date.now() - scout.cycleStartedAt) / 1000)}s - releasing`, 'red');
+			scout.cycleStartedAt = 0;
+			state.busy = false;
+		}
 
 		if (!state.busy) {
 			if (!scoutCanRun()) {
