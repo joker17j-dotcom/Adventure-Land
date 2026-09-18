@@ -1,0 +1,1390 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AL Market — Watchlist</title>
+<style>
+  :root {
+    --bg: #11151c; --panel: #171d26; --panel2: #1e2632; --line: #2b3542;
+    --fg: #dfe6f0; --dim: #8b98ab; --accent: #5ED6A8; --accent2: #55BDF0;
+    --warn: #E7A14E; --bad: #E2686F; --good: #7FD98A; --gold: #E9C46A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    position: sticky; top: 0; z-index: 30; background: var(--panel);
+    border-bottom: 1px solid var(--line); padding: 10px 16px;
+  }
+  h1 { margin: 0 0 8px; font-size: 16px; letter-spacing: .5px; color: var(--accent); }
+  h1 small { color: var(--dim); font-weight: normal; letter-spacing: 0; }
+  nav { display: flex; flex-wrap: wrap; gap: 6px; }
+  nav button {
+    background: var(--panel2); color: var(--dim); border: 1px solid var(--line);
+    padding: 5px 12px; border-radius: 4px; cursor: pointer; font: inherit; font-size: 13px;
+  }
+  nav button:hover { color: var(--fg); border-color: #3c4a5c; }
+  nav button.on { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
+  main { padding: 16px; max-width: 1500px; margin: 0 auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; margin-bottom: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  input[type=text], input[type=search], select, textarea {
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 6px 9px; font: inherit;
+  }
+  textarea { width: 100%; min-height: 62px; resize: vertical; line-height: 1.45; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent2); }
+  button.act {
+    background: var(--accent2); color: #08131a; border: 0; border-radius: 4px;
+    padding: 7px 14px; cursor: pointer; font: inherit; font-weight: 600;
+  }
+  button.act:hover { filter: brightness(1.12); }
+  button.act.sec { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); font-weight: normal; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 6px 9px; text-align: left; vertical-align: middle; }
+  th { color: var(--dim); font-weight: 600; position: sticky; top: 0; background: var(--panel); cursor: pointer; white-space: nowrap; }
+  th:hover { color: var(--fg); }
+  tbody tr:hover { background: #1b2331; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .gold { color: var(--gold); }
+  .dim { color: var(--dim); }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--dim);
+  }
+  .tag.buy { color: #0d1117; background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .tag.sell { color: #0d1117; background: var(--accent2); border-color: var(--accent2); font-weight: 600; }
+  canvas.icon { image-rendering: pixelated; vertical-align: middle; background: #0e1219; border-radius: 3px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .card { background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 10px; }
+  .card h4 { margin: 0 0 6px; font-size: 13px; color: var(--accent2); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; }
+  .kv b { color: var(--dim); font-weight: normal; }
+  #boot { padding: 40px 16px; text-align: center; color: var(--dim); }
+  #bootbar { height: 4px; background: var(--panel2); border-radius: 2px; overflow: hidden; max-width: 460px; margin: 14px auto; }
+  #bootfill { height: 100%; width: 0%; background: var(--accent); transition: width .25s; }
+  .err { color: var(--bad); white-space: pre-wrap; text-align: left; max-width: 900px; margin: 12px auto; }
+  .src { font-size: 11px; color: var(--dim); }
+  .src b { color: var(--accent); font-weight: normal; }
+  .hidden { display: none !important; }
+  .scroll { max-height: 72vh; overflow: auto; }
+  .pill { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); color: var(--dim); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AL MARKET · WATCHLIST <small id="subtitle">booting…</small></h1>
+  <nav id="tabs"></nav>
+</header>
+
+<div id="boot">
+  <div id="bootmsg">Starting Pyodide…</div>
+  <div id="bootbar"><div id="bootfill"></div></div>
+  <div class="err" id="booterr"></div>
+</div>
+
+<main id="app" class="hidden"></main>
+
+<script src="https://cdn.jsdelivr.net/pyodide/v0.27.8/full/pyodide.js"></script>
+<script>
+/* ============================================================================
+   AL MARKET · WATCHLIST
+   Self-hosted. No build step, no server code. Open the file directly or serve
+   it statically.
+
+   DATA SOURCES
+   1. Game data  -> kaansoral/adventureland design/*.py, fetched raw from
+                    raw.githubusercontent.com and executed as real Python in
+                    the browser via Pyodide. 29 datasets.
+   2. Gap fill   -> aldata.adventureland.community/data.json for the three
+                    sections that do NOT exist in the repo: geometry, images,
+                    docs. (CORS: access-control-allow-origin *)
+   3. Live market-> aldata.earthiverse.ca/merchants  (earthiverse's ALData)
+   4. Live bank  -> aldata.earthiverse.ca/active-owners + /bank/<owner>
+   5. Icons      -> sprite sheet PNGs from raw.githubusercontent, cropped
+                    client-side on canvas. GitHub raw sends CORS headers so the
+                    canvas stays untainted; adventure.land does NOT, which is
+                    why sheets are never loaded from there.
+   ========================================================================= */
+
+const CONFIG = {"mode": "watchlist"};
+
+const REPO = "https://raw.githubusercontent.com/kaansoral/adventureland/main";
+const ALDATA_SITE = "https://aldata.adventureland.community";
+const ALDATA_API = "https://aldata.earthiverse.ca";
+/* Local bridge fed by the in-game MerchantScout bots. Serves the same row shape
+   as aldata/merchants, so it slots in as a peer source rather than a special
+   case. Nothing here requires it to be running. */
+const BRIDGE = "http://127.0.0.1:8787";
+
+/* Modules in dependency order. Several import each other:
+   games -> conditions -> skills, projectiles -> animations, items -> drops. */
+const MODULES = [
+  "games", "conditions", "projectiles", "animations", "items", "dimensions",
+  "sprites", "monsters", "npcs", "recipes", "drops", "classes", "maps",
+  "skills", "cosmetics", "achievements", "events", "levels", "titles",
+  "tokens", "multipliers", "upgrades",
+];
+
+/* Top-level variable names each module defines (names differ from filenames). */
+const EXPORTS = {
+  items: ["items", "sets"], dimensions: ["dimensions", "positions"],
+  sprites: ["sprites", "imagesets", "tilesets"], monsters: ["monsters", "monster_gold"],
+  npcs: ["npcs"], recipes: ["craft", "dismantle"], drops: ["drops"],
+  classes: ["classes"], maps: ["maps"], skills: ["skills"], cosmetics: ["cosmetics"],
+  conditions: ["conditions"], achievements: ["achievements"], events: ["events"],
+  levels: ["levels"], titles: ["titles"], tokens: ["tokens"],
+  projectiles: ["projectiles"], animations: ["animations"],
+  multipliers: ["multipliers"], upgrades: ["upgrades", "compounds"], games: ["games"],
+};
+
+/* Sections absent from the open-source repo; sourced from aldata's snapshot. */
+const ALDATA_ONLY = ["geometry", "images", "docs"];
+
+const G = {};              // merged game data
+let META = {};             // provenance
+let MERCHANTS = null;      // live market rows
+let OWNERS = null;         // bank owners
+
+/* ---------------------------------------------------------------- helpers */
+const $ = (s, r) => (r || document).querySelector(s);
+const el = (t, a, ...kids) => {
+  const n = document.createElement(t);
+  for (const k in (a || {})) {
+    if (k === "class") n.className = a[k];
+    else if (k === "html") n.innerHTML = a[k];
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), a[k]);
+    else if (a[k] != null) n.setAttribute(k, a[k]);
+  }
+  for (const c of kids.flat()) if (c != null) n.append(c.nodeType ? c : String(c));
+  return n;
+};
+const fmt = (n) => (n == null || isNaN(n)) ? "—" : Number(n).toLocaleString("en-US");
+const short = (n) => {
+  if (n == null || isNaN(n)) return "—";
+  const a = Math.abs(n);
+  if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (a >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+};
+const ago = (iso) => {
+  if (!iso) return "—";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return Math.round(s / 3600) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+};
+const itemName = (key) => (G.items && G.items[key] && G.items[key].name) || key;
+const boot = (msg, pct) => {
+  $("#bootmsg").textContent = msg;
+  if (pct != null) $("#bootfill").style.width = pct + "%";
+};
+
+/* ------------------------------------------------------------ icon engine */
+/* positions[key] = [imageset, column, row]; "" means the default pack_20.
+   imagesets[name] = {size, rows, columns, file}. Crop at col*size, row*size.
+
+   30 of 529 items have no positions[key] of their own. 25 of those are keyed
+   by their skin instead (bcape -> cape1, gstaff -> blaster, ringsj -> ring1),
+   which is the game's own lookup order, so fall back to positions[item.skin].
+   The remaining 5 (mageshood among them) have no icon in either source. */
+const sheetCache = new Map();
+function loadSheet(file) {
+  if (sheetCache.has(file)) return sheetCache.get(file);
+  const p = new Promise((res, rej) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("sheet " + file));
+    img.src = REPO + file.split("?")[0];
+  });
+  sheetCache.set(file, p);
+  return p;
+}
+function iconPos(key) {
+  const P = G.positions || {};
+  if (P[key]) return P[key];
+  const skin = G.items && G.items[key] && G.items[key].skin;
+  if (skin && P[skin]) return P[skin];
+  return null;
+}
+function icon(key, scale) {
+  scale = scale || 2;
+  const pos = iconPos(key);
+  const cv = el("canvas", { class: "icon", title: key });
+  const size = 20;
+  cv.width = size * scale; cv.height = size * scale;
+  if (!pos) return cv;                       // some items genuinely have no icon
+  const setName = pos[0] || "pack_20";
+  const set = G.imagesets && G.imagesets[setName];
+  if (!set) return cv;
+  const s = set.size || 20;
+  cv.width = s * scale; cv.height = s * scale;
+  loadSheet(set.file).then((img) => {
+    const cx = cv.getContext("2d");
+    cx.imageSmoothingEnabled = false;
+    cx.drawImage(img, pos[1] * s, pos[2] * s, s, s, 0, 0, s * scale, s * scale);
+  }).catch(() => {});
+  return cv;
+}
+
+/* ------------------------------------------------------------- data load  */
+async function fetchText(url) {
+  const r = await fetch(url, { cache: "force-cache" });
+  if (!r.ok) throw new Error(r.status + " " + url);
+  return r.text();
+}
+
+async function loadGameData() {
+  boot("Loading Pyodide runtime…", 5);
+  const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.8/full/" });
+
+  boot("Fetching " + MODULES.length + " design modules from GitHub…", 20);
+  const sources = await Promise.all(
+    MODULES.map((m) => fetchText(`${REPO}/design/${m}.py`).then((t) => [m, t]))
+  );
+
+  boot("Writing module tree…", 45);
+  py.FS.mkdirTree("/al/design");
+  py.FS.writeFile("/al/design/__init__.py", "", { encoding: "utf8" });
+  for (const [m, src] of sources) {
+    py.FS.writeFile(`/al/design/${m}.py`, src, { encoding: "utf8" });
+  }
+
+  boot("Executing game design source…", 60);
+  py.runPython(`
+import sys
+sys.path.insert(0, "/al")
+sys.path.insert(0, "/al/design")
+`);
+
+  const failures = [];
+  for (const m of MODULES) {
+    try { py.runPython(`import design.${m}`); }
+    catch (e) { failures.push(m + ": " + String(e).split("\n").slice(-3).join(" ")); }
+  }
+
+  boot("Extracting datasets…", 78);
+  for (const m of MODULES) {
+    for (const v of (EXPORTS[m] || [])) {
+      try {
+        py.runPython(`import design.${m} as _m\n_x = getattr(_m, ${JSON.stringify(v)}, None)`);
+        const proxy = py.globals.get("_x");
+        if (proxy && proxy.toJs) {
+          G[v] = proxy.toJs({ dict_converter: Object.fromEntries });
+          proxy.destroy();
+        }
+      } catch (e) { failures.push(v + ": " + e.message); }
+    }
+  }
+
+  META.repoVars = Object.keys(G).length;
+  META.failures = failures;
+
+  /* Gap-fill the three sections the repo does not ship. */
+  boot("Fetching repo-absent sections from aldata…", 88);
+  try {
+    const r = await fetch(ALDATA_SITE + "/data.json", { cache: "force-cache" });
+    if (r.ok) {
+      const snap = await r.json();
+      for (const k of ALDATA_ONLY) if (snap[k]) G[k] = snap[k];
+      META.aldataVersion = snap.version;
+      META.aldataTimestamp = snap.timestamp;
+      META.aldataSections = ALDATA_ONLY.filter((k) => snap[k]);
+      META.aldataItemCount = snap.items ? Object.keys(snap.items).length : null;
+      G.__aldataSnapshot = snap;   // kept for the source-compare readout
+    }
+  } catch (e) { META.aldataError = e.message; }
+
+  boot("Ready", 100);
+}
+
+/* ----------------------------------------------------------- live market  */
+/* Where rows come from. "both" merges, preferring whichever sighting of a given
+   merchant is fresher - your own scouts usually are, since they are standing
+   next to the stand right now. */
+let SOURCE = (() => {
+  try { return localStorage.getItem("al_market_source") || "aldata"; }
+  catch (e) { return "aldata"; }
+})();
+let SOURCE_NOTE = "";          // what actually happened on the last pull
+
+function setSource(v) {
+  SOURCE = v;
+  try { localStorage.setItem("al_market_source", v); } catch (e) {}
+  MERCHANTS = null;            // sources are not interchangeable; force a refetch
+}
+
+/* A select bound to the global source, for any tab that pulls merchant rows. */
+function sourceSelect(onChange) {
+  const sel = el("select", {},
+    el("option", { value: "aldata" }, "Source: ALData"),
+    el("option", { value: "bridge" }, "Source: local scouts"),
+    el("option", { value: "both" }, "Source: both (merged)"));
+  sel.value = SOURCE;
+  sel.addEventListener("change", () => { setSource(sel.value); onChange(); });
+  return sel;
+}
+
+async function fetchRows(url, label) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${label} ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j)) throw new Error(`${label} returned no array`);
+  return j;
+}
+
+/* One row per merchant per shard; the fresher lastSeen wins a collision. */
+function mergeMerchants(...lists) {
+  const by = new Map();
+  for (const list of lists) {
+    for (const m of list || []) {
+      if (!m || !m.id) continue;
+      const k = `${m.serverRegion}|${m.serverIdentifier}|${m.id}`;
+      const prev = by.get(k);
+      if (!prev) { by.set(k, m); continue; }
+      const a = new Date(m.lastSeen || 0).getTime();
+      const b = new Date(prev.lastSeen || 0).getTime();
+      if (a > b) by.set(k, m);
+    }
+  }
+  return [...by.values()];
+}
+
+async function loadMerchants(force) {
+  if (MERCHANTS && !force) return MERCHANTS;
+  const cacheKey = "merchants_" + SOURCE;
+  if (!force) {
+    try {
+      const c = JSON.parse(sessionStorage.getItem(cacheKey) || "null");
+      if (c && Date.now() - new Date(c.timestamp).getTime() < 5 * 60 * 1000) {
+        MERCHANTS = c.merchants; SOURCE_NOTE = "cached"; return MERCHANTS;
+      }
+    } catch (e) {}
+  }
+
+  if (SOURCE === "bridge") {
+    MERCHANTS = await fetchRows(BRIDGE + "/merchants", "bridge");
+    SOURCE_NOTE = "local scouts";
+  } else if (SOURCE === "both") {
+    /* Never let a stopped bridge break the page: ALData is the floor, the
+       bridge is a bonus, and the note says which of the two actually answered. */
+    const [ald, br] = await Promise.allSettled([
+      fetchRows(ALDATA_API + "/merchants", "merchants"),
+      fetchRows(BRIDGE + "/merchants", "bridge"),
+    ]);
+    if (ald.status !== "fulfilled" && br.status !== "fulfilled") {
+      throw new Error("both sources failed: " + (ald.reason && ald.reason.message));
+    }
+    const a = ald.status === "fulfilled" ? ald.value : [];
+    const b = br.status === "fulfilled" ? br.value : [];
+    MERCHANTS = mergeMerchants(a, b);
+    SOURCE_NOTE = br.status === "fulfilled"
+      ? `ALData ${fmt(a.length)} + scouts ${fmt(b.length)}`
+      : `ALData only (bridge unreachable)`;
+  } else {
+    MERCHANTS = await fetchRows(ALDATA_API + "/merchants", "merchants");
+    SOURCE_NOTE = "ALData";
+  }
+
+  try {
+    sessionStorage.setItem(cacheKey, JSON.stringify(
+      { timestamp: new Date().toISOString(), merchants: MERCHANTS }));
+  } catch (e) {}
+  return MERCHANTS;
+}
+
+/* Flatten merchant -> one row per trade slot. b:true means a BUY order. */
+function marketRows(list) {
+  const out = [];
+  for (const m of list || []) {
+    for (const [slot, s] of Object.entries(m.slots || {})) {
+      if (!s || !s.name) continue;
+      out.push({
+        item: s.name, price: s.price, buying: !!s.b, qty: s.q || 1,
+        level: s.level || 0, special: s.p || null, statType: s.stat_type || null,
+        merchant: m.id, server: `${m.serverRegion} ${m.serverIdentifier}`,
+        map: m.map, x: m.x, y: m.y, lastSeen: m.lastSeen, slot,
+      });
+    }
+  }
+  return out;
+}
+
+/* "100000", "100k", "1.5m", "2b", "1,000,000" -> a number, else null. */
+function parsePrice(s) {
+  if (s == null) return null;
+  const m = String(s).replace(/[,_\s]/g, "").match(/^([0-9]*\.?[0-9]+)([kmb])?$/i);
+  if (!m) return null;
+  let v = parseFloat(m[1]);
+  const suf = (m[2] || "").toLowerCase();
+  if (suf === "k") v *= 1e3; else if (suf === "m") v *= 1e6; else if (suf === "b") v *= 1e9;
+  return Math.round(v);
+}
+
+/* Filter text -> [{term, price}]. price is null unless the term carries a
+   threshold, and a term without one never alerts.
+   Accepts "firebow @ 1.5m", "firebow@1500000", and a stray comma before the
+   price ("cearring, @ 10000") because that is how the list gets typed. */
+function parseTerms(text) {
+  /* Join digit groups first: a comma separates terms, so "1,000,000" would
+     otherwise shatter into the junk terms "000","000". Only a comma sitting
+     between a digit and exactly three more digits is treated as a separator
+     inside a number, so an ordinary list ("coat, pants") is untouched. */
+  const raw = String(text || "")
+    .replace(/(\d)[,_](?=\d{3}(\D|$))/g, "$1")
+    .split(/[\s,]+/).filter(Boolean);
+  const terms = [];
+  const attach = (v) => {
+    const p = parsePrice(v);
+    if (p != null && terms.length) { terms[terms.length - 1].price = p; return true; }
+    return false;
+  };
+  for (let i = 0; i < raw.length; i++) {
+    const tok = raw[i].toLowerCase();
+    if (tok[0] === "@") {                       // "@1000" or a lone "@"
+      if (tok.length > 1) attach(tok.slice(1));
+      else if (raw[i + 1] && attach(raw[i + 1])) i++;
+      continue;
+    }
+    const at = tok.indexOf("@");
+    if (at > 0) {                                // "key@1000" or "key@"
+      terms.push({ term: tok.slice(0, at), price: null });
+      const rest = tok.slice(at + 1);
+      if (rest) attach(rest);
+      else if (raw[i + 1] && attach(raw[i + 1])) i++;
+      continue;
+    }
+    terms.push({ term: tok, price: null });
+  }
+  return terms;
+}
+
+/* Kept for anything that only needs the bare term list. */
+function parseFilter(text) {
+  return parseTerms(text).map((t) => t.term);
+}
+
+/* Build the set of every real item key we might see: the repo's item table
+   plus anything actually listed right now (the repo lags production, so live
+   listings can name items the repo has never heard of). */
+function knownItemKeys(rows) {
+  const s = new Set(Object.keys(G.items || {}).map((k) => k.toLowerCase()));
+  for (const r of rows || []) s.add(String(r.item).toLowerCase());
+  return s;
+}
+
+/* A term that names a real item is matched EXACTLY.
+   Substring matching is disastrous on a watchlist: "pants" pulls in pants1,
+   xmaspants, frankypants and hpants; "dexamulet" pulls in t2dexamulet;
+   "sbelt" pulls in santasbelt; "ecape" pulls in hors-ecape-g. Those are
+   different items at wildly different prices.
+   Terms that are NOT item keys stay fuzzy, so free-text name search still
+   works ("cape", "quiver"). Append * to force fuzzy on an item key too
+   ("pants*" => every pants variant). */
+/* Returns the matched TERM object (truthy) or null, so a caller can read the
+   price threshold that came with it. */
+function makeMatcher(terms, rows) {
+  terms = terms.map((t) => (typeof t === "string" ? { term: t, price: null } : t));
+  const known = knownItemKeys(rows);
+  const exact = new Map(), fuzzy = [];
+  for (const t of terms) {
+    const w = t.term;
+    if (w.endsWith("*")) { const s = w.slice(0, -1); if (s) fuzzy.push({ ...t, term: s }); }
+    else if (known.has(w)) exact.set(w, t);
+    else fuzzy.push(t);
+  }
+  const fn = (key, name) => {
+    const k = String(key).toLowerCase();
+    if (exact.has(k)) return exact.get(k);
+    if (!fuzzy.length) return null;
+    const nm = String(name || "").toLowerCase();
+    for (const t of fuzzy) if (k.includes(t.term) || nm.includes(t.term)) return t;
+    return null;
+  };
+  fn.exact = new Set(exact.keys());
+  fn.fuzzy = fuzzy;
+  fn.terms = terms;
+  fn.priced = terms.filter((t) => t.price != null);
+  return fn;
+}
+
+/* ----------------------------------------------------------- alert engine */
+/* Desktop notifications need a real origin. Opened straight from disk the
+   page is file://, where Notification.permission is already "denied" and
+   cannot be requested, so the in-page panel, the sound and the title badge
+   are the channels that always work. Serve the file over http://localhost
+   (python3 -m http.server) to get desktop notifications too. */
+const ALERTS = {
+  audio: null,
+  baseTitle: document.title,
+  pending: 0,
+
+  canNotify() {
+    return typeof Notification !== "undefined" && Notification.permission === "granted";
+  },
+  notifyState() {
+    if (typeof Notification === "undefined") return "unsupported";
+    if (location.protocol === "file:") return "file";
+    return Notification.permission;      // granted | denied | default
+  },
+  async request() {
+    if (typeof Notification === "undefined") return "unsupported";
+    if (Notification.permission === "granted") return "granted";
+    if (location.protocol === "file:") return "file";
+    try { return await Notification.requestPermission(); }
+    catch (e) { return "denied"; }
+  },
+
+  /* Created on the click that arms alerts, so it counts as a user gesture. */
+  initAudio() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC && !this.audio) this.audio = new AC();
+      if (this.audio && this.audio.state === "suspended") this.audio.resume();
+    } catch (e) {}
+  },
+  beep(times) {
+    if (!this.audio) return;
+    times = times || 2;
+    const t0 = this.audio.currentTime;
+    for (let i = 0; i < times; i++) {
+      try {
+        const o = this.audio.createOscillator(), g = this.audio.createGain();
+        o.type = "sine";
+        o.frequency.value = 880 + i * 220;
+        g.gain.setValueAtTime(0.0001, t0 + i * 0.16);
+        g.gain.exponentialRampToValueAtTime(0.16, t0 + i * 0.16 + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + i * 0.16 + 0.14);
+        o.connect(g); g.connect(this.audio.destination);
+        o.start(t0 + i * 0.16); o.stop(t0 + i * 0.16 + 0.15);
+      } catch (e) {}
+    }
+  },
+
+  fire(hits) {
+    if (!hits.length) return;
+    this.beep(Math.min(hits.length, 3));
+    this.pending += hits.length;
+    document.title = `(${this.pending}) ${this.baseTitle}`;
+    if (this.canNotify()) {
+      const head = hits.length === 1
+        ? `${itemName(hits[0].item)} @ ${fmt(hits[0].price)}`
+        : `${hits.length} watchlist items under target`;
+      const body = hits.slice(0, 6).map((h) =>
+        `${itemName(h.item)} ${fmt(h.price)} (≤ ${fmt(h.threshold)}) · ${h.merchant} ${h.server}`
+      ).join("\n");
+      try { new Notification(head, { body, tag: "al-market-" + Date.now() }); } catch (e) {}
+    }
+  },
+  clearBadge() { this.pending = 0; document.title = this.baseTitle; },
+};
+
+/* ------------------------------------------------------------------ tabs  */
+const TABS = [];
+/* Intervals owned by the current tab; cleared whenever the tab is replaced so
+   a poller never outlives the DOM it writes into. */
+let TAB_TIMERS = [];
+function ownInterval(fn, ms) { const id = setInterval(fn, ms); TAB_TIMERS.push(id); return id; }
+function tab(id, label, render) { TABS.push({ id, label, render }); }
+let activeTab = null;
+function showTab(id) {
+  for (const t of TAB_TIMERS) clearInterval(t);
+  TAB_TIMERS = [];
+  activeTab = id;
+  for (const b of $("#tabs").children) b.classList.toggle("on", b.dataset.id === id);
+  const app = $("#app");
+  app.innerHTML = "";
+  const t = TABS.find((x) => x.id === id);
+  if (t) {
+    try { t.render(app); }
+    catch (e) { app.append(el("div", { class: "panel err" }, "Render error: " + e.stack)); }
+  }
+  try { location.hash = id; } catch (e) {}
+}
+
+/* Reusable sortable table. cols: {key,label,num?,get,render?} */
+function sortableTable(host, rows, cols, opts) {
+  opts = opts || {};
+  let sortKey = opts.sortKey || cols[0].key;
+  let sortDir = opts.sortDir || 1;
+  const wrap = el("div", { class: "scroll" });
+  const table = el("table");
+  host.append(el("div", { class: "dim", style: "margin-bottom:6px" },
+    fmt(rows.length) + (opts.noun || " rows")), wrap);
+  wrap.append(table);
+
+  function draw() {
+    const col = cols.find((c) => c.key === sortKey) || cols[0];
+    const sorted = rows.slice().sort((a, b) => {
+      const av = col.get(a), bv = col.get(b);
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * sortDir;
+      return String(av).localeCompare(String(bv)) * sortDir;
+    });
+    table.innerHTML = "";
+    const thead = el("tr");
+    for (const c of cols) {
+      thead.append(el("th", {
+        class: c.num ? "num" : "",
+        onclick: () => { if (sortKey === c.key) sortDir *= -1; else { sortKey = c.key; sortDir = c.num ? -1 : 1; } draw(); },
+      }, c.label + (sortKey === c.key ? (sortDir > 0 ? " ▲" : " ▼") : "")));
+    }
+    table.append(el("thead", {}, thead));
+    const tb = el("tbody");
+    for (const r of sorted.slice(0, opts.limit || 4000)) {
+      const tr = el("tr");
+      for (const c of cols) {
+        const td = el("td", { class: c.num ? "num" : "" });
+        if (c.render) { const v = c.render(r); if (v != null) td.append(v.nodeType ? v : String(v)); }
+        else { const v = c.get(r); td.textContent = v == null ? "—" : (c.num ? fmt(v) : String(v)); }
+        tr.append(td);
+      }
+      tb.append(tr);
+    }
+    table.append(tb);
+    if (sorted.length > (opts.limit || 4000)) {
+      host.append(el("div", { class: "dim", style: "margin-top:6px" },
+        `showing first ${fmt(opts.limit || 4000)} of ${fmt(sorted.length)}`));
+    }
+  }
+  draw();
+}
+
+/* =========================================================== MARKET TAB   */
+function renderMarket(host, opts) {
+  opts = opts || {};
+  const defaultFilter = opts.defaultFilter || "";
+
+  const ctl = el("div", { class: "panel" });
+  const ta = el("textarea", {
+    id: "mfilter",
+    placeholder: "Item keys separated by spaces or commas (e.g. firebow, jacko, cring). "
+      + "An exact item key matches only that item — pants will not show xmaspants. "
+      + "Anything that is not an item key is a name search (cape, quiver). "
+      + "Add * to widen a key: pants* shows every pants variant. Empty = everything.",
+  });
+  ta.value = defaultFilter;
+  const side = el("select", { id: "mside" },
+    el("option", { value: "" }, "Buying + Selling"),
+    el("option", { value: "sell" }, "Selling only"),
+    el("option", { value: "buy" }, "Buying only"));
+  const server = el("select", { id: "mserver" }, el("option", { value: "" }, "All servers"));
+  const status = el("span", { class: "dim", id: "mstatus" }, "—");
+  const refresh = el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA");
+  const apply = el("button", { class: "act sec", onclick: () => { saveFilter(); renderTargets(); draw(); } }, "Apply filter");
+
+  const armBox = el("input", { type: "checkbox", id: "marm" });
+  const armLabel = el("label", { class: "row", style: "gap:6px;cursor:pointer" },
+    armBox, el("span", {}, "Price alerts · auto-refresh 30s"));
+  const armInfo = el("span", { class: "dim", id: "marminfo" }, "");
+
+  ctl.append(
+    el("div", { class: "src", style: "margin-bottom:8px" },
+      "Live merchant stock from ", el("b", {}, "aldata.earthiverse.ca/merchants"),
+      " · earthiverse's ALData. ",
+      opts.blurb || ""),
+    ta,
+    el("div", { class: "src", style: "margin-top:6px" },
+      "Targets live in the ", el("b", {}, "Target prices"), " panel below, one field per item, ",
+      "so the filter box holds item keys only. A field takes ", el("b", {}, "1500000"), ", ",
+      el("b", {}, "1.5m"), " or ", el("b", {}, "1,500,000"), ". An item with no target is still ",
+      "filtered and listed, it just never alerts."),
+    el("div", { class: "row", style: "margin-top:9px" }, side, server,
+      sourceSelect(() => go(true)), apply, refresh, status),
+    el("div", { class: "row", style: "margin-top:9px" }, armLabel, armInfo,
+      el("button", { class: "act sec", onclick: () => { ta.value = defaultFilter; saveFilter(); renderTargets(); draw(); updateArmInfo(); } }, "Reset filter")));
+  host.append(ctl);
+
+  const targetPanel = el("div", { class: "panel" });
+  host.append(targetPanel);
+
+  const alertPanel = el("div", { class: "panel hidden" });
+  host.append(alertPanel);
+
+  const out = el("div", { class: "panel" });
+  host.append(out);
+
+  /* ------------------------------------------------------------- alerts */
+  const STORE = "al_market_filter_" + (CONFIG.mode || "x");
+  const TSTORE = "al_market_targets_" + (CONFIG.mode || "x");
+  const seen = new Set();          // dedupe: one alert per distinct listing
+  const hitLog = [];               // genuinely new hits, newest first
+  let baseline = [];               // already under target when alerts were armed
+  let armed = false, timer = null, primed = false;
+  let targets = {};                // { itemKey: price }, one entry per target field
+  let lastTargetSig = null;        // key set the panel was last built for
+
+  function saveFilter() {
+    try { localStorage.setItem(STORE, ta.value); } catch (e) {}
+  }
+  function restoreFilter() {
+    try { const v = localStorage.getItem(STORE); if (v != null) ta.value = v; } catch (e) {}
+  }
+  function saveTargets() {
+    try { localStorage.setItem(TSTORE, JSON.stringify(targets)); } catch (e) {}
+  }
+  function restoreTargets() {
+    try {
+      const v = JSON.parse(localStorage.getItem(TSTORE) || "{}");
+      if (v && typeof v === "object" && !Array.isArray(v)) {
+        for (const k in v) if (typeof v[k] === "number" && isFinite(v[k])) targets[k] = v[k];
+      }
+    } catch (e) {}
+  }
+
+  /* Null unless this exact item key carries a target. A fuzzy filter term
+     ("cape") never gets one: it names no single item that could be priced. */
+  function targetFor(key) {
+    const v = targets[String(key).toLowerCase()];
+    return (typeof v === "number" && isFinite(v)) ? v : null;
+  }
+
+  /* Targets used to be typed into the filter box as "firebow @ 1.5m". They are
+     their own fields now, so lift whatever a saved filter still carries into
+     the map and strip the prices back out of the text. */
+  function migrateInlineTargets() {
+    const terms = parseTerms(ta.value);
+    if (!terms.some((t) => t.price != null)) return;
+    for (const t of terms) if (t.price != null && targets[t.term] == null) targets[t.term] = t.price;
+    ta.value = terms.map((t) => t.term).join(", ");
+    saveTargets();
+    saveFilter();
+  }
+
+  /* One field per EXACT item key in the filter. */
+  function targetKeys() {
+    const rows = MERCHANTS ? marketRows(MERCHANTS) : [];
+    return [...makeMatcher(parseTerms(ta.value), rows).exact].sort();
+  }
+
+  function renderTargets(force) {
+    const keys = targetKeys();
+    const sig = keys.join(",");
+    if (!force && sig === lastTargetSig) return;   // never rebuild fields mid-edit
+    lastTargetSig = sig;
+    targetPanel.innerHTML = "";
+
+    const setCount = keys.filter((k) => targetFor(k) != null).length;
+    targetPanel.append(el("div", { class: "row", style: "margin-bottom:10px" },
+      el("h4", { style: "margin:0;color:var(--accent);font-size:13px" }, "Target prices"),
+      el("span", { class: "pill" }, `${setCount} of ${keys.length} set`),
+      el("button", {
+        class: "act sec",
+        onclick: () => {
+          for (const k of keys) delete targets[k];
+          saveTargets(); renderTargets(true); draw(); updateArmInfo();
+        },
+      }, "Clear all")));
+
+    if (!keys.length) {
+      targetPanel.append(el("div", { class: "dim" },
+        "No exact item keys in the filter, so there is nothing to price. "
+        + "Type item keys (firebow, cring) to get a field for each."));
+      return;
+    }
+
+    const grid = el("div", { class: "grid" });
+    for (const k of keys) {
+      const inp = el("input", {
+        type: "text", inputmode: "numeric", placeholder: "no target",
+        style: "width:100%;margin-top:6px",
+      });
+      const cur = targetFor(k);
+      inp.value = cur != null ? fmt(cur) : "";
+      const commit = () => {
+        const raw = inp.value.trim();
+        if (!raw) delete targets[k];
+        else {
+          const v = parsePrice(raw);
+          if (v == null) {            // unparseable: flag it, keep what was typed
+            inp.style.borderColor = "var(--bad)";
+            return;
+          }
+          targets[k] = v;
+        }
+        inp.style.borderColor = "";
+        saveTargets();
+        draw(); updateArmInfo();
+        lastTargetSig = null; renderTargets();     // refresh the "n of m set" pill
+      };
+      inp.addEventListener("change", commit);
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); inp.blur(); } });
+
+      const card = el("div", { class: "card" });
+      card.append(el("div", { class: "row", style: "gap:7px" }, icon(k, 1.6),
+        el("span", {}, el("span", {}, itemName(k)), el("span", { class: "dim" }, " " + k))));
+      card.append(inp);
+      grid.append(card);
+    }
+    targetPanel.append(grid);
+  }
+
+  function listingKey(r) {
+    return [r.item, r.level, r.price, r.merchant, r.server, r.slot].join("|");
+  }
+
+  function updateArmInfo() {
+    const priced = targetKeys().filter((k) => targetFor(k) != null);
+    if (!armed) {
+      armInfo.textContent = priced.length
+        ? `${priced.length} target${priced.length > 1 ? "s" : ""} set — tick to arm`
+        : "no targets set (fill in a Target prices field)";
+      armInfo.className = "dim";
+      return;
+    }
+    if (!priced.length) {
+      armInfo.textContent = "armed, but no target set on any item — nothing to alert on";
+      armInfo.className = "warn";
+      return;
+    }
+    const st = ALERTS.notifyState();
+    const chan = st === "granted" ? "desktop + sound"
+      : st === "file" ? "in-page + sound (desktop needs http://localhost)"
+      : st === "denied" ? "in-page + sound (desktop blocked)"
+      : "in-page + sound";
+    armInfo.textContent = `armed on ${priced.length} item${priced.length > 1 ? "s" : ""} · ${chan}`;
+    armInfo.className = "good";
+  }
+
+  function renderAlertPanel() {
+    if (!armed && !hitLog.length) { alertPanel.classList.add("hidden"); return; }
+    alertPanel.classList.remove("hidden");
+    alertPanel.innerHTML = "";
+
+    /* Listings that were already under target when you armed are context, not
+       a catch — they are listed quietly and never ring. */
+    if (baseline.length) {
+      const names = [...new Set(baseline.map((h) => itemName(h.item)))];
+      alertPanel.append(el("div", { class: "dim", style: "margin-bottom:8px" },
+        `${baseline.length} listing${baseline.length > 1 ? "s were" : " was"} already at or under target when you armed `
+        + `(${names.slice(0, 6).join(", ")}${names.length > 6 ? ", …" : ""}) — shown in the table below, not alerted.`));
+    }
+    if (!hitLog.length) {
+      alertPanel.append(el("div", { class: "good" },
+        "○ Watching. New listings at or under target will alert here."));
+      return;
+    }
+
+    alertPanel.append(el("div", { class: "row", style: "margin-bottom:8px" },
+      el("h4", { style: "margin:0;color:var(--accent)" }, `● ${hitLog.length} new price alert${hitLog.length > 1 ? "s" : ""}`),
+      el("button", {
+        class: "act sec",
+        onclick: () => { hitLog.length = 0; ALERTS.clearBadge(); renderAlertPanel(); },
+      }, "Clear")));
+    const t = el("table");
+    t.append(el("thead", {}, el("tr", {},
+      el("th", {}, ""), el("th", {}, "Item"), el("th", { class: "num" }, "Price"),
+      el("th", { class: "num" }, "Target"), el("th", {}, "Merchant"), el("th", {}, "Server"),
+      el("th", {}, "Where"), el("th", {}, "Spotted"))));
+    const tb = el("tbody");
+    for (const h of hitLog.slice(0, 60)) {
+      tb.append(el("tr", {},
+        el("td", {}, icon(h.item, 1.6)),
+        el("td", {}, el("span", {}, itemName(h.item)), el("span", { class: "dim" }, " " + h.item)),
+        el("td", { class: "num good" }, fmt(h.price)),
+        el("td", { class: "num dim" }, "≤ " + fmt(h.threshold)),
+        el("td", {}, h.merchant), el("td", {}, h.server),
+        el("td", { class: "dim" }, `${h.map} ${Math.round(h.x)},${Math.round(h.y)}`),
+        el("td", { class: "dim" }, h.at)));
+    }
+    t.append(tb);
+    alertPanel.append(el("div", { class: "scroll" }, t));
+  }
+
+  /* Only SELLING listings count: a buy order is not "posted for sale". */
+  function checkAlerts() {
+    const rows = marketRows(MERCHANTS);
+    const match = makeMatcher(parseTerms(ta.value), rows);
+    const fresh = [];
+    for (const r of rows) {
+      if (r.buying) continue;
+      if (!match(r.item, itemName(r.item))) continue;     // outside the filter
+      const th = targetFor(r.item);
+      if (th == null || r.price > th) continue;
+      const k = listingKey(r);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      fresh.push({ ...r, threshold: th, at: new Date().toLocaleTimeString() });
+    }
+    /* The first pass after arming only records what is already on the market;
+       it never rings. Everything after it is a genuine new listing. */
+    if (!primed) { baseline = fresh; renderAlertPanel(); return; }
+    if (!fresh.length) return;
+    hitLog.unshift(...fresh);
+    if (hitLog.length > 300) hitLog.length = 300;
+    renderAlertPanel();
+    ALERTS.fire(fresh);
+  }
+
+  async function arm(on) {
+    armed = on;
+    if (timer) { clearInterval(timer); timer = null; }
+    if (!on) { baseline = []; updateArmInfo(); renderAlertPanel(); return; }
+    ALERTS.initAudio();
+    await ALERTS.request();
+    primed = false;
+    seen.clear();
+    await go(true);          // fresh pull, seeds `seen` without ringing
+    primed = true;
+    timer = ownInterval(async () => {
+      try { await go(true); } catch (e) {}
+    }, 30000);
+    updateArmInfo();
+  }
+
+  armBox.addEventListener("change", () => arm(armBox.checked));
+  ta.addEventListener("input", updateArmInfo);
+
+  function draw() {
+    out.innerHTML = "";
+    if (!MERCHANTS) { out.append(el("div", { class: "dim" }, "No data loaded.")); return; }
+    const rows = marketRows(MERCHANTS);
+    const want = parseTerms(ta.value);
+    const match = makeMatcher(want, rows);
+    const sideV = side.value, serverV = server.value;
+    const filtered = rows.filter((r) => {
+      if (sideV === "buy" && !r.buying) return false;
+      if (sideV === "sell" && r.buying) return false;
+      if (serverV && r.server !== serverV) return false;
+      if (!want.length) return true;
+      return match(r.item, itemName(r.item));
+    });
+
+    if (want.length) {
+      /* Only exact item keys can be "not listed" — a fuzzy term such as
+         "cape" has no single key that could be missing. */
+      const found = new Set(rows.map((r) => r.item.toLowerCase()));
+      const missing = [...match.exact].filter((w) => !found.has(w));
+      if (missing.length) {
+        out.append(el("div", { class: "panel", style: "background:#1a1f28;margin-bottom:10px" },
+          el("div", { class: "warn" }, `Not currently listed by any merchant (${missing.length}):`),
+          el("div", { class: "dim", style: "margin-top:4px" }, missing.join(", "))));
+      }
+    }
+
+    sortableTable(out, filtered, [
+      { key: "icon", label: "", get: (r) => r.item, render: (r) => icon(r.item, 1.6) },
+      { key: "item", label: "Item", get: (r) => itemName(r.item),
+        render: (r) => el("span", {}, el("span", {}, itemName(r.item)),
+          el("span", { class: "dim" }, " " + r.item)) },
+      { key: "level", label: "Lv", num: true, get: (r) => r.level },
+      { key: "side", label: "Side", get: (r) => (r.buying ? "buy" : "sell"),
+        render: (r) => el("span", { class: "tag " + (r.buying ? "buy" : "sell") }, r.buying ? "BUYING" : "SELLING") },
+      { key: "price", label: "Price", num: true, get: (r) => r.price,
+        render: (r) => {
+          const th = targetFor(r.item);
+          const under = th != null && !r.buying && r.price <= th;
+          return el("span", { class: under ? "good" : "gold" },
+            (under ? "▼ " : "") + fmt(r.price));
+        } },
+      { key: "target", label: "Target", num: true,
+        get: (r) => targetFor(r.item),
+        render: (r) => {
+          const th = targetFor(r.item);
+          if (th == null) return el("span", { class: "dim" }, "—");
+          return el("span", { class: "dim" }, "≤ " + fmt(th));
+        } },
+      { key: "qty", label: "Qty", num: true, get: (r) => r.qty },
+      { key: "merchant", label: "Merchant", get: (r) => r.merchant },
+      { key: "server", label: "Server", get: (r) => r.server },
+      { key: "map", label: "Where", get: (r) => r.map,
+        render: (r) => el("span", { class: "dim" }, `${r.map} ${Math.round(r.x)},${Math.round(r.y)}`) },
+      { key: "lastSeen", label: "Seen", get: (r) => -new Date(r.lastSeen).getTime(),
+        render: (r) => el("span", { class: "dim" }, ago(r.lastSeen)) },
+    ], { noun: " listings", sortKey: "price", sortDir: -1 });
+  }
+
+  async function go(force) {
+    status.textContent = "loading…";
+    try {
+      await loadMerchants(force);
+      const servers = [...new Set(MERCHANTS.map((m) => `${m.serverRegion} ${m.serverIdentifier}`))].sort();
+      const cur = server.value;
+      server.innerHTML = "";
+      server.append(el("option", { value: "" }, "All servers"));
+      for (const s of servers) server.append(el("option", { value: s }, s));
+      server.value = cur;
+      const slots = marketRows(MERCHANTS).length;
+      status.textContent = `${fmt(MERCHANTS.length)} merchants · ${fmt(slots)} listings`
+        + (SOURCE_NOTE ? ` · ${SOURCE_NOTE}` : "")
+        + (armed ? ` · refreshed ${new Date().toLocaleTimeString()}` : "");
+      draw();
+      renderTargets();        // live listings can name keys the repo lacks
+      if (armed) checkAlerts();
+    } catch (e) {
+      status.textContent = armed ? "refresh failed, retrying in 30s" : "";
+      if (!armed) {
+        out.innerHTML = "";
+        out.append(el("div", { class: "err" }, "Could not load merchant data: " + e.message));
+      }
+    }
+  }
+
+  restoreFilter();
+  restoreTargets();
+  migrateInlineTargets();
+  renderTargets(true);
+  updateArmInfo();
+  go(false);
+}
+
+/* ==================================================== MARKET (WATCHLIST) */
+/* Same market section as the full explorer, but the filter box is pre-loaded
+   with the tracked item list. Clear the box to see the whole market. */
+
+const WATCHLIST = [
+  "alloyquiver", "bcape", "cearring", "coat", "cring", "dexamulet", "dexbelt",
+  "dexearring", "ecape", "firebow", "firestaff", "fury", "gcape", "gstaff",
+  "harmor", "hhelmet", "intamulet", "intbelt", "jacko", "lmace", "mageshood",
+  "mpxamulet", "mpxgloves", "mshield", "orbofdex", "pants", "rabbitsfoot",
+  "sbelt", "starkillers", "suckerpunch", "supermittens", "t2quiver", "tshirt9",
+  "vattire", "wbook0", "wingedboots", "xhelmet", "zapper",
+];
+
+tab("market", "Watchlist Market", (host) => {
+  renderMarket(host, {
+    defaultFilter: WATCHLIST.join(", "),
+    blurb: el("span", {}, "Pre-filtered to the ",
+      el("b", {}, String(WATCHLIST.length) + " tracked items"),
+      ". Clear the box to browse the whole market."),
+  });
+});
+
+/* ======================================================= SUMMARY ENGINE  */
+/* Shared by the two summary tabs below so their numbers cannot drift apart:
+   the only differences are which items are kept and whether losing rows are
+   shown. */
+
+/* One row per item + upgrade level + special title. An arbitrage number is
+   only meaningful between identical goods: a level 0 sell and a level 5 buy
+   order are two different markets, and a shiny is not a plain one. Pooling
+   them reports a spread nobody can capture. */
+function summaryGroupKey(r) {
+  return [String(r.item).toLowerCase(), r.level || 0, r.special || ""].join("|");
+}
+
+/* rows -> one record per group. `keep` is a Set of item keys to restrict to,
+   or null for every item currently on the market. */
+function summarizeMarket(rows, keep) {
+  const by = new Map();
+  for (const r of rows) {
+    const key = String(r.item).toLowerCase();
+    if (keep && !keep.has(key)) continue;
+    const gk = summaryGroupKey(r);
+    let g = by.get(gk);
+    if (!g) {
+      g = { item: key, level: r.level || 0, special: r.special || null, sells: [], buys: [] };
+      by.set(gk, g);
+    }
+    (r.buying ? g.buys : g.sells).push(r);
+  }
+  return [...by.values()].map((g) => {
+    const cheapest = g.sells.length ? g.sells.reduce((a, c) => (c.price < a.price ? c : a)) : null;
+    const best = g.buys.length ? g.buys.reduce((a, c) => (c.price > a.price ? c : a)) : null;
+    return {
+      item: g.item, level: g.level, special: g.special,
+      nSell: g.sells.length, nBuy: g.buys.length,
+      cheapest: cheapest ? cheapest.price : null,
+      cheapestWho: cheapest ? `${cheapest.merchant} (${cheapest.server})` : null,
+      cheapestSeen: cheapest ? cheapest.lastSeen : null,
+      best: best ? best.price : null,
+      bestWho: best ? `${best.merchant} (${best.server})` : null,
+      bestSeen: best ? best.lastSeen : null,
+      spread: (cheapest && best) ? best.price - cheapest.price : null,
+      listed: true,
+    };
+  });
+}
+
+/* Both sides of a spread need their own freshness: a merchant last confirmed
+   hours ago may well be gone, and a spread is only capturable while BOTH ends
+   are still standing. Stale is flagged, never hidden - the listing can still
+   be good, it just has not been seen recently. */
+const SEEN_STALE_MS = 60 * 60 * 1000;
+function seenCell(iso) {
+  if (!iso) return el("span", { class: "dim" }, "—");
+  const stale = (Date.now() - new Date(iso).getTime()) > SEEN_STALE_MS;
+  return el("span", { class: stale ? "warn" : "dim" }, ago(iso));
+}
+function seenSort(iso) { return iso ? -new Date(iso).getTime() : null; }
+
+function summaryColumns() {
+  return [
+    { key: "icon", label: "", get: (r) => r.item, render: (r) => icon(r.item, 1.6) },
+    { key: "name", label: "Item", get: (r) => itemName(r.item),
+      render: (r) => el("span", {}, el("span", {}, itemName(r.item)),
+        el("span", { class: "dim" }, " " + r.item)) },
+    { key: "level", label: "Lv", num: true, get: (r) => r.level,
+      render: (r) => r.level == null ? el("span", { class: "dim" }, "—")
+        : el("span", { class: r.level ? "warn" : "dim" }, String(r.level)) },
+    { key: "special", label: "Special", get: (r) => r.special,
+      render: (r) => r.special ? el("span", { class: "tag" }, r.special)
+        : el("span", { class: "dim" }, "—") },
+    { key: "cheapest", label: "Cheapest sell", num: true, get: (r) => r.cheapest,
+      render: (r) => el("span", { class: r.cheapest ? "gold" : "dim" },
+        r.cheapest ? fmt(r.cheapest) : (r.listed ? "none" : "not listed")) },
+    { key: "cheapestWho", label: "From", get: (r) => r.cheapestWho,
+      render: (r) => el("span", { class: "dim" }, r.cheapestWho || "—") },
+    { key: "cheapestSeen", label: "Sell seen", get: (r) => seenSort(r.cheapestSeen),
+      render: (r) => seenCell(r.cheapestSeen) },
+    { key: "best", label: "Best buy offer", num: true, get: (r) => r.best,
+      render: (r) => el("span", { class: r.best ? "good" : "dim" }, r.best ? fmt(r.best) : "none") },
+    { key: "bestWho", label: "By", get: (r) => r.bestWho,
+      render: (r) => el("span", { class: "dim" }, r.bestWho || "—") },
+    { key: "bestSeen", label: "Buy seen", get: (r) => seenSort(r.bestSeen),
+      render: (r) => seenCell(r.bestSeen) },
+    { key: "spread", label: "Spread", num: true, get: (r) => r.spread,
+      render: (r) => r.spread == null ? el("span", { class: "dim" }, "—")
+        : el("span", { class: r.spread > 0 ? "good" : "bad" },
+          (r.spread > 0 ? "+" : "") + fmt(r.spread)) },
+    { key: "nSell", label: "#Sell", num: true, get: (r) => r.nSell },
+    { key: "nBuy", label: "#Buy", num: true, get: (r) => r.nBuy },
+  ];
+}
+
+/* opts: {items: [keys]|null, positiveOnly: bool, blurb} */
+function renderSummary(host, opts) {
+  opts = opts || {};
+  const keep = opts.items ? new Set(opts.items) : null;
+  const positiveOnly = !!opts.positiveOnly;
+
+  const ctl = el("div", { class: "panel" });
+  const status = el("span", { class: "dim" }, "loading…");
+  ctl.append(
+    el("div", { class: "src", style: "margin-bottom:8px" }, opts.blurb || ""),
+    el("div", { class: "row" },
+      el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA"),
+      sourceSelect(() => go(true)), status));
+  const out = el("div", { class: "panel" });
+  host.append(ctl, out);
+
+  function draw() {
+    out.innerHTML = "";
+    const rows = marketRows(MERCHANTS);
+    let summary = summarizeMarket(rows, keep);
+    const groupsScanned = summary.length;
+    const present = new Set(summary.map((s) => s.item));
+    const positives = summary.filter((s) => s.spread != null && s.spread > 0).length;
+
+    if (positiveOnly) {
+      summary = summary.filter((s) => s.spread != null && s.spread > 0);
+    } else if (keep) {
+      /* A tracked item nobody is trading at any level still gets a row, so the
+         table always accounts for the whole watchlist. */
+      for (const k of opts.items) {
+        if (present.has(k)) continue;
+        summary.push({
+          item: k, level: null, special: null, nSell: 0, nBuy: 0,
+          cheapest: null, cheapestWho: null, cheapestSeen: null,
+          best: null, bestWho: null, bestSeen: null, spread: null, listed: false,
+        });
+      }
+    }
+
+    const pills = keep
+      ? [`${present.size} of ${opts.items.length} tracked items listed right now`]
+      : [`${fmt(present.size)} distinct items on the market`];
+    if (positiveOnly) {
+      pills.push(`${fmt(summary.length)} of ${fmt(groupsScanned)} groups have a positive spread`);
+    } else {
+      pills.push(`${fmt(groupsScanned)} item/level groups`);
+      pills.push(`${positives} with a positive level-matched spread`);
+    }
+    pills.push(`${fmt(rows.length)} total listings scanned`);
+    out.append(el("div", { class: "row", style: "margin-bottom:10px" },
+      pills.map((t) => el("span", { class: "pill" }, t))));
+
+    if (positiveOnly && !summary.length) {
+      out.append(el("div", { class: "dim" },
+        "Nothing on the market has a positive level-matched spread right now."));
+      return;
+    }
+
+    sortableTable(out, summary, summaryColumns(), {
+      noun: " item/level groups",
+      sortKey: positiveOnly ? "spread" : "name",
+      sortDir: positiveOnly ? -1 : 1,
+    });
+  }
+
+  async function go(force) {
+    status.textContent = "loading…";
+    try {
+      await loadMerchants(force);
+      status.textContent = `${fmt(MERCHANTS.length)} merchants`;
+      draw();
+    } catch (e) {
+      status.textContent = "";
+      out.innerHTML = "";
+      out.append(el("div", { class: "err" }, "Could not load merchant data: " + e.message));
+    }
+  }
+  go(false);
+}
+
+/* A quick at-a-glance summary of the watchlist across all servers. */
+tab("summary", "Watchlist Summary", (host) => renderSummary(host, {
+  items: WATCHLIST,
+  positiveOnly: false,
+  blurb: el("span", {}, "Best current prices for each tracked item, across every server. ",
+    el("b", {}, "Cheapest sell"), " is what you'd pay to buy it; ",
+    el("b", {}, "best buy"), " is the most anyone is currently paying. ",
+    "One row per item AND upgrade level: a spread only means something between identical goods. ",
+    el("b", {}, "Sell seen"), " and ", el("b", {}, "buy seen"),
+    " are when each side's merchant was last confirmed; anything over an hour old is flagged."),
+}));
+
+/* The same table over the WHOLE market rather than the watchlist, kept to the
+   rows that actually show a gap. This is the "what could I flip right now"
+   view, so losing and flat rows are noise and are dropped. */
+tab("arbitrage", "Arbitrage · All Items", (host) => renderSummary(host, {
+  items: null,
+  positiveOnly: true,
+  blurb: el("span", {}, "Every item on the market, not just the watchlist, ",
+    "reduced to the rows where the best buy order sits ", el("b", {}, "above"),
+    " the cheapest sell at the same item, level and special. ",
+    "A spread is not free money: both merchants have to still be standing, the buy order has ",
+    "to have quantity left, and you pay the trip between them — so read ",
+    el("b", {}, "sell seen"), " and ", el("b", {}, "buy seen"),
+    " before acting on a row, and treat a flagged one as probably gone."),
+}));
+
+/* ================================================================ PONTY TAB */
+/* Ponty (the "secondhands" NPC) resells what other players have sold to NPCs.
+   His stock is per shard and rotates, and there is no public API for it - the
+   only way to read it is to stand next to him and ask, which is exactly what
+   the roaming scout does on every shard it lands on. So this tab is bridge-only
+   by nature; with no bridge running there is simply nothing to show. */
+tab("ponty", "Ponty Stock", (host) => {
+  const ctl = el("div", { class: "panel" });
+  const status = el("span", { class: "dim" }, "loading…");
+  const q = el("input", { type: "search", placeholder: "filter by item…", style: "min-width:220px" });
+  const watchOnly = el("input", { type: "checkbox" });
+  const watchLabel = el("label", { class: "row", style: "gap:6px;cursor:pointer" },
+    watchOnly, el("span", {}, "Watchlist items only"));
+  ctl.append(
+    el("div", { class: "src", style: "margin-bottom:8px" },
+      "Ponty's resale stock per shard, collected by the roaming scout via ",
+      el("b", {}, "market_bridge.py"), ". Stock rotates and is shard-local, so a ",
+      "shard is only as current as the last time a scout stood in front of him."),
+    el("div", { class: "row" },
+      el("button", { class: "act", onclick: () => go() }, "REFRESH"), q, watchLabel, status));
+  const out = el("div", { class: "panel" });
+  host.append(ctl, out);
+
+  let DATA = null;
+  const watch = new Set(WATCHLIST);
+
+  function draw() {
+    out.innerHTML = "";
+    if (!DATA) { out.append(el("div", { class: "dim" }, "No data.")); return; }
+    const shards = Object.keys(DATA).sort();
+    if (!shards.length) {
+      out.append(el("div", { class: "dim" },
+        "The bridge is up but no scout has reported Ponty stock yet. The roamer "
+        + "checks him once per shard per visit, so give it a rotation."));
+      return;
+    }
+    const needle = q.value.trim().toLowerCase();
+    const rows = [];
+    for (const sh of shards) {
+      const rec = DATA[sh] || {};
+      for (const it of (rec.items || [])) {
+        if (!it || !it.name) continue;
+        const key = String(it.name).toLowerCase();
+        if (watchOnly.checked && !watch.has(key)) continue;
+        if (needle && !key.includes(needle) && !itemName(it.name).toLowerCase().includes(needle)) continue;
+        rows.push({ shard: sh, at: rec.at, ...it, tracked: watch.has(key) });
+      }
+    }
+    out.append(el("div", { class: "row", style: "margin-bottom:10px" },
+      el("span", { class: "pill" }, `${shards.length} shard${shards.length > 1 ? "s" : ""} reported`),
+      el("span", { class: "pill" }, `${fmt(rows.length)} entries shown`),
+      el("span", { class: "pill" }, `${rows.filter((r) => r.tracked).length} on the watchlist`)));
+
+    sortableTable(out, rows, [
+      { key: "icon", label: "", get: (r) => r.name, render: (r) => icon(r.name, 1.6) },
+      { key: "item", label: "Item", get: (r) => itemName(r.name),
+        render: (r) => el("span", {},
+          el("span", { class: r.tracked ? "good" : "" }, itemName(r.name)),
+          el("span", { class: "dim" }, " " + r.name)) },
+      { key: "level", label: "Lv", num: true, get: (r) => r.level,
+        render: (r) => el("span", { class: r.level ? "warn" : "dim" }, String(r.level || 0)) },
+      { key: "price", label: "Price", num: true, get: (r) => r.price,
+        render: (r) => el("span", { class: "gold" }, r.price == null ? "—" : fmt(r.price)) },
+      { key: "q", label: "Qty", num: true, get: (r) => r.q },
+      { key: "p", label: "Special", get: (r) => r.p,
+        render: (r) => r.p ? el("span", { class: "tag" }, r.p) : el("span", { class: "dim" }, "—") },
+      { key: "shard", label: "Shard", get: (r) => r.shard },
+      { key: "at", label: "Scanned", get: (r) => seenSort(r.at), render: (r) => seenCell(r.at) },
+    ], { noun: " Ponty entries", sortKey: "item" });
+  }
+
+  async function go() {
+    status.textContent = "loading…";
+    try {
+      const r = await fetch(BRIDGE + "/ponty");
+      if (!r.ok) throw new Error("bridge " + r.status);
+      DATA = await r.json();
+      status.textContent = "";
+      draw();
+    } catch (e) {
+      status.textContent = "";
+      out.innerHTML = "";
+      out.append(el("div", { class: "err" },
+        "Could not reach the bridge at " + BRIDGE + " — " + e.message
+        + "\n\nPonty stock has no public API, so this tab needs market_bridge.py running "
+        + "and at least one scout that has visited Ponty."));
+    }
+  }
+  q.addEventListener("input", draw);
+  watchOnly.addEventListener("change", draw);
+  go();
+});
+
+
+/* ------------------------------------------------------------------ init */
+(async function main() {
+  try {
+    await loadGameData();
+  } catch (e) {
+    $("#booterr").textContent = "Failed to load game data:\n" + (e.stack || e.message);
+    boot("Failed", 100);
+    return;
+  }
+
+  const bits = [];
+  bits.push(`${META.repoVars} datasets from kaansoral/adventureland`);
+  if (META.aldataSections && META.aldataSections.length) {
+    bits.push(`${META.aldataSections.join("/")} from aldata`);
+  }
+  if (G.items) bits.push(`${fmt(Object.keys(G.items).length)} items`);
+  $("#subtitle").textContent = "· " + bits.join(" · ");
+
+  const nav = $("#tabs");
+  for (const t of TABS) {
+    nav.append(el("button", { "data-id": t.id, onclick: () => showTab(t.id) }, t.label));
+  }
+  $("#boot").classList.add("hidden");
+  $("#app").classList.remove("hidden");
+
+  const want = (location.hash || "").replace("#", "");
+  showTab(TABS.find((t) => t.id === want) ? want : TABS[0].id);
+
+  if (META.failures && META.failures.length) {
+    console.warn("[AL] module issues:", META.failures);
+  }
+})();
+</script>
+</body>
+</html>
