@@ -58,6 +58,19 @@ ACTIVITY_HALFLIFE = 15 * 60
 MESSAGE_TTL = 10 * 60
 
 
+QUIET = False
+
+
+def say(msg: str) -> None:
+    """One line per meaningful event.
+
+    The default HTTP logger is suppressed because it prints a line per request
+    including every /merchants poll the page makes, which buries the handful of
+    events worth seeing. This prints what actually happened instead."""
+    if not QUIET:
+        print(f"{time.strftime('%H:%M:%S')} {msg}", flush=True)
+
+
 def now() -> float:
     return time.time()
 
@@ -165,7 +178,21 @@ class Store:
             # mismatch tells it to resend instead of moving on and losing the
             # scan.
             reply["accepted"] = {"merchants": stored_m, "ponty": stored_p}
+            assigned = reply.get("assignment")
         self.save()
+
+        bits = [f"{char} @{key}"]
+        if isinstance(seen, list):
+            bits.append(f"{stored_m} stands")
+            if stored_m != len(seen):
+                bits.append(f"({len(seen) - stored_m} rejected)")
+        else:
+            bits.append("heartbeat")
+        if stored_p:
+            bits.append(f"{stored_p} Ponty")
+        if assigned:
+            bits.append(f"-> assigned {assigned['region']}{assigned['name']}")
+        say("scan  " + "  ".join(bits))
         return reply
 
     def _evict(self, t: float) -> None:
@@ -272,7 +299,10 @@ class Store:
             })
             cutoff = t - MESSAGE_TTL
             self.messages = [m for m in self.messages if m["ts"] >= cutoff]
-            return {"ok": True, "seq": self.seq}
+            seq = self.seq
+        kind = (body.get("payload") or {}).get("message", "?")
+        say(f"relay {frm} -> {', '.join(to) if to else 'all'}  {kind}  #{seq}")
+        return {"ok": True, "seq": seq}
 
     def get_messages(self, who: str, since: int) -> dict:
         t = now()
@@ -397,7 +427,12 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--state", default="", help="optional JSON file to survive restarts")
+    ap.add_argument("--quiet", action="store_true",
+                    help="only print startup and errors, no per-event lines")
     a = ap.parse_args()
+
+    global QUIET
+    QUIET = a.quiet
 
     Handler.store = Store(pathlib.Path(a.state) if a.state else None)
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
@@ -405,6 +440,7 @@ def main():
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
     print(f"[bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
+    print(f"[bridge]   logging {'off (--quiet)' if a.quiet else 'on - one line per scan and relayed message'}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
