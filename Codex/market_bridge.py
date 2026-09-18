@@ -18,6 +18,13 @@ Standard library only.
     python3 market_bridge.py                 # 127.0.0.1:8787
     python3 market_bridge.py --port 9000 --state ./scouts.json
 """
+# Keeps every type annotation in this file a lazy string instead of something
+# Python evaluates at import time. Without it the "Path | None" and "dict[str,
+# dict]" hints below are syntax the interpreter has to understand at startup,
+# which needs 3.10 and 3.9 respectively - and the failure is a TypeError before
+# a single line of the bridge runs. With it, the file loads on 3.7+.
+from __future__ import annotations
+
 import argparse
 import json
 import pathlib
