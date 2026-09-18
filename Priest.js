@@ -124,6 +124,14 @@ function plFirstTime(id) {
 function plSend(to, payload) {
 	const body = Object.assign({}, payload || {});
 	if (!body._plid) body._plid = `${plName()}-${Date.now()}-${++plSeq}`;
+	/* Stamp where the sender is standing. Doing it here rather than at each
+	   call site means every message type gets it for free, and the merchant can
+	   work out whether a request needs a shard change without the requester
+	   having to think about it. */
+	if (!body._plshard) {
+		try { body._plshard = { region: parent.server_region, name: parent.server_identifier }; }
+		catch (e) { }
+	}
 
 	try { send_cm(to, body); } catch (e) { plLog('send_cm failed: ' + e, 'orange'); }
 

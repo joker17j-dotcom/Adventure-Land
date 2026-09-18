@@ -111,6 +111,14 @@ function plFirstTime(id) {
 function plSend(to, payload) {
 	const body = Object.assign({}, payload || {});
 	if (!body._plid) body._plid = `${plName()}-${Date.now()}-${++plSeq}`;
+	/* Stamp where the sender is standing. Doing it here rather than at each
+	   call site means every message type gets it for free, and the merchant can
+	   work out whether a request needs a shard change without the requester
+	   having to think about it. */
+	if (!body._plshard) {
+		try { body._plshard = { region: parent.server_region, name: parent.server_identifier }; }
+		catch (e) { }
+	}
 
 	try { send_cm(to, body); } catch (e) { plLog('send_cm failed: ' + e, 'orange'); }
 
@@ -160,6 +168,9 @@ setInterval(plPoll, PARTY_LINK.pollMs);
 
 const CONFIG = {
 	partyMembers: ['Dexon', 'FatherToken', 'MageofOz'],
+	// How long to wait for a change_server to actually land before treating the
+	// hop as failed and requeueing the work.
+	hopTimeoutMs: 30000,
 
 	// Ernis sells HP/MP potions in Mainland, beside Gabriel.
 	npc: { name: 'Ernis', map: 'main', x: -35, y: -162 },
@@ -329,19 +340,92 @@ async function travelTo(map, x, y) {
 // ============================================================================
 // MESSAGE HANDLING
 // ============================================================================
+// ============================================================================
+// CROSS-SHARD SERVICE
+// ============================================================================
+// send_cm is realm-local, so before the relay existed a request from another
+// shard simply never arrived and the question never came up. Now it does: a
+// job can name a shard this character is not on, and serving it means going
+// there and coming back.
+//
+// Only reachable when the relay is up, i.e. in a browser tab. On Mainframe the
+// relay is off, so every request that arrives came in-game from someone on this
+// same shard and none of this engages.
+// ============================================================================
+const SHARD_REGIONS = ['ASIA', 'US', 'EU'];
+
+function mShardKey() {
+	return String(parent.server_region) + String(parent.server_identifier);
+}
+
+function mParseShard(key) {
+	for (const r of SHARD_REGIONS) {
+		if (key && key.startsWith(r)) return { region: r, name: key.slice(r.length) };
+	}
+	return null;
+}
+
+function mCanHop() {
+	return typeof change_server === 'function';
+}
+
+/* Where to return to once the trip is done. Persisted because change_server
+   wipes runtime state in a browser tab, and coming back to the wrong shard
+   would strand the stand somewhere nobody is looking for it. */
+function mHomeShard() {
+	try {
+		const v = get('merch_home_shard');
+		if (v) return v;
+	} catch (e) { }
+	return mShardKey();
+}
+function mSetHomeShard(key) {
+	try { set('merch_home_shard', key); } catch (e) { }
+}
+
+/* change_server() drops the connection and reconnects. Mainframe keeps the
+   running code across that, so polling until the shard actually changes is the
+   reliable way to know we have landed. */
+async function mHopTo(key) {
+	if (key === mShardKey()) return true;
+	const t = mParseShard(key);
+	if (!t) { game_log(`Cannot parse shard "${key}"`, 'red'); return false; }
+	if (!mCanHop()) {
+		game_log(`change_server unavailable - cannot reach ${key}`, 'red');
+		return false;
+	}
+	game_log(`Hopping to ${key}`, '#FFD700');
+	try { change_server(t.region, t.name); }
+	catch (e) { game_log(`change_server failed: ${e}`, 'red'); return false; }
+
+	const until = Date.now() + CONFIG.hopTimeoutMs;
+	while (Date.now() < until) {
+		await new Promise(r => setTimeout(r, 1000));
+		if (mShardKey() === key) { game_log(`Arrived on ${key}`, '#7FD98A'); return true; }
+	}
+	game_log(`Hop to ${key} did not land within ${CONFIG.hopTimeoutMs / 1000}s`, 'red');
+	return false;
+}
+
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (!CONFIG.partyMembers.includes(name)) return;
 
+	// A message with no _plshard came in-game, which means same shard by
+	// definition - the pre-relay assumption, still correct.
+	const shard = (data._plshard && data._plshard.region)
+		? String(data._plshard.region) + String(data._plshard.name)
+		: mShardKey();
+
 	if (data.message === 'low_potions') {
-		enqueueJob({ type: 'delivery', recipient: name, potion: data.potion, x: data.x, y: data.y, map: data.map });
+		enqueueJob({ type: 'delivery', recipient: name, potion: data.potion, x: data.x, y: data.y, map: data.map, shard });
 	}
 	if (data.message === 'inventory_almost_full') {
-		enqueueJob({ type: 'pickup', recipient: name, emptySlots: data.emptySlots, x: data.x, y: data.y, map: data.map });
+		enqueueJob({ type: 'pickup', recipient: name, emptySlots: data.emptySlots, x: data.x, y: data.y, map: data.map, shard });
 	}
 	if (data.message === 'location' && CONFIG.mluck.targets.includes(name)) {
 		if (character.level >= CONFIG.mluck.minLevel) {
-			enqueueJob({ type: 'mluck', recipient: name, x: data.x, y: data.y, map: data.map });
+			enqueueJob({ type: 'mluck', recipient: name, x: data.x, y: data.y, map: data.map, shard });
 		}
 		// Below CONFIG.mluck.minLevel: silently ignored, nothing to do yet.
 	}
@@ -428,14 +512,48 @@ async function processBatch() {
 		}
 	}
 
-	// 3. Visit every recipient in sequence, in the order their jobs first
-	// arrived. No return-to-town between stops.
+	// 3. Visit every recipient, grouped by the shard they asked from. Everyone
+	// on this shard is served first so the common case costs no travel at all;
+	// only then do we go elsewhere. Potions were bought above, before any hop,
+	// so a trip never strands us somewhere with an empty bag.
+	const home = mHomeShard();
+	const here = mShardKey();
+	const byShard = new Map();
 	for (const [recipientName, jobs] of byRecipient) {
-		await visitOneStop(recipientName, jobs);
+		const k = jobs[0].shard || here;
+		if (!byShard.has(k)) byShard.set(k, []);
+		byShard.get(k).push([recipientName, jobs]);
 	}
 
-	// 4. Return to town and reopen the stand ONCE, after every stop in the
-	// batch is done - not after each individual recipient.
+	const order = [here, ...[...byShard.keys()].filter(k => k !== here)];
+	for (const shard of order) {
+		const stops = byShard.get(shard);
+		if (!stops || !stops.length) continue;
+
+		if (shard !== mShardKey()) {
+			if (!await mHopTo(shard)) {
+				// Requeue rather than drop: the requester still needs this, and a
+				// later batch may find the shard reachable.
+				for (const [recipientName, jobs] of stops) {
+					for (const j of jobs) enqueueJob(j);
+				}
+				game_log(`Could not reach ${shard} - ${stops.length} stop(s) requeued`, 'red');
+				continue;
+			}
+		}
+		for (const [recipientName, jobs] of stops) {
+			await visitOneStop(recipientName, jobs);
+		}
+	}
+
+	// 4. Back to the home shard, then reopen the stand ONCE - after every stop
+	// in the batch, not after each recipient.
+	if (mShardKey() !== home) {
+		if (!await mHopTo(home)) {
+			game_log(`Could not return to ${home} - opening the stand on ${mShardKey()} instead`, 'red');
+			mSetHomeShard(mShardKey());
+		}
+	}
 	await openStandAtBestSpot();
 }
 
@@ -641,6 +759,11 @@ async function travelToRecipient(job) {
 // STAND MANAGEMENT
 // ============================================================================
 async function openStandAtBestSpot() {
+	// Wherever the merchant settles and trades IS home - that is the shard a
+	// cross-shard trip has to come back to, and the one the stand belongs on.
+	// Recorded here rather than guessed at, so it survives a change_server.
+	mSetHomeShard(mShardKey());
+
 	const slot = locate_item('stand0');
 	if (slot === -1) {
 		game_log('No stand0 item owned - cannot open a stand', 'red');
