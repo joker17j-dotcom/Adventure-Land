@@ -1813,6 +1813,7 @@ const scout = {
 	pontySeen: {},          // shard -> when Ponty was last read there
 	rotIdx: 0,
 	homeFor: null,          // the anniversary `next` we came home for
+	lastReply: null,        // the bridge's most recent rotation/parked hints
 };
 
 function scoutLog(msg, color) {
@@ -2094,12 +2095,41 @@ async function scoutGoHome(reason) {
 	} finally { state.busy = false; }
 }
 
+/* Where to go next, steered by the bridge rather than a blind round-robin.
+
+   Two hints come back with every accepted scan:
+     parked   - shards a stationary scout is holding. Those are being reported
+                continuously, so visiting one spends the rotation re-collecting
+                data the bridge already has fresher than we could make it.
+     rotation - every shard the bridge knows, ordered oldest observation first.
+
+   Shards the bridge has never heard of outrank everything, since "no data at
+   all" is staler than any timestamp. With no reply yet - first run, or the
+   bridge down - this falls back to the plain round-robin, which is what a lone
+   scout effectively gets anyway. */
 function scoutNextShard() {
 	const all = scoutShards();
 	const here = mShardKey();
-	const pool = all.filter((k) => k !== here);
-	if (!pool.length) return null;
-	const k = pool[scout.rotIdx % pool.length];
+	const reply = scout.lastReply;
+
+	const parked = new Set(Object.values((reply && reply.parked) || {}).filter(Boolean));
+	const fromBridge = (reply && Array.isArray(reply.rotation)) ? reply.rotation : [];
+
+	if (fromBridge.length) {
+		const known = new Set(fromBridge);
+		const unseen = all.filter((k) => !known.has(k));
+		const ordered = [...unseen, ...fromBridge];
+		const pool = ordered.filter((k) =>
+			k !== here && all.includes(k) && !parked.has(k));
+		// Already staleness-ordered, so the head IS the shard most worth visiting.
+		if (pool.length) return pool[0];
+	}
+
+	// No hints, or every other shard is parked-covered: keep moving rather than
+	// stall, so a bridge outage never leaves the scout sitting still.
+	const any = all.filter((k) => k !== here);
+	if (!any.length) return null;
+	const k = any[scout.rotIdx % any.length];
 	scout.rotIdx++;
 	return k;
 }
@@ -2135,7 +2165,11 @@ async function scoutVisitNextShard() {
 		await scoutGoToScanSpot();
 		await scoutSettleScan();
 		if (scoutPontyDue()) await scoutPontyCheck();
-		await scoutReportConfirmed();
+		const r = await scoutReportConfirmed();
+		// Keep the hints for the next hop. Only from an answered post - a failed
+		// one carries no rotation, and overwriting with null would silently drop
+		// us back to round-robin.
+		if (r && r.reply) scout.lastReply = r.reply;
 	} finally { state.busy = false; }
 }
 
