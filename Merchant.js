@@ -187,6 +187,10 @@ const CONFIG = {
 		pontyTimeoutMs: 8000,
 		minPostGapMs: 7000,
 		postConfirmRetries: 3,
+		// While a probe holds the merchant, the shard it is standing on is still
+		// rescanned and reposted this often. Without it the hold starves the
+		// bridge it is meant to be probing - see scoutHeldScan.
+		heldScanMs: 30000,
 		// Be home this long before an anniversary round starts. S.anniversary.next
 		// is the round's start time, on the hour, so this is a real deadline
 		// rather than a guess.
@@ -2398,6 +2402,35 @@ async function scoutGoToScanSpot() {
    rotated shards forever and posted nothing - matching exactly what was
    observed: constant hopping, zero POSTs, and the only report being the one
    scoutGoHome sends BEFORE its hop. */
+/* Keep this shard's listings current while a probe holds the merchant.
+ 
+   Scan and report only - no travel, no Ponty trip, and never a hop. The
+   no-travel rule is the important one: a probe may have walked the merchant
+   600 units out to measure the trade distance, and dragging it back to the
+   plaza mid-measurement would ruin the reading.
+ 
+   That also means the scan is SKIPPED rather than taken from wherever the
+   character happens to be standing. A sweep read from a corner reports a
+   near-empty shard as fact, and a scan REPLACES its shard on the bridge - so a
+   lazy read here would not just be useless, it would destroy good data. */
+async function scoutHeldScan() {
+	if (!scoutCanRun()) return;
+	const spot = CONFIG.stand.candidates[0];
+	if (!spot) return;
+	if (character.map !== CONFIG.stand.map || distance(character, spot) > 60) return;
+	if (Date.now() - (scout.heldScanAt || 0) < CONFIG.scout.heldScanMs) return;
+	scout.heldScanAt = Date.now();
+	state.busy = true;
+	try {
+		await scoutSettleScan();
+		const r = await scoutReportConfirmed();
+		if (r && r.reply) scout.lastReply = r.reply;
+		scoutSaveBuffer();
+	} catch (e) {
+		console.error('scoutHeldScan error:', e);
+	} finally { state.busy = false; }
+}
+
 async function scoutVisitNextShard() {
 	const here = mShardKey();
 	const done = scoutLoad('scanned', null);
@@ -2453,9 +2486,16 @@ async function scoutLoop() {
 
 		if (!state.busy) {
 			if (PROBE.hold) {
-				// A probe is measuring. Do nothing at all: scoutGoHome would hop,
-				// a hop reloads the page, and the reload would take the probe and
-				// its half-collected findings with it.
+				// A probe is measuring. Never hop - a hop reloads the page and
+				// would take the probe and its half-collected findings with it -
+				// but DO keep scanning this shard and posting it.
+				//
+				// Standing down entirely was wrong and self-defeating: holding
+				// stopped the only thing that feeds the bridge, the bridge aged
+				// out to zero stands, and arbProbeFindBuy/FindSell - which exist
+				// precisely to read that data - silently fell back to whatever
+				// was in the plaza. The hold was starving the probe it protected.
+				await scoutHeldScan();
 			} else if (!scoutCanRun()) {
 				// Never leave the merchant parked off-home with scouting disabled.
 				await scoutGoHome('scouting unavailable');
@@ -2545,7 +2585,9 @@ function arbProbeHold(on) {
 	// off the shard the operator just went to.
 	try { set('probe_hold', PROBE.hold); } catch (e) { }
 	pLog(PROBE.hold
-		? 'HOLD ON - no hops, no gear spending, no sellTrash (survives a reload)'
+		? 'HOLD ON - no hops, no gear spending, no sellTrash. This shard is still '
+			+ 'scanned and posted every ' + Math.round(CONFIG.scout.heldScanMs / 1000)
+			+ 's while parked at the scan spot. Survives a reload.'
 		: 'HOLD OFF - normal behaviour resumes', '#FFD700');
 	return PROBE.hold;
 }
