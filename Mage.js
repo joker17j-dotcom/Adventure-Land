@@ -1,5 +1,5 @@
 // ============================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v42 (actionLoop error logging now uses describeError() instead of raw console.error)
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v44 (carries the running v43 Party Frames fix - left:0 instead of left:-25%, which pushed this character's own entry off-screen - onto the v42 party-link lineage, so the live fixes and plSend messaging are finally in one file)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -1567,7 +1567,7 @@ if (parent.$) {
 		if (parent.party_style_prepared) parent.$('#style-party-frames').remove();
 
 		parent.$('head').append(`<style id="style-party-frames">
-.party-container {position: absolute; top: 55px; left: -25%; width: 1000px; height: 300px; font-family: 'pixel';}
+.party-container {position: absolute; top: 55px; left: 0; width: 1000px; height: 300px; font-family: 'pixel';}
 </style>`);
 		parent.party_style_prepared = true;
 

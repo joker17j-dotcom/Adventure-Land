@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v32 (ported the full BROWSER-ONLY UI EXTRAS block - Kill Tracker, Gold Meter, Game Log Filter, DPS Meter v4, Party Frames - from Priest/Mage; v24-lineage predated this block and never had it. Purely browser-only, no-op on Mainframe.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v35 (added the PARTY LINK cross-shard block from party_link.js; every outbound party message now goes through plSend (in-game + relay) and on_cm drops the duplicate copy. Built on the running v34 lineage, not the GitHub v32 one.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -12,12 +12,6 @@ if (typeof performance === 'undefined') {
 	globalThis.performance = { now: () => Date.now() };
 }
 
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
-// home/mobMap are no longer hardcoded - determined dynamically by
-// findBestFarmSpot() below, based on live party DPS vs. real monster/map
-// data. They start null until the first search completes.
 let home = null;
 let mobMap = null;
 // ============================================================================
@@ -124,14 +118,6 @@ function plFirstTime(id) {
 function plSend(to, payload) {
 	const body = Object.assign({}, payload || {});
 	if (!body._plid) body._plid = `${plName()}-${Date.now()}-${++plSeq}`;
-	/* Stamp where the sender is standing. Doing it here rather than at each
-	   call site means every message type gets it for free, and the merchant can
-	   work out whether a request needs a shard change without the requester
-	   having to think about it. */
-	if (!body._plshard) {
-		try { body._plshard = { region: parent.server_region, name: parent.server_identifier }; }
-		catch (e) { }
-	}
 
 	try { send_cm(to, body); } catch (e) { plLog('send_cm failed: ' + e, 'orange'); }
 
@@ -186,7 +172,7 @@ const CONFIG = {
 	combat: {
 		enabled: true,
 		targetPriority: ['FatherToken'],
-		alwaysAttack: ['crabx', 'wabbit'], // 'home' is checked directly in shouldAttackMob() instead, since it's now dynamic
+		alwaysAttack: ['crabx', 'wabbit'],
 		attackIfTargeted: [...allBosses, 'phoenix'],
 		neverAttack: ['nerfedmummy', 'target_ar500red', 'target_ar900', 'target', 'target_a500', 'target_a750', 'target_r500', 'target_r750'],
 		useHuntersMark: true,
@@ -234,7 +220,7 @@ const CONFIG = {
 		coatSwapEnabled: true,
 		bossSetSwapEnabled: true,
 		xpSetSwapEnabled: false,
-		xpMonsters: ['sparkbot'], // 'home' checked directly alongside this below, since it's dynamic now
+		xpMonsters: ['sparkbot'],
 		xpMobHpThreshold: 12000,
 		useLicence: false,
 		temporal: {
@@ -293,11 +279,11 @@ const CONFIG = {
 	},
 
 	characterStarter: {
-		enabled: false, // stays off: this only fires from the "Pause2" browser button, which has no effect on Mainframe anyway
+		enabled: false,
 		characters: {
 			MERCHANT: { name: 'Meltymerch', codeSlot: 'CH_aLtHealaSgKdmOsDWpNl8scE9NhXk' },
 			PRIEST: { name: 'FatherToken', codeSlot: 'CH_hae5t3g8gBezOVTdR6ToTagikbTbF' },
-			MAGE: { name: 'MageofOz', codeSlot: 'CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom' } // MageofOz's existing saved slot
+			MAGE: { name: 'MageofOz', codeSlot: 'CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom' }
 		}
 	},
 
@@ -321,17 +307,13 @@ const CONFIG = {
 	},
 };
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
 const TICK_RATE = { main: 100, action: 15, mark: 40, equipment: 25, maintenance: 2000 };
-const MERCHANT_WAIT_TIMEOUT_MS = 90000; // safety net if merchant_done never arrives (e.g. merchant died mid-summon)
+const MERCHANT_WAIT_TIMEOUT_MS = 90000;
 const COOLDOWNS = { cc: 135 };
 const CACHE_TTL = 50;
 
 const EVENT_LOCATIONS = [
 	{ name: 'dragold', map: 'cave', x: 1150, y: -850 },
-	//{ name: 'crabxx', map: 'main', x: -961, y: 1780, join: true },
 	{ name: 'mrgreen', map: 'spookytown', x: 610, y: 1000 },
 	{ name: 'mrpumpkin', map: 'halloween', x: -222, y: 720 }
 ];
@@ -343,9 +325,6 @@ const getDynamicEvents = () => {
 
 const REGIONS = ['US', 'EU', 'ASIA'];
 
-// ============================================================================
-// OPTIMIZED LOOKUPS
-// ============================================================================
 const COMBAT_SETS = {
 	neverAttack: new Set(CONFIG.combat.neverAttack),
 	attackIfTargeted: new Set(CONFIG.combat.attackIfTargeted),
@@ -355,9 +334,6 @@ const COMBAT_SETS = {
 	bosses: new Set(allBosses),
 };
 
-// ============================================================================
-// STATE & CACHE
-// ============================================================================
 const state = {
 	skinReady: false,
 	lastEquipTime: 0,
@@ -382,9 +358,6 @@ const cache = {
 	isValid() { return performance.now() - this.lastUpdate < CACHE_TTL; }
 };
 
-// ============================================================================
-// LOCATION & EQUIPMENT DATA
-// ============================================================================
 const locations = {
 	bat: [{ x: 1200, y: -782 }],
 	bigbird: [{ x: 1258, y: -120 }],
@@ -420,8 +393,6 @@ const locations = {
 	xscorpion: [{ x: -495, y: 685 }]
 };
 
-// destination is now set by findBestFarmSpot() once its search completes,
-// rather than a static locations[home] lookup.
 let destination = null;
 
 const equipmentSets = {
@@ -462,7 +433,6 @@ const equipmentSets = {
 	orb: [
 		{ itemName: "orbofdex", slot: "orb", level: 5, l: "l" },
 		{ itemName: "dexamulet", slot: "amulet", level: 6, l: "l" },
-		//{ itemName: "amuletofm", slot: "amulet", level: 0, l: "l" },
 	],
 	stealth: [{ itemName: "stealthcape", slot: "cape", level: 0, l: "l" }],
 	cape: [{ itemName: "vcape", slot: "cape", level: 6, l: "l" }],
@@ -470,13 +440,10 @@ const equipmentSets = {
 	stat: [{ itemName: "coat", slot: "chest", level: 12, l: "s" }],
 };
 
-// ============================================================================
-// CORE UTILITIES
-// ============================================================================
 const shouldAttackMob = (mob) => {
 	if (!mob || mob.dead) return false;
 	if (COMBAT_SETS.neverAttack.has(mob.mtype)) return false;
-	if (mob.mtype === home) return true; // current farm-spot mob - engage unconditionally, whatever it currently is
+	if (mob.mtype === home) return true;
 	if (COMBAT_SETS.alwaysAttack.has(mob.mtype)) return true;
 	if (COMBAT_SETS.attackIfTargeted.has(mob.mtype)) {
 		return mob.target !== null && mob.target !== undefined;
@@ -488,7 +455,7 @@ const EXPLOSION_RADIUS = { boom: 68 / 3.6, dead: 23 / 3.6 };
 
 const updateCache = () => {
 	if (!cache.isValid()) {
-		if (!destination) return; // farm spot search hasn't completed yet
+		if (!destination) return;
 		const now = performance.now();
 		const { x: homeX, y: homeY } = destination;
 		const clumpRadius = CONFIG.movement.clumpRadius;
@@ -583,9 +550,6 @@ const findHealTarget = () => {
 	return minPct < threshold ? target : null;
 };
 
-// ============================================================================
-// MAIN TICK LOOP
-// ============================================================================
 async function mainLoop() {
 	try {
 		if (is_disabled(character)) return setTimeout(mainLoop, 250);
@@ -601,7 +565,7 @@ async function mainLoop() {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (!home || !mobMap || !destination) {
-			return setTimeout(mainLoop, 250); // farm spot search hasn't completed yet
+			return setTimeout(mainLoop, 250);
 		}
 
 		updateCache();
@@ -646,14 +610,6 @@ async function mainLoop() {
 	setTimeout(mainLoop, TICK_RATE.main);
 }
 
-// ============================================================================
-// ACTION LOOP
-// ============================================================================
-// CPU FIX: used to busy-wait-spin on performance.now() and reschedule at a
-// 0-1ms floor, firing ~1000x/sec with a synchronous spin - this is what
-// triggered a real Mainframe cpu_guard kill (see FatherToken's event
-// history). Spin removed, floor raised to 15ms - real attack cooldowns are
-// hundreds of ms minimum, so this costs no real responsiveness.
 const ACTION_MIN_DELAY = 15;
 
 const actionLoop = async () => {
@@ -676,10 +632,6 @@ const handleAttack = async () => {
 
 	const min5 = CONFIG.combat.minTargetsFor5Shot;
 	const min3 = CONFIG.combat.minTargetsFor3Shot;
-	// Level-gated: without this check, the code would keep trying (and
-	// silently failing) 3shot/5shot on every multi-target tick once mana
-	// allowed it, even below the required level - which meant falling
-	// through to plain attack() never happened in multi-target situations.
 	const can5 = character.level >= (G.skills['5shot']?.level || 0) && character.mp >= (G.skills['5shot']?.mp || 0);
 	const can3 = character.level >= (G.skills['3shot']?.level || 0) && character.mp >= (G.skills['3shot']?.mp || 0);
 	const top5 = can5 && sortedByHP.length >= min5 ? sortedByHP.slice(0, 5) : null;
@@ -711,8 +663,6 @@ const handleAttack = async () => {
 	}
 };
 
-// CPU FIX: same reasoning as ACTION_MIN_DELAY - the old 5ms/1ms floors here
-// fired 200-1000x/sec doing real targeting work every cycle.
 const skillLoop = async () => {
 	let delay = 15;
 	try {
@@ -751,9 +701,6 @@ const skillLoop = async () => {
 	setTimeout(skillLoop, delay);
 };
 
-// ============================================================================
-// MAINTENANCE LOOP
-// ============================================================================
 const maintenanceLoop = async () => {
 	try {
 		if (CONFIG.potions.autoBuy) autoBuyPotions();
@@ -770,9 +717,6 @@ const maintenanceLoop = async () => {
 		if (character.rip) {
 			await respawn();
 			if (CONFIG.potions.autoBuy) {
-				// respawn() teleports to town - take advantage of already
-				// being there rather than waiting for a future emergency
-				// trip once potions actually run out.
 				await sleep(1000);
 				game_log('Respawned - topping up potions while in town', '#FFD700');
 				await buyMissingPotions();
@@ -785,9 +729,6 @@ const maintenanceLoop = async () => {
 	setTimeout(maintenanceLoop, TICK_RATE.maintenance);
 }
 
-// ============================================================================
-// POTION LOOP
-// ============================================================================
 async function potionLoop() {
 	let delay = 100;
 
@@ -811,9 +752,6 @@ async function potionLoop() {
 	setTimeout(potionLoop, delay || 2000);
 }
 
-// ============================================================================
-// EQUIPMENT MANAGEMENT LOOP
-// ============================================================================
 async function equipmentLoop() {
 	const delay = TICK_RATE.equipment;
 
@@ -921,9 +859,6 @@ function getNumChests() {
 	return n;
 }
 
-// ============================================================================
-// MOVEMENT FUNCTIONS
-// ============================================================================
 function shouldHandleEvents() {
 	const holidaySpirit = parent?.S?.holidayseason && !character?.s?.holidayspirit;
 	const hasHandleableEvent = getDynamicEvents().some(e => parent?.S?.[e.name]?.live);
@@ -990,7 +925,6 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
 	}
 }
 
-// DRAGOLD SERVER HOPPING 
 const dragold = {
 	state: 'IDLE',
 	targetShard: null,
@@ -999,13 +933,6 @@ const dragold = {
 
 	startScanning() {
 		if (!CONFIG.dragold.enabled) return;
-		// parent.io is the socket.io-client global a real browser tab loads on
-		// the page - Mainframe's sandboxed runtime doesn't have it. Without
-		// this guard, the multi-server dragold scan crashes the whole script
-		// on load. Degradation is graceful: dragold.tick()'s IDLE state still
-		// checks localDragoldLive() and fights dragold if it spawns on
-		// whichever server this character is already on - it just never
-		// proactively hops to chase it on another server.
 		if (typeof parent.io !== 'function') {
 			game_log('Cross-server dragold scanning unavailable here - will still fight dragold locally if it spawns', 'orange');
 			return;
@@ -1081,28 +1008,19 @@ const dragold = {
 			game_log(`dragold: can't parse shard "${shard}"`, 'red');
 			return false;
 		}
-		game_log(`\ud83d\udc09 Hopping to ${shard} for dragold`, '#FFD700');
+		game_log(`🐉 Hopping to ${shard} for dragold`, '#FFD700');
 		this.hopping = true;
 		try {
 			change_server(parsed.region, parsed.name);
-			// Bring the crew along - without this, FatherToken and MageofOz
-			// stay behind on the old server while Dexon fights Dragold alone,
-			// and heal/curse/energize range checks all go stale.
 			plSend(['FatherToken', 'MageofOz'], {
 				message: 'dragold_hop',
 				region: parsed.region,
 				name: parsed.name
 			});
-			// Reset here, not just on failure - change_server() wipes runtime
-			// state in an ordinary browser tab (masking this), but Mainframe
-			// persists the running CODE through reconnects, so without this
-			// reset 'hopping' would stay true forever after the first
-			// successful hop, permanently blocking mainLoop via tick()'s
-			// "if (this.hopping) return 'block'" check.
 			this.hopping = false;
 			return true;
 		} catch (e) {
-			game_log(`dragold: server change failed \u2014 ${e}`, 'red');
+			game_log(`dragold: server change failed — ${e}`, 'red');
 			this.hopping = false;
 			return false;
 		}
@@ -1119,7 +1037,7 @@ const dragold = {
 				if (this.localDragoldLive()) {
 					this.state = 'FIGHTING';
 					this.targetShard = cur;
-					game_log('\ud83d\udc09 Dragold live here \u2014 entering FIGHTING', '#FFD700');
+					game_log('🐉 Dragold live here — entering FIGHTING', '#FFD700');
 					return 'continue';
 				}
 
@@ -1136,10 +1054,10 @@ const dragold = {
 				if (cur === this.targetShard) {
 					if (this.localDragoldLive()) {
 						this.state = 'FIGHTING';
-						game_log('\ud83d\udc09 Arrived \u2014 dragold is live, FIGHTING', '#FFD700');
+						game_log('🐉 Arrived — dragold is live, FIGHTING', '#FFD700');
 						return 'continue';
 					}
-					game_log('\ud83d\udc09 Arrived but dragold not live here \u2014 back to IDLE', '#FFD700');
+					game_log('🐉 Arrived but dragold not live here — back to IDLE', '#FFD700');
 					this.state = 'IDLE';
 					this.targetShard = null;
 					return 'continue';
@@ -1155,7 +1073,7 @@ const dragold = {
 				if (this.localDragoldLive()) {
 					return 'continue';
 				}
-				game_log('\ud83d\udc09 Dragold dead \u2014 RETURNING home', '#FFD700');
+				game_log('🐉 Dragold dead — RETURNING home', '#FFD700');
 				this.state = 'RETURNING';
 				this.targetShard = null;
 			}
@@ -1168,7 +1086,7 @@ const dragold = {
 				if (liveShard) {
 					this.state = 'HOPPING';
 					this.targetShard = liveShard;
-					game_log(`\ud83d\udc09 New live dragold on ${liveShard} \u2014 diverting`, '#FFD700');
+					game_log(`🐉 New live dragold on ${liveShard} — diverting`, '#FFD700');
 					return 'block';
 				}
 
@@ -1192,7 +1110,7 @@ const dragold = {
 };
 
 function handleReturnHome() {
-	if (!destination) return; // farm spot search hasn't completed yet
+	if (!destination) return;
 	if (distance(character, destination) < 20) return;
 
 	if (!smart.moving) {
@@ -1218,7 +1136,7 @@ async function rangedKite() {
 	const cx = character.real_x, cy = character.real_y;
 	const dist = Math.hypot(target.real_x - cx, target.real_y - cy);
 
-	let reason = 0, need = 0; // need = how far we actually want to move, capped below
+	let reason = 0, need = 0;
 	if (dist < cfg.minDistance) { reason = 1; need = cfg.optimalDistance - dist; }
 	else if (dist > cfg.maxDistance) { reason = 2; need = dist - cfg.optimalDistance; }
 	else if (Math.abs(dist - cfg.optimalDistance) > cfg.repositionThreshold) { reason = 3; need = Math.abs(dist - cfg.optimalDistance); }
@@ -1227,7 +1145,7 @@ async function rangedKite() {
 	const now = performance.now();
 	if (now - rangedKite.lastMove <= cfg.moveThrottle) return true;
 
-	const mag = Math.min(cfg.moveDistance, need); // <- the actual fix: don't step further than needed
+	const mag = Math.min(cfg.moveDistance, need);
 	const step = Math.PI / cfg.sampleAngles, n = cfg.sampleAngles * 2;
 	let bestW = -Infinity, bestX = 0, bestY = 0, found = false;
 	for (let i = 0, a = 0; i < n; i++, a += step) {
@@ -1243,19 +1161,12 @@ async function rangedKite() {
 
 	await xmove(bestX, bestY);
 	rangedKite.lastMove = now;
-	if (cfg.debug) game_log(`Kiting: ${reason} (${Math.round(dist)} \u2192 ${Math.round(Math.hypot(target.real_x - bestX, target.real_y - bestY))})`, '#FFA500');
+	if (cfg.debug) game_log(`Kiting: ${reason} (${Math.round(dist)} → ${Math.round(Math.hypot(target.real_x - bestX, target.real_y - bestY))})`, '#FFA500');
 	return true;
 }
 rangedKite.lastMove = 0;
 
-// ============================================================================
-// TEMPORAL SURGE COORDINATION
-// ============================================================================
 function getTemporalRotation() {
-	// get()/set() are the game's own storage functions - unlike localStorage
-	// (a browser-only Web API), these work identically in a real browser tab
-	// and on Mainframe's sandboxed runtime. Already proven safe elsewhere in
-	// this file for chest storage.
 	const stored = get(CONFIG.equipment.temporal.storageKey);
 	if (!stored) {
 		const initial = {
@@ -1299,7 +1210,7 @@ async function handleTemporalSurge() {
 	try {
 		equip(orbSlot, 'orb');
 		use_skill(CONFIG.equipment.temporal.skillName);
-		game_log(`\u23f0 Temporal Surge used on ${CONFIG.equipment.temporal.targetMob}!`, '#00FFFF');
+		game_log(`⏰ Temporal Surge used on ${CONFIG.equipment.temporal.targetMob}!`, '#00FFFF');
 		updateTemporalRotation();
 		equip(orbSlot, 'orb');
 	} catch (e) {
@@ -1308,9 +1219,6 @@ async function handleTemporalSurge() {
 	}
 }
 
-// ============================================================================
-// LOOTING
-// ============================================================================
 const CHEST_STORAGE_KEY = 'loot_chest_ids';
 
 function loadChestMap() {
@@ -1372,9 +1280,6 @@ function lootInterval() {
 }
 setInterval(lootInterval, 250);
 
-// ============================================================================
-// HELPER FUNCTIONS
-// ============================================================================
 const clearInventory = () => {
 	const cfg = CONFIG.muling;
 	const mule = get_player(cfg.muleName);
@@ -1406,9 +1311,6 @@ function autoBuyPotions() {
 	if (totalMp < 500) plSend('Meltymerch', { message: 'low_potions', potion: 'mp', quantity: totalMp, x: character.x, y: character.y, map: character.map });
 }
 
-// Shared by both the emergency restock (below) and the post-respawn top-up
-// in maintenanceLoop - buys back up to minStock, not just enough to clear
-// the zero-potion condition, so the trip actually lasts a while.
 async function buyMissingPotions() {
 	if (quantity('hpot0') + quantity('hpot1') < CONFIG.potions.minStock) {
 		try { await buy('hpot1', CONFIG.potions.minStock); } catch (e) { console.error('buy hpot1 failed:', e); }
@@ -1418,14 +1320,9 @@ async function buyMissingPotions() {
 	}
 }
 
-// Self-sufficiency fallback: don't just wait on Meltymerch forever if HP or
-// MP potions hit zero outright - go buy more directly. Once this returns,
-// mainLoop's own existing handleReturnHome()/walkInCircle() logic naturally
-// walks back to the farm spot on the next tick, so no explicit "return"
-// step is needed here.
 async function checkPotionEmergency() {
 	if (!CONFIG.potions.autoBuy) return false;
-	if (state.restocking) return true; // shouldn't normally happen (this call blocks until done), but guard anyway
+	if (state.restocking) return true;
 
 	const totalHp = quantity('hpot0') + quantity('hpot1');
 	const totalMp = quantity('mpot0') + quantity('mpot1');
@@ -1511,11 +1408,6 @@ function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Game API rejections are often plain objects (e.g. {reason, message}), not
-// real Error instances - console.error() on those just prints
-// "[object Object]" with no way to see what actually went wrong. This pulls
-// out whatever's actually useful: a real Error's .message, an object's own
-// .message/.reason fields, or a JSON dump as a last resort.
 function describeError(e) {
 	if (e instanceof Error) return e.message;
 	if (e && typeof e === 'object') {
@@ -1526,9 +1418,6 @@ function describeError(e) {
 	return String(e);
 }
 
-// ============================================================================
-// CHARACTER STARTER
-// ============================================================================
 function teamStarter() {
 	if (!CONFIG.characterStarter.enabled) return;
 
@@ -1542,9 +1431,6 @@ function teamStarter() {
 }
 setInterval(teamStarter, 3000);
 
-// ============================================================================
-// LOCATION BROADCASTER
-// ============================================================================
 async function sendLocationUpdate() {
 	if (!CONFIG.locationBroadcast.enabled) return;
 
@@ -1561,9 +1447,6 @@ async function sendLocationUpdate() {
 			});
 		}
 
-		// Distinct alert (separate from the general 'location' message above,
-		// which already fires on the same low-slot condition) so the merchant
-		// can tell "come find me" apart from "come find me, I'm almost full."
 		if (nullCount <= CONFIG.locationBroadcast.lowInventorySlots) {
 			plSend(CONFIG.locationBroadcast.targetPlayer, {
 				message: 'inventory_almost_full',
@@ -1579,9 +1462,6 @@ async function sendLocationUpdate() {
 }
 setInterval(sendLocationUpdate, CONFIG.locationBroadcast.checkInterval);
 
-// ============================================================================
-// SELLING
-// ============================================================================
 const SELL_WHITELIST = new Set(CONFIG.selling.whitelist);
 function sellItems() {
 	if (!CONFIG.selling.enabled) return;
@@ -1591,9 +1471,6 @@ function sellItems() {
 	}
 }
 
-// ============================================================================
-// UPGRADING
-// ============================================================================
 async function upgradeItems() {
 	if (!CONFIG.upgrading.enabled) return;
 
@@ -1635,9 +1512,6 @@ async function upgradeItems() {
 	}
 }
 
-// ============================================================================
-// COMBINING
-// ============================================================================
 async function combineItems() {
 	if (!CONFIG.combining.enabled) return;
 
@@ -1694,20 +1568,14 @@ async function combineItems() {
 	}
 }
 
-// ============================================================================
-// UI FUNCTIONS
-// ============================================================================
 function pingButton() {
-	// character.ping is apparently not populated in Mainframe's environment
-	// (undefined there, unlike a real browser tab) - without this fallback,
-	// this throws every second forever since it's on a setInterval.
 	add_top_button('Ping', (character.ping ?? 0).toFixed(0));
 }
 setInterval(pingButton, 1000);
 
 function topButtons() {
 	if (parent.S.lunarnewyear) {
-		add_top_button('ShowDragold', '\ud83d\udc09', () => {
+		add_top_button('ShowDragold', '🐉', () => {
 			const info = {
 				state: dragold.state,
 				targetShard: dragold.targetShard,
@@ -1735,14 +1603,14 @@ function topButtons() {
 		});
 	});
 
-	add_top_button('showLoot', '\ud83d\udcbc', displayLoot);
+	add_top_button('showLoot', '💼', displayLoot);
 
-	add_top_button('Pause2', '\u23f8\ufe0f', () => {
+	add_top_button('Pause2', '⏸️', () => {
 		pause();
 		CONFIG.characterStarter.enabled = true
 	});
 
-	add_top_button('Stop', '\ud83d\udd04', () => {
+	add_top_button('Stop', '🔄', () => {
 		stop_character('Meltymerch');
 		CONFIG.characterStarter.enabled = false
 	});
@@ -1755,9 +1623,6 @@ function displayLoot() {
 	show_json(sortedLoot);
 }
 
-// ============================================================================
-// ESSENTIAL HELPER FUNCTIONS
-// ============================================================================
 function get_nearest_monster_v2(args = {}) {
 	let min_d = 999999;
 	let target = null;
@@ -1817,15 +1682,6 @@ function ms_to_next_skill(skill) {
 	const next_skill = parent.next_skill[skill];
 	if (next_skill === undefined || next_skill === null) return 0;
 
-	// Normally a Date object exposing .getTime() - but Mainframe's runtime
-	// sometimes hands this back as something else (a raw epoch-ms number,
-	// or a value new Date() can still parse) with no .getTime() method,
-	// which was throwing "next_skill.getTime is not a function" every
-	// time it happened. That was previously invisible - console.error(e)
-	// printed it as "[object Object]" - and it was silently non-fatal
-	// only because use_hp/use_mp had already fired by the time this ran;
-	// only the delay calculation afterward was crashing. Get the epoch ms
-	// whichever shape we're actually given.
 	let targetMs;
 	if (typeof next_skill.getTime === 'function') {
 		targetMs = next_skill.getTime();
@@ -1879,38 +1735,18 @@ function isSetEquipped(setName) {
 
 const equipSet = name => equipmentSets[name] && equipBatch(equipmentSets[name]);
 
-// ============================================================================
-// SKIN CHANGER - removed per request (2026-09-17). Used to force-equip a
-// cosmetic skinRing, wait for character.skin to match, then swap back to
-// the normal ring - purely cosmetic, no gameplay effect, and it was
-// spamming "Applying skinRing"/"Skin never applied" into the CODE log on
-// every reconnect. state.skinReady only ever gated other logic on this
-// process finishing, so it's set true immediately instead.
-// ============================================================================
 state.skinReady = true;
 
-// ============================================================================
-// DYNAMIC FARM SPOT OPTIMIZER - live search across every map/monster type,
-// ranked by death-adjusted XP/sec for the whole party, with a safety floor
-// and map filtering (no PVP, no instances).
-//
-// Known limitations:
-// - Gold-per-kill has no exposed formula - the gold-vs-potion check is a
-//   rough approximation, corrected later by checkFarmEconomics().
-// - Survivability modeling is a heuristic (no evasion/crit/kiting/positioning).
-// - FatherToken's heal throughput assumes his base tier, not his real level
-//   (not visible to Dexon) - deliberately conservative.
-// ============================================================================
 const FARM_SEARCH = {
-	reevaluateIntervalMs: 15 * 60 * 1000, // re-run the full search every 15 minutes
-	mitigationConstant: 900, // 100 armor/resistance \u2248 10% reduction, per the stats guide - NOT the 2500 some references use
-	avgDeathDowntimeSec: 45, // rough respawn + travel-back estimate per death
-	minUptimeFraction: 0.5, // hard floor - exclude anything worse than this, don't just penalize it
-	maxConcurrentAttackers: 4, // cap on how many of a spawn can plausibly be hitting the party at once
-	goldToXpRatioGuess: 0.05, // UNVERIFIED first-pass approximation only - no gold formula is exposed in game data
-	minGoldMarginRatio: 1.2, // require estimated gold income to clear potion cost by this margin
-	maxViableHp: 50000000, // filters out absurd world-boss-tier HP pools that aren't real farm targets
-	xpLossPerDeathFraction: 0.03, // UNVERIFIED rough guess - AL's exact per-death xp penalty isn't exposed in game data either; assumed proportional to the level's total xp requirement (parent.G.levels[level]) so higher-level deaths are modeled as costing more in absolute terms, matching observed behavior
+	reevaluateIntervalMs: 15 * 60 * 1000,
+	mitigationConstant: 900,
+	avgDeathDowntimeSec: 45,
+	minUptimeFraction: 0.5,
+	maxConcurrentAttackers: 4,
+	goldToXpRatioGuess: 0.05,
+	minGoldMarginRatio: 1.2,
+	maxViableHp: 50000000,
+	xpLossPerDeathFraction: 0.03,
 };
 
 const partyDpsReports = {
@@ -1923,14 +1759,8 @@ const economicsTracker = {
 	lastCheckTime: Date.now(),
 };
 
-// ============================================================================
-// FARM SPOT ARRIVAL TRACKING - the economics sampling clock must not start
-// until Dexon has actually ARRIVED, or the window measures travel time
-// instead of farming. If arrival never happens (e.g. a stalled smart_move),
-// blacklist the spot as unreachable after a timeout rather than waiting forever.
-// ============================================================================
-const ARRIVAL_RADIUS = 100; // close enough to destination to count as "at the spot" - looser than handleReturnHome()'s 20 since walkInCircle() patrols a radius around it
-const UNREACHABLE_TIMEOUT_MS = 3 * 60 * 1000; // if still not there after this long, something is blocking travel, not just distance
+const ARRIVAL_RADIUS = 100;
+const UNREACHABLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 const arrivalState = {
 	assignedAt: null,
@@ -1943,13 +1773,6 @@ function hasReachedFarmSpot() {
 	return distance(character, destination) < ARRIVAL_RADIUS;
 }
 
-// ============================================================================
-// FARM SPOT BLACKLIST - persisted via get()/set(). A spot lands here when
-// FatherToken or MageofOz reports sustained net-negative xp/hour there (a
-// real, observed problem, not the pre-emptive safety filtering
-// scoreAllFarmSpots() already does). No auto-expiry - stays blacklisted
-// until removeFromBlacklist() is called explicitly.
-// ============================================================================
 const BLACKLIST_STORAGE_KEY = 'farm_spot_blacklist';
 
 function spotKey(home, mobMap) {
@@ -1968,9 +1791,6 @@ function addToBlacklist(home, mobMap, reason, reportedBy) {
 	return key;
 }
 
-// Exposed globally (not just internal) so it can be called directly via
-// code eval - e.g. removeFromBlacklist('cgoo@level2s') - per the explicit
-// request to be able to manually un-blacklist a spot later.
 function removeFromBlacklist(key) {
 	const blacklist = getBlacklist();
 	if (!blacklist[key]) {
@@ -1994,7 +1814,7 @@ function myOwnDps() {
 }
 
 function getPartyDps() {
-	let physical = myOwnDps(); // Dexon - ranger, physical damage
+	let physical = myOwnDps();
 	let magical = 0;
 	for (const name in partyDpsReports) {
 		const r = partyDpsReports[name];
@@ -2016,17 +1836,9 @@ function isMapSafeForFarming(mapData) {
 }
 
 function estimateHealThroughput() {
-	// FatherToken's partyheal, base tier (level 0-59): output 400, cooldown 200ms.
-	// Conservative on purpose - his real level isn't visible to Dexon, and
-	// underestimating heal throughput makes the safety floor stricter, not
-	// looser.
-	return 400 / 0.2; // ~2000 hp/sec ceiling, MP-limited in practice
+	return 400 / 0.2;
 }
 
-// Everyone Dexon has enough data on to check individually - himself
-// (known directly) plus any party member who's sent at least one
-// dps_report carrying maxHp/level. Meltymerch isn't included here since
-// he doesn't fight and reports nothing.
 function getTrackedPartyMembers() {
 	const members = [{ name: character.name, maxHp: character.max_hp, level: character.level }];
 	for (const name in partyDpsReports) {
@@ -2041,8 +1853,8 @@ function scoreAllFarmSpots() {
 
 	const dps = getPartyDps();
 	const healThroughput = estimateHealThroughput();
-	const partyEffectiveHp = 3 * (character.max_hp || 2000); // rough - only Dexon's own max_hp is precisely known here
-	const blacklist = getBlacklist(); // fetched once per search, not per-spot, to avoid repeated storage reads in the loop below
+	const partyEffectiveHp = 3 * (character.max_hp || 2000);
+	const blacklist = getBlacklist();
 
 	const candidates = [];
 
@@ -2054,10 +1866,8 @@ function scoreAllFarmSpots() {
 			const mobData = parent.G.monsters[spot.type];
 			if (!mobData || !mobData.hp || !mobData.xp) continue;
 			if (mobData.hp > FARM_SEARCH.maxViableHp) continue;
-			if (blacklist[spotKey(spot.type, mapName)]) continue; // reported net-negative xp/hr by a party member - stays excluded until manually removed
+			if (blacklist[spotKey(spot.type, mapName)]) continue;
 
-			// Physical portion of party DPS mitigated by armor, magical
-			// portion mitigated by resistance - not a single blended number.
 			const effPhysical = mitigated(dps.physical, mobData.armor || 0);
 			const effMagical = mitigated(dps.magical, mobData.resistance || 0);
 			const totalEffDps = Math.max(effPhysical + effMagical, 1);
@@ -2065,20 +1875,11 @@ function scoreAllFarmSpots() {
 			const ttk = mobData.hp / totalEffDps;
 			const rawKillRate = 1 / ttk;
 			const respawn = mobData.respawn || 1;
-			const sustainableKillRate = spot.count / respawn; // can't out-farm the respawn timer
+			const sustainableKillRate = spot.count / respawn;
 			const actualKillRate = Math.min(rawKillRate, sustainableKillRate);
 			const rawExpPerSecond = actualKillRate * mobData.xp;
 
-			// Survivability: worst-case concurrent attackers vs FatherToken's
-			// heal throughput, converted into expected downtime from deaths.
 			const attackers = Math.min(spot.count, FARM_SEARCH.maxConcurrentAttackers);
-			// aggro is the chance a monster proactively attacks an idle
-			// player - it has nothing to do with damage output once a mob
-			// is already engaged, which is exactly the case here (the
-			// party parks and fights). Multiplying incoming damage by it
-			// was underselling real danger by up to 10x on low-aggro mobs
-			// (e.g. cgoo at 0.1), which is why "100% uptime" spots were
-			// producing repeated real deaths.
 			const incomingDps = (mobData.attack || 0) * (mobData.frequency || 1) * attackers;
 			const survivabilityMargin = healThroughput - incomingDps;
 
@@ -2089,24 +1890,12 @@ function scoreAllFarmSpots() {
 				const downtimePerHour = deathsPerHour * FARM_SEARCH.avgDeathDowntimeSec;
 				uptimeFraction = Math.max(0, (3600 - downtimePerHour) / 3600);
 			}
-			if (uptimeFraction < FARM_SEARCH.minUptimeFraction) continue; // hard exclude, not just penalize
+			if (uptimeFraction < FARM_SEARCH.minUptimeFraction) continue;
 
-			// Per-character check: the party-wide uptimeFraction above uses
-			// a single blended effective-HP proxy (3x Dexon's own max_hp),
-			// which can hide a squishier character (lower max_hp) still
-			// coming out net-negative on xp even when the party average
-			// looks fine - exactly the pattern observed with MageofOz
-			// dying repeatedly while the party-level "100% uptime" read
-			// looked safe. Worst case, mobs don't split damage evenly -
-			// they commit to whoever they're targeting - so any one
-			// character could end up eating the full incomingDps alone.
-			// Require every character Dexon has stats for to have a
-			// strictly positive expected net xp/sec (gains minus expected
-			// xp lost to death) at this spot, not just the party average.
 			let allMembersNetPositive = true;
 			for (const member of getTrackedPartyMembers()) {
 				const memberMargin = healThroughput - incomingDps;
-				if (memberMargin >= 0) continue; // this character wouldn't be dying here at all - net positive by construction
+				if (memberMargin >= 0) continue;
 				const memberTimeToDeathSec = member.maxHp / Math.abs(memberMargin);
 				const memberDeathsPerHour = 3600 / memberTimeToDeathSec;
 				const xpToNextLevel = parent.G.levels?.[member.level] || 0;
@@ -2115,21 +1904,14 @@ function scoreAllFarmSpots() {
 				const memberNetXpPerSecond = (rawExpPerSecond * memberUptimeFraction) - (memberDeathsPerHour * xpLossPerDeath / 3600);
 				if (memberNetXpPerSecond <= 0) { allMembersNetPositive = false; break; }
 			}
-			if (!allMembersNetPositive) continue; // hard exclude - at least one tracked party member would net-lose xp here
+			if (!allMembersNetPositive) continue;
 
 			const adjustedExpPerSecond = rawExpPerSecond * uptimeFraction;
 
-			// Gold vs. potion cost - rough estimate only, see header note.
 			const estGoldPerSecond = adjustedExpPerSecond * FARM_SEARCH.goldToXpRatioGuess;
 			const estPotionCostPerSecond = incomingDps > 0 ? incomingDps * 0.002 : 0.5;
 			if (estGoldPerSecond < estPotionCostPerSecond * FARM_SEARCH.minGoldMarginRatio) continue;
 
-			// Some spawn entries (full-map roamers, apparently) have no
-			// boundary box at all - destructuring undefined here was
-			// throwing and aborting the ENTIRE search on every single
-			// call, which is why home/mobMap/destination never got set
-			// this whole session. Skip entries without a usable boundary
-			// rather than crash on them.
 			if (!Array.isArray(spot.boundary) || spot.boundary.length < 4) continue;
 			const [bx1, by1, bx2, by2] = spot.boundary;
 			candidates.push({
@@ -2152,8 +1934,8 @@ function findBestFarmSpot() {
 	return candidates.length ? candidates[0] : null;
 }
 
-let manualOverride = null; // set by clicking a mob button in the farm-spot UI; null = automatic
-let lastCandidates = []; // most recent scored list, used to populate/refresh the UI
+let manualOverride = null;
+let lastCandidates = [];
 
 function runFarmSearch() {
 	try {
@@ -2186,22 +1968,10 @@ function runFarmSearch() {
 	}
 }
 
-// Empirical correction: gold-per-kill isn't in game data, so watch real
-// gold income once farming and re-run the search if a spot is a net loss.
-// Requires 3 consecutive bad samples (~3 min) before re-evaluating, not one
-// - gold income is bursty, and a single-sample trigger previously caused
-// the farm spot to flap between locations every minute, dragging followers
-// through unproductive spots too. The sampling clock doesn't start until
-// Dexon has actually arrived (see hasReachedFarmSpot()) - otherwise the
-// first window(s) measure travel time and can falsely blacklist a spot
-// that never got a fair trial. If arrival never happens at all within
-// UNREACHABLE_TIMEOUT_MS, the spot is blacklisted as unreachable instead.
 function checkFarmEconomics() {
-	if (!home || !mobMap) return; // nothing assigned yet
+	if (!home || !mobMap) return;
 
 	if (!hasReachedFarmSpot()) {
-		// Hold the sampling clock at "now" so the first real window starts
-		// clean once we arrive, rather than measuring travel time.
 		economicsTracker.lastGold = character.gold;
 		economicsTracker.lastCheckTime = Date.now();
 		economicsTracker.consecutiveBadSamples = 0;
@@ -2218,7 +1988,6 @@ function checkFarmEconomics() {
 	}
 
 	if (arrivalState.reachedAt === null) {
-		// Just arrived - start the window fresh from this exact moment.
 		arrivalState.reachedAt = Date.now();
 		economicsTracker.lastGold = character.gold;
 		economicsTracker.lastCheckTime = Date.now();
@@ -2228,7 +1997,7 @@ function checkFarmEconomics() {
 
 	const now = Date.now();
 	const elapsedSec = (now - economicsTracker.lastCheckTime) / 1000;
-	if (elapsedSec < 60) return; // sample roughly once a minute
+	if (elapsedSec < 60) return;
 
 	const goldGained = character.gold - economicsTracker.lastGold;
 	const goldPerSecond = goldGained / elapsedSec;
@@ -2238,34 +2007,27 @@ function checkFarmEconomics() {
 		if (economicsTracker.consecutiveBadSamples >= 3) {
 			game_log(`Current farm spot shows no net gold gain for ${economicsTracker.consecutiveBadSamples} consecutive minutes - re-evaluating`, 'red');
 			runFarmSearch();
-			economicsTracker.consecutiveBadSamples = 0; // reset so the newly-picked spot gets its own fair trial
+			economicsTracker.consecutiveBadSamples = 0;
 		}
 	} else {
-		economicsTracker.consecutiveBadSamples = 0; // one good sample clears the streak
+		economicsTracker.consecutiveBadSamples = 0;
 	}
 
 	economicsTracker.lastGold = character.gold;
 	economicsTracker.lastCheckTime = now;
 }
 
-// Give FatherToken/MageofOz's DPS reports a few seconds to arrive before
-// the very first search, then re-run periodically.
 setTimeout(runFarmSearch, 8000);
 setInterval(runFarmSearch, FARM_SEARCH.reevaluateIntervalMs);
 
-// ============================================================================
-// FARM SPOT OVERRIDE UI - browser-only. Mainframe doesn't render DOM/button
-// output, so this deliberately no-ops there rather than erroring - only
-// useful when running this character's CODE tab in an actual browser.
-// ============================================================================
 function initializeFarmUI() {
 	if (character.name !== 'Dexon') return;
-	if (!parent.$) return; // no jQuery/DOM available - not running in a browser (e.g. Mainframe)
+	if (!parent.$) return;
 	const $ = parent.$;
 	if ($('#farm-spot-ui').length > 0) return;
 
 	const uiHtml = `
-		<div id="farm-spot-ui" style="position: fixed; top: 15px; left: 50%; transform: translateX(-50%); width: 1000px; min-width: 400px; min-height: 60px; background: rgba(0, 0, 0, 0.9); color: #fff; border-radius: 6px; font-family: monospace; font-size: 11px; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.3); box-sizing: border-box; user-select: none; resize: both; overflow: auto;">
+		<div id="farm-spot-ui" style="position: fixed; top: 180px; left: 10px; width: 1000px; min-width: 400px; min-height: 60px; background: rgba(0, 0, 0, 0.9); color: #fff; border-radius: 6px; font-family: monospace; font-size: 11px; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.3); box-sizing: border-box; user-select: none; resize: both; overflow: auto;">
 			<div id="farm-spot-header" style="padding: 6px 12px; background: rgba(30, 30, 30, 0.95); border-top-left-radius: 6px; border-top-right-radius: 6px; cursor: move; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #555;">
 				<div style="font-weight: bold; display: flex; align-items: center; gap: 6px;">
 					<span>Farm Spot</span>
@@ -2279,11 +2041,7 @@ function initializeFarmUI() {
 		</div>
 	`;
 
-	if ($('#bottomrightcorner').length > 0) {
-		$('#bottomrightcorner').children().first().after(uiHtml);
-	} else {
-		$('body').append(uiHtml);
-	}
+	$('body').append(uiHtml);
 
 	let isDragging = false;
 	let startX, startY;
@@ -2328,7 +2086,7 @@ function initializeFarmUI() {
 		const candidate = lastCandidates[idx];
 		if (!candidate) return;
 		if (manualOverride && manualOverride.home === candidate.home && manualOverride.mobMap === candidate.mobMap) {
-			manualOverride = null; // clicking the active selection again returns to Auto
+			manualOverride = null;
 		} else {
 			manualOverride = candidate;
 		}
@@ -2341,10 +2099,10 @@ function initializeFarmUI() {
 function updateFarmUI() {
 	if (character.name !== 'Dexon') return;
 	if (!parent.$) return;
-	if (lastCandidates.length === 0) lastCandidates = scoreAllFarmSpots(); // populate immediately if opened before the first scheduled search
+	if (lastCandidates.length === 0) lastCandidates = scoreAllFarmSpots();
 	const $ = parent.$;
 	const $list = $('#ui-mob-list');
-	if ($list.length === 0) return; // UI not initialized (or not in a browser)
+	if ($list.length === 0) return;
 
 	const rows = lastCandidates.slice(0, 20).map((c, idx) => {
 		const isActive = manualOverride
@@ -2374,10 +2132,10 @@ function on_cm(name, data) {
 		const key = addToBlacklist(data.home, data.mobMap, data.reason, name);
 		game_log(`Blacklisted "${key}" - ${data.reason} (reported by ${name})`, 'red');
 		if (manualOverride && spotKey(manualOverride.home, manualOverride.mobMap) === key) {
-			manualOverride = null; // don't keep forcing a spot that's now known to be hurting someone
+			manualOverride = null;
 			game_log(`Cleared manual override - it pointed at the spot just blacklisted`, 'orange');
 		}
-		runFarmSearch(); // don't wait for the next scheduled re-evaluation - move off it now
+		runFarmSearch();
 		return;
 	}
 
@@ -2410,22 +2168,13 @@ function on_party_invite(name) {
 }
 
 function sendUpdates() {
-	// This action refreshes a UI panel in a real browser tab and is rejected
-	// outright on Mainframe ("Action send_updates is unavailable") - not
-	// harmful, but spams the log every 20s for no benefit there.
 	if (!parent.$) return;
 	parent.socket.emit('send_updates', {});
 }
 setInterval(sendUpdates, 20000);
 
-// ============================================================================
-// FARM SPOT BROADCAST - tells FatherToken and MageofOz where to farm, so
-// they don't need home/mobMap hardcoded themselves. Sent at startup and
-// periodically, so a follower already running (or started later) picks up
-// changes made here without needing its own restart.
-// ============================================================================
 function sendFarmSpot() {
-	if (!home || !mobMap || !destination) return; // nothing decided yet
+	if (!home || !mobMap || !destination) return;
 	plSend(['FatherToken', 'MageofOz'], {
 		message: 'farm_spot',
 		home,
@@ -2436,9 +2185,6 @@ function sendFarmSpot() {
 }
 setInterval(sendFarmSpot, 5000);
 
-// ============================================================================
-// START ALL LOOPS
-// ============================================================================
 mainLoop();
 actionLoop();
 skillLoop();
@@ -2448,72 +2194,58 @@ maintenanceLoop();
 potionLoop();
 sendFarmSpot();
 initializeFarmUI();
-// BROWSER-ONLY UI EXTRAS (Kill Tracker, Gold Meter, Game Log Filter, DPS
-// Meter v4, Party Frames) - these render DOM/jQuery UI and do nothing
-// useful on Mainframe (per the game's own docs on UI/button functions), so
-// this entire block is skipped there rather than erroring. Each piece is
-// wrapped in its own IIFE so none of their internal variable names can
-// collide with each other or with anything else in this script.
-// ============================================================================
 if (parent.$) {
 
-	// --- Kill Tracker ---
 	(function () {
-		if (parent.killTrackerInitialized) return; // guard against duplicate 'death' listeners if this script ever re-runs without a full page reload
+		if (parent.killTrackerInitialized) return;
 		parent.killTrackerInitialized = true;
 
-		let deaths = 0; // Variable to track the number of deaths
-		const killTime = new Date(); // Start time to calculate elapsed time
+		let deaths = 0;
+		const killTime = new Date();
 
 		game.on('death', function (data) {
-			if (parent.entities[data.id]) { // Check if the entity exists
+			if (parent.entities[data.id]) {
 				const mob = parent.entities[data.id];
 				const mobName = mob.type;
 
-				// Check if the mob is a monster
 				if (mobName === 'monster') {
-					const mobTarget = mob.target; // Get the mob's target
-					const party = get_party(); // Get your party members
-
-					// If party exists, extract party member names into an array
+					const mobTarget = mob.target;
+					const party = get_party();
 					const partyMembers = party ? Object.keys(party) : [];
 
-					// Check if the mob's target was the player or someone in the party
 					if (mobTarget === character.name || partyMembers.includes(mobTarget)) {
-						console.log(data); // Log the death event
-						deaths++; // Increment the death count
-						killHandler(); // Call the killHandler function
+						console.log(data);
+						deaths++;
+						killHandler();
 					}
 				}
 			}
 		});
 
 		function killHandler() {
-			const elapsed = (new Date() - killTime) / 1000; // Calculate elapsed time in seconds
-			if (elapsed > 0) { // Prevent division by zero
-				const deathsPerSec = deaths / elapsed; // Calculate deaths per second
-				const dailyKillRate = calculateKillRate(deathsPerSec); // Calculate deaths based on interval
+			const elapsed = (new Date() - killTime) / 1000;
+			if (elapsed > 0) {
+				const deathsPerSec = deaths / elapsed;
+				const dailyKillRate = calculateKillRate(deathsPerSec);
 
-				add_top_button("kpm", Math.round(dailyKillRate.kpm).toLocaleString() + ' kpm'); // Deaths per minute
-				add_top_button("kph", Math.round(dailyKillRate.kph).toLocaleString() + ' kph'); // Deaths per hour
-				add_top_button("kpd", Math.round(dailyKillRate.kpd).toLocaleString() + ' kpd'); // Deaths per day
+				add_top_button("kpm", Math.round(dailyKillRate.kpm).toLocaleString() + ' kpm');
+				add_top_button("kph", Math.round(dailyKillRate.kph).toLocaleString() + ' kph');
+				add_top_button("kpd", Math.round(dailyKillRate.kpd).toLocaleString() + ' kpd');
 			} else {
 				console.warn("Elapsed time is zero, cannot calculate rates.");
 			}
 		}
 
-		// Function to calculate deaths based on the interval
 		function calculateKillRate(deathsPerSec) {
-			let kpm = deathsPerSec * 60; // Convert to deaths per minute
-			let kph = kpm * 60; // Convert to deaths per hour
-			let kpd = kph * 24; // Convert to deaths per day
+			let kpm = deathsPerSec * 60;
+			let kph = kpm * 60;
+			let kpd = kph * 24;
 			return { kpm, kph, kpd };
 		}
 	})();
 
-	// --- Gold Meter ---
 	(function () {
-		if (parent.goldMeterInitialized) return; // guard against duplicate 'loot' listeners if this script ever re-runs without a full page reload
+		if (parent.goldMeterInitialized) return;
 		parent.goldMeterInitialized = true;
 
 		let sumGold = 0, largestGoldDrop = 0, interval = 'hour';
@@ -2555,7 +2287,6 @@ if (parent.$) {
 		setTimeout(init, 1000);
 	})();
 
-	// --- Game Log Filter ---
 	(function () {
 		const FILTERS = {
 			kills: { show: false, regex: /killed/, label: 'Kills' },
@@ -2723,9 +2454,7 @@ if (parent.$) {
 		initTimestamps();
 	})();
 
-	// --- DPS Meter v4 ---
 	(function () {
-		// All currently supported damageTypes: "Base", "Blast", "Burn", "HPS", "MPS", "DR", "RF" "DPS"
 		const damageTypes = ["Base", "Blast", "HPS", "DPS"];
 		let displayClassTypeColors = true, displayDamageTypeColors = true, showOverheal = false, showOverManasteal = true;
 
@@ -2751,7 +2480,6 @@ if (parent.$) {
 			try {
 				const dmg = d.damage || 0, isPlayer = get_player(d.id), isAttacker = get_player(d.hid);
 
-				// Damage taken tracking
 				if (dmg && isPlayer) {
 					const e = getEntry(d.id);
 					d.damage_type === 'physical' ? e.dtP += dmg : e.dtM += dmg;
@@ -2759,20 +2487,16 @@ if (parent.$) {
 				if (d.dreturn && isAttacker) getEntry(d.hid).dtP += d.dreturn;
 				if (d.reflect && isAttacker) getEntry(d.hid).dtM += d.reflect;
 
-				// DR/RF attribution (only mob→player)
 				if (d.dreturn && isPlayer && !get_player(d.hid)) getEntry(d.id).dr += d.dreturn;
 				if (d.reflect && isPlayer && !get_player(d.hid)) getEntry(d.id).rf += d.reflect;
 
-				// Attacker actions
 				if (isAttacker) {
 					const e = getEntry(d.hid);
 
-					// Damage breakdown
 					if (dmg) {
 						d.source === 'burn' ? e.bD += dmg : d.splash ? e.blD += dmg : e.baD += dmg;
 					}
 
-					// Healing
 					if (d.heal || d.lifesteal) {
 						const target = get_player(d.id);
 						e.h += showOverheal ? (d.heal || 0) + (d.lifesteal || 0) :
@@ -2780,7 +2504,6 @@ if (parent.$) {
 							(d.lifesteal ? Math.min(d.lifesteal, isAttacker.max_hp - isAttacker.hp) : 0);
 					}
 
-					// Mana steal
 					if (d.manasteal) {
 						e.m += showOverManasteal ? d.manasteal : Math.min(d.manasteal, isAttacker.max_mp - isAttacker.mp);
 					}
@@ -2817,7 +2540,6 @@ if (parent.$) {
 			damageTypes.forEach(t => html += `<th style='color:${displayDamageTypeColors ? damageTypeColors[t] || 'white' : 'white'}'>${t}</th>`);
 			html += '</tr>';
 
-			// Sort by DPS
 			const sorted = Object.entries(playerData).map(([id, e]) => ({ id, e, dps: calcVal('DPS', e, now - e.t) })).sort((a, b) => b.dps - a.dps);
 
 			sorted.forEach(({ id, e }) => {
@@ -2831,7 +2553,6 @@ if (parent.$) {
 				html += '</tr>';
 			});
 
-			// Totals
 			html += `<tr><td style='color:${damageTypeColors.DPS}'>Total DPS</td>`;
 			damageTypes.forEach(t => {
 				if (t === 'Dmg Taken') {
@@ -2852,16 +2573,15 @@ if (parent.$) {
 		}, 250);
 	})();
 
-	// --- Party Frames ---
 	(function () {
 		if (parent.party_style_prepared) parent.$('#style-party-frames').remove();
 
 		parent.$('head').append(`<style id="style-party-frames">
-.party-container {position: absolute; top: 55px; left: -25%; width: 1000px; height: 300px; font-family: 'pixel';}
+.party-container {position: absolute; top: 55px; right: 0; width: 1000px; height: 300px; font-family: 'pixel';}
 </style>`);
 		parent.party_style_prepared = true;
 
-		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate']; // <-- Add 'cc', 'ping', 'share' as needed
+		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate'];
 		const FRAME_WIDTH = 80;
 		const INCLUDE = ['mp', 'max_mp', 'hp', 'max_hp', 'name', 'max_xp', 'xp', 'level', 'share', 'cc', 'max_cc'];
 		const SHOW_IMG = true;
@@ -2888,15 +2608,9 @@ if (parent.$) {
 <div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:20px;border:1px solid grey;"></div>
 </div>`;
 
-		// ========================================================================
-		// XP/HR + TIME-TO-LEVEL - display-only, no effect on farming/combat.
-		// Keeps a rolling {time, xp, level} history per party member
-		// (in-memory, resets on reload), sampled opportunistically from the
-		// render loop below and throttled to XP_SAMPLE_INTERVAL_MS apart.
-		// ========================================================================
-		const XP_SAMPLE_INTERVAL_MS = 5000; // minimum spacing between kept samples
-		const XP_WINDOW_MS = 5 * 60 * 1000; // rolling window used for the rate calc
-		const xpHistory = new Map(); // name -> [{t, xp, level}, ...], oldest first
+		const XP_SAMPLE_INTERVAL_MS = 5000;
+		const XP_WINDOW_MS = 5 * 60 * 1000;
+		const xpHistory = new Map();
 
 		function updateXpHistory(name, info) {
 			if (!info || info.xp === undefined || info.level === undefined) return null;
@@ -2911,8 +2625,6 @@ if (parent.$) {
 			return hist;
 		}
 
-		// xp resets to 0 each level, so a naive (new.xp - old.xp) is wrong
-		// across a level-up - same fix as the fighter scripts' own xpTracker.
 		function xpGainedBetween(oldSample, newSample) {
 			if (newSample.level <= oldSample.level) return newSample.xp - oldSample.xp;
 			let total = (G.levels[oldSample.level] || 0) - oldSample.xp;
@@ -2934,7 +2646,6 @@ if (parent.$) {
 			return Math.round(hours / 24) + 'd';
 		}
 
-		// Returns display strings, not raw numbers - keeps xprate's calc() simple.
 		function computeXpRateAndEta(name, info) {
 			const hist = updateXpHistory(name, info);
 			if (!hist || hist.length < 2) return { rateStr: '—', etaStr: '—' };
@@ -2942,7 +2653,7 @@ if (parent.$) {
 			const oldest = hist[0];
 			const newest = hist[hist.length - 1];
 			const elapsedSec = (newest.t - oldest.t) / 1000;
-			if (elapsedSec < 10) return { rateStr: '—', etaStr: '—' }; // too little data yet - avoid a wild first reading
+			if (elapsedSec < 10) return { rateStr: '—', etaStr: '—' };
 
 			const gained = xpGainedBetween(oldest, newest);
 			const xpPerHour = (gained / elapsedSec) * 3600;
@@ -3017,3 +2728,4 @@ if (parent.$) {
 	})();
 
 }
+
