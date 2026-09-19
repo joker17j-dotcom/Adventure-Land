@@ -178,6 +178,13 @@ const CONFIG = {
 	scout: {
 		enabled: true,
 		bridge: 'http://127.0.0.1:8787',
+		// earthiverse's ALData, the same feed the watchlist page defaults to. It
+		// covers every server continuously and is not affected by whatever this
+		// merchant happens to be doing, which matters during a probe: holding
+		// the merchant still stops OUR scouting, and then our own bridge is the
+		// worst market view available rather than the best. Serves the same row
+		// shape as /merchants, so it is a peer source, not a special case.
+		aldata: 'https://aldata.earthiverse.ca',
 		tickMs: 5000,
 		timeoutMs: 1500,
 		reprobeMs: 60000,
@@ -2592,37 +2599,92 @@ function arbProbeHold(on) {
 	return PROBE.hold;
 }
 
-/* Rows from the bridge: every stand every scout has seen, on every shard, not
-   just what is in front of this character right now. */
-async function arbProbeBridgeRows() {
-	try {
-		const rows = await scoutFetch('/merchants');
-		return Array.isArray(rows) ? rows : [];
-	} catch (e) {
-		pLog('bridge unreachable (' + (e.message || e) + ') - falling back to what is in view', 'orange');
-		return null;
+/* A market view from outside this character.
+ 
+   ALData first, our own bridge second. The order is deliberate and was learned
+   the hard way: holding the merchant for a probe stops OUR scouting, at which
+   point the local bridge is the *worst* available view of the market rather
+   than the best - one shard, frozen at whatever it last saw. ALData keeps
+   covering every server regardless of what this merchant is doing.
+ 
+   Both serve the same row shape, so neither is a special case. Returns the
+   rows and says which source produced them; callers stamp that onto results so
+   nobody has to infer it from the shape of an answer. */
+async function arbFetchJson(url, ms) {
+	if (typeof fetch !== 'function') throw new Error('no fetch');
+	const o = {};
+	let stop = null;
+	if (typeof AbortController === 'function') {
+		const ac = new AbortController();
+		o.signal = ac.signal;
+		stop = setTimeout(function () { try { ac.abort(); } catch (e) { } }, ms);
 	}
+	try {
+		const r = await fetch(url, o);
+		if (!r.ok) throw new Error('HTTP ' + r.status);
+		return await r.json();
+	} finally { if (stop) clearTimeout(stop); }
 }
 
-function pAgeSec(iso) {
-	const t = Date.parse(iso);
-	return isFinite(t) ? Math.round((Date.now() - t) / 1000) : null;
+/* 'aldata' | 'bridge' | 'auto'. Stored, so it survives the reload a shard hop
+   causes. */
+function arbProbeSource(which) {
+	if (which) {
+		try { set('probe_source', which); } catch (e) { }
+		pLog('market source pinned to ' + which, '#FFD700');
+	}
+	try { return get('probe_source') || 'auto'; } catch (e) { return 'auto'; }
+}
+
+async function arbProbeMarketRows() {
+	const want = arbProbeSource();
+	const attempts = (want === 'bridge') ? ['bridge']
+		: (want === 'aldata') ? ['aldata']
+			: ['aldata', 'bridge'];
+	const errors = {};
+	for (const src of attempts) {
+		try {
+			const rows = (src === 'aldata')
+				? await arbFetchJson(CONFIG.scout.aldata + '/merchants', 8000)
+				: await scoutFetch('/merchants');
+			if (Array.isArray(rows) && rows.length) return { rows: rows, source: src };
+			errors[src] = Array.isArray(rows) ? 'empty' : 'not an array';
+		} catch (e) {
+			errors[src] = String(e && e.message ? e.message : e);
+		}
+	}
+	pLog('no market rows from ' + attempts.join(' or ') + ' ('
+		+ attempts.map(function (k) { return k + ': ' + errors[k]; }).join('; ')
+		+ ') - falling back to what is in view', 'orange');
+	return { rows: null, source: 'in-view', errors: errors };
+}
+
+/* Accepts an ISO string or an epoch number - aldata and the bridge need not
+   agree on which, and a silently-null age would sort as "freshest". */
+function pAgeSec(when) {
+	const t = (typeof when === 'number') ? when : Date.parse(when);
+	if (!isFinite(t)) return null;
+	const ms = (t > 1e12) ? t : (t > 1e9 ? t * 1000 : t);
+	return Math.round((Date.now() - ms) / 1000);
 }
 
 /* Is the bridge actually feeding the finders? Asked directly, because the
    alternative is inferring it from the shape of a result - which has already
    been got wrong once. */
 async function arbProbeBridge() {
-	const out = { url: CONFIG.scout.bridge, reachable: false };
+	const out = { preference: arbProbeSource(), bridgeUrl: CONFIG.scout.bridge, aldataUrl: CONFIG.scout.aldata };
 	try {
 		out.health = await scoutFetch('/health');
-		out.reachable = true;
+		out.bridgeReachable = true;
 	} catch (e) {
-		out.error = String(e && e.message ? e.message : e);
-		pLog('bridge NOT reachable at ' + out.url + ' (' + out.error + ')', 'orange');
-		return pShow(out);
+		out.bridgeError = String(e && e.message ? e.message : e);
+		out.bridgeReachable = false;
+		pLog('local bridge NOT reachable at ' + out.bridgeUrl + ' (' + out.bridgeError + ')', 'orange');
 	}
-	const rows = await arbProbeBridgeRows();
+	const got = await arbProbeMarketRows();
+	const rows = got.rows;
+	out.source = got.source;
+	out.reachable = got.source !== 'in-view';
 	out.stands = rows ? rows.length : 0;
 	const shards = {};
 	let listings = 0, buyOrders = 0;
@@ -2635,8 +2697,9 @@ async function arbProbeBridge() {
 	out.shardCount = Object.keys(shards).length;
 	out.listings = listings;
 	out.buyOrders = buyOrders;
-	pLog('bridge up: ' + out.stands + ' stands across ' + out.shardCount + ' shard(s), '
-		+ listings + ' listings of which ' + buyOrders + ' are buy orders');
+	pLog('SOURCE ' + out.source + ': ' + out.stands + ' stands across ' + out.shardCount
+		+ ' shard(s), ' + listings + ' listings of which ' + buyOrders + ' are buy orders',
+		out.source === 'in-view' ? 'orange' : null);
 	return pShow(out);
 }
 
@@ -2651,16 +2714,16 @@ async function arbProbeBridge() {
    Falls back to the in-view scan when the bridge is down or has nothing. */
 async function arbProbeFindBuy(maxPrice) {
 	const cap = maxPrice || CONFIG.arbitrage.probe.maxPrice;
-	const rows = await arbProbeBridgeRows();
+	const got = await arbProbeMarketRows();
+	const rows = got.rows;
 	if (rows === null || !rows.length) {
-		if (rows && !rows.length) pLog('bridge has no stands recorded - falling back to what is in view', 'orange');
 		// Wrapped in an array with the source stamped on it. Returning a bare
 		// object here once read as "the finder returns the single best
-		// candidate" rather than "the bridge was not consulted" - which is the
+		// candidate" rather than "no market feed was consulted" - which is the
 		// opposite conclusion, and the one that matters.
 		const local = arbProbePick(cap);
 		const list = local ? [Object.assign({ source: 'in-view', shard: mShardKey(), here: true, ageSec: 0 }, local)] : [];
-		pLog('SOURCE: in-view scan only (bridge gave nothing) - ' + list.length + ' candidate(s)', 'orange');
+		pLog('SOURCE: in-view scan only - ' + list.length + ' candidate(s)', 'orange');
 		return pShow(list);
 	}
 	const here = mShardKey();
@@ -2674,7 +2737,7 @@ async function arbProbeFindBuy(maxPrice) {
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			if (sl.price > cap) continue;
 			out.push({
-				source: 'bridge',
+				source: got.source,
 				shard: shard, here: shard === here, ageSec: age,
 				target: r.id, slot: k, name: sl.name, level: sl.level || 0,
 				price: sl.price, q: sl.q, map: r.map, x: r.x, y: r.y,
@@ -2691,7 +2754,7 @@ async function arbProbeFindBuy(maxPrice) {
 		return arbProbePick(cap);
 	}
 	const top = out[0];
-	pLog('SOURCE: bridge (' + rows.length + ' stands across all shards)');
+	pLog('SOURCE: ' + got.source + ' (' + rows.length + ' stands across all shards)');
 	pLog(out.length + ' candidate(s) at or under ' + cap + '. Best: ' + top.name
 		+ ' @ ' + top.price + ' from ' + top.target + ' on ' + top.shard
 		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
@@ -2720,10 +2783,11 @@ async function arbProbeFindSell() {
 	}
 	if (!have.size) { pLog('inventory is empty - nothing to sell', 'orange'); return []; }
 
-	const rows = await arbProbeBridgeRows();
+	const got = await arbProbeMarketRows();
+	const rows = got.rows;
 	const here = mShardKey();
 	const out = [];
-	let source = 'bridge';
+	let source = got.source;
 	const scan = function (shard, ageSec, r) {
 		for (const k in (r.slots || {})) {
 			const sl = r.slots[k];
@@ -2748,10 +2812,10 @@ async function arbProbeFindSell() {
 	}
 	// Stated before the result, because an empty list means very different
 	// things depending on which of the two it is.
-	pLog('SOURCE: ' + (source === 'bridge'
-		? 'bridge (' + rows.length + ' stands across all shards)'
-		: 'in-view scan only (bridge gave nothing)'),
-		source === 'bridge' ? null : 'orange');
+	pLog('SOURCE: ' + (source === 'in-view'
+		? 'in-view scan only'
+		: source + ' (' + rows.length + ' stands across all shards)'),
+		source === 'in-view' ? 'orange' : null);
 	out.sort(function (a, b) { return (b.theyPay || 0) - (a.theyPay || 0); });
 	if (!out.length) {
 		pLog('nobody the scouts have seen is buying anything currently held'
@@ -2787,7 +2851,8 @@ async function arbProbeWhyNoSell() {
 		if (!it || !it.name) continue;
 		held.push({ slot: i, name: it.name, level: it.level || 0, p: it.p || null, q: it.q || 1 });
 	}
-	const rows = await arbProbeBridgeRows();
+	const got = await arbProbeMarketRows();
+	const rows = got.rows;
 	const here = mShardKey();
 	const wanted = [];
 	const src = (rows === null || !rows.length)
@@ -2815,6 +2880,7 @@ async function arbProbeWhyNoSell() {
 		else near.push({ buyer: w, mine: mine, why: 'same item, different level/special' });
 	}
 	const out = {
+		source: got.source,
 		shardsSeen: [...new Set(wanted.map(function (w) { return w.shard; }))],
 		heldCount: held.length,
 		buyOrdersSeen: wanted.length,
@@ -2824,7 +2890,8 @@ async function arbProbeWhyNoSell() {
 		held: held,
 		wantedItems: [...new Set(wanted.map(function (w) { return w.name + ' lvl' + w.level; }))].sort(),
 	};
-	pLog(held.length + ' held vs ' + wanted.length + ' buy order(s) on ' + out.shardsSeen.join(',')
+	pLog('[' + got.source + '] ' + held.length + ' held vs ' + wanted.length
+		+ ' buy order(s) on ' + out.shardsSeen.join(',')
 		+ ': ' + exact.length + ' exact, ' + near.length + ' near miss(es)',
 		near.length ? '#FFD700' : null);
 	if (!out.nameOverlap) {
@@ -3325,7 +3392,8 @@ function arbProbeHelp() {
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
 		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
-		'arbProbeBridge()           is the bridge feeding the finders? how much?',
+		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | auto',
+		'arbProbeBridge()           which feed answers, and how much is in it',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
 		'arbProbeFindSell()         who is buying something already in inventory',
 		'arbProbeWhyNoSell()        when that is empty: held vs wanted, near misses',
@@ -3354,7 +3422,7 @@ try {
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
-		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell,
+		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell, source: arbProbeSource,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,

@@ -161,6 +161,34 @@ designed around it.
 
 ---
 
+## Where the market data comes from
+
+The finders read **ALData** (`aldata.earthiverse.ca/merchants`) first and the
+local bridge second, falling back to an in-view scan only if neither answers.
+
+That order is deliberate and was learned the hard way. Holding the merchant for
+a probe stops *our* scouting, and at that point the local bridge is the **worst**
+available view of the market, not the best — one shard, frozen at whatever it
+last saw. ALData keeps covering every server regardless of what this merchant is
+doing. Both serve the same row shape, so neither is a special case.
+
+```js
+arbProbeSource('aldata')   // pin it
+arbProbeSource('bridge')   // or pin to our own scouts
+arbProbeSource('auto')     // default: aldata, then bridge
+await arbProbeBridge()     // which feed actually answered, and how much is in it
+```
+
+A pin persists across the reload a shard hop causes, and a pinned source does
+**not** fall back — pinning to `aldata` and getting `in-view` means ALData could
+not be reached, not that it was empty.
+
+Every result row carries `source`, and every finder logs a `SOURCE:` line before
+its result. An empty answer means very different things depending on which
+source produced it, so check that line before drawing a conclusion from one.
+
+---
+
 ## Step 5 — Measure the trade distance (costs nothing)
 
 Find a cheap target. Ask the **bridge** first — it holds every stand every scout
