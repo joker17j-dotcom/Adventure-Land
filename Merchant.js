@@ -1919,7 +1919,23 @@ async function attemptKiss(name) {
 
 async function anniversaryKissLoop() {
 	try {
-		if (CONFIG.anniversaryKiss.enabled && !state.busy && isInTown()) {
+		// A probe hold suppresses this outright. The kiss walks the merchant
+		// across town at its own cadence, on a loop of its own that the scout
+		// hold never touched - so a measurement could be halfway through a
+		// positioning step when the round pulled the character away, and the
+		// numbers would look like a game behaviour rather than an interruption.
+		//
+		// Tied to the hold rather than a separate switch: the hold already
+		// means "a probe is running", it survives a reload, and kissing resumes
+		// by itself when the hold comes off, so there is no flag left stranded.
+		// CONFIG.anniversaryKiss.enabled remains the permanent off switch.
+		if (PROBE.hold) {
+			if (!PROBE.kissNoted) {
+				PROBE.kissNoted = true;
+				pLog('anniversary kissing suppressed while the hold is on', '#FFD700');
+			}
+		} else if (CONFIG.anniversaryKiss.enabled && !state.busy && isInTown()) {
+			PROBE.kissNoted = false;
 			const name = findFeaturedPlayerName();
 
 			// Being the target ourselves is not a kiss we can perform: get_player
@@ -1953,7 +1969,11 @@ async function anniversaryKissLoop() {
 	setTimeout(anniversaryKissLoop, CONFIG.anniversaryKiss.checkIntervalMs);
 }
 
-anniversaryKissLoop();
+// NOT called here. It now reads PROBE.hold, and PROBE is a const declared in
+// the probe section further down this file - referencing it at this point in
+// top-to-bottom load throws "Cannot access before initialization" on the very
+// first tick. Started from STARTUP instead, like maintenanceLoop and
+// gearProgressionLoop, once every section has run.
 
 // ============================================================================
 // MARKET SCOUTING
@@ -2573,7 +2593,7 @@ async function scoutLoop() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v26 / probe.8 / 2026-09-19 / step+refusals fixed';
+const MERCHANT_BUILD = 'v26 / probe.9 / 2026-09-19 / step+refusals fixed, kiss suppressed on hold';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -2607,6 +2627,7 @@ const PROBE = {
 	// most - without it a gold delta measured across a trade is the trade plus
 	// whatever junk got vendored in the same two seconds.
 	hold: false,
+	kissNoted: false,
 	log: [],
 };
 
@@ -3914,6 +3935,7 @@ openStandAtBestSpot();
 scoutLoop();
 gearProgressionLoop();
 maintenanceLoop();
+anniversaryKissLoop();
 /* Phase 0 only announces itself. Nothing in the probe section runs unless the
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {
