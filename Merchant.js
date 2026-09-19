@@ -2707,6 +2707,53 @@ async function arbProbeBridge() {
 	return pShow(out);
 }
 
+/* Ponty's stock, from the local bridge, across every shard a scout has read.
+ 
+   Always the bridge - ALData does not carry Ponty, which is exactly why this
+   matters. It is the one buy source that is genuinely private: every spread
+   visible on the public board is visible to everyone querying it, and Ponty's
+   stock is not on that board at all.
+ 
+   It is also the only buy leg with no counterparty risk. A player merchant can
+   pack up between reading their price and arriving at their stand; Ponty
+   cannot. His stock rotates, so a listing can still be gone - but he is always
+   there, which removes the failure mode that makes a cross-shard round trip
+   risky in the first place. */
+async function arbProbePontyRows() {
+	let raw = null;
+	try { raw = await scoutFetch('/ponty'); } catch (e) { return { rows: [], error: String(e && e.message ? e.message : e) }; }
+	const rows = [];
+	for (const shard in (raw || {})) {
+		const e = raw[shard] || {};
+		const age = pAgeSec(e.at);
+		for (const it of (e.items || [])) {
+			if (!it || !it.name) continue;
+			rows.push({
+				source: 'ponty', npc: true, counterparty: 'none',
+				shard: shard, ageSec: age,
+				target: 'Ponty', slot: null,
+				name: it.name, level: it.level || 0, p: it.p || null,
+				price: it.price, q: it.q || 1,
+			});
+		}
+	}
+	return { rows: rows };
+}
+
+/* Ponty stock across shards, cheapest first. Standalone because his stock is
+   worth looking at on its own, not only when it happens to undercut a player. */
+async function arbProbeFindPonty(maxPrice) {
+	const got = await arbProbePontyRows();
+	const cap = (maxPrice == null) ? Infinity : maxPrice;
+	const out = got.rows
+		.filter(function (r) { return typeof r.price === 'number' && isFinite(r.price) && r.price <= cap; })
+		.sort(function (a, b) { return a.price - b.price; });
+	if (got.error) pLog('Ponty stock unavailable (' + got.error + ') - the local bridge serves it, ALData does not', 'orange');
+	else pLog(out.length + ' Ponty listing(s)' + (cap === Infinity ? '' : ' at or under ' + cap)
+		+ ' across ' + [...new Set(out.map(function (r) { return r.shard; }))].length + ' shard(s)');
+	return pShow(out.slice(0, 30));
+}
+
 /* Candidates for the BUY leg, taken from what the scouts already recorded
    rather than from whatever happens to be standing here.
  
@@ -2719,19 +2766,23 @@ async function arbProbeBridge() {
 async function arbProbeFindBuy(maxPrice) {
 	const cap = maxPrice || CONFIG.arbitrage.probe.maxPrice;
 	const got = await arbProbeMarketRows();
-	const rows = got.rows;
-	if (rows === null || !rows.length) {
-		// Wrapped in an array with the source stamped on it. Returning a bare
-		// object here once read as "the finder returns the single best
-		// candidate" rather than "no market feed was consulted" - which is the
-		// opposite conclusion, and the one that matters.
-		const local = arbProbePick(cap);
-		const list = local ? [Object.assign({ source: 'in-view', shard: mShardKey(), here: true, ageSec: 0 }, local)] : [];
-		pLog('SOURCE: in-view scan only - ' + list.length + ' candidate(s)', 'orange');
-		return pShow(list);
-	}
+	const rows = got.rows || [];
 	const here = mShardKey();
 	const out = [];
+	if (!rows.length) {
+		// Stamped and wrapped in an array. Returning a bare object here once
+		// read as "the finder returns the single best candidate" rather than
+		// "no market feed was consulted" - the opposite conclusion, and the one
+		// that matters.
+		//
+		// Falls THROUGH rather than returning: Ponty comes from the bridge, and
+		// the bridge can have his stock while having no merchant rows at all.
+		// Returning early here skipped the one buy source that is still ours
+		// when the public feed is down, which is exactly when it matters most.
+		const local = arbProbePick(cap);
+		if (local) out.push(Object.assign({ source: 'in-view', shard: here, here: true, ageSec: 0 }, local));
+		pLog('SOURCE: in-view scan only - ' + out.length + ' stand candidate(s)', 'orange');
+	}
 	for (const r of rows) {
 		const shard = String(r.serverRegion) + String(r.serverIdentifier);
 		const age = pAgeSec(r.lastSeen);
@@ -2748,20 +2799,45 @@ async function arbProbeFindBuy(maxPrice) {
 			});
 		}
 	}
+	// Ponty joins the same list. He is not on ALData, so he comes from the
+	// bridge whatever the market source is - a private candidate on a public
+	// board's worth of competition.
+	const pon = await arbProbePontyRows();
+	let pontyCount = 0;
+	for (const r of pon.rows) {
+		if (!(typeof r.price === 'number' && isFinite(r.price)) || r.price > cap) continue;
+		out.push(Object.assign({}, r, { here: r.shard === here, map: 'main', x: null, y: null }));
+		pontyCount++;
+	}
+	const FRESH = CONFIG.arbitrage.sellMaxAgeSec;
+	for (const r of out) r.stale = (r.ageSec == null) || (r.ageSec > FRESH);
 	out.sort(function (a, b) {
+		if (a.stale !== b.stale) return a.stale ? 1 : -1;  // a dead listing is not a cheap one
 		if (a.here !== b.here) return a.here ? -1 : 1;     // no hop beats a hop
+		// Ponty cannot pack up between reading his price and arriving, so at
+		// equal freshness he is the safer of two otherwise equal candidates.
+		if (!!a.npc !== !!b.npc) return a.npc ? -1 : 1;
 		if ((a.ageSec || 0) !== (b.ageSec || 0)) return (a.ageSec || 0) - (b.ageSec || 0);
 		return a.price - b.price;
 	});
+	// One empty-result path, not two. The old one here returned arbProbePick's
+	// bare object-or-null - the same shape ambiguity that was already fixed
+	// once on the other branch, left behind when the in-view fallback moved up.
+	// The in-view scan has already run above by the time we reach this.
 	if (!out.length) {
-		pLog('nothing under ' + cap + ' gold anywhere the scouts have been - falling back to what is in view', 'orange');
-		return arbProbePick(cap);
+		pLog('nothing at or under ' + cap + ' gold on ' + got.source + ' or at Ponty', 'orange');
+		return pShow([]);
 	}
 	const top = out[0];
-	pLog('SOURCE: ' + got.source + ' (' + rows.length + ' stands across all shards)');
+	if (rows.length) pLog('SOURCE: ' + got.source + ' (' + rows.length + ' stands across all shards)'
+		+ (pontyCount ? ' + ' + pontyCount + ' Ponty listing(s) from the bridge'
+			: (pon.error ? ' - no Ponty (' + pon.error + ')' : ' - Ponty has nothing under the cap')));
+	else if (pontyCount) pLog('SOURCE: Ponty only (' + pontyCount + ' listing(s) from the bridge)');
 	pLog(out.length + ' candidate(s) at or under ' + cap + '. Best: ' + top.name
 		+ ' @ ' + top.price + ' from ' + top.target + ' on ' + top.shard
-		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
+		+ ' (' + top.ageSec + 's old' + (top.stale ? ', STALE' : '')
+		+ (top.npc ? ', NPC - no counterparty risk' : '') + ')'
+		+ (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
 	return pShow(out.slice(0, 20));
 }
 
@@ -3413,6 +3489,7 @@ function arbProbeHelp() {
 		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | auto',
 		'arbProbeBridge()           which feed answers, and how much is in it',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
+		'arbProbeFindPonty(99999)   Ponty stock across shards - bridge only, not public',
 		'arbProbeFindSell()         who is buying something already in inventory',
 		'arbProbeWhyNoSell()        when that is empty: held vs wanted, near misses',
 		'arbProbeGo("EUII")         travel to a candidate\'s shard (reloads the page)',
@@ -3441,6 +3518,7 @@ try {
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
 		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell, source: arbProbeSource,
+		findPonty: arbProbeFindPonty,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
