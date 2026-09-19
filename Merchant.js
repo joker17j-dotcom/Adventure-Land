@@ -3211,13 +3211,21 @@ async function arbProbeNpcSell(idx, confirm) {
 		// vendor-vs-player comparison is being fed a wrong number.
 		rec.predictionError = expected - rec.goldDelta;
 		rec.predictionErrorPct = +(100 * rec.predictionError / expected).toFixed(4);
+		// Gold is an integer, so a cheap item cannot resolve a small error: on a
+		// 3 gold sale anything under ~17% rounds to a perfect zero and reads as
+		// proof. Resolution is roughly 100/expected percent, so "EXACT" only
+		// means much on something worth four figures.
+		rec.resolutionPct = +(100 / expected).toFixed(4);
+		rec.lowResolution = expected < 1000;
 	}
 	rec.characterLevel = character.level;
 	pLog(rec.outcome.toUpperCase() + (rec.reason ? ' (' + rec.reason + ')' : '')
 		+ ' - gold +' + rec.goldDelta + ', predicted ' + expected
 		+ (rec.predictionError != null
 			? (rec.predictionError === 0
-				? ', EXACT'
+				? ', EXACT' + (rec.lowResolution
+					? ' but only to +-' + rec.resolutionPct + '% - too cheap to prove much, repeat on something worth 1000+'
+					: '')
 				: ', OFF BY ' + rec.predictionError + ' (' + rec.predictionErrorPct + '%)')
 			: ''),
 		rec.outcome === 'resolved' ? '#7FD98A' : 'orange');
