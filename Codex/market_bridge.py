@@ -37,11 +37,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Long enough to survive a roamer's full rotation, short enough that the page is
 # not quoting prices from merchants who logged off an hour ago.
 #
-# Sized against the real server list: 11 non-PVP shards at roughly 97s each is
-# an 18 minute rotation, so 20 minutes left no margin at all - a shard's stands
-# expired at almost exactly the moment the roamer came back to refresh them,
-# and rows flickered. 30 minutes clears a full rotation with room to spare.
-MERCHANT_TTL = 30 * 60
+# Since each scan REPLACES its shard rather than merging, this is no longer what
+# keeps the data fresh - it only decides how long a shard nobody is visiting
+# stays listed. Measured rotation is ~2.4 minutes (146s mean over 25 per-shard
+# round trips), so 10 minutes is four rotations of margin: a shard has to be
+# missed four times running before its stands drop out.
+MERCHANT_TTL = 10 * 60
 # A scout that has not POSTed in this long has its shard assignment released so
 # another scout can take it.
 BOT_TIMEOUT = 3 * 60
@@ -148,6 +149,18 @@ class Store:
             # A scan that reports no merchants array at all is a heartbeat, not
             # an observation - it must not wipe a shard we have good data for.
             if isinstance(seen, list):
+                # Each visit is a COMPLETE sweep of that shard, so it replaces
+                # what was there rather than merging into it. Accumulating across
+                # visits meant a merchant seen two rotations ago stayed listed
+                # long after packing up, and the watchlist quoted them - you
+                # would travel to a stand that is not there. An empty list is a
+                # real observation ("nothing trading here right now") and clears
+                # the shard; only a heartbeat leaves it alone.
+                dropped = 0
+                for k in [k for k in self.merchants if k.startswith(key + "|")]:
+                    del self.merchants[k]
+                    dropped += 1
+
                 for row in seen:
                     if not isinstance(row, dict) or not row.get("id"):
                         continue
@@ -186,6 +199,9 @@ class Store:
             bits.append(f"{stored_m} stands")
             if stored_m != len(seen):
                 bits.append(f"({len(seen) - stored_m} rejected)")
+            delta = stored_m - dropped
+            if dropped:
+                bits.append(f"[replaced {dropped}, {delta:+d}]")
         else:
             bits.append("heartbeat")
         if stored_p:
