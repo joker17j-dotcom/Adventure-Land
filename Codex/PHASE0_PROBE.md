@@ -335,10 +335,12 @@ still there.
 5. The distance ladder: every `{ distance, reason }` rejection, and the first
    distance that succeeded.
 6. `arbProbeNpcSell` — `EXACT`, or `OFF BY` how much?
-7. **Two sell legs into player buy orders at different prices**, with
-   `impliedFee`, `impliedFeePct` and `characterLevel`. The critical measurement.
+7. **One sell leg into a real player buy order**, with `impliedFee`,
+   `impliedFeePct` and `characterLevel`. At level 30 `impliedFeePct` should come
+   back at 4%. Report the raw numbers whatever it says — do not adjust to fit.
 8. At least one buy leg — expected to show a zero fee. Say so either way.
-9. The full `arbProbeDump()`.
+9. Whether `character.tax` is exposed, and whether it agrees with the table.
+10. The full `arbProbeDump()`.
 
 ---
 
