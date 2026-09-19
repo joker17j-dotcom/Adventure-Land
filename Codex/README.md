@@ -9,7 +9,7 @@ arbitrage executor that trades across shards.
 | `aldata_explorer.html` | Full game-data explorer — items, monsters, drops, world, bank |
 | `market_bridge.py` | Local server: collects scans, coordinates scouts, keeps the trade ledger. Stdlib only |
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
-| `MerchantScout.js` | **Stale.** Standalone scout, superseded — see *Which file is the scout* |
+| `MerchantScout.js` | Standalone scout, for a fleet — see *Which file is the scout* |
 | `_al_template.html`, `_tabs_*.js`, `build.py` | Sources for the two pages (see *Rebuilding*) |
 
 Both HTML files are fully self-contained. **You do not need any of this setup to
@@ -22,13 +22,17 @@ the public feed does not have: Ponty's stock, and the trade ledger.
 ## Which file is the scout
 
 `Merchant.js` in the repository root. Scouting was merged into the merchant, so
-one character both trades and scans.
+one character both trades and scans. That is the only scout that has ever run.
 
-`MerchantScout.js` is the earlier standalone version and is **behind** it. It
-still carries the hop-then-scan structure that meant, in a browser tab, the
-script hopped, the page reloaded, and the scan and report never ran — thirty-five
-minutes of constant hopping and zero POSTs. Do not deploy it without bringing it
-to parity first.
+`MerchantScout.js` is the standalone version, for adding scouts beyond the
+merchant. It scans, hands over, confirms and only then hops — the same ordering
+`Merchant.js` uses, and for the same reason: `change_server` reloads the page, so
+anything after a hop never runs. An early version had that backwards and spent
+thirty-five minutes hopping without posting once.
+
+Both persist their unsent findings, their rotation position and their Ponty
+clock to CODE storage before hopping, because module scope does not survive the
+reload.
 
 The scouting code stays inert unless the bridge answers, so `Merchant.js` behaves
 exactly as before on Mainframe, where `127.0.0.1` is not the operator's PC.
@@ -110,8 +114,12 @@ reading the same rows on.
 
 ## Fleet mode — 3 parked + 1 roamer
 
-Supported by the bridge but never run: only the merchant has ever scouted. If
-you do add scouts, **you do not assign shards yourself.** `send_cm` is
+Supported by the bridge but never run: only the merchant has ever scouted. Paste
+`MerchantScout.js` into each extra character and list them in `CONFIG.roles` —
+the role is resolved from the character's own name at runtime, so it is the same
+file everywhere. Each needs its own browser tab.
+
+**You do not assign shards yourself.** `send_cm` is
 realm-local, so scouts on different shards physically cannot talk to each other
 and cannot agree who sits where. The bridge ranks shards by observed activity,
 hands each parked scout a different one, and removes a shard from the pool the

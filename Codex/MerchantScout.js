@@ -435,6 +435,51 @@ function bufferedCount() {
 	return n;
 }
 
+/* Findings the bridge has not acknowledged must outlive the hop that follows.
+   reportConfirmed already refuses to clear the buffer without an
+   acknowledgement, and hopTo calls it before leaving - but when the bridge is
+   down that path deliberately carries the scan forward instead of discarding
+   it, and "forward" was a module-scope Map that change_server destroys. A
+   whole shard's sweep was lost every time the bridge blinked.
+
+   Maps do not survive JSON, so this flattens them on the way out and rebuilds
+   them on the way in. */
+function saveBuffer() {
+	const out = [];
+	for (const e of buffer.shards.values()) {
+		out.push({ shard: e.shard, stands: [...e.stands.values()], ponty: e.ponty });
+	}
+	SS.set('buffer', out);
+}
+
+function restoreBuffer() {
+	const saved = SS.get('buffer', null);
+	if (!Array.isArray(saved)) return 0;
+	let n = 0;
+	for (const e of saved) {
+		if (!e || !e.shard) continue;
+		const b = bufferFor(e.shard);
+		for (const row of (e.stands || [])) { b.stands.set(row.id, row); n++; }
+		if (e.ponty) b.ponty = e.ponty;
+	}
+	if (n) log(`restored ${n} unsent stand(s) from before the last hop`, '#E9C46A');
+	return n;
+}
+
+/* When Ponty was last read, per shard. Was a local in roamerLoop, so every
+   reload - which is to say every hop - forgot it, and the roamer walked to
+   Ponty on arrival at every single shard rather than once every pontyEveryMs.
+   Correct, but it paid for the walk each time. */
+function pontySeen(key, stamp) {
+	const m = SS.get('ponty_seen', {}) || {};
+	if (stamp !== undefined) { m[key] = stamp; SS.set('ponty_seen', m); }
+	return m[key] || 0;
+}
+
+function pontyDue(key) {
+	return Date.now() - pontySeen(key) > CONFIG.pontyEveryMs;
+}
+
 
 let lastPostAt = 0;
 
@@ -499,6 +544,10 @@ async function report(extra) {
 			log(`${key}: not acknowledged, held for retry`, 'orange');
 		}
 	}
+	// Keep the stored copy in step with the live buffer. Without this a bucket
+	// accepted by the bridge would still be sitting in storage, and the next
+	// boot would restore and resend rows that already landed.
+	saveBuffer();
 	return { reply: lastReply, confirmed: allOk, stands: sent, ponty: 0 };
 }
 
@@ -529,6 +578,8 @@ async function hopTo(target) {
 	if (!target || !target.region || !target.name) return false;
 	const cur = currentShard();
 	if (shardKey(cur) === shardKey(target)) return false;
+	// saveBuffer is declared below report(); both are function declarations, so
+	// the hoisting is fine - noted because the call order here reads backwards.
 	if (!canHop()) {
 		log('server hopping unavailable here (no change_server / X.servers) - staying put', 'orange');
 		return false;
@@ -537,6 +588,7 @@ async function hopTo(target) {
 	if (Date.now() - last < CONFIG.minHopIntervalMs) return false;
 
 	await reportConfirmed();            // never carry findings across a hop
+	saveBuffer();                       // and if it could not be sent, keep it
 	SS.set('lastHop', Date.now());
 	log(`hopping ${shardKey(cur)} -> ${shardKey(target)}`, '#E9C46A');
 	try {
@@ -599,6 +651,17 @@ async function parkedLoop() {
 	while (true) {
 		absorb(scanStands());
 
+		// A parked scout sits on one shard indefinitely, which makes it that
+		// shard's only source of Ponty stock - and Ponty is the one thing the
+		// public feed does not carry. Previously only the roamer ever asked,
+		// so a shard with a parked scout on it had no Ponty data at all.
+		const key = shardKey(currentShard());
+		if (pontyDue(key)) {
+			const items = await pontyCheck();
+			if (items) { absorbPonty(items); pontySeen(key, Date.now()); }
+			await goTo(spots[spotIdx]);      // pontyCheck walks; come back
+		}
+
 		if (Date.now() - lastPost > CONFIG.postIntervalMs) {
 			const { reply } = await report();
 			lastPost = Date.now();
@@ -622,16 +685,15 @@ async function roamerLoop() {
 		log('no server hopping available - roamer will scan this shard only', 'orange');
 	}
 	const spots = deriveScanSpots();
-	const pontySeen = {};
 
 	while (true) {
 		const key = shardKey(currentShard());
 		await goTo(spots[0]);
 
-		// Ponty first: it is a fixed walk and the answer is the same all dwell.
-		if (!pontySeen[key] || Date.now() - pontySeen[key] > CONFIG.pontyEveryMs) {
+		// Ponty first: it is a fixed walk and the answer is the same all visit.
+		if (pontyDue(key)) {
 			const items = await pontyCheck();
-			if (items) { absorbPonty(items); pontySeen[key] = Date.now(); }
+			if (items) { absorbPonty(items); pontySeen(key, Date.now()); }
 		}
 
 		// Sweep until the visible set stops growing, so a shard that is still
@@ -666,6 +728,9 @@ async function roamerLoop() {
 (async function main() {
 	const role = myRole();
 	log(`${myName()} starting as ${role} - bridge ${CONFIG.bridge}`, '#5ED6A8');
+	// A hop restarts this script from the top. Anything the previous run could
+	// not hand over is still in storage.
+	restoreBuffer();
 	if (!CONFIG.roles[myName()]) {
 		log(`${myName()} is not in CONFIG.roles - defaulting to parked`, 'orange');
 	}
