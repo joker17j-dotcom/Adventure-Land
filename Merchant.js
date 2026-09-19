@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v25 (market scouting merged in and gated on the bridge being reachable, so it stays inert on Mainframe; cross-shard delivery with a FIXED home of USIV; party link with _plshard stamping; anniversary guard using S.anniversary.next; stand raised only at home. v24's header survived thirteen commits of the above and led a handoff to record this file as untouched - bump it when you change it)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v26 (v25 plus: anniversary guard tightened to 5m10s, the agreed arbitrage spec recorded in CONFIG.arbitrage, and a hand-driven PHASE 0 PROBE section that discovers the trade/bank API instead of assuming it. Nothing in the probe runs on its own. Bump this header when you change the file - v24's survived thirteen commits and led a handoff to record this file as untouched)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -190,12 +190,69 @@ const CONFIG = {
 		// Be home this long before an anniversary round starts. S.anniversary.next
 		// is the round's start time, on the hour, so this is a real deadline
 		// rather than a guess.
-		kissGuardMs: 6 * 60 * 1000,
+		//
+		// 5m10s, not 6m. The requirement is to be in place five minutes early;
+		// the extra minute was padding, and padding here is paid for in forgone
+		// arbitrage, which is worth more than one kiss round. Ten seconds of
+		// slack is kept because smart_move's last few steps are not instant.
+		// Missing the window is not an error: the round is skipped and the
+		// merchant carries on as though the event were not running until the
+		// next round's guard opens.
+		kissGuardMs: 5 * 60 * 1000 + 10 * 1000,
 		// Longest a single shard visit may take before the loop assumes it has
 		// hung and takes its lock back. Generous: a hop alone can take 30s.
 		maxCycleMs: 3 * 60 * 1000,
 		skipServers: ['PVP'],
 	},
+
+	// ARBITRAGE - the agreed specification, recorded here so it lives with the
+	// code rather than in chat history. PHASE 0 uses only `probe`; every other
+	// field is inert until Phase 1 flips `enabled`.
+	//
+	// PRIORITY: arbitrage outranks queued delivery/pickup work and the
+	// anniversary round. The combat characters buy their own potions when stock
+	// hits zero, so a delayed delivery is an inconvenience rather than a death.
+	// The one exception is jobPreemptMs below.
+	arbitrage: {
+		enabled: false,
+		// Per ITEM, not per batch: a marginal item must not ride along on a good
+		// one, which would quietly lower the floor.
+		minProfit: 500000,
+		// HARD reserve. gold - (everything this trade or batch will spend) must
+		// still clear this, so a large purchase cannot leave the merchant broke.
+		goldFloor: 10000000,
+		// Half of the NET profit is banked after each sale - not half the sale
+		// value, so the capital spent on the item stays with the merchant and
+		// only the gain is split. Never banked on a loss, and losses are not
+		// carried forward against a later trade's share.
+		bankShare: 0.5,
+		// Below this much gold, one trade at a time. At or above it, batching is
+		// allowed - multiple units of one item and multiple items in a visit -
+		// but ONLY when every buy sits on one shard and every sell sits on one
+		// shard. Splitting either leg across shards risks buying what cannot
+		// then be sold.
+		batchAboveGold: 100000000,
+		// A queued delivery/pickup older than this stops the NEXT trade from
+		// starting. It never interrupts a trade already in flight: once gold is
+		// spent, the item reaches a terminal state (sold or banked) first.
+		jobPreemptMs: 10 * 60 * 1000,
+		// Moving gold between accounts is taxed. The rate is reduced by some
+		// factor of merchant level and the formula is not known, so it is
+		// MEASURED across the phases rather than assumed - the last constant
+		// assumed in this project (Ponty's price) was wrong by half. Until a
+		// measurement lands this stays null and the profit test must refuse to
+		// pass rather than guess a rate of zero.
+		tax: null,
+		probe: {
+			// arbProbeCall refuses to spend more than this in one call.
+			maxPrice: 10000,
+			// The distance walk-in starts this far out and closes in by
+			// stepDist until the server stops rejecting the trade.
+			startDist: 600,
+			stepDist: 50,
+		},
+	},
+
 	// How many times to retry the journey home before giving up for now. The
 	// trip record is kept on failure, so a later batch or restart tries again.
 	homeReturnAttempts: 3,
@@ -1018,8 +1075,12 @@ function sellAggressivelyIfLowOnSpace() {
 
 async function maintenanceLoop() {
 	try {
-		sellTrash();
-		sellAggressivelyIfLowOnSpace();
+		// sellTrash moves gold. Left running during a probe it would land inside
+		// the before/after window of a measured trade and be read as tax.
+		if (!PROBE.hold) {
+			sellTrash();
+			sellAggressivelyIfLowOnSpace();
+		}
 		if (character.rip) respawn();
 	} catch (e) {
 		console.error('maintenanceLoop error:', e);
@@ -1604,7 +1665,7 @@ async function attemptBestPlanStep(currentGold) {
 // ----------------------------------------------------------------------------
 async function gearProgressionLoop() {
 	try {
-		if (CONFIG.gearProgression.enabled && !state.busy) {
+		if (CONFIG.gearProgression.enabled && !state.busy && !PROBE.hold) {
 			const hasBankable = character.items.some(item => item && item.name && isKnownGearItem(item.name) && !findCandidacy(item));
 			// Gated behind canStartSpending: without this, a plan candidate or
 			// duplicate group sitting below the gold threshold made the loop
@@ -2316,7 +2377,11 @@ async function scoutLoop() {
 		}
 
 		if (!state.busy) {
-			if (!scoutCanRun()) {
+			if (PROBE.hold) {
+				// A probe is measuring. Do nothing at all: scoutGoHome would hop,
+				// a hop reloads the page, and the reload would take the probe and
+				// its half-collected findings with it.
+			} else if (!scoutCanRun()) {
 				// Never leave the merchant parked off-home with scouting disabled.
 				await scoutGoHome('scouting unavailable');
 			} else if (state.queue.length) {
@@ -2341,6 +2406,482 @@ async function scoutLoop() {
 	}
 	setTimeout(scoutLoop, CONFIG.scout.tickMs);
 }
+
+// ============================================================================
+// PHASE 0 - ARBITRAGE PROBE
+// ============================================================================
+/* Nothing in this section runs on its own. Every function is called by hand
+   from the Adventure Land code console while the merchant stands somewhere
+   useful, and the results are read off the log.
+ 
+   WHY A PROBE AT ALL
+   The trade API is the one part of the arbitrage plan this codebase has never
+   exercised. The obvious move is to write trade_buy(target, slot) and see what
+   happens, but the last constant assumed in this project - Ponty's asking
+   price - was wrong by a factor of two and took three rounds to catch, and
+   that one only cost a wrong number on a webpage. This one spends gold. So
+   the API is DISCOVERED: arbProbeFns and arbProbeSrc read the real function
+   list and the real source, including the socket payload each one emits, and
+   the operator builds the first call from that rather than from memory.
+ 
+   SAFETY
+   arbProbeCall is the only function here that can move gold. It refuses a slot
+   priced above CONFIG.arbitrage.probe.maxPrice, demands an explicit confirm
+   string, and reports the gold delta whether it succeeded or failed - a failed
+   call is data too, since a rejection at a known distance is how the trade
+   range gets measured without paying for it.
+ 
+   Everything else reads, or walks.
+ 
+   Procedure: Codex/PHASE0_PROBE.md. */
+
+const PROBE = {
+	// While held: no shard hop (a hop reloads the page and kills a probe
+	// mid-measurement), no gear spending, no sellTrash. That last one matters
+	// most - without it a gold delta measured across a trade is the trade plus
+	// whatever junk got vendored in the same two seconds.
+	hold: false,
+	log: [],
+};
+
+function pLog(msg, color) {
+	const line = '[probe] ' + msg;
+	PROBE.log.push({ at: new Date().toISOString(), msg: msg });
+	// Kept in CODE storage too: a probe that ends in a page reload - or a hop
+	// slipping through - would otherwise take its own findings with it.
+	try { set('probe_log', PROBE.log.slice(-200)); } catch (e) { }
+	try { game_log(line, color || '#7FD98A'); } catch (e) { }
+	try { console.log(line); } catch (e) { }
+}
+
+function pShow(obj) {
+	try { show_json(obj); } catch (e) { try { console.log(obj); } catch (e2) { } }
+	return obj;
+}
+
+/* Freeze the merchant for the duration of a probe. Leave it on for the whole
+   session and turn it off when done; forgetting it on costs scouting, not
+   correctness. */
+function arbProbeHold(on) {
+	PROBE.hold = (on !== false);
+	pLog(PROBE.hold
+		? 'HOLD ON - no hops, no gear spending, no sellTrash'
+		: 'HOLD OFF - normal behaviour resumes', '#FFD700');
+	return PROBE.hold;
+}
+
+/* Every function in either scope whose name suggests trading or banking.
+   Discovery, not a guess list: the point is to see names nobody thought to
+   look for. */
+function arbProbeFns() {
+	const seen = new Set();
+	const out = [];
+	const scopes = [];
+	try { if (typeof globalThis !== 'undefined' && globalThis) scopes.push(['runner', globalThis]); } catch (e) { }
+	try { if (typeof parent !== 'undefined' && parent) scopes.push(['parent', parent]); } catch (e) { }
+	for (const pair of scopes) {
+		const label = pair[0], scope = pair[1];
+		let keys = [];
+		try { keys = Object.keys(scope); } catch (e) { continue; }
+		for (const k of keys) {
+			if (!/trade|buy|sell|bank|merchant|stand|exchange|vend/i.test(k)) continue;
+			let v;
+			try { v = scope[k]; } catch (e) { continue; }
+			if (typeof v !== 'function') continue;
+			const sig = label + '.' + k;
+			if (seen.has(sig)) continue;
+			seen.add(sig);
+			out.push({ scope: label, name: k, arity: v.length });
+		}
+	}
+	out.sort((a, b) => a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+	pLog(out.length + ' candidate function(s) found by name scan');
+	return pShow(out);
+}
+
+/* The named check. Object.keys does not see identifiers declared in the
+   runner's own scope, so the ones that actually matter are referenced
+   directly and the ReferenceError caught. Verbose on purpose: a missing name
+   here is a real finding, not a gap in the scan. */
+function arbProbeNamed() {
+	const out = [];
+	const t = function (name, get) {
+		try {
+			const fn = get();
+			out.push({ name: name, type: typeof fn, arity: (typeof fn === 'function') ? fn.length : null });
+		} catch (e) {
+			out.push({ name: name, type: 'undeclared', arity: null });
+		}
+	};
+	t('trade_buy', function () { return trade_buy; });
+	t('trade_sell', function () { return trade_sell; });
+	t('buy', function () { return buy; });
+	t('sell', function () { return sell; });
+	t('buy_with_gold', function () { return buy_with_gold; });
+	t('bank_deposit', function () { return bank_deposit; });
+	t('bank_withdraw', function () { return bank_withdraw; });
+	t('bank_store', function () { return bank_store; });
+	t('bank_retrieve', function () { return bank_retrieve; });
+	t('open_stand', function () { return open_stand; });
+	t('close_stand', function () { return close_stand; });
+	t('calculate_item_value', function () { return calculate_item_value; });
+	pLog('named API check');
+	return pShow(out);
+}
+
+/* The most valuable single output of Phase 0. A runner function is a thin
+   wrapper around a socket emit, so its source names the event and the exact
+   payload keys - which is the argument order and shape, straight from the
+   game, with nothing inferred. */
+function arbProbeSrc(name) {
+	let fn = null;
+	try { fn = eval(name); } catch (e) { }                 // runner scope
+	if (typeof fn !== 'function') {
+		try { fn = parent[name]; } catch (e) { }           // parent scope
+	}
+	if (typeof fn !== 'function') {
+		pLog('no function named "' + name + '" in either scope', 'orange');
+		return null;
+	}
+	const src = String(fn);
+	pLog('source of ' + name + ' (' + src.length + ' chars) - see console');
+	try { console.log('[probe] ' + name + ' =\n' + src); } catch (e) { }
+	return src;
+}
+
+/* Every visible stand with its distance, so the operator can see what is in
+   reach before touching anything. Deliberately built on the same reader the
+   scout posts from, so what the probe sees and what the watchlist shows are
+   the same rows. */
+function arbProbeStands() {
+	const rows = scoutScanStands().map(function (r) {
+		return {
+			id: r.id, map: r.map, x: r.x, y: r.y,
+			dist: Math.round(distance(character, { x: r.x, y: r.y })),
+			sells: Object.keys(r.slots).filter(function (k) { return !r.slots[k].b; }).length,
+			buys: Object.keys(r.slots).filter(function (k) { return r.slots[k].b; }).length,
+		};
+	}).sort(function (a, b) { return a.dist - b.dist; });
+	pLog(rows.length + ' stand(s) in view on ' + mShardKey());
+	return pShow(rows);
+}
+
+/* The cheapest sell slot at or under a cap, with everything arbProbeCall
+   needs already assembled. This is how the first real trade gets chosen: by
+   price, so the experiment costs pocket change. */
+function arbProbePick(maxPrice) {
+	const cap = maxPrice || CONFIG.arbitrage.probe.maxPrice;
+	let best = null;
+	for (const r of scoutScanStands()) {
+		for (const k in r.slots) {
+			const sl = r.slots[k];
+			if (sl.b) continue;                                  // buy orders are not for sale
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			if (sl.price > cap) continue;
+			const cand = {
+				target: r.id, slot: k, name: sl.name, level: sl.level,
+				price: sl.price, q: sl.q,
+				x: r.x, y: r.y, dist: Math.round(distance(character, { x: r.x, y: r.y })),
+			};
+			if (!best || cand.price < best.price) best = cand;
+		}
+	}
+	if (!best) pLog('nothing on sale at or under ' + cap + ' gold in view', 'orange');
+	else pLog('cheapest in view: ' + best.name + ' lvl ' + best.level + ' @ ' + best.price + ' from ' + best.target + ' (' + best.dist + ' away)');
+	return pShow(best);
+}
+
+/* Visible buy orders, for the sell leg. Cheapest first is the wrong order
+   here - a buy order is worth more the higher it is. */
+function arbProbeBuyOrders() {
+	const out = [];
+	for (const r of scoutScanStands()) {
+		for (const k in r.slots) {
+			const sl = r.slots[k];
+			if (!sl.b) continue;
+			out.push({
+				target: r.id, slot: k, name: sl.name, level: sl.level,
+				price: sl.price, wants: sl.q,
+				dist: Math.round(distance(character, { x: r.x, y: r.y })),
+			});
+		}
+	}
+	out.sort(function (a, b) { return (b.price || 0) - (a.price || 0); });
+	pLog(out.length + ' buy order(s) in view');
+	return pShow(out);
+}
+
+/* Inventory headroom. esize is the number the purchase gate will read, so it
+   is worth confirming it means what it is assumed to mean rather than
+   trusting the name. Stack counts are reported alongside because a stackable
+   purchase may need no new slot at all. */
+function arbProbeInv() {
+	let used = 0;
+	const stacks = {};
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (!it) continue;
+		used++;
+		if (it.q && it.q > 1) stacks[it.name] = (stacks[it.name] || 0) + it.q;
+	}
+	const info = {
+		esize: character.esize,
+		slotsTotal: character.items.length,
+		slotsUsed: used,
+		slotsFreeCounted: character.items.length - used,
+		gold: character.gold,
+		stacked: stacks,
+	};
+	pLog('inventory: esize=' + character.esize + ', counted free=' + info.slotsFreeCounted
+		+ (character.esize === info.slotsFreeCounted ? ' (agree)' : ' (DISAGREE - esize does not mean free slots)'),
+		character.esize === info.slotsFreeCounted ? null : 'orange');
+	return pShow(info);
+}
+
+/* Walk to the bank, read what is actually there, and walk back - timed, since
+   the agreed rule is that every sale is followed by a bank visit before
+   scouting resumes, and that rule is only affordable if the trip is short.
+   Reads only: no deposit, no withdrawal. */
+async function arbProbeBank() {
+	if (state.busy) { pLog('merchant is busy - try again in a moment', 'orange'); return null; }
+	const wasHeld = PROBE.hold;
+	arbProbeHold(true);
+	state.busy = true;
+	const t0 = Date.now();
+	const result = { from: { map: character.map, x: Math.round(character.x), y: Math.round(character.y) } };
+	try {
+		const ok = await travelToBank();
+		result.reachedBank = ok;
+		result.toBankMs = Date.now() - t0;
+		if (!ok) {
+			pLog('could not reach the bank', 'red');
+		} else {
+			// character.bank is null anywhere but inside the bank map, which is
+			// exactly why a pre-purchase bank-space check cannot be done from
+			// the field. Confirm that here rather than take it on trust.
+			const b = character.bank || null;
+			result.bankVisible = !!b;
+			result.bankGold = b ? b.gold : null;
+			result.packs = b ? Object.keys(b).filter(function (k) { return k !== 'gold'; }) : [];
+			result.freeBySlot = {};
+			if (b) {
+				for (const k of result.packs) {
+					const arr = b[k] || [];
+					let free = 0;
+					for (let i = 0; i < arr.length; i++) if (!arr[i]) free++;
+					result.freeBySlot[k] = { size: arr.length, free: free };
+				}
+			}
+			pLog('bank: ' + result.packs.length + ' pack(s), gold=' + result.bankGold);
+		}
+		const t1 = Date.now();
+		await scoutGoToScanSpot();
+		result.backMs = Date.now() - t1;
+		result.totalMs = Date.now() - t0;
+		pLog('bank round trip: ' + Math.round(result.totalMs / 1000) + 's ('
+			+ Math.round(result.toBankMs / 1000) + 's there, ' + Math.round(result.backMs / 1000) + 's back)');
+	} catch (e) {
+		result.error = String(e && e.reason ? e.reason : e);
+		pLog('bank probe failed: ' + result.error, 'red');
+	} finally {
+		state.busy = false;
+		if (!wasHeld) arbProbeHold(false);
+	}
+	return pShow(result);
+}
+
+/* Stand exactly `dist` units from a target stand, on the line between here and
+   there. This is the distance walk-in: call it at decreasing distances and
+   retry the trade at each, and the first distance that stops being rejected
+   is the real trade range. Nothing about it is guessed or hardcoded, which is
+   the point - whatever the number turns out to be, and whenever it changes,
+   this measures it again. */
+async function arbProbeStep(targetName, dist) {
+	const e = parent.entities[targetName] || get_player(targetName);
+	if (!e) { pLog('no entity named "' + targetName + '" in view', 'orange'); return null; }
+	const tx = (e.real_x != null ? e.real_x : e.x), ty = (e.real_y != null ? e.real_y : e.y);
+	const want = (dist == null) ? CONFIG.arbitrage.probe.startDist : dist;
+	let dx = character.x - tx, dy = character.y - ty;
+	let len = Math.sqrt(dx * dx + dy * dy);
+	// Standing exactly on top of the target leaves no direction to back off in;
+	// any direction will do, so pick one.
+	if (!len || !isFinite(len)) { dx = 1; dy = 0; len = 1; }
+	const px = tx + (dx / len) * want, py = ty + (dy / len) * want;
+	try {
+		await move(px, py);
+	} catch (err) {
+		try { await smart_move({ map: character.map, x: px, y: py }); }
+		catch (err2) { pLog('could not reach the ' + want + '-unit mark: ' + (err2.reason || err2), 'orange'); }
+	}
+	const now = Math.round(distance(character, { x: tx, y: ty }));
+	pLog('standing ' + now + ' units from ' + targetName + ' (asked for ' + want + ')');
+	return now;
+}
+
+/* THE ONLY FUNCTION HERE THAT CAN MOVE GOLD.
+ 
+   o = {
+     fn:      'trade_buy',        // name discovered by arbProbeFns/arbProbeSrc
+     target:  'SomeMerchant',     // stand owner, resolved to an entity
+     slot:    'trade1',
+     extra:   [1],                // anything after (target, slot) - e.g. qty
+     leg:     'buy' | 'sell',     // 'buy' enforces the price cap
+     confirm: 'YES'
+   }
+ 
+   Arguments are assembled as [entity, slot, ...extra]. If the source dump
+   shows a different order, pass o.args directly - that path skips the price
+   check, so it needs confirm 'YES-UNCHECKED' and the operator owns the risk.
+ 
+   Gold, inventory and the counterparty's slot are recorded either side of the
+   call. A REJECTION IS A RESULT, not a failure: the distance walk-in depends
+   on collecting rejections, and the exact reason string is what the Phase 1
+   error handling will have to branch on. */
+async function arbProbeCall(o) {
+	o = o || {};
+	const cap = CONFIG.arbitrage.probe.maxPrice;
+	const unchecked = !!o.args;
+	const need = unchecked ? 'YES-UNCHECKED' : 'YES';
+	if (o.confirm !== need) {
+		pLog('refused: this call can spend gold. Pass confirm: "' + need + '" to proceed.', 'orange');
+		return null;
+	}
+
+	let fn = null;
+	try { fn = eval(o.fn); } catch (e) { }
+	if (typeof fn !== 'function') { try { fn = parent[o.fn]; } catch (e) { } }
+	if (typeof fn !== 'function') { pLog('no function named "' + o.fn + '"', 'red'); return null; }
+
+	const ent = o.target ? (parent.entities[o.target] || get_player(o.target) || null) : null;
+	let slotInfo = null;
+	if (ent && o.slot && ent.slots) slotInfo = ent.slots[o.slot] || null;
+
+	if (!unchecked && (o.leg || 'buy') === 'buy') {
+		if (!slotInfo) {
+			pLog('refused: cannot read ' + o.target + '.' + o.slot + ' to check its price. '
+				+ 'Move into view of the stand, or use o.args with "YES-UNCHECKED".', 'orange');
+			return null;
+		}
+		if (!(typeof slotInfo.price === 'number' && isFinite(slotInfo.price))) {
+			pLog('refused: ' + o.target + '.' + o.slot + ' has no readable price', 'orange');
+			return null;
+		}
+		if (slotInfo.price > cap) {
+			pLog('refused: ' + slotInfo.name + ' costs ' + slotInfo.price
+				+ ', over the ' + cap + ' probe cap. Pick something cheaper.', 'orange');
+			return null;
+		}
+	}
+
+	const args = unchecked ? o.args : [ent || o.target, o.slot].concat(o.extra || []);
+	const before = {
+		gold: character.gold,
+		esize: character.esize,
+		dist: ent ? Math.round(distance(character, { x: (ent.real_x != null ? ent.real_x : ent.x), y: (ent.real_y != null ? ent.real_y : ent.y) })) : null,
+		slot: slotInfo ? { name: slotInfo.name, level: slotInfo.level, price: slotInfo.price, q: slotInfo.q, b: slotInfo.b } : null,
+	};
+	pLog('CALL ' + o.fn + ' at ' + before.dist + ' units, gold=' + before.gold
+		+ (before.slot ? ', slot=' + before.slot.name + ' @ ' + before.slot.price : ''), '#FFD700');
+
+	const rec = { fn: o.fn, target: o.target || null, slot: o.slot || null, before: before };
+	try {
+		rec.returned = await fn.apply(null, args);
+		rec.outcome = 'resolved';
+	} catch (e) {
+		rec.outcome = 'rejected';
+		rec.reason = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+	}
+
+	// Settle: the gold change lands on a socket round trip, not on the promise.
+	await sleep(1200);
+	rec.after = { gold: character.gold, esize: character.esize };
+	rec.goldDelta = rec.after.gold - before.gold;
+	rec.esizeDelta = rec.after.esize - before.esize;
+
+	// The whole reason for the cheap trade. For a buy, anything paid beyond the
+	// listed price is tax (or a fee by another name); for a sell, anything
+	// short of it is.
+	//
+	// Only on a resolved call that moved gold. A rejection moves nothing, and
+	// deriving a "fee" from a zero delta produces a confident -100% that reads
+	// exactly like a measurement and is not one.
+	rec.qty = (o.extra && typeof o.extra[0] === 'number') ? o.extra[0] : 1;
+	if (before.slot && typeof before.slot.price === 'number') {
+		rec.unitPrice = before.slot.price;
+		rec.expectedGross = before.slot.price * rec.qty;   // listed price is PER UNIT
+	}
+	if (rec.outcome === 'resolved' && rec.goldDelta !== 0 && rec.expectedGross != null) {
+		rec.impliedFee = (o.leg === 'sell')
+			? rec.expectedGross - rec.goldDelta
+			: (-rec.goldDelta) - rec.expectedGross;
+		rec.impliedFeePct = rec.expectedGross
+			? +(100 * rec.impliedFee / rec.expectedGross).toFixed(4) : null;
+	}
+	// Recorded on every row because the tax is said to scale with merchant
+	// level: a rate measured at one level is a data point, not a constant.
+	rec.characterLevel = character.level;
+
+	pLog(rec.outcome.toUpperCase() + (rec.reason ? ' (' + rec.reason + ')' : '')
+		+ ' - gold ' + (rec.goldDelta >= 0 ? '+' : '') + rec.goldDelta
+		+ ', slots ' + (rec.esizeDelta >= 0 ? '+' : '') + rec.esizeDelta
+		+ (rec.impliedFee != null ? ', implied fee ' + rec.impliedFee + ' (' + rec.impliedFeePct + '%)' : ''),
+		rec.outcome === 'resolved' ? '#7FD98A' : 'orange');
+
+	PROBE.log.push({ at: new Date().toISOString(), msg: 'TRADE RECORD', record: rec });
+	try { set('probe_log', PROBE.log.slice(-200)); } catch (e) { }
+	return pShow(rec);
+}
+
+/* Everything observed this session, including across a reload. */
+function arbProbeDump() {
+	let stored = [];
+	try { stored = get('probe_log') || []; } catch (e) { }
+	pLog(stored.length + ' stored entries (in-memory: ' + PROBE.log.length + ')');
+	return pShow(stored);
+}
+
+function arbProbeClear() {
+	const n = PROBE.log.length;
+	// Announce first, then wipe. pLog writes back to storage, so clearing and
+	// then logging left exactly one entry behind and the log was never empty.
+	pLog('clearing ' + n + ' probe entries');
+	PROBE.log = [];
+	try { set('probe_log', []); } catch (e) { }
+	return n;
+}
+
+function arbProbeHelp() {
+	const lines = [
+		'arbProbeHold(true|false)   freeze/unfreeze the merchant for a probe',
+		'arbProbeFns()              scan both scopes for trade/bank functions',
+		'arbProbeNamed()            direct check of the names we expect',
+		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
+		'arbProbeStands()           visible stands with distances',
+		'arbProbePick(10000)        cheapest sell slot under a cap, ready to call',
+		'arbProbeBuyOrders()        visible buy orders, highest first',
+		'arbProbeInv()              esize vs counted free slots, stacks, gold',
+		'arbProbeBank()             timed bank round trip, reads only',
+		'arbProbeStep("Name", 400)  stand exactly 400 units from a stand',
+		'arbProbeCall({...})        THE ONLY ONE THAT SPENDS GOLD - see the source',
+		'arbProbeDump()             everything recorded, survives a reload',
+		'arbProbeClear()            wipe the record',
+	];
+	for (const l of lines) { try { console.log('[probe] ' + l); } catch (e) { } }
+	pLog('help printed to console (' + lines.length + ' commands)');
+	return lines;
+}
+
+/* Reachable from the code console and from other scripts on this tab. The
+   functions are also in the runner scope, but only if the console evaluates
+   there, which is not worth depending on. */
+try {
+	parent.PROBE_API = {
+		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
+		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
+		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
+		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
+	};
+} catch (e) { }
 
 // ============================================================================
 // STARTUP
@@ -2379,3 +2920,9 @@ openStandAtBestSpot();
 scoutLoop();
 gearProgressionLoop();
 maintenanceLoop();
+/* Phase 0 only announces itself. Nothing in the probe section runs unless the
+   operator calls it by hand - see Codex/PHASE0_PROBE.md. */
+try {
+	PROBE.log = get('probe_log') || [];
+	game_log('[probe] Phase 0 probe loaded (' + PROBE.log.length + ' stored entries) - arbProbeHelp() for commands', '#8b98ab');
+} catch (e) { }
