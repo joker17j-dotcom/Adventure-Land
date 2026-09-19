@@ -280,6 +280,25 @@ const CONFIG = {
 		// visible range is not ruled out. This figure is where to stand, not a
 		// proven trade range.
 		approachUnits: 500,
+		// A listing this merchant has just traded against is suppressed for this
+		// long. Measured need: the rehearsal re-picked the same route seventeen
+		// times because nothing consumes stock in a rehearsal - but live, the
+		// public feed still lists a stand we have just emptied, and worse, a buy
+		// order we have just filled.
+		//
+		// The two sides are not symmetric. A stale BUY listing costs nothing:
+		// verification fires before any gold moves and the trade is abandoned
+		// with nothing spent, which is exactly what the rehearsal showed nine
+		// times. A stale SELL listing is only discovered after the purchase, on
+		// another shard, and turns gold into an item nobody will buy. Without
+		// this, the executor would re-fill an order it had just exhausted,
+		// bank the goods, and go round again.
+		usedCooldownMs: 20 * 60 * 1000,
+		// Consecutive trades that ended with an item banked rather than sold.
+		// Past this the executor stops itself: each one has converted liquid
+		// gold into stock, and a run of them means the market being traded
+		// against is not the market on the board. Cleared by any completed sale.
+		maxConsecutiveStrandings: 2,
 		// Tax applies ONLY to gold received from another ACCOUNT, and the
 		// receiver pays it. Exactly one leg of an arbitrage round trip is
 		// therefore taxed:
@@ -2638,6 +2657,46 @@ const ARB = {
 
 const ARB_KEY = 'arb_trade';
 const ARB_BUF_KEY = 'arb_ledger_buffer';
+const ARB_USED_KEY = 'arb_used';
+const ARB_STRAND_KEY = 'arb_strandings';
+
+/* Listings this merchant has already traded against, and when they stop being
+   suppressed. Keyed by shard|target|slot so the same merchant's other slots
+   stay available - emptying one of a stand's six trade slots says nothing
+   about the other five. Persisted, because the cooldown has to outlive the
+   page reloads a trade causes. */
+function arbUsedKey(shard, target, slot) { return shard + '|' + target + '|' + slot; }
+
+function arbLoadUsed() {
+	let m = {};
+	try { m = get(ARB_USED_KEY) || {}; } catch (e) { m = {}; }
+	const now = Date.now();
+	let changed = false;
+	for (const k in m) if (!(m[k] > now)) { delete m[k]; changed = true; }
+	if (changed) { try { set(ARB_USED_KEY, m); } catch (e) { } }
+	return m;
+}
+
+function arbMarkUsed(shard, target, slot) {
+	if (!target || !slot) return;
+	const m = arbLoadUsed();
+	m[arbUsedKey(shard, target, slot)] = Date.now() + CONFIG.arbitrage.usedCooldownMs;
+	try { set(ARB_USED_KEY, m); } catch (e) { }
+}
+
+function arbIsUsed(shard, target, slot, used) {
+	const m = used || arbLoadUsed();
+	return !!m[arbUsedKey(shard, target, slot)];
+}
+
+function arbStrandings(delta) {
+	let n = 0;
+	try { n = get(ARB_STRAND_KEY) || 0; } catch (e) { n = 0; }
+	if (delta === 0) n = 0;
+	else if (delta) n += delta;
+	if (delta !== undefined) { try { set(ARB_STRAND_KEY, n); } catch (e) { } }
+	return n;
+}
 
 function arbLog(msg, color) {
 	try { game_log('[arb] ' + msg, color || '#9BD1FF'); } catch (e) { }
@@ -2859,6 +2918,9 @@ async function arbAdvance() {
 		// state; it is no longer something that can simply be dropped.
 		t.actualSpend = -r.delta;
 		t.dryRun = !!r.dryRun;
+		// Marked the instant it is consumed, not when the trade completes: if
+		// the sell leg strands, this stand must still not be re-bought from.
+		arbMarkUsed(t.buyShard, t.buyFrom, t.buySlot);
 		t.phase = 'holding';
 		t.attempts = 0;
 		arbSaveTrade(t);
@@ -2920,6 +2982,8 @@ async function arbAdvance() {
 		t.gross = t.sellPrice * t.qty;
 		t.tax = t.gross - t.received;
 		t.net = t.received - (t.actualSpend || t.spend);
+		arbMarkUsed(t.sellShard, t.sellTo, t.sellSlot);
+		arbStrandings(0);          // a completed sale clears the breaker
 		t.phase = 'sold';
 		arbSaveTrade(t);
 		return;
@@ -2944,6 +3008,18 @@ async function arbAdvance() {
 			reason: 'no buyer found', disposition: ok ? 'banked_item' : 'held_in_inventory',
 			item: t.item, qty: t.qty, spend: t.actualSpend || t.spend,
 		});
+		// Each stranding has turned liquid gold into stock. A run of them means
+		// the market being traded against is not the market on the board, and
+		// continuing would keep paying to find that out.
+		const n = arbStrandings(1);
+		if (n >= CONFIG.arbitrage.maxConsecutiveStrandings) {
+			CONFIG.arbitrage.enabled = false;
+			arbLog('STOPPED: ' + n + ' trades in a row ended with the goods banked rather than sold. '
+				+ 'Gold is being converted to stock. Set CONFIG.arbitrage.enabled back to true '
+				+ 'once you know why.', 'red');
+			arbLedger({ id: t.id, event: 'note',
+				text: 'executor stopped itself after ' + n + ' consecutive strandings' });
+		}
 		return;
 	}
 }
@@ -2965,11 +3041,9 @@ async function arbFindBuyerFor(t) {
 			if (!sl || !sl.b) continue;
 			if ((sl.name + '|' + (sl.level || 0) + '|' + (sl.p || '')) !== key) continue;
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
-			const cand = {
-				target: r.id, slot: k, price: sl.price,
-				shard: String(r.serverRegion) + String(r.serverIdentifier),
-				ageSec: age,
-			};
+			const shard = String(r.serverRegion) + String(r.serverIdentifier);
+			if (arbIsUsed(shard, r.id, k)) continue;   // we already filled this one
+			const cand = { target: r.id, slot: k, price: sl.price, shard: shard, ageSec: age };
 			if (!best || cand.price > best.price) best = cand;
 		}
 	}
@@ -3065,8 +3139,21 @@ async function arbLookForWork() {
 
 	const flips = await arbProbeFindFlips();
 	if (!flips || !flips.length) return;
-	const pick = flips.find(function (f) { return f.affordable && arbAffordable(f.spend, character.gold); });
-	if (!pick) return;
+	const used = arbLoadUsed();
+	let suppressed = 0;
+	const pick = flips.find(function (f) {
+		if (!f.affordable || !arbAffordable(f.spend, character.gold)) return false;
+		// Either side having been traded recently disqualifies the route. The
+		// sell side matters more - a buy order we filled is the one that costs
+		// gold to rediscover - but a stand we emptied is equally not there.
+		if (arbIsUsed(f.buyShard, f.buyFrom, f.buySlot, used)
+			|| arbIsUsed(f.sellShard, f.sellTo, f.sellSlot, used)) { suppressed++; return false; }
+		return true;
+	});
+	if (!pick) {
+		if (suppressed) arbLog(suppressed + ' flip(s) skipped - traded against recently', '#8b98ab');
+		return;
+	}
 
 	const t = arbPlan(pick, character.gold);
 	arbSaveTrade(t);
@@ -3152,7 +3239,7 @@ function arbRestore() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v27 / arb.3 / 2026-09-19 / ledger + trade machine + dry run';
+const MERCHANT_BUILD = 'v27 / arb.4 / 2026-09-19 / used-listing cooldown + stranding breaker';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
