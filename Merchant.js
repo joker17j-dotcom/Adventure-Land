@@ -2490,10 +2490,152 @@ function pShow(obj) {
    correctness. */
 function arbProbeHold(on) {
 	PROBE.hold = (on !== false);
+	// Written to storage, not just memory. Travelling to a candidate on another
+	// shard means change_server, which reloads the page and would otherwise
+	// clear the hold - the scout would resume rotating and hop straight back
+	// off the shard the operator just went to.
+	try { set('probe_hold', PROBE.hold); } catch (e) { }
 	pLog(PROBE.hold
-		? 'HOLD ON - no hops, no gear spending, no sellTrash'
+		? 'HOLD ON - no hops, no gear spending, no sellTrash (survives a reload)'
 		: 'HOLD OFF - normal behaviour resumes', '#FFD700');
 	return PROBE.hold;
+}
+
+/* Rows from the bridge: every stand every scout has seen, on every shard, not
+   just what is in front of this character right now. */
+async function arbProbeBridgeRows() {
+	try {
+		const rows = await scoutFetch('/merchants');
+		return Array.isArray(rows) ? rows : [];
+	} catch (e) {
+		pLog('bridge unreachable (' + (e.message || e) + ') - falling back to what is in view', 'orange');
+		return null;
+	}
+}
+
+function pAgeSec(iso) {
+	const t = Date.parse(iso);
+	return isFinite(t) ? Math.round((Date.now() - t) / 1000) : null;
+}
+
+/* Candidates for the BUY leg, taken from what the scouts already recorded
+   rather than from whatever happens to be standing here.
+ 
+   Ordered by AGE, not by price. The cheapest listing on the board is worthless
+   if the seller packed up twenty minutes ago, and every candidate here is under
+   the probe cap anyway - so the question is not "which is cheapest" but "which
+   is most likely to still be there when we arrive". Price breaks ties.
+ 
+   Falls back to the in-view scan when the bridge is down or has nothing. */
+async function arbProbeFindBuy(maxPrice) {
+	const cap = maxPrice || CONFIG.arbitrage.probe.maxPrice;
+	const rows = await arbProbeBridgeRows();
+	if (rows === null || !rows.length) {
+		if (rows && !rows.length) pLog('bridge has no stands recorded - falling back to what is in view', 'orange');
+		return arbProbePick(cap);
+	}
+	const here = mShardKey();
+	const out = [];
+	for (const r of rows) {
+		const shard = String(r.serverRegion) + String(r.serverIdentifier);
+		const age = pAgeSec(r.lastSeen);
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || sl.b) continue;
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			if (sl.price > cap) continue;
+			out.push({
+				shard: shard, here: shard === here, ageSec: age,
+				target: r.id, slot: k, name: sl.name, level: sl.level || 0,
+				price: sl.price, q: sl.q, map: r.map, x: r.x, y: r.y,
+			});
+		}
+	}
+	out.sort(function (a, b) {
+		if (a.here !== b.here) return a.here ? -1 : 1;     // no hop beats a hop
+		if ((a.ageSec || 0) !== (b.ageSec || 0)) return (a.ageSec || 0) - (b.ageSec || 0);
+		return a.price - b.price;
+	});
+	if (!out.length) {
+		pLog('nothing under ' + cap + ' gold anywhere the scouts have been - falling back to what is in view', 'orange');
+		return arbProbePick(cap);
+	}
+	const top = out[0];
+	pLog(out.length + ' candidate(s) at or under ' + cap + '. Best: ' + top.name
+		+ ' @ ' + top.price + ' from ' + top.target + ' on ' + top.shard
+		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
+	return pShow(out.slice(0, 20));
+}
+
+/* Candidates for the SELL leg - the taxed one, and the one that otherwise
+   stalls for want of a counterparty.
+ 
+   Cross-references the merchant's OWN INVENTORY against every buy order the
+   scouts have seen, so the question stops being "will someone turn up wanting
+   what I bought" and becomes "who already wants something I am holding".
+   Matched on name, level and special, the same way the watchlist groups them -
+   a level 0 buy order does not pay for a level 3 item.
+ 
+   Ordered by price, highest first: the tax measurement needs two sales at
+   clearly different prices, and the top and bottom of this list are exactly
+   that pair. */
+async function arbProbeFindSell() {
+	const have = new Map();
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (!it || !it.name) continue;
+		const key = it.name + '|' + (it.level || 0) + '|' + (it.p || '');
+		if (!have.has(key)) have.set(key, { slot: i, name: it.name, level: it.level || 0, p: it.p || null, q: it.q || 1 });
+	}
+	if (!have.size) { pLog('inventory is empty - nothing to sell', 'orange'); return []; }
+
+	const rows = await arbProbeBridgeRows();
+	const here = mShardKey();
+	const out = [];
+	const scan = function (shard, ageSec, r) {
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || !sl.b) continue;
+			const key = sl.name + '|' + (sl.level || 0) + '|' + (sl.p || '');
+			const mine = have.get(key);
+			if (!mine) continue;
+			out.push({
+				shard: shard, here: shard === here, ageSec: ageSec,
+				target: r.id, slot: k, name: sl.name, level: sl.level || 0,
+				theyPay: sl.price, theyWant: sl.q, iHoldSlot: mine.slot, iHold: mine.q,
+				map: r.map, x: r.x, y: r.y,
+			});
+		}
+	};
+	if (rows === null || !rows.length) {
+		for (const r of scoutScanStands()) scan(here, 0, r);
+	} else {
+		for (const r of rows) scan(String(r.serverRegion) + String(r.serverIdentifier), pAgeSec(r.lastSeen), r);
+	}
+	out.sort(function (a, b) { return (b.theyPay || 0) - (a.theyPay || 0); });
+	if (!out.length) {
+		pLog('nobody the scouts have seen is buying anything currently held', 'orange');
+		return pShow([]);
+	}
+	const top = out[0];
+	pLog(out.length + ' buyer(s) for held items. Best: ' + top.name + ' lvl ' + top.level
+		+ ' -> ' + top.theyPay + ' from ' + top.target + ' on ' + top.shard
+		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
+	if (out.length > 1) {
+		const lo = out[out.length - 1];
+		pLog('price spread for the two-point tax measurement: ' + lo.theyPay + ' .. ' + top.theyPay);
+	}
+	return pShow(out.slice(0, 20));
+}
+
+/* Travel to a candidate's shard. THE SCRIPT RESTARTS: change_server reloads the
+   page, so nothing after this call runs. The hold and the probe log are both in
+   storage, so they come back; anything held only in memory does not. */
+async function arbProbeGo(shardKey) {
+	if (shardKey === mShardKey()) { pLog('already on ' + shardKey); return true; }
+	arbProbeHold(true);
+	pLog('hopping to ' + shardKey + ' - the page will reload and this script restarts', '#FFD700');
+	return await mHopTo(shardKey);
 }
 
 /* Every function in either scope whose name suggests trading or banking.
@@ -2951,9 +3093,12 @@ function arbProbeHelp() {
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
 		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
-		'arbProbeStands()           visible stands with distances',
-		'arbProbePick(10000)        cheapest sell slot under a cap, ready to call',
-		'arbProbeBuyOrders()        visible buy orders, highest first',
+		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
+		'arbProbeFindSell()         who is buying something already in inventory',
+		'arbProbeGo("EUII")         travel to a candidate\'s shard (reloads the page)',
+		'arbProbeStands()           stands in view here, with distances',
+		'arbProbePick(10000)        cheapest sell slot in view here',
+		'arbProbeBuyOrders()        buy orders in view here, highest first',
 		'arbProbeInv()              esize vs counted free slots, stacks, gold',
 		'arbProbeBank()             timed bank round trip, reads only',
 		'arbProbeStep("Name", 400)  stand exactly 400 units from a stand',
@@ -2974,6 +3119,7 @@ try {
 	parent.PROBE_API = {
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
+		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
@@ -3021,5 +3167,11 @@ maintenanceLoop();
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {
 	PROBE.log = get('probe_log') || [];
-	game_log('[probe] Phase 0 probe loaded (' + PROBE.log.length + ' stored entries) - arbProbeHelp() for commands', '#8b98ab');
+	// A hop to a candidate's shard reloads the page. Without restoring the hold
+	// the scout would resume rotating on the next tick and carry the merchant
+	// straight back off the shard the operator just travelled to.
+	PROBE.hold = !!get('probe_hold');
+	game_log('[probe] Phase 0 probe loaded (' + PROBE.log.length + ' stored entries'
+		+ (PROBE.hold ? ', HOLD STILL ON' : '') + ') - arbProbeHelp() for commands',
+		PROBE.hold ? '#FFD700' : '#8b98ab');
 } catch (e) { }

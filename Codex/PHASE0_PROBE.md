@@ -71,6 +71,10 @@ Open the code console and run:
 arbProbeHelp()
 ```
 
+Note the two `Find` commands — they read from the bridge, which means the probe
+works off data the scouts already collected instead of waiting for something
+useful to wander into the plaza. Prefer them over the in-view commands.
+
 If that errors, the script has not loaded — check the tab, then retry. If the
 console evaluates in a different scope, everything is also reachable as
 `PROBE_API.help()`, `PROBE_API.pick(10000)` and so on.
@@ -159,14 +163,34 @@ designed around it.
 
 ## Step 5 — Measure the trade distance (costs nothing)
 
-Pick a cheap target:
+Find a cheap target. Ask the **bridge** first — it holds every stand every scout
+has recorded, on every shard, not just what happens to be in front of the
+merchant right now:
 
 ```js
-arbProbePick(10000)    // cheapest sell slot under 10k, with target + slot ready
+await arbProbeFindBuy(10000)
 ```
 
-If it returns `null`, nothing cheap is in view — wait for the plaza to change, or
-raise the cap, but **do not raise it above 10,000**: that is the hard cap
+Candidates are ordered by **age, not price**. The cheapest listing on the board
+is worthless if the seller packed up twenty minutes ago, and everything returned
+is already under the cap, so the useful question is which is most likely to still
+be there. Same-shard candidates rank above remote ones, because no hop beats a
+hop.
+
+If a good candidate is on another shard:
+
+```js
+await arbProbeGo('EUII')
+```
+
+**The page reloads and the script restarts** — that is what `change_server` does.
+The hold and the probe log are both kept in storage, so they come back; anything
+you were holding only in the console does not. After the reload you should see
+`HOLD STILL ON` in the startup line.
+
+If the bridge is down or has nothing under the cap, it falls back automatically
+to `arbProbePick(10000)` — the in-view scan. You can also call that directly.
+Either way, **do not raise the cap above 10,000**: that is the hard limit
 `arbProbeCall` enforces.
 
 Now walk in from far out, retrying the trade at each distance. Substitute the
@@ -210,17 +234,37 @@ RESOLVED - gold -420, slots +0, implied fee 20 (5%)
 
 `implied fee` is the whole point: gold actually paid minus the listed price.
 
-Then sell the same item back into any buy order you can reach, to measure the
-other leg:
+### The sell leg
+
+This is the taxed leg and the one that otherwise stalls waiting for someone to
+turn up wanting what you just bought. Don't wait — ask the other way round:
 
 ```js
-arbProbeBuyOrders()
+await arbProbeFindSell()
+```
+
+That cross-references **the merchant's own inventory** against every buy order
+the scouts have seen anywhere, so the question becomes "who already wants
+something I am holding". Items are matched on name, level *and* special, the same
+way the watchlist groups them — a level 0 buy order does not pay for a level 3
+item.
+
+Results are ordered by price, highest first, and the log prints the spread
+between the top and bottom entries. **That spread is the two-point tax
+measurement** — take the highest and the lowest, not two similar ones.
+
+Then travel and sell:
+
+```js
+await arbProbeGo('EUII')          // if the buyer is elsewhere
 await arbProbeStep('BuyerName', 60)
 await arbProbeCall({ fn: 'trade_sell', target: 'BuyerName', slot: 'trade2',
                      extra: [1], leg: 'sell', confirm: 'YES' })
 ```
 
-`leg: 'sell'` skips the price cap, because a sale cannot spend gold.
+`leg: 'sell'` skips the price cap, because a sale cannot spend gold. The
+`iHoldSlot` field in the finder's output tells you which inventory slot the item
+is in, if the call signature from Step 2 needs it.
 
 ---
 
