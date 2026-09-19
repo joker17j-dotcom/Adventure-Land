@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - Mainframe slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v24 (GEAR_PROGRESSION tier-1 goals commented out for ranger/priest/mage per request - the evaluator now has nothing to act on at tier 1 for any class; tier 2/3 goals unaffected)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v25 (market scouting merged in and gated on the bridge being reachable, so it stays inert on Mainframe; cross-shard delivery with a FIXED home of USIV; party link with _plshard stamping; anniversary guard using S.anniversary.next; stand raised only at home. v24's header survived thirteen commits of the above and led a handoff to record this file as untouched - bump it when you change it)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
