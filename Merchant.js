@@ -3223,7 +3223,7 @@ function arbProbeStands() {
 	const rows = scoutScanStands().map(function (r) {
 		return {
 			id: r.id, map: r.map, x: r.x, y: r.y,
-			dist: Math.round(distance(character, { x: r.x, y: r.y })),
+			dist: Math.round(pDist(character.x, character.y, r.x, r.y)),
 			sells: Object.keys(r.slots).filter(function (k) { return !r.slots[k].b; }).length,
 			buys: Object.keys(r.slots).filter(function (k) { return r.slots[k].b; }).length,
 		};
@@ -3247,7 +3247,7 @@ function arbProbePick(maxPrice) {
 			const cand = {
 				target: r.id, slot: k, name: sl.name, level: sl.level,
 				price: sl.price, q: sl.q,
-				x: r.x, y: r.y, dist: Math.round(distance(character, { x: r.x, y: r.y })),
+				x: r.x, y: r.y, dist: Math.round(pDist(character.x, character.y, r.x, r.y)),
 			};
 			if (!best || cand.price < best.price) best = cand;
 		}
@@ -3268,7 +3268,7 @@ function arbProbeBuyOrders() {
 			out.push({
 				target: r.id, slot: k, name: sl.name, level: sl.level,
 				price: sl.price, wants: sl.q,
-				dist: Math.round(distance(character, { x: r.x, y: r.y })),
+				dist: Math.round(pDist(character.x, character.y, r.x, r.y)),
 			});
 		}
 	}
@@ -3379,26 +3379,186 @@ async function arbProbeBank() {
    is the real trade range. Nothing about it is guessed or hardcoded, which is
    the point - whatever the number turns out to be, and whenever it changes,
    this measures it again. */
+/* Distance, computed here rather than through the game's distance().
+ 
+   distance(character, {x, y}) was returning numbers that had nothing to do
+   with the real separation - 208 when the true gap was 1307, 47 when it was
+   708 - so a plain {x,y} is evidently not what it expects. Whatever it does
+   with one, this is eight lines of arithmetic and it cannot lie. Different
+   maps are not comparable, so that returns null rather than a number. */
+function pDist(ax, ay, bx, by) {
+	const dx = ax - bx, dy = ay - by;
+	const d = Math.sqrt(dx * dx + dy * dy);
+	return isFinite(d) ? d : null;
+}
+
+function pWhere(e) {
+	if (!e) return null;
+	return {
+		map: e.map,
+		x: (e.real_x != null ? e.real_x : e.x),
+		y: (e.real_y != null ? e.real_y : e.y),
+	};
+}
+
+/* Find a visible entity by name. parent.entities is keyed by id; for players
+   the id is the name, but get_player is the documented route, so try both. */
+function pEntity(name) {
+	let e = null;
+	try { e = parent.entities[name] || null; } catch (err) { }
+	if (!e) { try { e = get_player(name) || null; } catch (err) { } }
+	if (!e) {
+		try {
+			for (const id in parent.entities) {
+				const c = parent.entities[id];
+				if (c && c.name === name) { e = c; break; }
+			}
+		} catch (err) { }
+	}
+	return e;
+}
+
+/* Does the game's distance() agree with plain arithmetic?
+ 
+   It did not in the field - 208 against a true 1307, then 47 against 708 - but
+   only ever when called with a plain {x, y}. The merchant's own long-standing
+   code calls it the same way for the scan spot, the stand spot and the potion
+   NPC, and that code demonstrably works: the stand goes up in the right place
+   and scoutHeldScan fires. So the fault is not obviously in distance() itself,
+   and rewriting working code on a theory is how good code gets broken.
+ 
+   This settles it by measuring instead. Run it next to any loaded target and
+   it reports both numbers for the same two points. If they agree, the probe's
+   208 came from somewhere else and the scan-spot checks are fine. If they
+   disagree, every distance() call in this file that passes a plain object is
+   suspect and they are listed here so they can be fixed together. */
+function arbProbeDistanceCheck(targetName) {
+	const out = { cases: [] };
+	const me = pWhere(character);
+	const add = function (label, x, y, extra) {
+		let game = null, err = null;
+		try { game = Math.round(distance(character, Object.assign({ x: x, y: y }, extra || {}))); }
+		catch (e) { err = String(e && e.message ? e.message : e); }
+		const mine = Math.round(pDist(me.x, me.y, x, y));
+		out.cases.push({ label: label, at: { x: Math.round(x), y: Math.round(y) }, game: game, pDist: mine, agree: game === mine, error: err });
+	};
+	if (targetName) {
+		const e = pEntity(targetName);
+		if (e) {
+			const t = pWhere(e);
+			add('entity ' + targetName + ' via plain {x,y}', t.x, t.y);
+			let game = null;
+			try { game = Math.round(distance(character, e)); } catch (err) { }
+			out.cases.push({
+				label: 'entity ' + targetName + ' passed WHOLE', at: { x: Math.round(t.x), y: Math.round(t.y) },
+				game: game, pDist: Math.round(pDist(me.x, me.y, t.x, t.y)), agree: game === Math.round(pDist(me.x, me.y, t.x, t.y)),
+			});
+		} else out.cases.push({ label: targetName + ' not loaded', game: null, pDist: null, agree: null });
+	}
+	const spot = CONFIG.stand.candidates[0];
+	if (spot) add('the scan/stand spot (used by scoutHeldScan)', spot.x, spot.y);
+	add('the potion NPC ' + CONFIG.npc.name, CONFIG.npc.x, CONFIG.npc.y, { map: CONFIG.npc.map });
+	add('a point 1000 units due east', me.x + 1000, me.y);
+
+	out.meAt = me;
+	out.allAgree = out.cases.every(function (c) { return c.agree !== false; });
+	pLog(out.allAgree
+		? 'distance() agrees with plain arithmetic on every case - the 208 came from elsewhere'
+		: 'distance() DISAGREES with plain arithmetic - every plain-object call in this file is suspect',
+		out.allAgree ? null : 'red');
+	return pShow(out);
+}
+
+/* Stand `dist` units from a target, and REPORT WHETHER IT ACTUALLY HAPPENED.
+ 
+   The previous version claimed success while standing still. It awaited
+   move(), which walks only in a straight line and, when the path is blocked,
+   neither moves nor throws - so the smart_move fallback in the catch never
+   ran. It then measured with the game's distance() against a plain {x,y},
+   which returned a number unrelated to the real gap. Two independent faults,
+   and between them it reported "standing 208 units from Griffin" while parked
+   1307 units away and never having moved.
+ 
+   So: smart_move first, since it is the one that pathfinds; positions read
+   before and after; distance computed here; and the result says plainly
+   whether the character moved at all. A caller must be able to distinguish
+   "in position" from "still where it started but told otherwise". */
 async function arbProbeStep(targetName, dist) {
-	const e = parent.entities[targetName] || get_player(targetName);
-	if (!e) { pLog('no entity named "' + targetName + '" in view', 'orange'); return null; }
-	const tx = (e.real_x != null ? e.real_x : e.x), ty = (e.real_y != null ? e.real_y : e.y);
+	const e = pEntity(targetName);
+	if (!e) {
+		pLog('no entity named "' + targetName + '" is loaded here - cannot position', 'orange');
+		return pShow({ ok: false, reason: 'target_not_loaded', target: targetName });
+	}
+	const t = pWhere(e);
+	const from = pWhere(character);
 	const want = (dist == null) ? CONFIG.arbitrage.probe.startDist : dist;
-	let dx = character.x - tx, dy = character.y - ty;
+	const before = (from.map === t.map) ? pDist(from.x, from.y, t.x, t.y) : null;
+
+	let dx = from.x - t.x, dy = from.y - t.y;
 	let len = Math.sqrt(dx * dx + dy * dy);
 	// Standing exactly on top of the target leaves no direction to back off in;
 	// any direction will do, so pick one.
 	if (!len || !isFinite(len)) { dx = 1; dy = 0; len = 1; }
-	const px = tx + (dx / len) * want, py = ty + (dy / len) * want;
-	try {
-		await move(px, py);
-	} catch (err) {
-		try { await smart_move({ map: character.map, x: px, y: py }); }
-		catch (err2) { pLog('could not reach the ' + want + '-unit mark: ' + (err2.reason || err2), 'orange'); }
+	const px = t.x + (dx / len) * want, py = t.y + (dy / len) * want;
+
+	const errors = [];
+	try { await smart_move({ map: t.map, x: px, y: py }); }
+	catch (err) {
+		errors.push('smart_move: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)));
+		try { await move(px, py); }
+		catch (err2) { errors.push('move: ' + (err2 && (err2.reason || err2.message) ? (err2.reason || err2.message) : String(err2))); }
 	}
-	const now = Math.round(distance(character, { x: tx, y: ty }));
-	pLog('standing ' + now + ' units from ' + targetName + ' (asked for ' + want + ')');
-	return now;
+
+	const to = pWhere(character);
+	const after = (to.map === t.map) ? pDist(to.x, to.y, t.x, t.y) : null;
+	const travelled = (from.map === to.map) ? pDist(from.x, from.y, to.x, to.y) : null;
+	const out = {
+		ok: false, target: targetName, asked: want,
+		aimedAt: { x: Math.round(px), y: Math.round(py), map: t.map },
+		targetAt: { x: Math.round(t.x), y: Math.round(t.y), map: t.map },
+		from: { x: Math.round(from.x), y: Math.round(from.y), map: from.map },
+		to: { x: Math.round(to.x), y: Math.round(to.y), map: to.map },
+		movedUnits: travelled == null ? null : Math.round(travelled),
+		distBefore: before == null ? null : Math.round(before),
+		distAfter: after == null ? null : Math.round(after),
+		errors: errors,
+	};
+	// Under two units of drift is not movement, it is the client jittering.
+	out.moved = (out.movedUnits != null && out.movedUnits > 2);
+	out.ok = out.moved && out.distAfter != null && Math.abs(out.distAfter - want) <= Math.max(30, want * 0.25);
+
+	if (!out.moved) {
+		pLog('DID NOT MOVE. Still ' + out.distAfter + ' units from ' + targetName
+			+ ' (asked to stand at ' + want + ')'
+			+ (errors.length ? ' - ' + errors.join('; ') : ' - smart_move reported no error'), 'red');
+	} else if (!out.ok) {
+		pLog('moved ' + out.movedUnits + ' units but ended ' + out.distAfter + ' from '
+			+ targetName + ', not the ' + want + ' asked for', 'orange');
+	} else {
+		pLog('in position: ' + out.distAfter + ' units from ' + targetName
+			+ ' (asked ' + want + ', travelled ' + out.movedUnits + ')');
+	}
+	return pShow(out);
+}
+
+/* How far away is a target, and is it even loaded? Read-only, and the thing to
+   check before assuming anything about positioning. */
+function arbProbeRange(targetName) {
+	const e = pEntity(targetName);
+	if (!e) {
+		pLog('"' + targetName + '" is not in parent.entities - not loaded on this client', 'orange');
+		return pShow({ loaded: false, target: targetName });
+	}
+	const t = pWhere(e), me = pWhere(character);
+	const out = {
+		loaded: true, target: targetName,
+		sameMap: t.map === me.map,
+		distance: (t.map === me.map) ? Math.round(pDist(me.x, me.y, t.x, t.y)) : null,
+		targetAt: t, meAt: me, hasStand: !!e.stand,
+	};
+	pLog(targetName + ': ' + (out.sameMap ? out.distance + ' units away on ' + t.map
+		: 'on ' + t.map + ', we are on ' + me.map) + (out.hasStand ? ', stand open' : ', no stand'));
+	return pShow(out);
 }
 
 /* THE ONLY FUNCTION HERE THAT CAN MOVE GOLD.
@@ -3425,42 +3585,58 @@ async function arbProbeCall(o) {
 	const cap = CONFIG.arbitrage.probe.maxPrice;
 	const unchecked = !!o.args;
 	const need = unchecked ? 'YES-UNCHECKED' : 'YES';
+	// Refusals are returned as records, not as a bare null. A caller that gets
+	// null cannot tell "you forgot the confirm string" from "the stand is not
+	// loaded" from "it costs too much" without scraping the log, and those want
+	// three different responses.
+	const refuse = function (reason, detail, color) {
+		pLog('refused: ' + detail, color || 'orange');
+		return pShow({ outcome: 'refused', reason: reason, detail: detail, fn: o.fn, target: o.target || null, slot: o.slot || null });
+	};
 	if (o.confirm !== need) {
-		pLog('refused: this call can spend gold. Pass confirm: "' + need + '" to proceed.', 'orange');
-		return null;
+		return refuse('no_confirm', 'this call can spend gold. Pass confirm: "' + need + '" to proceed.');
 	}
 
 	let fn = null;
 	try { fn = eval(o.fn); } catch (e) { }
 	if (typeof fn !== 'function') { try { fn = parent[o.fn]; } catch (e) { } }
-	if (typeof fn !== 'function') { pLog('no function named "' + o.fn + '"', 'red'); return null; }
+	if (typeof fn !== 'function') return refuse('no_such_function', 'no function named "' + o.fn + '"', 'red');
 
-	const ent = o.target ? (parent.entities[o.target] || get_player(o.target) || null) : null;
+	const ent = o.target ? pEntity(o.target) : null;
+	// Presence first, and named as its own reason. The only refusal Phase 0 saw
+	// in the field was this one wearing the price check's clothes: the target
+	// was on another shard, so its price could not be read, and the message
+	// talked about prices when the real problem was that nothing was there.
+	if (o.target && !ent) {
+		return refuse('target_not_loaded', '"' + o.target + '" is not in parent.entities - '
+			+ 'not on this shard, or too far to be loaded. Check with arbProbeRange("' + o.target + '").');
+	}
 	let slotInfo = null;
 	if (ent && o.slot && ent.slots) slotInfo = ent.slots[o.slot] || null;
 
 	if (!unchecked && (o.leg || 'buy') === 'buy') {
 		if (!slotInfo) {
-			pLog('refused: cannot read ' + o.target + '.' + o.slot + ' to check its price. '
-				+ 'Move into view of the stand, or use o.args with "YES-UNCHECKED".', 'orange');
-			return null;
+			return refuse('slot_unreadable', o.target + ' is loaded but has no readable slot "' + o.slot
+				+ '" - the stand may have closed or been rearranged.');
 		}
 		if (!(typeof slotInfo.price === 'number' && isFinite(slotInfo.price))) {
-			pLog('refused: ' + o.target + '.' + o.slot + ' has no readable price', 'orange');
-			return null;
+			return refuse('no_price', o.target + '.' + o.slot + ' has no readable price');
 		}
 		if (slotInfo.price > cap) {
-			pLog('refused: ' + slotInfo.name + ' costs ' + slotInfo.price
-				+ ', over the ' + cap + ' probe cap. Pick something cheaper.', 'orange');
-			return null;
+			return refuse('over_cap', slotInfo.name + ' costs ' + slotInfo.price
+				+ ', over the ' + cap + ' probe cap. Pick something cheaper.');
 		}
 	}
 
 	const args = unchecked ? o.args : [ent || o.target, o.slot].concat(o.extra || []);
+	// pDist, not the game's distance(): the latter reported 208 where the true
+	// gap was 1307, so every distance this probe recorded before now is suspect.
+	const entAt = pWhere(ent), meAt = pWhere(character);
 	const before = {
 		gold: character.gold,
 		esize: character.esize,
-		dist: ent ? Math.round(distance(character, { x: (ent.real_x != null ? ent.real_x : ent.x), y: (ent.real_y != null ? ent.real_y : ent.y) })) : null,
+		sameMap: ent ? (entAt.map === meAt.map) : null,
+		dist: (ent && entAt.map === meAt.map) ? Math.round(pDist(meAt.x, meAt.y, entAt.x, entAt.y)) : null,
 		slot: slotInfo ? { name: slotInfo.name, level: slotInfo.level, price: slotInfo.price, q: slotInfo.q, b: slotInfo.b } : null,
 	};
 	pLog('CALL ' + o.fn + ' at ' + before.dist + ' units, gold=' + before.gold
@@ -3629,7 +3805,9 @@ function arbProbeHelp() {
 		'arbProbeBuyOrders()        buy orders in view here, highest first',
 		'arbProbeInv()              esize vs counted free slots, stacks, gold',
 		'arbProbeBank()             timed bank round trip, reads only',
-		'arbProbeStep("Name", 400)  stand exactly 400 units from a stand',
+		'arbProbeRange("Name")      is it loaded, and how far? read-only',
+		'arbProbeDistanceCheck("N") does the game distance() agree with arithmetic?',
+		'arbProbeStep("Name", 400)  walk to 400 units away - REPORTS IF IT DID NOT',
 		'arbProbeCall({...})        player trade - see the source before using',
 		'arbProbeNpcSell(idx,"YES") does calculate_item_value predict the payout?',
 		'arbProbeDump()             everything recorded, survives a reload',
@@ -3651,6 +3829,7 @@ try {
 		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell, source: arbProbeSource,
 		findPonty: arbProbeFindPonty, findFlips: arbProbeFindFlips,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
+		range: arbProbeRange, distanceCheck: arbProbeDistanceCheck,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
