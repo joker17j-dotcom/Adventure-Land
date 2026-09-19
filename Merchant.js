@@ -308,6 +308,11 @@ const CONFIG = {
 			{ above: 20, rate: 0.04 },
 			{ above: -Infinity, rate: 0.05 },
 		],
+		// How often the executor ticks, and how often it re-asks the market when
+		// idle. Looking is a network round trip against ALData, so it is paced
+		// well below the tick.
+		tickMs: 4000,
+		lookEveryMs: 30000,
 		probe: {
 			// arbProbeCall refuses to spend more than this in one call.
 			maxPrice: 10000,
@@ -998,6 +1003,11 @@ async function travelToRecipient(job) {
    raised again after the next hop. Pointless work, and it advertises the
    merchant somewhere it will not be in thirty seconds. */
 function shouldHoldStand() {
+	// A trade in flight may well be running on the home shard - that is the
+	// commonest buy shard. Opening the stand there would still be wrong: the
+	// stand has to be closed again before travelling, and the trade is about to
+	// travel.
+	if (ARB.cur) return false;
 	return mShardKey() === mHomeShard();
 }
 
@@ -1946,6 +1956,9 @@ async function anniversaryKissLoop() {
 				PROBE.kissNoted = true;
 				pLog('anniversary kissing suppressed while the hold is on', '#FFD700');
 			}
+		} else if (ARB.cur) {
+			// Same reason as the scout loop: a kiss walks the merchant across
+			// town, and a trade in flight has gold committed to a destination.
 		} else if (CONFIG.anniversaryKiss.enabled && !state.busy && isInTown()) {
 			PROBE.kissNoted = false;
 			const name = findFeaturedPlayerName();
@@ -2527,7 +2540,12 @@ async function scoutLoop() {
 			state.busy = false;
 		}
 
-		if (!state.busy) {
+		if (ARB.cur) {
+			// A trade is in flight. It outranks scouting and the anniversary
+			// round, and unlike them it cannot be resumed from wherever it was
+			// left: gold has been committed and the item has to reach a
+			// terminal state. Stand well clear.
+		} else if (!state.busy) {
 			if (PROBE.hold) {
 				// A probe is measuring. Never hop - a hop reloads the page and
 				// would take the probe and its half-collected findings with it -
@@ -2563,6 +2581,496 @@ async function scoutLoop() {
 		state.busy = false;
 	}
 	setTimeout(scoutLoop, CONFIG.scout.tickMs);
+}
+
+// ============================================================================
+// ARBITRAGE EXECUTION
+// ============================================================================
+/* Buy on one shard, sell on another, and survive being killed halfway.
+ 
+   THE CONSTRAINT THAT SHAPES EVERYTHING HERE
+   change_server reloads the page, which destroys every variable in this
+   script. A cross-shard trade contains two of those reloads, and between them
+   the merchant is holding an item it has paid for. So the trade lives in CODE
+   storage, not in memory, and every phase is written BEFORE the hop that ends
+   the script rather than after it. This file has been bitten by that twice
+   already - the scout hopped before it scanned, and the probe hold evaporated
+   on the reload it was meant to survive - and those only cost data.
+ 
+   ONE STEP PER TICK. A phase does its work, records the outcome, and returns.
+   Nothing chains a hop onto anything, because nothing after a hop runs.
+ 
+   PHASES
+     picked   a flip chosen, nothing spent   -> travel to the buy shard
+     at_buy   on the buy shard               -> verify, then buy
+     holding  item bought, gold spent        -> travel to the sell shard
+     at_sell  on the sell shard              -> verify, then sell
+     sold     gold received                  -> bank the share, then finish
+ 
+   From `holding` onwards the trade is no longer optional. Gold has become an
+   item, and the only ways out are selling it or banking it - never simply
+   forgetting it, which would leave the ledger reporting an open trade forever
+   and the merchant carrying stock nobody decided to keep. */
+
+const ARB = {
+	cur: null,          // mirror of the stored trade; storage is authoritative
+	buffer: [],         // ledger events the bridge has not acknowledged
+	lastLookAt: 0,
+	busy: false,
+};
+
+const ARB_KEY = 'arb_trade';
+const ARB_BUF_KEY = 'arb_ledger_buffer';
+
+function arbLog(msg, color) {
+	try { game_log('[arb] ' + msg, color || '#9BD1FF'); } catch (e) { }
+	try { console.log('[arb] ' + msg); } catch (e) { }
+}
+
+function arbLoadTrade() {
+	try { const v = get(ARB_KEY); return (v && v.phase) ? v : null; } catch (e) { return null; }
+}
+function arbSaveTrade(t) {
+	ARB.cur = t;
+	try { set(ARB_KEY, t); } catch (e) { }
+}
+function arbClearTrade() {
+	ARB.cur = null;
+	try { set(ARB_KEY, null); } catch (e) { }
+}
+
+/* A ledger event is buffered first and cleared only once the bridge confirms
+   it. The bridge dedupes on eventId, so a resend after a lost reply is free -
+   which is the whole reason a retry is safe to attempt at all. */
+function arbLedger(ev) {
+	ev.eventId = ev.eventId || (ev.id + '-' + ev.event + '-' + Date.now());
+	ARB.buffer.push(ev);
+	try { set(ARB_BUF_KEY, ARB.buffer.slice(-100)); } catch (e) { }
+	return ev;
+}
+
+async function arbFlushLedger() {
+	if (!ARB.buffer.length) return true;
+	const pending = ARB.buffer.slice();
+	const kept = [];
+	for (const ev of pending) {
+		try {
+			const r = await scoutFetch('/trade', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(ev),
+			});
+			if (!r || r.ok !== true) kept.push(ev);
+		} catch (e) {
+			kept.push(ev);
+		}
+	}
+	ARB.buffer = kept;
+	try { set(ARB_BUF_KEY, ARB.buffer); } catch (e) { }
+	if (kept.length) arbLog(kept.length + ' ledger event(s) still unsent - will retry', 'orange');
+	return kept.length === 0;
+}
+
+/* May a NEW trade start? Says why not, because "nothing happened" is the
+   hardest state to debug. An in-flight trade is not covered here: once gold is
+   spent the answer is always yes, keep going. */
+function arbCanStart(ctx) {
+	const c = CONFIG.arbitrage;
+	if (!c.enabled) return { ok: false, reason: 'disabled' };
+	if (ctx.probeHold) return { ok: false, reason: 'probe hold' };
+	if (ctx.trade) return { ok: false, reason: 'a trade is already in flight' };
+	if (ctx.busy) return { ok: false, reason: 'merchant busy' };
+	if (arbTaxRate() == null) return { ok: false, reason: 'no tax rate - refusing to price a trade' };
+	// A queued job the merchant has sat on for too long takes the next slot.
+	// It never interrupts a trade already running; it only stops one starting.
+	if (ctx.oldestJobAgeMs != null && ctx.oldestJobAgeMs > c.jobPreemptMs) {
+		return { ok: false, reason: 'a queued job has waited ' + Math.round(ctx.oldestJobAgeMs / 60000) + ' min' };
+	}
+	if (ctx.gold <= c.goldFloor) return { ok: false, reason: 'gold is at or below the floor' };
+	return { ok: true };
+}
+
+/* The hard reserve is on what is LEFT, not on what is held. Requiring only
+   that gold exceeds the floor before buying would let a purchase take it
+   straight through. */
+function arbAffordable(spend, gold) {
+	return (gold - spend) >= CONFIG.arbitrage.goldFloor;
+}
+
+/* Turn a findFlips row into the trade record that will be carried across two
+   page reloads. Everything the later phases need is copied in now - by the
+   time the sell phase runs, the flip list that produced it is long gone. */
+function arbPlan(flip, gold) {
+	const qty = Math.max(1, flip.qty || 1);
+	return {
+		id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+		phase: 'picked',
+		at: Date.now(),
+		item: flip.item, level: flip.level || 0, special: flip.special || null,
+		qty: qty,
+		buyFrom: flip.buyFrom, buyPrice: flip.buyPrice, buyShard: flip.buyShard,
+		buySlot: flip.buySlot, buyIsNpc: !!flip.buyIsNpc,
+		sellTo: flip.sellTo, sellPrice: flip.sellPrice, sellShard: flip.sellShard,
+		sellSlot: flip.sellSlot,
+		spend: flip.spend, expectProfit: flip.profit, taxRate: flip.taxRate,
+		goldAtStart: gold,
+		attempts: 0,
+	};
+}
+
+/* Half of NET profit, and only of a profit. A loss banks nothing and is not
+   carried forward against a later trade's share - each trade is settled on its
+   own. Floored so the bank never receives a fraction of a gold. */
+function arbBankShare(net) {
+	if (!(typeof net === 'number' && isFinite(net)) || net <= 0) return 0;
+	return Math.floor(net * CONFIG.arbitrage.bankShare);
+}
+
+/* Terminal. Records the outcome, releases the trade, and leaves the ledger
+   holding the only lasting account of it. */
+function arbFinish(t, event, extra) {
+	const ev = Object.assign({ id: t.id, event: event }, extra || {});
+	arbLedger(ev);
+	arbLog(event === 'closed'
+		? 'closed ' + t.item + ' x' + t.qty + ' for ' + (extra && extra.net) + ' net'
+		: 'abandoned ' + t.item + ' x' + t.qty + ' (' + (extra && extra.reason) + ')',
+		event === 'closed' ? '#7FD98A' : 'orange');
+	arbClearTrade();
+}
+
+/* Close enough to trade. Measured: a stand unloads somewhere between 566 and
+   619 units, and its slots stay readable to that edge, so there is nothing to
+   gain from walking the last 500 units. Already inside the radius counts as
+   arrived - the commonest case is that no movement is needed at all. */
+async function arbApproach(targetName) {
+	const want = CONFIG.arbitrage.approachUnits;
+	const e = pEntity(targetName);
+	if (!e) return { ok: false, reason: 'not_loaded' };
+	const t = pWhere(e), me = pWhere(character);
+	if (t.map === me.map && pDist(me.x, me.y, t.x, t.y) <= want) return { ok: true, moved: false };
+	try {
+		await smart_move({ map: t.map, x: t.x, y: t.y });
+	} catch (err) {
+		return { ok: false, reason: 'smart_move: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)) };
+	}
+	const now = pWhere(character);
+	const e2 = pEntity(targetName);
+	if (!e2) return { ok: false, reason: 'unloaded_on_arrival' };
+	const t2 = pWhere(e2);
+	const d = (t2.map === now.map) ? pDist(now.x, now.y, t2.x, t2.y) : null;
+	return (d != null && d <= want) ? { ok: true, moved: true, distance: Math.round(d) }
+		: { ok: false, reason: 'still ' + (d == null ? 'off-map' : Math.round(d) + ' units') + ' away' };
+}
+
+/* Is this listing still what the flip said it was? A price that has moved is
+   not a smaller opportunity, it is a different trade nobody has evaluated. */
+function arbStillThere(t, side) {
+	const v = arbProbeVerify(side === 'buy'
+		? { target: t.buyFrom, slot: t.buySlot, name: t.item, level: t.level, price: t.buyPrice, b: false }
+		: { target: t.sellTo, slot: t.sellSlot, name: t.item, level: t.level, price: t.sellPrice, b: true });
+	return v;
+}
+
+/* Gold actually moved, measured rather than assumed. The listed price is what
+   was advertised; this is what the server did. */
+async function arbGoldDelta(fn, args) {
+	const before = character.gold;
+	let outcome = 'resolved', reason = null, returned = null;
+	try { returned = await fn.apply(null, args); }
+	catch (e) { outcome = 'rejected'; reason = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
+	await sleep(1200);          // the gold change lands on a socket round trip
+	return { outcome: outcome, reason: reason, returned: returned, delta: character.gold - before };
+}
+
+/* One phase per tick. Never chains work onto a hop, because nothing after a
+   hop runs. */
+async function arbAdvance() {
+	const t = ARB.cur;
+	if (!t) return;
+	const here = mShardKey();
+
+	// ---- picked: nothing spent yet, so this is the last cheap exit ----------
+	if (t.phase === 'picked') {
+		if (here !== t.buyShard) {
+			t.phase = 'picked'; arbSaveTrade(t);      // written BEFORE the hop
+			arbLog('hopping to ' + t.buyShard + ' to buy ' + t.item);
+			await mHopTo(t.buyShard);                 // the script ends here in a tab
+			return;
+		}
+		t.phase = 'at_buy'; arbSaveTrade(t);
+		return;
+	}
+
+	// ---- at_buy: verify, afford, buy ---------------------------------------
+	if (t.phase === 'at_buy') {
+		const near = await arbApproach(t.buyFrom);
+		if (!near.ok) {
+			t.attempts = (t.attempts || 0) + 1;
+			if (t.attempts >= 3) {
+				arbFinish(t, 'abandoned', { reason: 'could not reach the seller: ' + near.reason, disposition: 'nothing_spent' });
+			} else { arbSaveTrade(t); }
+			return;
+		}
+		const v = arbStillThere(t, 'buy');
+		if (!v.ok) {
+			arbFinish(t, 'abandoned', { reason: 'listing changed before buying: ' + (v.reason || (v.mismatch || []).join('; ')), disposition: 'nothing_spent' });
+			return;
+		}
+		if (!arbAffordable(t.spend, character.gold)) {
+			arbFinish(t, 'abandoned', { reason: 'would breach the ' + CONFIG.arbitrage.goldFloor + ' gold floor', disposition: 'nothing_spent' });
+			return;
+		}
+		const r = await arbGoldDelta(trade_buy, [pEntity(t.buyFrom), t.buySlot, t.qty]);
+		if (r.outcome !== 'resolved' || r.delta >= 0) {
+			t.attempts = (t.attempts || 0) + 1;
+			arbLog('buy did not take (' + (r.reason || 'no gold moved') + ')', 'orange');
+			if (t.attempts >= 3) arbFinish(t, 'abandoned', { reason: 'buy refused: ' + (r.reason || 'no gold moved'), disposition: 'nothing_spent' });
+			else arbSaveTrade(t);
+			return;
+		}
+		// Gold has become an item. From here the trade must reach a terminal
+		// state; it is no longer something that can simply be dropped.
+		t.actualSpend = -r.delta;
+		t.phase = 'holding';
+		t.attempts = 0;
+		arbSaveTrade(t);
+		arbLedger({
+			id: t.id, event: 'open', item: t.item, level: t.level, special: t.special,
+			qty: t.qty, buyPrice: t.buyPrice, buyFrom: t.buyFrom, buyShard: t.buyShard,
+			spend: t.actualSpend, taxRate: t.taxRate,
+		});
+		arbLog('bought ' + t.item + ' x' + t.qty + ' for ' + t.actualSpend, '#7FD98A');
+		return;
+	}
+
+	// ---- holding: an item we paid for, and a shard to reach ----------------
+	if (t.phase === 'holding') {
+		if (here !== t.sellShard) {
+			arbSaveTrade(t);
+			arbLog('hopping to ' + t.sellShard + ' to sell ' + t.item);
+			await mHopTo(t.sellShard);
+			return;
+		}
+		t.phase = 'at_sell'; arbSaveTrade(t);
+		return;
+	}
+
+	// ---- at_sell: verify, sell, or find another buyer ----------------------
+	if (t.phase === 'at_sell') {
+		const near = await arbApproach(t.sellTo);
+		const v = near.ok ? arbStillThere(t, 'sell') : { ok: false, reason: near.reason };
+		if (!v.ok) {
+			// The buyer is gone or has repriced. Re-ask the market rather than
+			// give up: the item is already paid for, so any profitable exit
+			// beats banking it.
+			const alt = await arbFindBuyerFor(t);
+			if (alt) {
+				arbLog('buyer changed - rerouting to ' + alt.target + ' on ' + alt.shard + ' @ ' + alt.price, '#FFD700');
+				t.sellTo = alt.target; t.sellShard = alt.shard; t.sellSlot = alt.slot; t.sellPrice = alt.price;
+				t.phase = (alt.shard === here) ? 'at_sell' : 'holding';
+				t.attempts = 0;
+				arbSaveTrade(t);
+				return;
+			}
+			t.attempts = (t.attempts || 0) + 1;
+			if (t.attempts >= 3) {
+				t.phase = 'stranded'; arbSaveTrade(t);
+				arbLog('no buyer for ' + t.item + ' - banking it', 'orange');
+			} else arbSaveTrade(t);
+			return;
+		}
+		const r = await arbGoldDelta(trade_sell, [pEntity(t.sellTo), t.sellSlot, t.qty]);
+		if (r.outcome !== 'resolved' || r.delta <= 0) {
+			t.attempts = (t.attempts || 0) + 1;
+			arbLog('sell did not take (' + (r.reason || 'no gold received') + ')', 'orange');
+			if (t.attempts >= 3) { t.phase = 'stranded'; }
+			arbSaveTrade(t);
+			return;
+		}
+		t.received = r.delta;
+		t.gross = t.sellPrice * t.qty;
+		t.tax = t.gross - t.received;
+		t.net = t.received - (t.actualSpend || t.spend);
+		t.phase = 'sold';
+		arbSaveTrade(t);
+		return;
+	}
+
+	// ---- sold: settle the books, bank the share ----------------------------
+	if (t.phase === 'sold') {
+		arbFinish(t, 'closed', {
+			item: t.item, qty: t.qty, sellPrice: t.sellPrice, sellTo: t.sellTo,
+			sellShard: t.sellShard, gross: t.gross, received: t.received,
+			tax: t.tax, net: t.net,
+		});
+		const share = arbBankShare(t.net);
+		if (share > 0) await arbBankShareNow(t, share);
+		return;
+	}
+
+	// ---- stranded: bought, unsellable. Bank it and close the books ---------
+	if (t.phase === 'stranded') {
+		const ok = await arbBankItem(t);
+		arbFinish(t, 'abandoned', {
+			reason: 'no buyer found', disposition: ok ? 'banked_item' : 'held_in_inventory',
+			item: t.item, qty: t.qty, spend: t.actualSpend || t.spend,
+		});
+		return;
+	}
+}
+
+/* Any fresh buy order for what we are holding, anywhere. Used only after the
+   planned buyer has failed, when the item is already paid for and the question
+   has changed from "is this the best trade" to "is there any exit at all". */
+async function arbFindBuyerFor(t) {
+	const got = await arbProbeMarketRows();
+	const rows = got.rows || [];
+	const maxAge = CONFIG.arbitrage.sellMaxAgeSec;
+	const key = t.item + '|' + (t.level || 0) + '|' + (t.special || '');
+	let best = null;
+	for (const r of rows) {
+		const age = pAgeSec(r.lastSeen);
+		if (age == null || age > maxAge) continue;
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || !sl.b) continue;
+			if ((sl.name + '|' + (sl.level || 0) + '|' + (sl.p || '')) !== key) continue;
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			const cand = {
+				target: r.id, slot: k, price: sl.price,
+				shard: String(r.serverRegion) + String(r.serverIdentifier),
+				ageSec: age,
+			};
+			if (!best || cand.price > best.price) best = cand;
+		}
+	}
+	return best;
+}
+
+/* Deposit the banked share, then return to the scan spot before anything else
+   happens - the agreed rule. The bank is a door off the same map as the scan
+   spot, so this is a short walk, measured at about six seconds for the round
+   trip. Both legs are recorded: a deposit that happened but was not logged
+   would quietly drift the running total. */
+async function arbBankShareNow(t, share) {
+	const arrived = await travelToBank();
+	if (!arrived) {
+		arbLog('could not reach the bank - ' + share + ' gold stays on hand, recorded as owed', 'orange');
+		arbLedger({ id: t.id, event: 'note', text: 'bank share of ' + share + ' not deposited: bank unreachable' });
+		return false;
+	}
+	let ok = false;
+	try {
+		await bank_deposit(share);
+		await sleep(800);
+		ok = true;
+	} catch (e) {
+		arbLog('bank_deposit failed: ' + (e && (e.reason || e.message) ? (e.reason || e.message) : e), 'red');
+	}
+	if (ok) {
+		arbLedger({ id: t.id, event: 'banked', amount: share });
+		arbLog('banked ' + share + ' (half of ' + t.net + ' net)', '#7FD98A');
+	} else {
+		arbLedger({ id: t.id, event: 'note', text: 'bank share of ' + share + ' not deposited: bank_deposit failed' });
+	}
+	// Do the rest of the bank's business while standing in it, then go back.
+	try { await bankFullyProgressedItems(); } catch (e) { }
+	await scoutGoToScanSpot();
+	return ok;
+}
+
+/* Put an unsold item away rather than carry it. Inventory space is the scarcer
+   resource, and an item in the bank is still an asset the ledger can account
+   for - see the "abandoned" status, which keeps its spend out of realised P/L
+   rather than reporting it as a loss. */
+async function arbBankItem(t) {
+	let idx = -1;
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (it && it.name === t.item && (it.level || 0) === (t.level || 0)) { idx = i; break; }
+	}
+	if (idx < 0) {
+		arbLog('cannot find ' + t.item + ' in inventory to bank - it may already be gone', 'orange');
+		return false;
+	}
+	if (!(await travelToBank())) return false;
+	try { await bank_store(idx); } catch (e) {
+		arbLog('bank_store failed: ' + (e && (e.reason || e.message) ? (e.reason || e.message) : e), 'red');
+		await scoutGoToScanSpot();
+		return false;
+	}
+	await scoutGoToScanSpot();
+	return true;
+}
+
+/* How long the oldest queued job has waited. Above jobPreemptMs it blocks the
+   NEXT trade from starting - never one already running. */
+function arbOldestJobAgeMs() {
+	if (!state.queue.length) return null;
+	let oldest = null;
+	for (const j of state.queue) {
+		const at = j && j.requestedAt ? j.requestedAt : null;
+		if (at && (oldest == null || at < oldest)) oldest = at;
+	}
+	return oldest == null ? null : (Date.now() - oldest);
+}
+
+/* Look for work. Only ever reached with nothing in flight. */
+async function arbLookForWork() {
+	const gate = arbCanStart({
+		trade: ARB.cur, busy: state.busy, probeHold: PROBE.hold,
+		gold: character.gold, oldestJobAgeMs: arbOldestJobAgeMs(),
+	});
+	if (!gate.ok) return;
+	if (Date.now() - ARB.lastLookAt < CONFIG.arbitrage.lookEveryMs) return;
+	ARB.lastLookAt = Date.now();
+
+	const flips = await arbProbeFindFlips();
+	if (!flips || !flips.length) return;
+	const pick = flips.find(function (f) { return f.affordable && arbAffordable(f.spend, character.gold); });
+	if (!pick) return;
+
+	const t = arbPlan(pick, character.gold);
+	arbSaveTrade(t);
+	arbLog('taking ' + t.item + ' x' + t.qty + ': buy ' + t.buyPrice + ' from ' + t.buyFrom
+		+ ' (' + t.buyShard + '), sell ' + t.sellPrice + ' to ' + t.sellTo + ' (' + t.sellShard
+		+ ') for ~' + t.expectProfit + ' net', '#FFD700');
+}
+
+async function arbLoop() {
+	try {
+		await arbFlushLedger();
+		if (CONFIG.arbitrage.enabled && !PROBE.hold) {
+			if (!ARB.busy) {
+				ARB.busy = true;
+				try {
+					if (ARB.cur) { state.busy = true; await arbAdvance(); }
+					else await arbLookForWork();
+				} finally {
+					ARB.busy = false;
+					if (!ARB.cur) state.busy = false;
+				}
+			}
+		}
+	} catch (e) {
+		console.error('arbLoop error:', e);
+		ARB.busy = false;
+	}
+	setTimeout(arbLoop, CONFIG.arbitrage.tickMs);
+}
+
+/* A reload landed mid-trade. Storage is authoritative - the phase written
+   before the hop says what was happening, and nothing in memory survived. */
+function arbRestore() {
+	try { ARB.buffer = get(ARB_BUF_KEY) || []; } catch (e) { ARB.buffer = []; }
+	const t = arbLoadTrade();
+	if (!t) return;
+	ARB.cur = t;
+	// state.busy is taken back immediately: an in-flight trade outranks
+	// scouting and the anniversary round, and holds that claim across a reload.
+	state.busy = true;
+	arbLog('resuming ' + t.item + ' x' + t.qty + ' in phase "' + t.phase + '"'
+		+ (t.actualSpend ? ' - ' + t.actualSpend + ' gold already committed' : ''), '#FFD700');
 }
 
 // ============================================================================
@@ -2605,7 +3113,7 @@ async function scoutLoop() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v26 / probe.10 / 2026-09-19 / verify + collision-geometry distance + approachUnits';
+const MERCHANT_BUILD = 'v27 / arb.1 / 2026-09-19 / ledger + resumable trade state machine (enabled:false)';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -3991,6 +4499,15 @@ async function resumeInterruptedTrip() {
 		game_log(`Resuming ${pending.length} job(s) interrupted by a server change`, '#FFD700');
 	}
 	const home = mHomeShard();
+	// An arbitrage trade in flight owns where the merchant is. This reload is
+	// very likely the trade's own hop, and going home from here would strand a
+	// paid-for item on the wrong shard - the delivery jobs are requeued above
+	// and will be served once the trade reaches a terminal state.
+	if (ARB.cur) {
+		game_log('A trade is in flight - staying put; queued jobs wait', '#FFD700');
+		mClearTrip();
+		return;
+	}
 	if (!state.queue.length && mShardKey() !== home) {
 		game_log(`Nothing left to do here - returning to ${home}`, '#FFD700');
 		mClearTrip();
@@ -4000,6 +4517,9 @@ async function resumeInterruptedTrip() {
 	mClearTrip();
 }
 
+// arbRestore FIRST: resumeInterruptedTrip decides whether to hop home, and it
+// can only make that call correctly once it knows a trade is in flight.
+arbRestore();
 resumeInterruptedTrip();
 /* Pick up where the pre-hop script left off: a reload wiped every in-memory
    field, but the findings, rotation position and Ponty timers were written to
@@ -4014,6 +4534,7 @@ scoutLoop();
 gearProgressionLoop();
 maintenanceLoop();
 anniversaryKissLoop();
+arbLoop();
 /* Phase 0 only announces itself. Nothing in the probe section runs unless the
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {
