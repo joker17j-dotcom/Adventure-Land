@@ -482,6 +482,29 @@ function pontyDue(key) {
 	return Date.now() - pontySeen(key) > CONFIG.pontyEveryMs;
 }
 
+/* Sweep until the visible set stops growing, so a shard that is still
+   streaming entities in is never read half-empty.
+
+   The zero case is the one that matters, and it is not symmetric with the
+   others. A scan reporting an empty merchants array is a real observation to
+   the bridge - "nothing trading here right now" - and it REPLACES that shard's
+   listings. So a freshly landed client, whose entity list has not arrived yet,
+   reads zero twice in a second and a half and wipes a shard that was full.
+   Zero therefore only counts once every pass has been spent. */
+async function settleScan() {
+	let seen = -1;
+	for (let pass = 0; pass < CONFIG.maxSettlePasses; pass++) {
+		absorb(scanStands());
+		const n = bufferedCount();
+		if (n > 0 && n === seen) return n;
+		seen = n;
+		await new Promise((r) => setTimeout(r, CONFIG.settleMs));
+	}
+	const n = bufferedCount();
+	if (n === 0) log(`${shardKey(currentShard())}: no stands after ${CONFIG.maxSettlePasses} sweeps`, 'orange');
+	return n;
+}
+
 
 let lastPostAt = 0;
 
@@ -649,6 +672,12 @@ async function parkedLoop() {
 	let spotIdx = 0;
 	await goTo(spots[0]);
 
+	// Settle before anything is posted. lastPost starting at 0 made the first
+	// iteration post immediately - straight after arriving, with an entity list
+	// that had not streamed in - and an empty scan wipes the shard it names.
+	// With several parked scouts that is a shard blanked every time one starts
+	// or is reassigned.
+	await settleScan();
 	let lastPost = 0;
 	while (true) {
 		absorb(scanStands());
@@ -700,18 +729,16 @@ async function roamerLoop() {
 			if (items) { absorbPonty(items); pontySeen(key, Date.now()); }
 		}
 
-		// Sweep until the visible set stops growing, so a shard that is still
-		// streaming entities in is not read half-empty. Exits as soon as two
-		// passes agree - typically ~1.5s, not a fixed wait.
-		let seen = -1;
-		for (let pass = 0; pass < CONFIG.maxSettlePasses; pass++) {
-			absorb(scanStands());
-			if (CONFIG.driftBetweenSpots && spots.length > 1) {
-				await goTo(spots[(pass + 1) % spots.length]);
+		// Its own copy of this broke out on two equal readings including zero,
+		// which is the case that wipes a shard. settleScan holds zero open
+		// until every pass is spent.
+		if (CONFIG.driftBetweenSpots && spots.length > 1) {
+			for (let i = 0; i < spots.length; i++) {
+				await goTo(spots[i]);
+				await settleScan();
 			}
-			if (bufferedCount() === seen) break;
-			seen = bufferedCount();
-			await new Promise((r) => setTimeout(r, CONFIG.settleMs));
+		} else {
+			await settleScan();
 		}
 
 		// Hand it over and confirm it landed BEFORE leaving. Hopping with an

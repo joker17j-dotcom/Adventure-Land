@@ -138,6 +138,14 @@ a `change_server` plus the walk back to the scan spot.
 A character not listed in `CONFIG.roles` defaults to `parked`, so an extra scout
 can be pasted in unmodified and still be assigned a shard.
 
+**A scan reporting an empty merchants array replaces that shard's listings** —
+an empty list is a real observation ("nothing trading here right now"), which is
+what makes a stale stand disappear when it packs up. The consequence is that a
+scout must never post before its entity list has streamed in, or it wipes a
+shard that was full. Both scouts sweep until the count stops growing, and hold
+zero open until every pass is spent, because "nothing yet" and "nothing here"
+look identical for the first second or two.
+
 **Two scouts can briefly appear on the same shard, and that is not a fault.**
 The bridge's own picture is always collision-free — a shard is removed from the
 pool the moment it is handed out — but a scout only learns its assignment from
