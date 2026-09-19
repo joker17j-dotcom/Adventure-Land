@@ -251,6 +251,18 @@ const CONFIG = {
 		// Matches the watchlist's SPREAD_MAX_AGE_MS: the listing is still worth
 		// keeping and showing, it is just not worth travelling to.
 		sellMaxAgeSec: 15 * 60,
+		// MEASURED: a stand stops being loaded somewhere between 566 and 619
+		// units away, and its trade slots stay fully readable right up to that
+		// edge. So a merchant does not need to path to a stand - it needs to be
+		// inside the visibility radius, and closing the last 500 units buys
+		// nothing. Approach to here and stop.
+		//
+		// Caveat kept honest: confirmed trades exist only at ~47 and ~208 units.
+		// The band from 208 to 566 is untested, for want of a stand cheap enough
+		// to trade with under the probe cap, so a server-side gate inside the
+		// visible range is not ruled out. This figure is where to stand, not a
+		// proven trade range.
+		approachUnits: 500,
 		// Tax applies ONLY to gold received from another ACCOUNT, and the
 		// receiver pays it. Exactly one leg of an arbitrage round trip is
 		// therefore taxed:
@@ -2593,7 +2605,7 @@ async function scoutLoop() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v26 / probe.9 / 2026-09-19 / step+refusals fixed, kiss suppressed on hold';
+const MERCHANT_BUILD = 'v26 / probe.10 / 2026-09-19 / verify + collision-geometry distance + approachUnits';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -3479,20 +3491,26 @@ function pEntity(name) {
 	return e;
 }
 
-/* Does the game's distance() agree with plain arithmetic?
+/* How far apart are distance() and plain arithmetic, and why?
  
-   It did not in the field - 208 against a true 1307, then 47 against 708 - but
-   only ever when called with a plain {x, y}. The merchant's own long-standing
-   code calls it the same way for the scan spot, the stand spot and the potion
-   NPC, and that code demonstrably works: the stand goes up in the right place
-   and scoutHeldScan fires. So the fault is not obviously in distance() itself,
-   and rewriting working code on a theory is how good code gets broken.
+   MEASURED, not theorised. distance() is edge-to-edge: it subtracts one
+   entity's base for a bare {x, y}, and both bases when handed two whole
+   entities. Readings from a stationary character at (240,-90):
  
-   This settles it by measuring instead. Run it next to any loaded target and
-   it reports both numbers for the same two points. If they agree, the probe's
-   208 came from somewhere else and the scan-spot checks are fine. If they
-   disagree, every distance() call in this file that passes a plain object is
-   suspect and they are listed here so they can be fixed together. */
+       same two points, bare {x,y}   game 287  arithmetic 300   short by 13
+       same two points, whole entity game 273  arithmetic 300   short by 27
+       an NPC                        game 264  arithmetic 284   short by 20
+       1000 units due east           game 987  arithmetic 1000  short by 13
+ 
+   So it can never equal centre-to-centre arithmetic, and an earlier version of
+   this function called that disagreement and printed it in red. That was the
+   wrong question: the merchant's long-standing calls ask "am I close enough to
+   interact", which is exactly what edge-to-edge answers. No rewrite warranted
+   there, and none was made.
+ 
+   What this now checks is that the offset stays small and one-directional. A
+   large gap, or arithmetic coming out SHORTER than the game's figure, would
+   mean something other than collision geometry and would be worth chasing. */
 function arbProbeDistanceCheck(targetName) {
 	const out = { cases: [] };
 	const me = pWhere(character);
@@ -3501,7 +3519,12 @@ function arbProbeDistanceCheck(targetName) {
 		try { game = Math.round(distance(character, Object.assign({ x: x, y: y }, extra || {}))); }
 		catch (e) { err = String(e && e.message ? e.message : e); }
 		const mine = Math.round(pDist(me.x, me.y, x, y));
-		out.cases.push({ label: label, at: { x: Math.round(x), y: Math.round(y) }, game: game, pDist: mine, agree: game === mine, error: err });
+		out.cases.push({
+			label: label, at: { x: Math.round(x), y: Math.round(y) },
+			game: game, pDist: mine,
+			shortBy: (game == null) ? null : mine - game,
+			error: err,
+		});
 	};
 	if (targetName) {
 		const e = pEntity(targetName);
@@ -3510,23 +3533,77 @@ function arbProbeDistanceCheck(targetName) {
 			add('entity ' + targetName + ' via plain {x,y}', t.x, t.y);
 			let game = null;
 			try { game = Math.round(distance(character, e)); } catch (err) { }
+			const mine = Math.round(pDist(me.x, me.y, t.x, t.y));
 			out.cases.push({
 				label: 'entity ' + targetName + ' passed WHOLE', at: { x: Math.round(t.x), y: Math.round(t.y) },
-				game: game, pDist: Math.round(pDist(me.x, me.y, t.x, t.y)), agree: game === Math.round(pDist(me.x, me.y, t.x, t.y)),
+				game: game, pDist: mine, shortBy: (game == null) ? null : mine - game,
 			});
-		} else out.cases.push({ label: targetName + ' not loaded', game: null, pDist: null, agree: null });
+		} else out.cases.push({ label: targetName + ' not loaded', game: null, pDist: null, shortBy: null });
 	}
 	const spot = CONFIG.stand.candidates[0];
 	if (spot) add('the scan/stand spot (used by scoutHeldScan)', spot.x, spot.y);
 	add('the potion NPC ' + CONFIG.npc.name, CONFIG.npc.x, CONFIG.npc.y, { map: CONFIG.npc.map });
 	add('a point 1000 units due east', me.x + 1000, me.y);
 
+	const deltas = out.cases.map(function (c) { return c.shortBy; }).filter(function (d) { return d != null; });
 	out.meAt = me;
-	out.allAgree = out.cases.every(function (c) { return c.agree !== false; });
-	pLog(out.allAgree
-		? 'distance() agrees with plain arithmetic on every case - the 208 came from elsewhere'
-		: 'distance() DISAGREES with plain arithmetic - every plain-object call in this file is suspect',
-		out.allAgree ? null : 'red');
+	out.offsets = deltas;
+	// Both entity bases together are tens of units, not hundreds. Anything
+	// outside this, or negative, is not collision geometry.
+	out.consistentWithCollisionGeometry = deltas.length > 0
+		&& deltas.every(function (d) { return d >= 0 && d <= 60; });
+	pLog(out.consistentWithCollisionGeometry
+		? 'distance() runs ' + Math.min.apply(null, deltas) + '-' + Math.max.apply(null, deltas)
+			+ ' units short of centre-to-centre - edge-to-edge, as expected. Nothing to fix.'
+		: 'distance() offsets are NOT collision geometry: ' + deltas.join(', ')
+			+ ' - something else is going on', 
+		out.consistentWithCollisionGeometry ? null : 'red');
+	return pShow(out);
+}
+
+/* Is this listing real, here, now?
+ 
+   A listing on ALData seven seconds old was walked to and was simply not
+   present - no entity, no slots, nothing at the coordinates. The public feed
+   carries stands that have already gone, and the merchant would otherwise hop
+   a shard on the strength of one.
+ 
+   So every flip verifies against the live client before any gold moves: the
+   target loaded, the slot still holding the same item at the same price and
+   side. A price that has moved is not a smaller opportunity, it is a different
+   trade that has not been evaluated. */
+function arbProbeVerify(expect) {
+	expect = expect || {};
+	const out = { target: expect.target, slot: expect.slot, ok: false };
+	const e = expect.target ? pEntity(expect.target) : null;
+	if (!e) {
+		out.reason = 'not_loaded';
+		pLog(expect.target + ' is not loaded here - the listing is stale or we are out of range', 'orange');
+		return pShow(out);
+	}
+	out.loaded = true;
+	const me = pWhere(character), t = pWhere(e);
+	out.sameMap = t.map === me.map;
+	out.distance = out.sameMap ? Math.round(pDist(me.x, me.y, t.x, t.y)) : null;
+	const sl = (e.slots || {})[expect.slot];
+	if (!sl) {
+		out.reason = 'slot_gone';
+		pLog(expect.target + ' is here but ' + expect.slot + ' is empty - the stand was rearranged', 'orange');
+		return pShow(out);
+	}
+	out.live = { name: sl.name, level: sl.level || 0, price: sl.price, q: sl.q, b: !!sl.b };
+	const mismatch = [];
+	if (expect.name != null && sl.name !== expect.name) mismatch.push('name ' + sl.name + ' not ' + expect.name);
+	if (expect.level != null && (sl.level || 0) !== expect.level) mismatch.push('level ' + (sl.level || 0) + ' not ' + expect.level);
+	if (expect.price != null && sl.price !== expect.price) mismatch.push('price ' + sl.price + ' not ' + expect.price);
+	if (expect.b != null && !!sl.b !== !!expect.b) mismatch.push('side changed');
+	out.mismatch = mismatch;
+	out.ok = mismatch.length === 0;
+	pLog(out.ok
+		? 'verified: ' + expect.target + '.' + expect.slot + ' is ' + sl.name + ' @ ' + sl.price
+			+ ', ' + out.distance + ' units away'
+		: 'CHANGED since the listing: ' + mismatch.join('; ') + ' - re-evaluate before trading',
+		out.ok ? null : 'orange');
 	return pShow(out);
 }
 
@@ -3868,6 +3945,7 @@ function arbProbeHelp() {
 		'arbProbeInv()              esize vs counted free slots, stacks, gold',
 		'arbProbeBank()             timed bank round trip, reads only',
 		'arbProbeRange("Name")      is it loaded, and how far? read-only',
+		'arbProbeVerify({...})      is a listing still real, here, now?',
 		'arbProbeDistanceCheck("N") does the game distance() agree with arithmetic?',
 		'arbProbeStep("Name", 400)  walk to 400 units away - REPORTS IF IT DID NOT',
 		'arbProbeCall({...})        player trade - see the source before using',
@@ -3892,7 +3970,7 @@ try {
 		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell, source: arbProbeSource,
 		findPonty: arbProbeFindPonty, findFlips: arbProbeFindFlips,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
-		range: arbProbeRange, distanceCheck: arbProbeDistanceCheck,
+		range: arbProbeRange, distanceCheck: arbProbeDistanceCheck, verify: arbProbeVerify,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
