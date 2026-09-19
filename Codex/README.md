@@ -9,6 +9,7 @@ arbitrage executor that trades across shards.
 | `aldata_explorer.html` | Full game-data explorer — items, monsters, drops, world, bank |
 | `market_bridge.py` | Local server: collects scans, coordinates scouts, keeps the trade ledger. Stdlib only |
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
+| `relay/` | For running a scout on a second computer — see its own README |
 | `MerchantScout.js` | Standalone scout, for a fleet — see *Which file is the scout* |
 | `_al_template.html`, `_tabs_*.js`, `build.py` | Sources for the two pages (see *Rebuilding*) |
 
@@ -118,6 +119,11 @@ Supported by the bridge but never run: only the merchant has ever scouted. Paste
 `MerchantScout.js` into each extra character and list them in `CONFIG.roles` —
 the role is resolved from the character's own name at runtime, so it is the same
 file everywhere. Each needs its own browser tab.
+
+A scout on a **second computer** needs `Codex/relay/`. Pointing it at your LAN
+address does not work: the scout runs inside `https://adventure.land`, and a
+secure page may not fetch `http://` except to `127.0.0.1` or `localhost`. The
+relay gives it a localhost address to talk to and forwards over the network.
 
 **You do not assign shards yourself.** `send_cm` is
 realm-local, so scouts on different shards physically cannot talk to each other
