@@ -24,9 +24,33 @@ Two numbers come out of this phase and both are needed before Phase 1:
 
 1. **The trade distance.** Measured by collecting rejections at decreasing
    distances, which costs nothing.
-2. **The transfer tax.** The rate is reduced by some unknown factor of merchant
-   level, so a single measurement is a data point rather than a constant — see
-   *Recording the tax* below.
+2. **The transfer tax on the SELL leg.** See below — it is not symmetric, and
+   the buy leg is expected to be free.
+
+### Which leg is taxed
+
+**The receiving account pays the tax.** That asymmetry decides everything:
+
+| leg | gold goes to | who is taxed | what it costs us |
+|---|---|---|---|
+| buying from a stand | the seller | **them** | exactly the listed price |
+| selling into a buy order | us | **us** | the whole round trip's tax |
+
+So the profit formula is:
+
+```
+net = sellPrice * (1 - taxRate) - buyPrice
+```
+
+Not `sell - buy - tax` on both sides.
+
+This makes the **sell leg the critical measurement** and the buy leg a
+confirmation. A buy that comes back with a zero fee is a real result — it
+validates the model from our side — but it is not the number Phase 1 needs.
+
+**Same-account trades are exempt.** Using your own characters to stage a trade
+would report a clean zero that looks exactly like a genuine measurement. Do not
+do it. Both legs need a real stranger.
 
 ---
 
@@ -196,18 +220,44 @@ await arbProbeCall({ fn: 'trade_sell', target: 'BuyerName', slot: 'trade2',
 
 ---
 
+## Step 6b — NPC sale control (needs no counterparty)
+
+```js
+arbProbeInv()                    // find a junk slot number
+await arbProbeNpcSell(5, 'YES')  // slot NUMBER, not a name
+```
+
+Sells one junk item to a nearby vendor and compares the gold received against
+`calculate_item_value`. Refuses gear-plan items and anything over the 10,000 cap.
+
+Gold arrives at our account here too, so if the tax is charged on **received
+gold** generally, this shows a shortfall; if it is charged only on gold received
+**from another account**, this comes back clean. Those two readings imply
+different profit formulas, and Ponty purchases sit on the same question.
+
+Its practical value is that it needs nobody. Every other measurement waits on a
+stranger with the right goods; this one runs the moment Meltymerch is next to a
+vendor. **Run it first** — it is the one tax reading guaranteed to be obtainable.
+
+---
+
 ## Recording the tax
 
-**One data point cannot tell a flat fee from a percentage.** Repeat the buy leg at
-two clearly different prices — something near 500 gold and something near 9,000 —
-and report both. If `impliedFeePct` is the same at both, it is a percentage; if
-`impliedFee` is the same, it is flat.
+**One data point cannot tell a flat fee from a percentage.** Get **two sell legs
+at clearly different prices** — the sell leg is where the tax lands, so that is
+where the two points are needed. If `impliedFeePct` matches at both, it is a
+percentage; if `impliedFee` matches, it is flat.
 
-Every record also carries `characterLevel`, because the rate is said to scale with
-merchant level. A rate measured today at one level is **not** a constant, and
-`CONFIG.arbitrage.tax` stays `null` until enough points exist to fit a formula.
-Phase 1's profit test must refuse to pass while it is null rather than quietly
-assume a rate of zero.
+Run at least one buy leg too. It is expected to come back with **zero** implied
+fee. If it does not, the receiver-pays model is wrong and Phase 1 needs
+rethinking — report it loudly rather than as a rounding oddity.
+
+Every record carries `characterLevel`, because the rate is said to be reduced by
+some factor of merchant level. A rate measured today at one level is **not** a
+constant. `CONFIG.arbitrage.tax` stays `null` until enough points exist to fit a
+formula, and Phase 1's profit test must refuse to pass while it is null rather
+than assume zero — assuming zero over-trades, which is the expensive direction
+to be wrong in.
 
 ---
 
@@ -232,10 +282,12 @@ still there.
 4. `arbProbeBank()` — timings, and whether the bank reads only from inside.
 5. The distance ladder: every `{ distance, reason }` rejection, and the first
    distance that succeeded.
-6. At least two buy-leg trades at different prices, with `impliedFee`,
-   `impliedFeePct` and `characterLevel`.
-7. One sell-leg trade, same fields.
-8. The full `arbProbeDump()`.
+6. `arbProbeNpcSell` — does an NPC sale show a shortfall against
+   `calculate_item_value`, or come back clean?
+7. **Two sell-leg trades at different prices**, with `impliedFee`,
+   `impliedFeePct` and `characterLevel`. This is the critical measurement.
+8. At least one buy-leg trade — expected to show a zero fee. Say so either way.
+9. The full `arbProbeDump()`.
 
 ---
 

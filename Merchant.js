@@ -236,12 +236,26 @@ const CONFIG = {
 		// starting. It never interrupts a trade already in flight: once gold is
 		// spent, the item reaches a terminal state (sold or banked) first.
 		jobPreemptMs: 10 * 60 * 1000,
-		// Moving gold between accounts is taxed. The rate is reduced by some
-		// factor of merchant level and the formula is not known, so it is
-		// MEASURED across the phases rather than assumed - the last constant
-		// assumed in this project (Ponty's price) was wrong by half. Until a
-		// measurement lands this stays null and the profit test must refuse to
-		// pass rather than guess a rate of zero.
+		// Moving gold between accounts is taxed, and THE RECEIVING ACCOUNT PAYS.
+		// That asymmetry decides the whole profit formula:
+		//
+		//   buying  - the gold goes to the seller, so THEY are taxed and this
+		//             merchant pays exactly the listed price, no fee.
+		//   selling - the gold arrives here, so THIS merchant is taxed and the
+		//             whole cost of the round trip lands on the sell leg.
+		//
+		//   net = sellPrice * (1 - taxRate) - buyPrice
+		//
+		// Same-account trades are exempt, so the merchant's own characters
+		// cannot be used to measure this - they would report a clean zero that
+		// looks exactly like a real result.
+		//
+		// The rate is further reduced by some unknown factor of merchant level,
+		// so it is MEASURED across the phases rather than assumed: the last
+		// constant assumed in this project (Ponty's price) was wrong by half.
+		// Until a measurement lands this stays null and the profit test must
+		// refuse to pass rather than guess a rate of zero - guessing zero
+		// over-trades, which is the expensive direction to be wrong in.
 		tax: null,
 		probe: {
 			// arbProbeCall refuses to spend more than this in one call.
@@ -2832,6 +2846,68 @@ async function arbProbeCall(o) {
 	return pShow(rec);
 }
 
+/* Selling to an NPC vendor, as a control. The gold arrives here, so if the
+   tax really is charged to the receiving ACCOUNT, an NPC sale should be exempt
+   - there is no account on the other side. Confirming that is worth having:
+   it separates "tax on gold received" from "tax on gold received from a
+   player", and those two readings imply different profit formulas.
+
+   Its practical value is that it needs no counterparty at all. Every other
+   measurement here waits on a stranger standing in the plaza with the right
+   goods; this one can be run the moment the merchant is next to a vendor.
+
+   idx is an INVENTORY SLOT NUMBER, not a name. Refuses gear-plan items and
+   anything worth more than the probe cap. */
+async function arbProbeNpcSell(idx, confirm) {
+	if (confirm !== 'YES') {
+		pLog('refused: this sells a real item. Pass "YES" as the second argument.', 'orange');
+		return null;
+	}
+	const it = character.items[idx];
+	if (!it) { pLog('slot ' + idx + ' is empty', 'orange'); return null; }
+	if (isKnownGearItem(it.name)) {
+		pLog('refused: ' + it.name + ' is on a gear plan - pick junk', 'orange');
+		return null;
+	}
+	let expected = null;
+	try { expected = parent.calculate_item_value(it); } catch (e) { }
+	if (expected != null && expected > CONFIG.arbitrage.probe.maxPrice) {
+		pLog('refused: ' + it.name + ' is worth ' + expected + ', over the '
+			+ CONFIG.arbitrage.probe.maxPrice + ' probe cap', 'orange');
+		return null;
+	}
+	const rec = {
+		fn: 'sell', target: 'NPC', item: it.name, level: it.level || 0,
+		before: { gold: character.gold, esize: character.esize },
+		expectedUnit: expected,
+	};
+	pLog('CALL sell(' + idx + ', 1) on ' + it.name + ', calculate_item_value says ' + expected, '#FFD700');
+	try {
+		rec.returned = await sell(idx, 1);
+		rec.outcome = 'resolved';
+	} catch (e) {
+		rec.outcome = 'rejected';
+		rec.reason = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+	}
+	await sleep(1200);
+	rec.after = { gold: character.gold, esize: character.esize };
+	rec.goldDelta = rec.after.gold - rec.before.gold;
+	if (rec.outcome === 'resolved' && rec.goldDelta !== 0 && expected) {
+		// Positive means the vendor paid less than calculate_item_value says,
+		// i.e. something was withheld on the way in.
+		rec.impliedFee = expected - rec.goldDelta;
+		rec.impliedFeePct = +(100 * rec.impliedFee / expected).toFixed(4);
+	}
+	rec.characterLevel = character.level;
+	pLog(rec.outcome.toUpperCase() + (rec.reason ? ' (' + rec.reason + ')' : '')
+		+ ' - gold +' + rec.goldDelta + ', expected ' + expected
+		+ (rec.impliedFee != null ? ', shortfall ' + rec.impliedFee + ' (' + rec.impliedFeePct + '%)' : ''),
+		rec.outcome === 'resolved' ? '#7FD98A' : 'orange');
+	PROBE.log.push({ at: new Date().toISOString(), msg: 'NPC SELL RECORD', record: rec });
+	try { set('probe_log', PROBE.log.slice(-200)); } catch (e) { }
+	return pShow(rec);
+}
+
 /* Everything observed this session, including across a reload. */
 function arbProbeDump() {
 	let stored = [];
@@ -2862,7 +2938,8 @@ function arbProbeHelp() {
 		'arbProbeInv()              esize vs counted free slots, stacks, gold',
 		'arbProbeBank()             timed bank round trip, reads only',
 		'arbProbeStep("Name", 400)  stand exactly 400 units from a stand',
-		'arbProbeCall({...})        THE ONLY ONE THAT SPENDS GOLD - see the source',
+		'arbProbeCall({...})        player trade - see the source before using',
+		'arbProbeNpcSell(idx,"YES") sell one junk item to a vendor, as a control',
 		'arbProbeDump()             everything recorded, survives a reload',
 		'arbProbeClear()            wipe the record',
 	];
@@ -2879,6 +2956,7 @@ try {
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
+		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
 } catch (e) { }
