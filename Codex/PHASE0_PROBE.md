@@ -29,28 +29,32 @@ Two numbers come out of this phase and both are needed before Phase 1:
 
 ### Which leg is taxed
 
-**The receiving account pays the tax.** That asymmetry decides everything:
+Tax applies **only to gold received from another account**, and the **receiver**
+pays it. Exactly one leg of a round trip is affected:
 
-| leg | gold goes to | who is taxed | what it costs us |
-|---|---|---|---|
-| buying from a stand | the seller | **them** | exactly the listed price |
-| selling into a buy order | us | **us** | the whole round trip's tax |
-
-So the profit formula is:
+| leg | who receives | taxed? |
+|---|---|---|
+| buy from a player stand | them | **no** — we pay the listed price, nothing more |
+| buy from Ponty | an NPC | **no** |
+| sell into a player buy order | **us** | **YES** — the whole round trip's tax |
+| sell to an NPC vendor | us, from an NPC | **no** |
+| anything with your own characters | same account | **no** — exempt |
 
 ```
-net = sellPrice * (1 - taxRate) - buyPrice
+net = sellPrice * (1 - taxRate) - buyPrice      (player buyer)
+net = npcValue                   - buyPrice      (NPC buyer)
 ```
 
 Not `sell - buy - tax` on both sides.
 
-This makes the **sell leg the critical measurement** and the buy leg a
-confirmation. A buy that comes back with a zero fee is a real result — it
-validates the model from our side — but it is not the number Phase 1 needs.
+So **the sell-into-a-player-buy-order leg is the only measurement that matters**.
+The buy leg is a confirmation: it should come back showing **zero**. If it does
+not, the model is wrong and Phase 1 needs rethinking — report that loudly rather
+than as a rounding oddity.
 
-**Same-account trades are exempt.** Using your own characters to stage a trade
-would report a clean zero that looks exactly like a genuine measurement. Do not
-do it. Both legs need a real stranger.
+**Do not stage a trade with your own characters.** Same-account transfers are
+exempt, so it would report a clean zero indistinguishable from a real result.
+Both legs need a real stranger.
 
 ---
 
@@ -220,7 +224,7 @@ await arbProbeCall({ fn: 'trade_sell', target: 'BuyerName', slot: 'trade2',
 
 ---
 
-## Step 6b — NPC sale control (needs no counterparty)
+## Step 6b — Does `calculate_item_value` predict the vendor payout?
 
 ```js
 arbProbeInv()                    // find a junk slot number
@@ -229,35 +233,39 @@ await arbProbeNpcSell(5, 'YES')  // slot NUMBER, not a name
 
 Sells one junk item to a nearby vendor and compares the gold received against
 `calculate_item_value`. Refuses gear-plan items and anything over the 10,000 cap.
+Prints `EXACT` or `OFF BY n`.
 
-Gold arrives at our account here too, so if the tax is charged on **received
-gold** generally, this shows a shortfall; if it is charged only on gold received
-**from another account**, this comes back clean. Those two readings imply
-different profit formulas, and Ponty purchases sit on the same question.
+Not a tax measurement — NPC sales are untaxed and that is settled. This matters
+because Phase 1 has to **choose** a sell side. A player buy order is only worth
+taking once it clears the vendor's price by more than the tax:
 
-Its practical value is that it needs nobody. Every other measurement waits on a
-stranger with the right goods; this one runs the moment Meltymerch is next to a
-vendor. **Run it first** — it is the one tax reading guaranteed to be obtainable.
+```
+max( npcValue, playerBuyPrice * (1 - taxRate) )
+```
+
+never `playerBuyPrice` on its own. At a high enough rate, a generous-looking buy
+order is worth less than simply vendoring the item. `calculate_item_value` sits
+directly in that comparison, and this project has already been burned once by
+trusting its output for Ponty and being wrong by half — that time it only
+misprinted a webpage.
+
+It also needs no counterparty, so it can be run immediately. **Run it early.**
 
 ---
 
 ## Recording the tax
 
 **One data point cannot tell a flat fee from a percentage.** Get **two sell legs
-at clearly different prices** — the sell leg is where the tax lands, so that is
-where the two points are needed. If `impliedFeePct` matches at both, it is a
-percentage; if `impliedFee` matches, it is flat.
+into player buy orders at clearly different prices**. That is the only taxed leg,
+so that is where both points are needed. If `impliedFeePct` matches at both, it
+is a percentage; if `impliedFee` matches, it is flat.
 
-Run at least one buy leg too. It is expected to come back with **zero** implied
-fee. If it does not, the receiver-pays model is wrong and Phase 1 needs
-rethinking — report it loudly rather than as a rounding oddity.
-
-Every record carries `characterLevel`, because the rate is said to be reduced by
-some factor of merchant level. A rate measured today at one level is **not** a
+Every record carries `characterLevel`, because the rate is reduced by some
+unknown factor of merchant level. A rate measured today at one level is **not** a
 constant. `CONFIG.arbitrage.tax` stays `null` until enough points exist to fit a
 formula, and Phase 1's profit test must refuse to pass while it is null rather
-than assume zero — assuming zero over-trades, which is the expensive direction
-to be wrong in.
+than assume zero — assuming zero over-trades, which is the expensive direction to
+be wrong in.
 
 ---
 
@@ -282,11 +290,10 @@ still there.
 4. `arbProbeBank()` — timings, and whether the bank reads only from inside.
 5. The distance ladder: every `{ distance, reason }` rejection, and the first
    distance that succeeded.
-6. `arbProbeNpcSell` — does an NPC sale show a shortfall against
-   `calculate_item_value`, or come back clean?
-7. **Two sell-leg trades at different prices**, with `impliedFee`,
-   `impliedFeePct` and `characterLevel`. This is the critical measurement.
-8. At least one buy-leg trade — expected to show a zero fee. Say so either way.
+6. `arbProbeNpcSell` — `EXACT`, or `OFF BY` how much?
+7. **Two sell legs into player buy orders at different prices**, with
+   `impliedFee`, `impliedFeePct` and `characterLevel`. The critical measurement.
+8. At least one buy leg — expected to show a zero fee. Say so either way.
 9. The full `arbProbeDump()`.
 
 ---

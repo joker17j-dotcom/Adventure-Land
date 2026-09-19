@@ -236,26 +236,38 @@ const CONFIG = {
 		// starting. It never interrupts a trade already in flight: once gold is
 		// spent, the item reaches a terminal state (sold or banked) first.
 		jobPreemptMs: 10 * 60 * 1000,
-		// Moving gold between accounts is taxed, and THE RECEIVING ACCOUNT PAYS.
-		// That asymmetry decides the whole profit formula:
+		// Tax applies ONLY to gold received from another ACCOUNT, and the
+		// receiver is the one who pays it. Exactly one leg of an arbitrage
+		// round trip is therefore taxed:
 		//
-		//   buying  - the gold goes to the seller, so THEY are taxed and this
-		//             merchant pays exactly the listed price, no fee.
-		//   selling - the gold arrives here, so THIS merchant is taxed and the
-		//             whole cost of the round trip lands on the sell leg.
+		//   buy from a player   - gold goes to them; they are taxed, we pay the
+		//                         listed price and nothing more.
+		//   buy from Ponty      - an NPC receives; nobody is taxed.
+		//   sell to a player    - gold arrives here from their account: TAXED.
+		//   sell to an NPC      - no account on the other side; untaxed, so
+		//                         calculate_item_value is the true net.
+		//   own characters      - same account, exempt. They cannot be used to
+		//                         measure any of this: they report a clean zero
+		//                         indistinguishable from a real result.
 		//
-		//   net = sellPrice * (1 - taxRate) - buyPrice
+		//   net = sellPrice * (1 - taxRate) - buyPrice      (player buyer)
+		//   net = npcValue                  - buyPrice      (NPC buyer)
 		//
-		// Same-account trades are exempt, so the merchant's own characters
-		// cannot be used to measure this - they would report a clean zero that
-		// looks exactly like a real result.
+		// CONSEQUENCE FOR PHASE 1: the sell side is a choice, not a given. A
+		// player buy order only beats the vendor once it clears the vendor's
+		// price by more than the tax, so the comparison is
 		//
-		// The rate is further reduced by some unknown factor of merchant level,
-		// so it is MEASURED across the phases rather than assumed: the last
-		// constant assumed in this project (Ponty's price) was wrong by half.
-		// Until a measurement lands this stays null and the profit test must
-		// refuse to pass rather than guess a rate of zero - guessing zero
-		// over-trades, which is the expensive direction to be wrong in.
+		//   max(npcValue, playerBuyPrice * (1 - taxRate))
+		//
+		// and never playerBuyPrice on its own. At a high enough rate a
+		// generous-looking buy order is worth less than simply vendoring.
+		//
+		// The rate is reduced by some unknown factor of merchant level, so it is
+		// MEASURED rather than assumed: the last constant assumed in this
+		// project (Ponty's price) was wrong by half. Until a measurement lands
+		// this stays null and the profit test must refuse to pass rather than
+		// guess zero - guessing zero over-trades, the expensive direction to be
+		// wrong in.
 		tax: null,
 		probe: {
 			// arbProbeCall refuses to spend more than this in one call.
@@ -2846,15 +2858,17 @@ async function arbProbeCall(o) {
 	return pShow(rec);
 }
 
-/* Selling to an NPC vendor, as a control. The gold arrives here, so if the
-   tax really is charged to the receiving ACCOUNT, an NPC sale should be exempt
-   - there is no account on the other side. Confirming that is worth having:
-   it separates "tax on gold received" from "tax on gold received from a
-   player", and those two readings imply different profit formulas.
+/* Does calculate_item_value actually predict what a vendor pays?
 
-   Its practical value is that it needs no counterparty at all. Every other
-   measurement here waits on a stranger standing in the plaza with the right
-   goods; this one can be run the moment the merchant is next to a vendor.
+   Not a tax measurement - NPC sales are untaxed, which is settled. This exists
+   because Phase 1 has to CHOOSE a sell side: a player buy order is only worth
+   taking once it clears the vendor's price by more than the tax, so
+   calculate_item_value sits directly in the go/no-go comparison. This project
+   has already been burned once by trusting that function's output for Ponty
+   and being wrong by half, and that time it only misprinted a webpage.
+
+   Cheap to check, and it needs no counterparty - every other measurement here
+   waits on a stranger standing in the plaza with the right goods.
 
    idx is an INVENTORY SLOT NUMBER, not a name. Refuses gear-plan items and
    anything worth more than the probe cap. */
@@ -2893,15 +2907,20 @@ async function arbProbeNpcSell(idx, confirm) {
 	rec.after = { gold: character.gold, esize: character.esize };
 	rec.goldDelta = rec.after.gold - rec.before.gold;
 	if (rec.outcome === 'resolved' && rec.goldDelta !== 0 && expected) {
-		// Positive means the vendor paid less than calculate_item_value says,
-		// i.e. something was withheld on the way in.
-		rec.impliedFee = expected - rec.goldDelta;
-		rec.impliedFeePct = +(100 * rec.impliedFee / expected).toFixed(4);
+		// NPC sales are untaxed, so this should be zero. Anything else means
+		// calculate_item_value does not predict the payout, and Phase 1's
+		// vendor-vs-player comparison is being fed a wrong number.
+		rec.predictionError = expected - rec.goldDelta;
+		rec.predictionErrorPct = +(100 * rec.predictionError / expected).toFixed(4);
 	}
 	rec.characterLevel = character.level;
 	pLog(rec.outcome.toUpperCase() + (rec.reason ? ' (' + rec.reason + ')' : '')
-		+ ' - gold +' + rec.goldDelta + ', expected ' + expected
-		+ (rec.impliedFee != null ? ', shortfall ' + rec.impliedFee + ' (' + rec.impliedFeePct + '%)' : ''),
+		+ ' - gold +' + rec.goldDelta + ', predicted ' + expected
+		+ (rec.predictionError != null
+			? (rec.predictionError === 0
+				? ', EXACT'
+				: ', OFF BY ' + rec.predictionError + ' (' + rec.predictionErrorPct + '%)')
+			: ''),
 		rec.outcome === 'resolved' ? '#7FD98A' : 'orange');
 	PROBE.log.push({ at: new Date().toISOString(), msg: 'NPC SELL RECORD', record: rec });
 	try { set('probe_log', PROBE.log.slice(-200)); } catch (e) { }
@@ -2939,7 +2958,7 @@ function arbProbeHelp() {
 		'arbProbeBank()             timed bank round trip, reads only',
 		'arbProbeStep("Name", 400)  stand exactly 400 units from a stand',
 		'arbProbeCall({...})        player trade - see the source before using',
-		'arbProbeNpcSell(idx,"YES") sell one junk item to a vendor, as a control',
+		'arbProbeNpcSell(idx,"YES") does calculate_item_value predict the payout?',
 		'arbProbeDump()             everything recorded, survives a reload',
 		'arbProbeClear()            wipe the record',
 	];
