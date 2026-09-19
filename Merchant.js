@@ -268,18 +268,25 @@ const CONFIG = {
 		// Matches the watchlist's SPREAD_MAX_AGE_MS: the listing is still worth
 		// keeping and showing, it is just not worth travelling to.
 		sellMaxAgeSec: 15 * 60,
-		// MEASURED: a stand stops being loaded somewhere between 566 and 619
-		// units away, and its trade slots stay fully readable right up to that
-		// edge. So a merchant does not need to path to a stand - it needs to be
-		// inside the visibility radius, and closing the last 500 units buys
-		// nothing. Approach to here and stop.
+		// How close to get to a stand before trading. Not a measured limit - a
+		// deliberately conservative choice below two readings that disagree.
 		//
-		// Caveat kept honest: confirmed trades exist only at ~47 and ~208 units.
-		// The band from 208 to 566 is untested, for want of a stand cheap enough
-		// to trade with under the probe cap, so a server-side gate inside the
-		// visible range is not ruled out. This figure is where to stand, not a
-		// proven trade range.
-		approachUnits: 500,
+		//   566-619  a controlled walk-out from a stationary stand: loaded and
+		//            fully readable at 450, 500 and 566, gone at 619 and 681.
+		//   699+     an earlier incidental observation of a stand still visible,
+		//            and "still climbing" - see the scan-spot comments, which
+		//            rely on it.
+		//
+		// They are not reconciled. Visibility may differ by map or by client
+		// state, the first was controlled but done once against one target on
+		// one map, and the second was incidental. Picking whichever is more
+		// convenient is how this project produced a confident 1,307-unit trade
+		// range that turned out to be an artefact.
+		//
+		// 350 sits comfortably inside both, and above the 208 units at which a
+		// trade is known to have worked, so it costs nothing to be wrong about
+		// either figure. Raise it once the disagreement is settled.
+		approachUnits: 350,
 		// A listing this merchant has just traded against is suppressed for this
 		// long. Measured need: the rehearsal re-picked the same route seventeen
 		// times because nothing consumes stock in a rehearsal - but live, the
@@ -2466,7 +2473,10 @@ function scoutNextShard() {
 
 /* Stand where the stands are before reading them.
 
-   Entity visibility is a radius - measured at 699+ units - so WHERE the scan
+   Entity visibility is a radius. Two readings of it disagree - a stand was once
+   seen at 699+ units and still climbing, while a controlled walk-out later put
+   the unload boundary between 566 and 619 - and neither has been reconciled.
+   Drifting between spots is cheap and covers both, so WHERE the scan
    happens decides what it sees. change_server drops the character wherever it
    left off, and an anniversary kiss can end anywhere on the map, so without
    this the scout would hop and scan from some arbitrary corner and report a
@@ -2815,10 +2825,11 @@ function arbFinish(t, event, extra) {
 	arbClearTrade();
 }
 
-/* Close enough to trade. Measured: a stand unloads somewhere between 566 and
-   619 units, and its slots stay readable to that edge, so there is nothing to
-   gain from walking the last 500 units. Already inside the radius counts as
-   arrived - the commonest case is that no movement is needed at all. */
+/* Close enough to trade. A stand's trade slots stay fully readable right to the
+   edge of visibility - there is no inner radius where you can see a stand but
+   not read its prices - so there is nothing to gain from closing the last few
+   hundred units. Already inside CONFIG.arbitrage.approachUnits counts as
+   arrived, and the commonest case is that no movement is needed at all. */
 async function arbApproach(targetName) {
 	const want = CONFIG.arbitrage.approachUnits;
 	const e = pEntity(targetName);

@@ -285,10 +285,31 @@ Merchant (`Merchant.js`, `CONFIG.scout`):
 | `maxCycleMs` | 3 min | A shard visit longer than this is assumed hung |
 | `skipServers` | `['PVP']` | A parked scout on PVP is a free kill |
 
-Arbitrage (`CONFIG.arbitrage`) — see *Safety rails*, plus `approachUnits` (500;
-a stand unloads between 566 and 619 units, and its slots stay readable to that
-edge, so walking closer buys nothing) and `batchAboveGold` (100M; below it, one
+Arbitrage (`CONFIG.arbitrage`) — see *Safety rails*, plus `approachUnits` (350;
+see *The visibility radius* below) and `batchAboveGold` (100M; below it, one
 trade at a time).
+
+### The visibility radius
+
+A stand's trade slots stay fully readable right to the edge of visibility —
+there is no inner radius where you can see a stand but cannot read its prices —
+so a merchant never needs to path all the way to one. Where that edge is has two
+readings that **disagree and have not been reconciled**:
+
+| reading | how |
+|---|---|
+| **566–619 units** | A controlled walk-out from a stationary stand: loaded and fully readable at 450, 500 and 566; gone at 619 and 681 |
+| **699+ units** | An earlier incidental sighting, "still climbing" when sampling stopped. The scan-spot drifting still relies on it |
+
+They may both be true if visibility varies by map or client state. The first was
+controlled but done once, on one map, against one target; the second was
+incidental.
+
+`approachUnits` is **350** — below both, and above the 208 units at which a trade
+is known to have worked, so it costs nothing to be wrong about either figure.
+Raise it once the disagreement is settled. Picking whichever number is more
+convenient is how this project produced a confident 1,307-unit trade range that
+turned out to be an artefact.
 
 Bridge (`market_bridge.py`):
 
@@ -321,8 +342,8 @@ committed alongside their sources so the pages work straight from a clone.
 **Measured against the live game:** the tax rate and which leg carries it; that
 `trade_buy`/`trade_sell` take `(target, slot, quantity)`; that `bank_deposit`
 and `bank_withdraw` exist; that `esize` is free inventory slots; that a bank
-round trip is about 6 seconds; that a stand unloads between 566 and 619 units
-with its slots readable to the edge; that `parent.entities` exposes stand slots
+round trip is about 6 seconds; that a stand's slots stay readable to the edge of
+visibility, wherever exactly that edge is (see *The visibility radius*); that `parent.entities` exposes stand slots
 under `entity.slots` keyed `trade1..N` with equipment mixed in, so a scanner
 must filter on the prefix; that `socket.emit('secondhands')` is the right call
 for Ponty; that Chrome permits the `adventure.land` → `127.0.0.1` POST; and that
@@ -330,9 +351,12 @@ a trade survives the two page reloads its own shard hops cause.
 
 **Not established:**
 
+- Where the visibility radius actually is. Two readings disagree; neither has
+  been re-run. `approachUnits: 350` sits under both.
 - Whether a server-side trade-distance gate exists between 208 and 566 units.
   Confirmed trades exist only at 47 and 208; nothing cheap enough to test with
-  was available further out. `approachUnits: 500` is conservative either way.
+  was available further out. 350 is inside the proven band's upper reach and
+  well past its lower one.
 - Cross-map trading — never tested, same cause.
 - The real opportunity rate. The one rehearsal ran 26 trades in 23 minutes but
   re-picked two routes seventeen times, because nothing is consumed in a

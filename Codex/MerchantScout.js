@@ -73,10 +73,12 @@ const CONFIG = {
 	scanSpots: [],
 	// Walk between scan spots, or hold the first one.
 	//
-	// Entity visibility was measured at 699+ units and still climbing when the
-	// sampling stopped, which comfortably covers the whole main-map merchant
-	// plaza from a single pitch - so drifting buys nothing there and costs time
-	// that could be spent scanning. Left on by default because a bigger or more
+	// Entity visibility is a radius, and two readings of it disagree: a stand
+	// was seen at 699+ units and still climbing when sampling stopped, while a
+	// later controlled walk-out put the unload boundary between 566 and 619.
+	// Neither has been reconciled. Either comfortably covers the whole main-map
+	// merchant plaza from a single pitch - so drifting buys nothing there and
+	// costs time that could be spent scanning. Left on by default because a
 	// spread-out venue may still need it; turn it off for main.
 	driftBetweenSpots: false,
 
@@ -669,8 +671,10 @@ async function parkedLoop() {
 		}
 
 		// Drift between anchor points: entity visibility is a radius, so one
-		// fixed pitch can miss stands parked beyond it. Measured at 699+ units,
-		// which covers the main plaza, so this is for venues that are larger.
+		// fixed pitch can miss stands parked beyond it. The two readings of that
+		// radius disagree - 699+ once, 566-619 in a later controlled walk-out -
+		// so drifting covers both at no cost. The main plaza fits inside either;
+		// this is for venues that are larger.
 		if (CONFIG.driftBetweenSpots && spots.length > 1 && Math.random() < 0.25) {
 			spotIdx = (spotIdx + 1) % spots.length;
 			await goTo(spots[spotIdx]);
