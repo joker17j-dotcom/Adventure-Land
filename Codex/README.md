@@ -135,6 +135,18 @@ A parked scout only moves when a new shard beats its current one by 25%.
 Without that margin they thrash between near-equal shards, and every move costs
 a `change_server` plus the walk back to the scan spot.
 
+A character not listed in `CONFIG.roles` defaults to `parked`, so an extra scout
+can be pasted in unmodified and still be assigned a shard.
+
+**Two scouts can briefly appear on the same shard, and that is not a fault.**
+The bridge's own picture is always collision-free — a shard is removed from the
+pool the moment it is handed out — but a scout only learns its assignment from
+the reply to its own scan. Between one scout being reassigned and the other
+posting again, the *scouts* disagree with the bridge even though the bridge does
+not disagree with itself. It resolves on the next post. Verified up to eight
+parked scouts against three known shards: never a duplicate, and the surplus
+scouts are given nothing rather than a shared shard.
+
 ---
 
 ## Arbitrage
