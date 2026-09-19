@@ -2754,7 +2754,8 @@ async function arbProbeFindSell() {
 		source === 'bridge' ? null : 'orange');
 	out.sort(function (a, b) { return (b.theyPay || 0) - (a.theyPay || 0); });
 	if (!out.length) {
-		pLog('nobody the scouts have seen is buying anything currently held', 'orange');
+		pLog('nobody the scouts have seen is buying anything currently held'
+			+ ' - arbProbeWhyNoSell() shows what was compared', 'orange');
 		return pShow([]);
 	}
 	const top = out[0];
@@ -2766,6 +2767,72 @@ async function arbProbeFindSell() {
 		pLog('price spread for the two-point tax measurement: ' + lo.theyPay + ' .. ' + top.theyPay);
 	}
 	return pShow(out.slice(0, 20));
+}
+
+/* Why findSell came back empty.
+ 
+   "20 buy orders exist, none of them match" is a conclusion, not an
+   observation, and the two things it could mean need different responses: a
+   real gap in the market, or a matching rule that is too strict. So show the
+   working - what is held, what is wanted, and in particular the NEAR MISSES:
+   the same item name at a different level or special.
+ 
+   A near miss is the informative case. A pile of them means the level+special
+   match is throwing away trades; none at all means the market genuinely does
+   not want what this merchant is carrying, and the sell leg has to wait. */
+async function arbProbeWhyNoSell() {
+	const held = [];
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (!it || !it.name) continue;
+		held.push({ slot: i, name: it.name, level: it.level || 0, p: it.p || null, q: it.q || 1 });
+	}
+	const rows = await arbProbeBridgeRows();
+	const here = mShardKey();
+	const wanted = [];
+	const src = (rows === null || !rows.length)
+		? scoutScanStands().map(function (r) { return { r: r, shard: here, age: 0 }; })
+		: rows.map(function (r) { return { r: r, shard: String(r.serverRegion) + String(r.serverIdentifier), age: pAgeSec(r.lastSeen) }; });
+	for (const e of src) {
+		for (const k in (e.r.slots || {})) {
+			const sl = e.r.slots[k];
+			if (!sl || !sl.b) continue;
+			wanted.push({
+				shard: e.shard, ageSec: e.age, target: e.r.id, slot: k,
+				name: sl.name, level: sl.level || 0, p: sl.p || null,
+				pays: sl.price, wants: sl.q,
+			});
+		}
+	}
+	const heldNames = new Set(held.map(function (h) { return h.name; }));
+	const exact = [];
+	const near = [];
+	for (const w of wanted) {
+		if (!heldNames.has(w.name)) continue;
+		const mine = held.filter(function (h) { return h.name === w.name; });
+		const hit = mine.filter(function (h) { return h.level === w.level && (h.p || '') === (w.p || ''); });
+		if (hit.length) exact.push({ buyer: w, mine: hit });
+		else near.push({ buyer: w, mine: mine, why: 'same item, different level/special' });
+	}
+	const out = {
+		shardsSeen: [...new Set(wanted.map(function (w) { return w.shard; }))],
+		heldCount: held.length,
+		buyOrdersSeen: wanted.length,
+		nameOverlap: exact.length + near.length,
+		exactMatches: exact.length,
+		nearMisses: near,
+		held: held,
+		wantedItems: [...new Set(wanted.map(function (w) { return w.name + ' lvl' + w.level; }))].sort(),
+	};
+	pLog(held.length + ' held vs ' + wanted.length + ' buy order(s) on ' + out.shardsSeen.join(',')
+		+ ': ' + exact.length + ' exact, ' + near.length + ' near miss(es)',
+		near.length ? '#FFD700' : null);
+	if (!out.nameOverlap) {
+		pLog('no item NAME appears on both sides - a real market gap, not a matching rule');
+	} else if (!exact.length) {
+		pLog('names overlap but level/special never does - the match rule is what is blocking', '#FFD700');
+	}
+	return pShow(out);
 }
 
 /* Travel to a candidate's shard. THE SCRIPT RESTARTS: change_server reloads the
@@ -3261,6 +3328,7 @@ function arbProbeHelp() {
 		'arbProbeBridge()           is the bridge feeding the finders? how much?',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
 		'arbProbeFindSell()         who is buying something already in inventory',
+		'arbProbeWhyNoSell()        when that is empty: held vs wanted, near misses',
 		'arbProbeGo("EUII")         travel to a candidate\'s shard (reloads the page)',
 		'arbProbeStands()           stands in view here, with distances',
 		'arbProbePick(10000)        cheapest sell slot in view here',
@@ -3286,7 +3354,7 @@ try {
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
-		bridge: arbProbeBridge,
+		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
