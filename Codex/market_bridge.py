@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import threading
 import time
@@ -90,6 +91,189 @@ def iso(ts: float) -> str:
 
 def shard_key(region: str, name: str) -> str:
     return f"{region}{name}"
+
+
+# Trade ledger events, in the order a trade can move through them. "open" is a
+# purchase that has not been resolved; every trade ends "closed" (sold) or
+# "abandoned" (given up on, item kept or vendored). "banked" records the half of
+# net profit put away, "adjust" a hand correction from the page, "note" a
+# free-text line.
+LEDGER_EVENTS = ("open", "closed", "abandoned", "banked", "adjust", "note")
+
+# Fields an "adjust" event is allowed to change. Deliberately narrow: the point
+# of a hand correction is to record what really happened to an item the script
+# could not see, not to let the page rewrite a trade's identity.
+ADJUSTABLE = ("sellPrice", "received", "net", "status", "qty", "sellTo", "sellShard")
+
+
+class Ledger:
+    """Append-only trade history. Never expires, never rewritten.
+
+    Separate from Store because it obeys the opposite rule. Store holds a market
+    snapshot that is supposed to age out; this is the record of what was
+    actually done, and the operator's requirement was that no timer and no
+    restart may clear it.
+
+    JSON Lines rather than one JSON document, for two reasons. A crash
+    mid-write costs the last line instead of the file, and appending never has
+    to read or rewrite what is already there - so the cost of a trade does not
+    grow with the number of trades already recorded.
+
+    Current state is derived by replaying the events, so the file stays the only
+    source of truth and there is nothing to keep in step with it."""
+
+    def __init__(self, path: pathlib.Path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.events: list[dict] = []
+        self.seen: set[str] = set()      # eventId dedupe - see append()
+        self.load()
+
+    def load(self) -> None:
+        if not self.path.exists():
+            return
+        bad = 0
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except Exception:
+                        # One unreadable line must not cost the whole history;
+                        # that is the reason for line-delimited records.
+                        bad += 1
+                        continue
+                    if isinstance(e, dict) and e.get("id"):
+                        self.events.append(e)
+                        if e.get("eventId"):
+                            self.seen.add(e["eventId"])
+        except Exception as ex:
+            print(f"[bridge] could not read the ledger: {ex}")
+            return
+        msg = f"[bridge] ledger: {len(self.events)} event(s) from {self.path}"
+        if bad:
+            msg += f" ({bad} unreadable line(s) skipped)"
+        print(msg)
+
+    def append(self, body: dict) -> dict:
+        """Record one event. Idempotent on eventId.
+
+        The merchant resends anything the bridge has not acknowledged, exactly
+        as it does with scans, so the same event arrives twice whenever a reply
+        is lost. Without dedupe a retried "banked" would double-count gold that
+        moved once."""
+        ev = str(body.get("event") or "").strip()
+        if ev not in LEDGER_EVENTS:
+            return {"ok": False, "error": f"event must be one of {', '.join(LEDGER_EVENTS)}"}
+        tid = str(body.get("id") or "").strip()
+        if not tid:
+            return {"ok": False, "error": "id is required"}
+
+        rec = {k: v for k, v in body.items() if k != "at"}
+        rec["id"] = tid
+        rec["event"] = ev
+        rec["at"] = iso(now())
+
+        with self.lock:
+            eid = rec.get("eventId")
+            if eid and eid in self.seen:
+                say(f"ledger {ev} {tid} - duplicate, ignored")
+                return {"ok": True, "duplicate": True, "id": tid, "events": len(self.events)}
+            try:
+                with self.path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(rec, separators=(",", ":")) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            except Exception as ex:
+                # Refusing is the honest answer. Accepting an event we could not
+                # write would have the merchant clear its buffer and lose it.
+                return {"ok": False, "error": f"could not write the ledger: {ex}"}
+            self.events.append(rec)
+            if eid:
+                self.seen.add(eid)
+
+        bits = [f"ledger {ev} {tid}"]
+        if rec.get("item"):
+            bits.append(str(rec["item"]) + (f" x{rec['qty']}" if rec.get("qty") else ""))
+        for k in ("spend", "net", "amount"):
+            if rec.get(k) is not None:
+                bits.append(f"{k}={rec[k]}")
+        say("  ".join(bits))
+        return {"ok": True, "id": tid, "events": len(self.events)}
+
+    def state(self) -> dict:
+        """Replay the events into per-trade rows plus running totals."""
+        with self.lock:
+            events = list(self.events)
+
+        trades: dict[str, dict] = {}
+        order: list[str] = []
+        banked_total = 0
+        for e in events:
+            tid = e["id"]
+            t = trades.get(tid)
+            if t is None:
+                t = {"id": tid, "status": "open", "banked": 0, "notes": [], "events": 0}
+                trades[tid] = t
+                order.append(tid)
+            t["events"] += 1
+            ev = e["event"]
+            if ev == "open":
+                for k in ("item", "level", "special", "qty", "buyPrice", "buyFrom",
+                          "buyShard", "spend", "taxRate"):
+                    if e.get(k) is not None:
+                        t[k] = e[k]
+                t["openedAt"] = e["at"]
+            elif ev == "closed":
+                for k in ("sellPrice", "sellTo", "sellShard", "gross", "received", "tax", "net"):
+                    if e.get(k) is not None:
+                        t[k] = e[k]
+                t["status"] = "closed"
+                t["closedAt"] = e["at"]
+            elif ev == "abandoned":
+                t["status"] = "abandoned"
+                t["closedAt"] = e["at"]
+                if e.get("reason"):
+                    t["reason"] = e["reason"]
+                if e.get("disposition"):
+                    t["disposition"] = e["disposition"]
+            elif ev == "banked":
+                amt = e.get("amount") or 0
+                t["banked"] += amt
+                banked_total += amt
+            elif ev == "adjust":
+                f = e.get("field")
+                if f in ADJUSTABLE:
+                    t[f] = e.get("value")
+                    t.setdefault("adjusted", []).append(f)
+            elif ev == "note":
+                if e.get("text"):
+                    t["notes"].append({"at": e["at"], "text": e["text"]})
+
+        rows = [trades[i] for i in order]
+        realized = sum(r.get("net") or 0 for r in rows if r["status"] == "closed")
+        open_rows = [r for r in rows if r["status"] == "open"]
+        abandoned = [r for r in rows if r["status"] == "abandoned"]
+        return {
+            "trades": rows,
+            "totals": {
+                # Realised and unrealised kept apart on purpose. A bought item
+                # that has not sold is gold turned into an asset, not a loss,
+                # and folding the two together would report it as one.
+                "realizedNet": realized,
+                "closed": len([r for r in rows if r["status"] == "closed"]),
+                "open": len(open_rows),
+                "openSpend": sum(r.get("spend") or 0 for r in open_rows),
+                "abandoned": len(abandoned),
+                "abandonedSpend": sum(r.get("spend") or 0 for r in abandoned),
+                "banked": banked_total,
+                "events": len(events),
+            },
+            "path": str(self.path),
+        }
 
 
 class Store:
@@ -372,6 +556,7 @@ class Store:
 
 class Handler(BaseHTTPRequestHandler):
     store: Store = None            # set on the server instance below
+    ledger: Ledger = None
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -415,6 +600,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._send({"ok": False, "error": "to= is required"}, 400)
             else:
                 self._send(self.store.get_messages(who, since))
+        elif path == "/trades":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            if (q.get("raw") or [""])[0] in ("1", "true"):
+                with self.ledger.lock:
+                    self._send({"events": list(self.ledger.events)})
+            else:
+                self._send(self.ledger.state())
         elif path == "/ponty":
             with self.store.lock:
                 self._send(self.store.ponty)
@@ -427,7 +620,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path not in ("/scan", "/msg"):
+        if path not in ("/scan", "/msg", "/trade"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
             return
         try:
@@ -440,8 +633,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send({"ok": False, "error": "body must be an object"}, 400)
             return
         try:
-            self._send(self.store.post_message(body) if path == "/msg"
-                       else self.store.ingest(body))
+            if path == "/msg":
+                self._send(self.store.post_message(body))
+            elif path == "/trade":
+                self._send(self.ledger.append(body))
+            else:
+                self._send(self.store.ingest(body))
         except Exception as e:
             self._send({"ok": False, "error": str(e)}, 500)
 
@@ -451,6 +648,12 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8787)
     ap.add_argument("--state", default="", help="optional JSON file to survive restarts")
+    # Defaulted ON, unlike --state. The market snapshot is allowed to be lost;
+    # the trade history is not - the requirement was that no timer and no
+    # restart clears it, and an off-by-default flag is a restart away from
+    # breaking that.
+    ap.add_argument("--ledger", default="./ledger.jsonl",
+                    help="append-only trade history (default ./ledger.jsonl)")
     ap.add_argument("--quiet", action="store_true",
                     help="only print startup and errors, no per-event lines")
     a = ap.parse_args()
@@ -459,10 +662,12 @@ def main():
     QUIET = a.quiet
 
     Handler.store = Store(pathlib.Path(a.state) if a.state else None)
+    Handler.ledger = Ledger(pathlib.Path(a.ledger))
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
     print(f"[bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>")
+    print(f"[bridge]   trades       -> POST /trade, GET /trades (raw=1 for events)")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
     print(f"[bridge]   logging {'off (--quiet)' if a.quiet else 'on - one line per scan and relayed message'}")
     try:
