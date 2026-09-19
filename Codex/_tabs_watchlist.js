@@ -395,3 +395,234 @@ tab("ponty", "Ponty Stock", (host) => {
   watchOnly.addEventListener("change", draw);
   go();
 });
+
+/* ---------------------------------------------------------------- ledger  */
+/* The trade history, from the bridge's append-only ledger.
+ 
+   Realised and unrealised are shown apart and never summed into one headline.
+   A bought item that has not sold is gold turned into an asset, not a loss,
+   and a single "profit" figure folding the two together would report it as
+   one - which is also why an abandoned trade keeps its own spend column rather
+   than being counted as a closed trade with a bad number.
+ 
+   Editing writes an event, never a correction in place: the ledger is append
+   only, so a hand adjustment is another line rather than a rewrite of an
+   existing one. Items have no unique id in this game, so reconciling a manual
+   sale is best-effort by design and the operator picks the row. */
+
+function ledgerPill(label, value, cls) {
+  return el("div", { class: "pill " + (cls || "") },
+    el("span", { class: "dim" }, label + " "), el("b", {}, value));
+}
+
+async function postLedger(body) {
+  const r = await fetch(BRIDGE + "/trade", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.ok !== true) throw new Error(j.error || ("bridge " + r.status));
+  return j;
+}
+
+tab("ledger", "Trade Ledger", (host) => {
+  const status = el("span", { class: "dim" });
+  const totals = el("div", { class: "pills" });
+  const out = el("div");
+  const showClosed = el("input", { type: "checkbox", checked: "checked" });
+  const showOpen = el("input", { type: "checkbox", checked: "checked" });
+  const showAbandoned = el("input", { type: "checkbox", checked: "checked" });
+
+  host.append(
+    el("div", { class: "panel" },
+      el("h2", {}, "Trade Ledger ", status),
+      el("div", { class: "dim" },
+        "Every arbitrage trade the merchant has attempted. Appended by ",
+        el("b", {}, "market_bridge.py"), " to ", el("b", {}, "ledger.jsonl"),
+        " and never cleared by a timer or a restart. ",
+        el("b", {}, "Realised"), " is profit actually banked as gold; ",
+        el("b", {}, "open"), " is gold currently sitting in an unsold item, which is ",
+        "an asset rather than a loss and is deliberately not netted against it."),
+      totals,
+      el("div", { class: "row", style: "margin-top:8px" },
+        el("label", {}, showClosed, " closed"),
+        el("label", {}, showOpen, " open"),
+        el("label", {}, showAbandoned, " abandoned")),
+    ),
+    out);
+
+  let DATA = null;
+
+  function statusCell(r) {
+    const cls = r.status === "closed" ? "good" : (r.status === "open" ? "warn" : "dim");
+    return el("span", { class: cls }, r.status
+      + (r.adjusted && r.adjusted.length ? " ·edited" : ""));
+  }
+
+  /* One inline form per row rather than a modal: the operator is reconciling
+     against something they did in the game a moment ago, and a dialog that
+     hides the rest of the table makes that harder. */
+  function actions(r, redraw) {
+    const wrap = el("div", { class: "row" });
+    const open = el("button", { class: "mini" }, "edit");
+    const form = el("div", { class: "editrow", style: "display:none" });
+    open.addEventListener("click", () => {
+      form.style.display = form.style.display === "none" ? "" : "none";
+    });
+
+    const price = el("input", { type: "number", placeholder: "sold for", style: "width:110px" });
+    const sold = el("button", { class: "mini" }, "mark sold");
+    sold.addEventListener("click", async () => {
+      const v = Number(price.value);
+      if (!isFinite(v) || v <= 0) { status.textContent = "enter a price"; return; }
+      // Net is computed here, not asked for: the operator knows what they were
+      // paid, and making them also do the tax arithmetic invites a wrong number
+      // into a record whose whole point is being trustworthy.
+      const rate = r.taxRate != null ? r.taxRate : 0;
+      const received = Math.round(v * (1 - rate));
+      const spend = r.spend || 0;
+      try {
+        await postLedger({ id: r.id, event: "closed", sellPrice: v, gross: v,
+          received: received, tax: v - received, net: received - spend,
+          sellTo: "(manual)", by: "manual" });
+        await postLedger({ id: r.id, event: "note",
+          text: "closed by hand at " + v + " (tax " + (rate * 100).toFixed(1) + "% assumed)" });
+        redraw();
+      } catch (e) { status.textContent = e.message; }
+    });
+
+    const off = el("button", { class: "mini" }, "write off");
+    off.addEventListener("click", async () => {
+      try {
+        await postLedger({ id: r.id, event: "abandoned", reason: "written off by hand",
+          disposition: "manual", by: "manual" });
+        redraw();
+      } catch (e) { status.textContent = e.message; }
+    });
+
+    const netIn = el("input", { type: "number", placeholder: "net", style: "width:100px" });
+    const setNet = el("button", { class: "mini" }, "set net");
+    setNet.addEventListener("click", async () => {
+      const v = Number(netIn.value);
+      if (!isFinite(v)) { status.textContent = "enter a number"; return; }
+      try {
+        await postLedger({ id: r.id, event: "adjust", field: "net", value: v, by: "manual" });
+        redraw();
+      } catch (e) { status.textContent = e.message; }
+    });
+
+    const noteIn = el("input", { type: "text", placeholder: "note", style: "width:200px" });
+    const addNote = el("button", { class: "mini" }, "add");
+    addNote.addEventListener("click", async () => {
+      if (!noteIn.value.trim()) return;
+      try {
+        await postLedger({ id: r.id, event: "note", text: noteIn.value.trim() });
+        noteIn.value = "";
+        redraw();
+      } catch (e) { status.textContent = e.message; }
+    });
+
+    form.append(price, sold, off, netIn, setNet, noteIn, addNote);
+    wrap.append(open, form);
+    return wrap;
+  }
+
+  function draw() {
+    out.innerHTML = "";
+    if (!DATA) return;
+    const t = DATA.totals || {};
+    totals.innerHTML = "";
+    totals.append(
+      ledgerPill("realised", fmt(t.realizedNet), (t.realizedNet || 0) >= 0 ? "good" : "bad"),
+      ledgerPill("closed", fmt(t.closed)),
+      ledgerPill("open", fmt(t.open) + " (" + fmt(t.openSpend) + "g committed)", "warn"),
+      ledgerPill("abandoned", fmt(t.abandoned) + " (" + fmt(t.abandonedSpend) + "g)"),
+      ledgerPill("banked", fmt(t.banked)),
+      ledgerPill("events", fmt(t.events)));
+
+    const rows = (DATA.trades || []).filter((r) =>
+      (r.status === "closed" && showClosed.checked)
+      || (r.status === "open" && showOpen.checked)
+      || (r.status === "abandoned" && showAbandoned.checked));
+
+    sortableTable(out, rows, [
+      { key: "icon", label: "", get: (r) => r.item, render: (r) => icon(r.item, 1.6) },
+      { key: "item", label: "Item", get: (r) => itemName(r.item || ""),
+        render: (r) => el("span", {}, el("span", {}, itemName(r.item || "?")),
+          r.level ? el("span", { class: "dim" }, " lv" + r.level) : "") },
+      { key: "qty", label: "Qty", num: true, get: (r) => r.qty },
+      { key: "status", label: "Status", get: (r) => r.status, render: statusCell },
+      { key: "buyPrice", label: "Bought at", num: true, get: (r) => r.buyPrice,
+        render: (r) => el("span", { class: "gold" }, fmt(r.buyPrice)) },
+      { key: "buyFrom", label: "From", get: (r) => r.buyFrom || "",
+        render: (r) => el("span", {}, r.buyFrom || "—",
+          el("span", { class: "dim" }, r.buyShard ? " " + r.buyShard : "")) },
+      { key: "sellPrice", label: "Sold at", num: true, get: (r) => r.sellPrice,
+        render: (r) => r.sellPrice == null ? el("span", { class: "dim" }, "—")
+          : el("span", { class: "gold" }, fmt(r.sellPrice)) },
+      { key: "sellTo", label: "To", get: (r) => r.sellTo || "",
+        render: (r) => el("span", {}, r.sellTo || "—",
+          el("span", { class: "dim" }, r.sellShard ? " " + r.sellShard : "")) },
+      { key: "tax", label: "Tax", num: true, get: (r) => r.tax,
+        render: (r) => r.tax == null ? el("span", { class: "dim" }, "—")
+          : el("span", { class: "dim" }, fmt(r.tax)) },
+      // Spend for an unsold item sits under "committed", not under net: it is
+      // not a result yet, and a column that implied otherwise would be wrong
+      // in exactly the direction that matters.
+      { key: "net", label: "Net", num: true, get: (r) => r.status === "closed" ? r.net : null,
+        render: (r) => r.status === "closed"
+          ? el("span", { class: (r.net || 0) >= 0 ? "good" : "bad" }, fmt(r.net))
+          : el("span", { class: "dim" }, "—") },
+      { key: "committed", label: "Committed", num: true,
+        get: (r) => r.status === "closed" ? null : (r.spend || null),
+        render: (r) => r.status === "closed" ? el("span", { class: "dim" }, "—")
+          : el("span", { class: "warn" }, fmt(r.spend)) },
+      { key: "banked", label: "Banked", num: true, get: (r) => r.banked || null,
+        render: (r) => r.banked ? el("span", { class: "gold" }, fmt(r.banked))
+          : el("span", { class: "dim" }, "—") },
+      { key: "openedAt", label: "Opened", get: (r) => seenSort(r.openedAt),
+        render: (r) => seenCell(r.openedAt) },
+      { key: "closedAt", label: "Closed", get: (r) => seenSort(r.closedAt),
+        render: (r) => seenCell(r.closedAt) },
+      { key: "notes", label: "Notes", get: (r) => (r.notes || []).length,
+        render: (r) => (r.notes || []).length
+          ? el("span", { class: "dim", title: r.notes.map((n) => n.text).join("\n") },
+              (r.notes.length) + " ⓘ")
+          : el("span", { class: "dim" }, "—") },
+      { key: "actions", label: "", get: () => "", render: (r) => actions(r, go) },
+    ], { noun: " trades", sortKey: "openedAt" });
+
+    if (!rows.length) {
+      out.append(el("div", { class: "panel dim" },
+        (DATA.trades || []).length
+          ? "No trades match the filters above."
+          : "No trades recorded yet. The ledger fills once CONFIG.arbitrage.enabled "
+            + "is turned on in Merchant.js and the merchant takes its first flip."));
+    }
+  }
+
+  async function go() {
+    status.textContent = "loading…";
+    try {
+      const r = await fetch(BRIDGE + "/trades");
+      if (!r.ok) throw new Error("bridge " + r.status);
+      DATA = await r.json();
+      status.textContent = "";
+      draw();
+    } catch (e) {
+      status.textContent = "";
+      out.innerHTML = "";
+      totals.innerHTML = "";
+      out.append(el("div", { class: "err" },
+        "Could not reach the bridge at " + BRIDGE + " — " + e.message
+        + "\n\nThe ledger lives in market_bridge.py, so this tab needs it running. "
+        + "Nothing is lost while it is down: the merchant buffers its trade events "
+        + "and resends them when the bridge returns."));
+    }
+  }
+
+  for (const c of [showClosed, showOpen, showAbandoned]) c.addEventListener("change", draw);
+  ownInterval(go, 20000);
+  go();
+});

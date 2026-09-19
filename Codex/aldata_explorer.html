@@ -74,6 +74,21 @@
   .hidden { display: none !important; }
   .scroll { max-height: 72vh; overflow: auto; }
   .pill { font-size: 11px; padding: 1px 7px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); color: var(--dim); }
+  /* Ledger: a headline row of totals, and the per-row edit controls. The
+     numbers are deliberately not summed into one figure - realised profit and
+     gold still sitting in an unsold item are different things. */
+  .pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .pills .pill { font-size: 12px; padding: 3px 10px; }
+  .pills .pill.good b { color: var(--good); }
+  .pills .pill.bad b { color: var(--bad); }
+  .pills .pill.warn b { color: var(--warn); }
+  button.mini { font-size: 11px; padding: 2px 8px; border-radius: 5px; cursor: pointer;
+    background: var(--panel2); color: var(--fg); border: 1px solid var(--line); }
+  button.mini:hover { border-color: var(--accent2); }
+  .editrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 4px; }
+  .editrow input { font-size: 11px; padding: 2px 6px; }
+  input[type=number] { background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 5px; padding: 4px 7px; font: inherit; }
 </style>
 </head>
 <body>
