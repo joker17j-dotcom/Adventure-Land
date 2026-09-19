@@ -2745,12 +2745,27 @@ async function arbProbePontyRows() {
 async function arbProbeFindPonty(maxPrice) {
 	const got = await arbProbePontyRows();
 	const cap = (maxPrice == null) ? Infinity : maxPrice;
+	// Dearest first, not cheapest. Sorting Ponty up from the bottom returns
+	// thirty snowballs at 2 gold: cheap items are cheap because nobody wants
+	// them, and the slice then hides the gear that is actually worth flipping.
 	const out = got.rows
 		.filter(function (r) { return typeof r.price === 'number' && isFinite(r.price) && r.price <= cap; })
-		.sort(function (a, b) { return a.price - b.price; });
-	if (got.error) pLog('Ponty stock unavailable (' + got.error + ') - the local bridge serves it, ALData does not', 'orange');
-	else pLog(out.length + ' Ponty listing(s)' + (cap === Infinity ? '' : ' at or under ' + cap)
+		.sort(function (a, b) { return b.price - a.price; });
+	if (got.error) {
+		pLog('Ponty stock unavailable (' + got.error + ') - the local bridge serves it, ALData does not', 'orange');
+		return pShow([]);
+	}
+	const oldest = out.reduce(function (m, r) { return Math.max(m, r.ageSec || 0); }, 0);
+	pLog(out.length + ' Ponty listing(s)' + (cap === Infinity ? '' : ' at or under ' + cap)
 		+ ' across ' + [...new Set(out.map(function (r) { return r.shard; }))].length + ' shard(s)');
+	// Ponty answers only when stood next to, so his stock is refreshed by a
+	// rotation and by nothing else. A hold keeps stands current through
+	// scoutHeldScan but cannot do the same here without walking the merchant
+	// away mid-probe, so a long hold silently ages this data out.
+	if (oldest > 30 * 60) {
+		pLog('Ponty data is ' + Math.round(oldest / 60) + ' min old - his stock rotates, so treat this '
+			+ 'as history. Only a scouting rotation refreshes it: arbProbeHold(false) for a sweep.', 'orange');
+	}
 	return pShow(out.slice(0, 30));
 }
 
@@ -2994,6 +3009,121 @@ async function arbProbeWhyNoSell() {
 		pLog('names overlap but level/special never does - the match rule is what is blocking', '#FFD700');
 	}
 	return pShow(out);
+}
+
+/* THE MONEY QUERY: every buy-side listing that some player is paying more for
+   than it costs, after tax, right now.
+ 
+   This is the whole arbitrage thesis in one function. Buy side is player
+   stands plus Ponty; sell side is player buy orders. Both sides must be fresh,
+   because a spread between two dead listings is arithmetic, not an
+   opportunity.
+ 
+   Net is per unit and taxed on the sell leg only - the buyer pays the listed
+   price, we receive gold from another account and are taxed on it:
+ 
+       unitNet = sellPrice * (1 - taxRate) - buyPrice
+ 
+   Quantity is capped by both sides: Ponty's stock and what the buyer will
+   take. Profit is unitNet times that, so a thin margin on a large order can
+   outrank a fat one on a single item - which is usually the real shape of
+   this.
+ 
+   A note on Ponty specifically: he sells at calculate_item_value times
+   secondhands_mult, which is above what a vendor pays for the same item.
+   Buying from Ponty to vendor is therefore always a loss, and the only
+   profitable exit is a player buy order. That is not a limitation, it is the
+   reason to look: those buy orders are on the public board but Ponty's stock
+   is not, so the pairing is not one everyone else can see. */
+async function arbProbeFindFlips(opts) {
+	opts = opts || {};
+	const minProfit = (opts.minProfit == null) ? CONFIG.arbitrage.minProfit : opts.minProfit;
+	const maxAge = (opts.maxAgeSec == null) ? CONFIG.arbitrage.sellMaxAgeSec : opts.maxAgeSec;
+	const tax = arbTaxRate();
+	if (tax == null) {
+		pLog('no tax rate available - refusing to price a flip rather than assume zero', 'red');
+		return pShow([]);
+	}
+
+	const got = await arbProbeMarketRows();
+	const rows = got.rows || [];
+	const here = mShardKey();
+	const fresh = function (a) { return a != null && a <= maxAge; };
+
+	const buys = [];   // things we could acquire
+	const sells = [];  // people paying for things
+	for (const r of rows) {
+		const shard = String(r.serverRegion) + String(r.serverIdentifier);
+		const age = pAgeSec(r.lastSeen);
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || !sl.name) continue;
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			const rec = {
+				key: sl.name + '|' + (sl.level || 0) + '|' + (sl.p || ''),
+				shard: shard, ageSec: age, target: r.id, slot: k,
+				name: sl.name, level: sl.level || 0, p: sl.p || null,
+				price: sl.price, q: sl.q || 1, map: r.map, x: r.x, y: r.y,
+				source: got.source, npc: false,
+			};
+			(sl.b ? sells : buys).push(rec);
+		}
+	}
+	const pon = await arbProbePontyRows();
+	for (const r of pon.rows) {
+		if (!(typeof r.price === 'number' && isFinite(r.price))) continue;
+		buys.push(Object.assign({ key: r.name + '|' + r.level + '|' + (r.p || ''), map: 'main', x: null, y: null }, r));
+	}
+
+	const cheapest = new Map();
+	for (const b of buys) {
+		if (!fresh(b.ageSec)) continue;
+		const cur = cheapest.get(b.key);
+		if (!cur || b.price < cur.price) cheapest.set(b.key, b);
+	}
+
+	const out = [];
+	for (const sell of sells) {
+		if (!fresh(sell.ageSec)) continue;
+		const buy = cheapest.get(sell.key);
+		if (!buy) continue;
+		const unitNet = sell.price * (1 - tax) - buy.price;
+		if (unitNet <= 0) continue;
+		const qty = Math.max(1, Math.min(buy.q || 1, sell.q || 1));
+		const spend = buy.price * qty;
+		const profit = Math.floor(unitNet * qty);
+		if (profit < minProfit) continue;
+		out.push({
+			item: sell.name, level: sell.level, special: sell.p,
+			qty: qty, spend: spend, profit: profit,
+			unitNet: Math.round(unitNet), taxRate: tax,
+			buyFrom: buy.target, buyPrice: buy.price, buyShard: buy.shard,
+			buyAgeSec: buy.ageSec, buyIsNpc: !!buy.npc, buySlot: buy.slot,
+			sellTo: sell.target, sellPrice: sell.price, sellShard: sell.shard,
+			sellAgeSec: sell.ageSec, sellSlot: sell.slot,
+			sameShard: buy.shard === sell.shard,
+			hops: (buy.shard === sell.shard ? (buy.shard === here ? 0 : 1) : (buy.shard === here ? 1 : 2)),
+			affordable: (character.gold - spend) >= CONFIG.arbitrage.goldFloor,
+		});
+	}
+	out.sort(function (a, b) { return b.profit - a.profit; });
+
+	if (!out.length) {
+		pLog('no flip clears ' + minProfit + ' with both sides under ' + Math.round(maxAge / 60)
+			+ ' min old (tax ' + (tax * 100).toFixed(1) + '%, ' + buys.length + ' buy-side, '
+			+ sells.length + ' sell-side listings considered)', 'orange');
+		return pShow([]);
+	}
+	const t = out[0];
+	const unaffordable = out.filter(function (r) { return !r.affordable; }).length;
+	pLog(out.length + ' flip(s) clearing ' + minProfit + '. Best: ' + t.item + ' x' + t.qty
+		+ ' - buy ' + t.buyPrice + ' from ' + t.buyFrom + ' (' + t.buyShard + ')'
+		+ ', sell ' + t.sellPrice + ' to ' + t.sellTo + ' (' + t.sellShard + ')'
+		+ ' = ' + t.profit + ' net, ' + t.hops + ' hop(s)'
+		+ (t.affordable ? '' : ' - NOT AFFORDABLE under the ' + CONFIG.arbitrage.goldFloor + ' floor'),
+		'#7FD98A');
+	if (unaffordable) pLog(unaffordable + ' of these would breach the gold floor', 'orange');
+	return pShow(out.slice(0, 20));
 }
 
 /* Travel to a candidate's shard. THE SCRIPT RESTARTS: change_server reloads the
@@ -3489,6 +3619,7 @@ function arbProbeHelp() {
 		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | auto',
 		'arbProbeBridge()           which feed answers, and how much is in it',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
+		'arbProbeFindFlips()        THE MONEY QUERY: profitable buy->sell pairs now',
 		'arbProbeFindPonty(99999)   Ponty stock across shards - bridge only, not public',
 		'arbProbeFindSell()         who is buying something already in inventory',
 		'arbProbeWhyNoSell()        when that is empty: held vs wanted, near misses',
@@ -3518,7 +3649,7 @@ try {
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
 		bridge: arbProbeBridge, whyNoSell: arbProbeWhyNoSell, source: arbProbeSource,
-		findPonty: arbProbeFindPonty,
+		findPonty: arbProbeFindPonty, findFlips: arbProbeFindFlips,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
