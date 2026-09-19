@@ -247,6 +247,10 @@ const CONFIG = {
 		// starting. It never interrupts a trade already in flight: once gold is
 		// spent, the item reaches a terminal state (sold or banked) first.
 		jobPreemptMs: 10 * 60 * 1000,
+		// A buy order older than this is treated as gone rather than as an offer.
+		// Matches the watchlist's SPREAD_MAX_AGE_MS: the listing is still worth
+		// keeping and showing, it is just not worth travelling to.
+		sellMaxAgeSec: 15 * 60,
 		// Tax applies ONLY to gold received from another ACCOUNT, and the
 		// receiver pays it. Exactly one leg of an arbitrage round trip is
 		// therefore taxed:
@@ -2816,20 +2820,34 @@ async function arbProbeFindSell() {
 		? 'in-view scan only'
 		: source + ' (' + rows.length + ' stands across all shards)'),
 		source === 'in-view' ? 'orange' : null);
-	out.sort(function (a, b) { return (b.theyPay || 0) - (a.theyPay || 0); });
+	// Freshness FIRST, then price. Sorting on price alone was wrong and it
+	// showed: a four-day-old buy order for 60,000 outranked a 98-second-old one,
+	// and the older merchant is long gone. A high price on a dead listing is not
+	// a better trade, it is not a trade. findBuy already ordered by age; this
+	// did not, which was simply an inconsistency.
+	const FRESH = CONFIG.arbitrage.sellMaxAgeSec;
+	for (const r of out) r.stale = (r.ageSec == null) || (r.ageSec > FRESH);
+	out.sort(function (a, b) {
+		if (a.stale !== b.stale) return a.stale ? 1 : -1;
+		return (b.theyPay || 0) - (a.theyPay || 0);
+	});
 	if (!out.length) {
 		pLog('nobody the scouts have seen is buying anything currently held'
 			+ ' - arbProbeWhyNoSell() shows what was compared', 'orange');
 		return pShow([]);
 	}
+	const fresh = out.filter(function (r) { return !r.stale; });
+	if (!fresh.length) {
+		pLog(out.length + ' buyer(s) for held items, but ALL are older than '
+			+ Math.round(FRESH / 60) + ' min - treat them as gone, not as offers', 'orange');
+	} else if (fresh.length < out.length) {
+		pLog(fresh.length + ' fresh of ' + out.length + ' buyer(s); the rest are stale and ranked last');
+	}
 	const top = out[0];
 	pLog(out.length + ' buyer(s) for held items. Best: ' + top.name + ' lvl ' + top.level
 		+ ' -> ' + top.theyPay + ' from ' + top.target + ' on ' + top.shard
-		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
-	if (out.length > 1) {
-		const lo = out[out.length - 1];
-		pLog('price spread for the two-point tax measurement: ' + lo.theyPay + ' .. ' + top.theyPay);
-	}
+		+ ' (' + top.ageSec + 's old' + (top.stale ? ', STALE' : '') + ')'
+		+ (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
 	return pShow(out.slice(0, 20));
 }
 
