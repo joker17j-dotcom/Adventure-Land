@@ -225,7 +225,11 @@ const CONFIG = {
 	// hits zero, so a delayed delivery is an inconvenience rather than a death.
 	// The one exception is jobPreemptMs below.
 	arbitrage: {
-		enabled: false,
+		// Source is the only switch. There is deliberately no runtime toggle:
+		// one persisted in CODE storage would outlive a redeploy, so a build
+		// pushed with this false could still be trading, which is the opposite
+		// of what a kill switch is for. arbProbeBuild() reports the live value.
+		enabled: true,
 		// Belt and braces. Turning `enabled` on alone cannot spend gold: the
 		// executor still runs every step - find, verify, approach, hop, ledger,
 		// bank - but the two calls that move money are simulated from the
@@ -3148,7 +3152,7 @@ function arbRestore() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v27 / arb.2 / 2026-09-19 / ledger + trade machine + dry run (enabled:false, dryRun:true)';
+const MERCHANT_BUILD = 'v27 / arb.3 / 2026-09-19 / ledger + trade machine + dry run';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -3156,6 +3160,19 @@ function arbProbeBuild() {
 		build: MERCHANT_BUILD,
 		api: api,
 		apiCount: api.length,
+		// Read from CONFIG, never transcribed into the build string. An earlier
+		// version spelled the flags out in that string, which made a hand-kept
+		// note the thing a reader checked before deciding whether a rehearsal
+		// could spend gold - and a note that has to be kept in step with two
+		// constants is a note that will eventually disagree with them. This
+		// cannot: it is the value the executor itself consults.
+		arbitrage: {
+			enabled: !!CONFIG.arbitrage.enabled,
+			dryRun: !!CONFIG.arbitrage.dryRun,
+			canSpendGold: !!CONFIG.arbitrage.enabled && !CONFIG.arbitrage.dryRun,
+			minProfit: CONFIG.arbitrage.minProfit,
+			goldFloor: CONFIG.arbitrage.goldFloor,
+		},
 		// Named so a caller can assert on a capability rather than a number.
 		has: {
 			distanceCheck: api.indexOf('distanceCheck') >= 0,   // the distance() diagnostic
@@ -3173,6 +3190,12 @@ function arbProbeBuild() {
 			? ', step and call are the fixed versions'
 			: ', WARNING: step or call is the OLD version - the redeploy did not land'),
 		(out.stepReportsMovement && out.callReturnsStructuredRefusals) ? null : 'red');
+	pLog('arbitrage: ' + (out.arbitrage.enabled ? 'ENABLED' : 'disabled')
+		+ ', dryRun ' + (out.arbitrage.dryRun ? 'ON' : 'OFF')
+		+ ' -> ' + (out.arbitrage.canSpendGold
+			? 'THIS BUILD CAN SPEND REAL GOLD'
+			: (out.arbitrage.enabled ? 'rehearsal only, no gold moves' : 'executor will not run at all')),
+		out.arbitrage.canSpendGold ? 'red' : (out.arbitrage.enabled ? '#7FD98A' : 'orange'));
 	return pShow(out);
 }
 
