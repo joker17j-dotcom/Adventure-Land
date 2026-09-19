@@ -2561,6 +2561,46 @@ async function scoutLoop() {
  
    Procedure: Codex/PHASE0_PROBE.md. */
 
+/* WHICH BUILD IS ACTUALLY RUNNING.
+ 
+   A redeploy returns "queued", not "confirmed", so a reader needs a way to
+   check that the code answering is the code just written. This file has form
+   here: the v24 header survived thirteen commits of changes and led a handoff
+   to record the file as untouched.
+ 
+   So two answers, of different quality. `build` is a hand-bumped string and
+   can go stale exactly as that header did - treat it as a hint. `api` is the
+   live list of probe functions the running script actually exposes, and it
+   cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
+   that introduced it. Feature-detect against `api`, read `build` for context. */
+const MERCHANT_BUILD = 'v26 / probe.8 / 2026-09-19 / step+refusals fixed';
+
+function arbProbeBuild() {
+	const api = Object.keys(parent.PROBE_API || {}).sort();
+	const out = {
+		build: MERCHANT_BUILD,
+		api: api,
+		apiCount: api.length,
+		// Named so a caller can assert on a capability rather than a number.
+		has: {
+			distanceCheck: api.indexOf('distanceCheck') >= 0,   // the distance() diagnostic
+			range: api.indexOf('range') >= 0,                   // loaded-and-how-far
+            findFlips: api.indexOf('findFlips') >= 0,           // the profitability query
+			findPonty: api.indexOf('findPonty') >= 0,
+		},
+		stepReportsMovement: (typeof arbProbeStep === 'function')
+			&& String(arbProbeStep).indexOf('DID NOT MOVE') >= 0,
+		callReturnsStructuredRefusals: (typeof arbProbeCall === 'function')
+			&& String(arbProbeCall).indexOf('target_not_loaded') >= 0,
+	};
+	pLog('build ' + out.build + ' - ' + out.apiCount + ' probe functions'
+		+ (out.stepReportsMovement && out.callReturnsStructuredRefusals
+			? ', step and call are the fixed versions'
+			: ', WARNING: step or call is the OLD version - the redeploy did not land'),
+		(out.stepReportsMovement && out.callReturnsStructuredRefusals) ? null : 'red');
+	return pShow(out);
+}
+
 const PROBE = {
 	// While held: no shard hop (a hop reloads the page and kills a probe
 	// mid-measurement), no gear spending, no sellTrash. That last one matters
@@ -3788,6 +3828,7 @@ function arbProbeClear() {
 
 function arbProbeHelp() {
 	const lines = [
+		'arbProbeBuild()            which build is running - feature-detected',
 		'arbProbeHold(true|false)   freeze/unfreeze the merchant for a probe',
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
@@ -3823,6 +3864,7 @@ function arbProbeHelp() {
    there, which is not worth depending on. */
 try {
 	parent.PROBE_API = {
+		build: arbProbeBuild,
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
@@ -3880,7 +3922,7 @@ try {
 	// the scout would resume rotating on the next tick and carry the merchant
 	// straight back off the shard the operator just travelled to.
 	PROBE.hold = !!get('probe_hold');
-	game_log('[probe] Phase 0 probe loaded (' + PROBE.log.length + ' stored entries'
+	game_log('[probe] ' + MERCHANT_BUILD + ' loaded (' + PROBE.log.length + ' stored entries'
 		+ (PROBE.hold ? ', HOLD STILL ON' : '') + ') - arbProbeHelp() for commands',
 		PROBE.hold ? '#FFD700' : '#8b98ab');
 } catch (e) { }
