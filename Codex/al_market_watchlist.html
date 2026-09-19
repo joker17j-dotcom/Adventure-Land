@@ -1234,7 +1234,16 @@ function summarizeMarket(rows, keep) {
       best: best ? best.price : null,
       bestWho: best ? `${best.merchant} (${best.server})` : null,
       bestSeen: best ? best.lastSeen : null,
-      spread: (cheapest && best) ? best.price - cheapest.price : null,
+      /* Both ends must be recent. A spread is a claim that two counterparties
+         exist RIGHT NOW; one stale side makes it uncapturable, and quoting it
+         anyway is how you end up travelling to a stand that has gone. */
+      spread: (cheapest && best
+        && freshEnoughToTrade(cheapest.lastSeen) && freshEnoughToTrade(best.lastSeen))
+        ? best.price - cheapest.price : null,
+      /* Distinguishes "priced, but too old to trust" from "no counterparty at
+         all" - the cell would otherwise read as a plain dash for both. */
+      spreadStale: !!(cheapest && best
+        && !(freshEnoughToTrade(cheapest.lastSeen) && freshEnoughToTrade(best.lastSeen))),
       listed: true,
     };
   });
@@ -1245,6 +1254,24 @@ function summarizeMarket(rows, keep) {
    are still standing. Stale is flagged, never hidden - the listing can still
    be good, it just has not been seen recently. */
 const SEEN_STALE_MS = 60 * 60 * 1000;
+
+/* A listing older than this still SHOWS, with its timestamp, but produces no
+   spread and cannot rank in Arbitrage.
+
+   The spread table sorts by size with no weighting for age, so a listing from
+   an hour ago sat at the top looking like the best trade on the board. Deleting
+   old data at the bridge used to bound that, but deleting also erased the
+   difference between "the scout stopped" and "the market is empty". Filtering
+   here fixes the ranking where the ranking happens, and leaves the record
+   intact.
+
+   15 minutes clears a 2.4 minute rotation six times over, and comfortably
+   survives the ~7 minute parking the anniversary guard causes each round. */
+const SPREAD_MAX_AGE_MS = 15 * 60 * 1000;
+function freshEnoughToTrade(iso) {
+  if (!iso) return false;
+  return (Date.now() - new Date(iso).getTime()) <= SPREAD_MAX_AGE_MS;
+}
 function seenCell(iso) {
   if (!iso) return el("span", { class: "dim" }, "—");
   const stale = (Date.now() - new Date(iso).getTime()) > SEEN_STALE_MS;
@@ -1285,9 +1312,16 @@ function summaryColumns() {
     { key: "bestSeen", label: "Buy seen", get: (r) => seenSort(r.bestSeen),
       render: (r) => seenCell(r.bestSeen) },
     { key: "spread", label: "Spread", num: true, get: (r) => r.spread,
-      render: (r) => r.spread == null ? el("span", { class: "dim" }, "—")
-        : el("span", { class: r.spread > 0 ? "good" : "bad" },
-          (r.spread > 0 ? "+" : "") + fmt(r.spread)) },
+      render: (r) => {
+        if (r.spread != null) {
+          return el("span", { class: r.spread > 0 ? "good" : "bad" },
+            (r.spread > 0 ? "+" : "") + fmt(r.spread));
+        }
+        if (r.spreadStale) {
+          return el("span", { class: "warn", title: "both sides priced, but one was seen too long ago to trade against" }, "stale");
+        }
+        return el("span", { class: "dim" }, "—");
+      } },
     { key: "nSell", label: "#Sell", num: true, get: (r) => r.nSell },
     { key: "nBuy", label: "#Buy", num: true, get: (r) => r.nBuy },
   ];
@@ -1327,7 +1361,8 @@ function renderSummary(host, opts) {
         summary.push({
           item: k, level: null, special: null, nSell: 0, nBuy: 0,
           cheapest: null, cheapestWho: null, cheapestSeen: null,
-          best: null, bestWho: null, bestSeen: null, spread: null, listed: false,
+          best: null, bestWho: null, bestSeen: null, spread: null,
+          spreadStale: false, listed: false,
         });
       }
     }
@@ -1336,9 +1371,11 @@ function renderSummary(host, opts) {
       ? [`${present.size} of ${opts.items.length} tracked items listed right now`]
       : [`${fmt(present.size)} distinct items on the market`];
     const npcBacked = summary.filter((x) => x.cheapestNpc && x.spread != null && x.spread > 0).length;
+    const staleSpreads = summary.filter((x) => x.spreadStale).length;
     if (positiveOnly) {
       pills.push(`${fmt(summary.length)} of ${fmt(groupsScanned)} groups have a positive spread`);
       if (npcBacked) pills.push(`${npcBacked} bought from Ponty (seller can't vanish)`);
+      if (staleSpreads) pills.push(`${staleSpreads} withheld as too old to trade`);
     } else {
       pills.push(`${fmt(groupsScanned)} item/level groups`);
       pills.push(`${positives} with a positive level-matched spread`);

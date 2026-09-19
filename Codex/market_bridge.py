@@ -37,12 +37,20 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # Long enough to survive a roamer's full rotation, short enough that the page is
 # not quoting prices from merchants who logged off an hour ago.
 #
-# Since each scan REPLACES its shard rather than merging, this is no longer what
-# keeps the data fresh - it only decides how long a shard nobody is visiting
-# stays listed. Measured rotation is ~2.4 minutes (146s mean over 25 per-shard
-# round trips), so 10 minutes is four rotations of margin: a shard has to be
-# missed four times running before its stands drop out.
-MERCHANT_TTL = 10 * 60
+# Since each scan REPLACES its shard rather than merging, this cannot make
+# anything fresher - it only decides how long a shard NOBODY IS VISITING stays
+# listed. That makes it close to pure loss: deleting the last known state of a
+# shard turns "the scout stopped 40 minutes ago" into "the market is empty",
+# which are very different things and look identical once the rows are gone.
+#
+# The page already marks age on every listing, so keeping stale data is honest
+# rather than misleading, and a board labelled 40 minutes old diagnoses a dead
+# scout that an empty board hides. The real risk - a stale row ranking top of
+# the arbitrage table - is handled where it belongs, by excluding old listings
+# from the SPREAD maths rather than by destroying the underlying record.
+#
+# An hour, then, purely as a bound on unbounded growth.
+MERCHANT_TTL = 60 * 60
 # A scout that has not POSTed in this long has its shard assignment released so
 # another scout can take it.
 BOT_TIMEOUT = 3 * 60
