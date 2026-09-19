@@ -216,7 +216,8 @@ class Ledger:
             tid = e["id"]
             t = trades.get(tid)
             if t is None:
-                t = {"id": tid, "status": "open", "banked": 0, "notes": [], "events": 0}
+                t = {"id": tid, "status": "open", "banked": 0, "notes": [], "events": 0,
+                     "dryRun": bool(e.get("dryRun"))}
                 trades[tid] = t
                 order.append(tid)
             t["events"] += 1
@@ -243,7 +244,8 @@ class Ledger:
             elif ev == "banked":
                 amt = e.get("amount") or 0
                 t["banked"] += amt
-                banked_total += amt
+                if not t.get("dryRun"):
+                    banked_total += amt
             elif ev == "adjust":
                 f = e.get("field")
                 if f in ADJUSTABLE:
@@ -253,12 +255,18 @@ class Ledger:
                 if e.get("text"):
                     t["notes"].append({"at": e["at"], "text": e["text"]})
 
-        rows = [trades[i] for i in order]
+        all_rows = [trades[i] for i in order]
+        # A rehearsal must never move the headline. Dry-run trades are kept and
+        # shown - they are how the executor gets exercised against the real
+        # market - but no gold changed hands, so counting them as profit would
+        # make the one number the operator trusts a fiction.
+        rows = [r for r in all_rows if not r.get("dryRun")]
+        dry = [r for r in all_rows if r.get("dryRun")]
         realized = sum(r.get("net") or 0 for r in rows if r["status"] == "closed")
         open_rows = [r for r in rows if r["status"] == "open"]
         abandoned = [r for r in rows if r["status"] == "abandoned"]
         return {
-            "trades": rows,
+            "trades": all_rows,
             "totals": {
                 # Realised and unrealised kept apart on purpose. A bought item
                 # that has not sold is gold turned into an asset, not a loss,
@@ -271,6 +279,9 @@ class Ledger:
                 "abandonedSpend": sum(r.get("spend") or 0 for r in abandoned),
                 "banked": banked_total,
                 "events": len(events),
+                # Reported alongside, never folded in.
+                "dryRun": len(dry),
+                "dryRunNet": sum(r.get("net") or 0 for r in dry if r["status"] == "closed"),
             },
             "path": str(self.path),
         }

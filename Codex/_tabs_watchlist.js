@@ -433,6 +433,7 @@ tab("ledger", "Trade Ledger", (host) => {
   const showClosed = el("input", { type: "checkbox", checked: "checked" });
   const showOpen = el("input", { type: "checkbox", checked: "checked" });
   const showAbandoned = el("input", { type: "checkbox", checked: "checked" });
+  const showDry = el("input", { type: "checkbox", checked: "checked" });
 
   host.append(
     el("div", { class: "panel" },
@@ -448,15 +449,17 @@ tab("ledger", "Trade Ledger", (host) => {
       el("div", { class: "row", style: "margin-top:8px" },
         el("label", {}, showClosed, " closed"),
         el("label", {}, showOpen, " open"),
-        el("label", {}, showAbandoned, " abandoned")),
+        el("label", {}, showAbandoned, " abandoned"),
+        el("label", {}, showDry, " dry runs")),
     ),
     out);
 
   let DATA = null;
 
   function statusCell(r) {
-    const cls = r.status === "closed" ? "good" : (r.status === "open" ? "warn" : "dim");
-    return el("span", { class: cls }, r.status
+    const cls = r.dryRun ? "dim" : (r.status === "closed" ? "good" : (r.status === "open" ? "warn" : "dim"));
+    return el("span", { class: cls },
+      (r.dryRun ? "dry·" : "") + r.status
       + (r.adjusted && r.adjusted.length ? " ·edited" : ""));
   }
 
@@ -540,8 +543,11 @@ tab("ledger", "Trade Ledger", (host) => {
       ledgerPill("abandoned", fmt(t.abandoned) + " (" + fmt(t.abandonedSpend) + "g)"),
       ledgerPill("banked", fmt(t.banked)),
       ledgerPill("events", fmt(t.events)));
+    if (t.dryRun) {
+      totals.append(ledgerPill("dry run", fmt(t.dryRun) + " (" + fmt(t.dryRunNet) + "g simulated)"));
+    }
 
-    const rows = (DATA.trades || []).filter((r) =>
+    const rows = (DATA.trades || []).filter((r) => (showDry.checked || !r.dryRun)).filter((r) =>
       (r.status === "closed" && showClosed.checked)
       || (r.status === "open" && showOpen.checked)
       || (r.status === "abandoned" && showAbandoned.checked));
@@ -622,7 +628,7 @@ tab("ledger", "Trade Ledger", (host) => {
     }
   }
 
-  for (const c of [showClosed, showOpen, showAbandoned]) c.addEventListener("change", draw);
+  for (const c of [showClosed, showOpen, showAbandoned, showDry]) c.addEventListener("change", draw);
   ownInterval(go, 20000);
   go();
 });

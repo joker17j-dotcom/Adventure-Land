@@ -226,6 +226,19 @@ const CONFIG = {
 	// The one exception is jobPreemptMs below.
 	arbitrage: {
 		enabled: false,
+		// Belt and braces. Turning `enabled` on alone cannot spend gold: the
+		// executor still runs every step - find, verify, approach, hop, ledger,
+		// bank - but the two calls that move money are simulated from the
+		// listed prices instead of made. Everything this code has been tested
+		// against so far is a stub, and the live game has already contradicted
+		// three confident readings, so the first run on the real market should
+		// not be the first run that can lose something.
+		//
+		// Dry-run events reach the ledger marked dryRun, so the whole recording
+		// path is exercised too - a rehearsal that skipped it would not be
+		// testing the thing most likely to be wrong. The bridge keeps them out
+		// of realised P/L.
+		dryRun: true,
 		// Per ITEM, not per batch: a marginal item must not ride along on a good
 		// one, which would quietly lower the floor.
 		minProfit: 500000,
@@ -2643,6 +2656,7 @@ function arbClearTrade() {
    it. The bridge dedupes on eventId, so a resend after a lost reply is free -
    which is the whole reason a retry is safe to attempt at all. */
 function arbLedger(ev) {
+	if (CONFIG.arbitrage.dryRun) ev.dryRun = true;
 	ev.eventId = ev.eventId || (ev.id + '-' + ev.event + '-' + Date.now());
 	ARB.buffer.push(ev);
 	try { set(ARB_BUF_KEY, ARB.buffer.slice(-100)); } catch (e) { }
@@ -2773,7 +2787,15 @@ function arbStillThere(t, side) {
 
 /* Gold actually moved, measured rather than assumed. The listed price is what
    was advertised; this is what the server did. */
-async function arbGoldDelta(fn, args) {
+async function arbGoldDelta(fn, args, sim) {
+	if (CONFIG.arbitrage.dryRun) {
+		// Simulated from the listed price. Deliberately NOT from a random or
+		// optimistic figure: the point of the rehearsal is to see the same
+		// arithmetic the real run would do, so a discrepancy later is the
+		// game's and not the model's.
+		await sleep(200);
+		return { outcome: 'resolved', reason: null, returned: null, delta: sim, dryRun: true };
+	}
 	const before = character.gold;
 	let outcome = 'resolved', reason = null, returned = null;
 	try { returned = await fn.apply(null, args); }
@@ -2820,7 +2842,8 @@ async function arbAdvance() {
 			arbFinish(t, 'abandoned', { reason: 'would breach the ' + CONFIG.arbitrage.goldFloor + ' gold floor', disposition: 'nothing_spent' });
 			return;
 		}
-		const r = await arbGoldDelta(trade_buy, [pEntity(t.buyFrom), t.buySlot, t.qty]);
+		const r = await arbGoldDelta(trade_buy, [pEntity(t.buyFrom), t.buySlot, t.qty],
+			-(t.buyPrice * t.qty));
 		if (r.outcome !== 'resolved' || r.delta >= 0) {
 			t.attempts = (t.attempts || 0) + 1;
 			arbLog('buy did not take (' + (r.reason || 'no gold moved') + ')', 'orange');
@@ -2831,6 +2854,7 @@ async function arbAdvance() {
 		// Gold has become an item. From here the trade must reach a terminal
 		// state; it is no longer something that can simply be dropped.
 		t.actualSpend = -r.delta;
+		t.dryRun = !!r.dryRun;
 		t.phase = 'holding';
 		t.attempts = 0;
 		arbSaveTrade(t);
@@ -2879,7 +2903,8 @@ async function arbAdvance() {
 			} else arbSaveTrade(t);
 			return;
 		}
-		const r = await arbGoldDelta(trade_sell, [pEntity(t.sellTo), t.sellSlot, t.qty]);
+		const r = await arbGoldDelta(trade_sell, [pEntity(t.sellTo), t.sellSlot, t.qty],
+			Math.round(t.sellPrice * t.qty * (1 - (arbTaxRate() || 0))));
 		if (r.outcome !== 'resolved' || r.delta <= 0) {
 			t.attempts = (t.attempts || 0) + 1;
 			arbLog('sell did not take (' + (r.reason || 'no gold received') + ')', 'orange');
@@ -2953,6 +2978,11 @@ async function arbFindBuyerFor(t) {
    trip. Both legs are recorded: a deposit that happened but was not logged
    would quietly drift the running total. */
 async function arbBankShareNow(t, share) {
+	if (CONFIG.arbitrage.dryRun) {
+		arbLedger({ id: t.id, event: 'banked', amount: share });
+		arbLog('[dry run] would bank ' + share + ' (half of ' + t.net + ' net)', '#9BD1FF');
+		return true;
+	}
 	const arrived = await travelToBank();
 	if (!arrived) {
 		arbLog('could not reach the bank - ' + share + ' gold stays on hand, recorded as owed', 'orange');
@@ -2984,6 +3014,10 @@ async function arbBankShareNow(t, share) {
    for - see the "abandoned" status, which keeps its spend out of realised P/L
    rather than reporting it as a loss. */
 async function arbBankItem(t) {
+	if (CONFIG.arbitrage.dryRun) {
+		arbLog('[dry run] would bank the unsold ' + t.item, '#9BD1FF');
+		return true;
+	}
 	let idx = -1;
 	for (let i = 0; i < character.items.length; i++) {
 		const it = character.items[i];
@@ -3032,7 +3066,8 @@ async function arbLookForWork() {
 
 	const t = arbPlan(pick, character.gold);
 	arbSaveTrade(t);
-	arbLog('taking ' + t.item + ' x' + t.qty + ': buy ' + t.buyPrice + ' from ' + t.buyFrom
+	arbLog((CONFIG.arbitrage.dryRun ? '[dry run] ' : '') + 'taking ' + t.item + ' x' + t.qty
+		+ ': buy ' + t.buyPrice + ' from ' + t.buyFrom
 		+ ' (' + t.buyShard + '), sell ' + t.sellPrice + ' to ' + t.sellTo + ' (' + t.sellShard
 		+ ') for ~' + t.expectProfit + ' net', '#FFD700');
 }
@@ -3113,7 +3148,7 @@ function arbRestore() {
    live list of probe functions the running script actually exposes, and it
    cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
    that introduced it. Feature-detect against `api`, read `build` for context. */
-const MERCHANT_BUILD = 'v27 / arb.1 / 2026-09-19 / ledger + resumable trade state machine (enabled:false)';
+const MERCHANT_BUILD = 'v27 / arb.2 / 2026-09-19 / ledger + trade machine + dry run (enabled:false, dryRun:true)';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
