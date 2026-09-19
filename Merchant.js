@@ -237,8 +237,8 @@ const CONFIG = {
 		// spent, the item reaches a terminal state (sold or banked) first.
 		jobPreemptMs: 10 * 60 * 1000,
 		// Tax applies ONLY to gold received from another ACCOUNT, and the
-		// receiver is the one who pays it. Exactly one leg of an arbitrage
-		// round trip is therefore taxed:
+		// receiver pays it. Exactly one leg of an arbitrage round trip is
+		// therefore taxed:
 		//
 		//   buy from a player   - gold goes to them; they are taxed, we pay the
 		//                         listed price and nothing more.
@@ -246,29 +246,41 @@ const CONFIG = {
 		//   sell to a player    - gold arrives here from their account: TAXED.
 		//   sell to an NPC      - no account on the other side; untaxed, so
 		//                         calculate_item_value is the true net.
-		//   own characters      - same account, exempt. They cannot be used to
-		//                         measure any of this: they report a clean zero
-		//                         indistinguishable from a real result.
+		//   own characters      - same account, exempt.
 		//
 		//   net = sellPrice * (1 - taxRate) - buyPrice      (player buyer)
 		//   net = npcValue                  - buyPrice      (NPC buyer)
 		//
-		// CONSEQUENCE FOR PHASE 1: the sell side is a choice, not a given. A
-		// player buy order only beats the vendor once it clears the vendor's
-		// price by more than the tax, so the comparison is
+		// CONSEQUENCE: the sell side is a CHOICE, not a given. A player buy
+		// order only beats the vendor once it clears the vendor's price by more
+		// than the tax, so the comparison is
 		//
 		//   max(npcValue, playerBuyPrice * (1 - taxRate))
 		//
-		// and never playerBuyPrice on its own. At a high enough rate a
-		// generous-looking buy order is worth less than simply vendoring.
+		// and never playerBuyPrice on its own. At 4% a buy order must sit about
+		// 4.2% above vendor value merely to break even against vendoring, so a
+		// buy order that looks better on the board can be worse in the hand.
 		//
-		// The rate is reduced by some unknown factor of merchant level, so it is
-		// MEASURED rather than assumed: the last constant assumed in this
-		// project (Ponty's price) was wrong by half. Until a measurement lands
-		// this stays null and the profit test must refuse to pass rather than
-		// guess zero - guessing zero over-trades, the expensive direction to be
-		// wrong in.
-		tax: null,
+		// SOURCE: kaansoral/adventureland, node/server.js, in
+		// calculate_player_stats(), which assigns player.tax from a chain of
+		// `level > N && rate` clauses. It is a STEP function, not a smooth
+		// decay: no per-level taper, nothing below 1%, nothing above 5%. The
+		// bands below were evaluated against that expression at every boundary
+		// (1/20/21/50/51/60/61/70/71/80/81/100) and agree at all of them.
+		//
+		// The published chain carries two consecutive `level > 80` clauses
+		// (0.01 then 0.012). `||` short-circuits on the first truthy value, so
+		// the second is unreachable and everything above 80 is simply 1%.
+		// Transcribed here as the live behaviour rather than the apparent
+		// intent, since the server runs the code and not the intent.
+		taxBands: [
+			{ above: 80, rate: 0.01 },
+			{ above: 70, rate: 0.02 },
+			{ above: 60, rate: 0.025 },
+			{ above: 50, rate: 0.03 },
+			{ above: 20, rate: 0.04 },
+			{ above: -Infinity, rate: 0.05 },
+		],
 		probe: {
 			// arbProbeCall refuses to spend more than this in one call.
 			maxPrice: 10000,
@@ -471,6 +483,43 @@ async function travelTo(map, x, y) {
 // same shard and none of this engages.
 // ============================================================================
 const SHARD_REGIONS = ['ASIA', 'US', 'EU'];
+
+/* This merchant's tax rate on gold received from another account.
+ 
+   Prefers the server's own number. calculate_player_stats assigns player.tax
+   server-side, so if it reaches the client then it is authoritative and cannot
+   drift when the bands are rebalanced. CONFIG.arbitrage.taxBands is the
+   fallback, transcribed from the same function.
+ 
+   Returning null is meaningful: it means neither source produced a usable rate,
+   and the profit test must refuse rather than treat the tax as zero. Assuming
+   zero over-trades, which is the expensive direction to be wrong in. */
+function arbTaxRate() {
+	const live = (typeof character !== 'undefined') ? character.tax : undefined;
+	if (typeof live === 'number' && isFinite(live) && live >= 0 && live < 1) return live;
+	const lvl = (typeof character !== 'undefined') ? character.level : null;
+	if (typeof lvl !== 'number' || !isFinite(lvl)) return null;
+	for (const b of CONFIG.arbitrage.taxBands) {
+		if (lvl > b.above) return b.rate;
+	}
+	return null;
+}
+
+/* What a sale is actually worth after tax, against what a vendor would pay
+   untaxed. Phase 1's sell-side decision in one place so the comparison cannot
+   be written as a raw price anywhere else. */
+function arbNetFromSale(playerPrice, npcValue) {
+	const t = arbTaxRate();
+	const viaPlayer = (typeof playerPrice === 'number' && isFinite(playerPrice) && t != null)
+		? playerPrice * (1 - t) : null;
+	const viaNpc = (typeof npcValue === 'number' && isFinite(npcValue)) ? npcValue : null;
+	if (viaPlayer == null && viaNpc == null) return null;
+	if (viaPlayer == null) return { to: 'npc', net: viaNpc, taxRate: t };
+	if (viaNpc == null) return { to: 'player', net: viaPlayer, taxRate: t };
+	return (viaPlayer >= viaNpc)
+		? { to: 'player', net: viaPlayer, taxRate: t }
+		: { to: 'npc', net: viaNpc, taxRate: t };
+}
 
 function mShardKey() {
 	return String(parent.server_region) + String(parent.server_identifier);
@@ -2792,14 +2841,31 @@ function arbProbeInv() {
 		used++;
 		if (it.q && it.q > 1) stacks[it.name] = (stacks[it.name] || 0) + it.q;
 	}
+	// character.tax is the question Phase 1 cares about most here: if the server
+	// exposes its own rate there is no band table to keep in step.
+	const banded = (function () {
+		for (const b of CONFIG.arbitrage.taxBands) if (character.level > b.above) return b.rate;
+		return null;
+	})();
 	const info = {
 		esize: character.esize,
 		slotsTotal: character.items.length,
 		slotsUsed: used,
 		slotsFreeCounted: character.items.length - used,
 		gold: character.gold,
+		level: character.level,
+		taxLive: (typeof character.tax === 'number') ? character.tax : null,
+		taxFromBands: banded,
+		taxUsed: arbTaxRate(),
 		stacked: stacks,
 	};
+	pLog('tax: bands say ' + (banded * 100).toFixed(1) + '% at level ' + character.level
+		+ (info.taxLive == null
+			? ' - character.tax NOT exposed, falling back to the table'
+			: (info.taxLive === banded
+				? ' - character.tax agrees'
+				: ' - character.tax says ' + (info.taxLive * 100).toFixed(1) + '%, DISAGREES with the table')),
+		(info.taxLive != null && info.taxLive !== banded) ? 'orange' : null);
 	pLog('inventory: esize=' + character.esize + ', counted free=' + info.slotsFreeCounted
 		+ (character.esize === info.slotsFreeCounted ? ' (agree)' : ' (DISAGREE - esize does not mean free slots)'),
 		character.esize === info.slotsFreeCounted ? null : 'orange');
