@@ -2567,6 +2567,37 @@ function pAgeSec(iso) {
 	return isFinite(t) ? Math.round((Date.now() - t) / 1000) : null;
 }
 
+/* Is the bridge actually feeding the finders? Asked directly, because the
+   alternative is inferring it from the shape of a result - which has already
+   been got wrong once. */
+async function arbProbeBridge() {
+	const out = { url: CONFIG.scout.bridge, reachable: false };
+	try {
+		out.health = await scoutFetch('/health');
+		out.reachable = true;
+	} catch (e) {
+		out.error = String(e && e.message ? e.message : e);
+		pLog('bridge NOT reachable at ' + out.url + ' (' + out.error + ')', 'orange');
+		return pShow(out);
+	}
+	const rows = await arbProbeBridgeRows();
+	out.stands = rows ? rows.length : 0;
+	const shards = {};
+	let listings = 0, buyOrders = 0;
+	for (const r of (rows || [])) {
+		const k = String(r.serverRegion) + String(r.serverIdentifier);
+		shards[k] = (shards[k] || 0) + 1;
+		for (const s2 in (r.slots || {})) { listings++; if (r.slots[s2] && r.slots[s2].b) buyOrders++; }
+	}
+	out.shards = shards;
+	out.shardCount = Object.keys(shards).length;
+	out.listings = listings;
+	out.buyOrders = buyOrders;
+	pLog('bridge up: ' + out.stands + ' stands across ' + out.shardCount + ' shard(s), '
+		+ listings + ' listings of which ' + buyOrders + ' are buy orders');
+	return pShow(out);
+}
+
 /* Candidates for the BUY leg, taken from what the scouts already recorded
    rather than from whatever happens to be standing here.
  
@@ -2581,7 +2612,14 @@ async function arbProbeFindBuy(maxPrice) {
 	const rows = await arbProbeBridgeRows();
 	if (rows === null || !rows.length) {
 		if (rows && !rows.length) pLog('bridge has no stands recorded - falling back to what is in view', 'orange');
-		return arbProbePick(cap);
+		// Wrapped in an array with the source stamped on it. Returning a bare
+		// object here once read as "the finder returns the single best
+		// candidate" rather than "the bridge was not consulted" - which is the
+		// opposite conclusion, and the one that matters.
+		const local = arbProbePick(cap);
+		const list = local ? [Object.assign({ source: 'in-view', shard: mShardKey(), here: true, ageSec: 0 }, local)] : [];
+		pLog('SOURCE: in-view scan only (bridge gave nothing) - ' + list.length + ' candidate(s)', 'orange');
+		return pShow(list);
 	}
 	const here = mShardKey();
 	const out = [];
@@ -2594,6 +2632,7 @@ async function arbProbeFindBuy(maxPrice) {
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			if (sl.price > cap) continue;
 			out.push({
+				source: 'bridge',
 				shard: shard, here: shard === here, ageSec: age,
 				target: r.id, slot: k, name: sl.name, level: sl.level || 0,
 				price: sl.price, q: sl.q, map: r.map, x: r.x, y: r.y,
@@ -2610,6 +2649,7 @@ async function arbProbeFindBuy(maxPrice) {
 		return arbProbePick(cap);
 	}
 	const top = out[0];
+	pLog('SOURCE: bridge (' + rows.length + ' stands across all shards)');
 	pLog(out.length + ' candidate(s) at or under ' + cap + '. Best: ' + top.name
 		+ ' @ ' + top.price + ' from ' + top.target + ' on ' + top.shard
 		+ ' (' + top.ageSec + 's old)' + (top.here ? ' - already here' : ' - arbProbeGo("' + top.shard + '")'));
@@ -2641,6 +2681,7 @@ async function arbProbeFindSell() {
 	const rows = await arbProbeBridgeRows();
 	const here = mShardKey();
 	const out = [];
+	let source = 'bridge';
 	const scan = function (shard, ageSec, r) {
 		for (const k in (r.slots || {})) {
 			const sl = r.slots[k];
@@ -2649,6 +2690,7 @@ async function arbProbeFindSell() {
 			const mine = have.get(key);
 			if (!mine) continue;
 			out.push({
+				source: source,
 				shard: shard, here: shard === here, ageSec: ageSec,
 				target: r.id, slot: k, name: sl.name, level: sl.level || 0,
 				theyPay: sl.price, theyWant: sl.q, iHoldSlot: mine.slot, iHold: mine.q,
@@ -2657,10 +2699,17 @@ async function arbProbeFindSell() {
 		}
 	};
 	if (rows === null || !rows.length) {
+		source = 'in-view';
 		for (const r of scoutScanStands()) scan(here, 0, r);
 	} else {
 		for (const r of rows) scan(String(r.serverRegion) + String(r.serverIdentifier), pAgeSec(r.lastSeen), r);
 	}
+	// Stated before the result, because an empty list means very different
+	// things depending on which of the two it is.
+	pLog('SOURCE: ' + (source === 'bridge'
+		? 'bridge (' + rows.length + ' stands across all shards)'
+		: 'in-view scan only (bridge gave nothing)'),
+		source === 'bridge' ? null : 'orange');
 	out.sort(function (a, b) { return (b.theyPay || 0) - (a.theyPay || 0); });
 	if (!out.length) {
 		pLog('nobody the scouts have seen is buying anything currently held', 'orange');
@@ -3159,6 +3208,7 @@ function arbProbeHelp() {
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
 		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
+		'arbProbeBridge()           is the bridge feeding the finders? how much?',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
 		'arbProbeFindSell()         who is buying something already in inventory',
 		'arbProbeGo("EUII")         travel to a candidate\'s shard (reloads the page)',
@@ -3186,6 +3236,7 @@ try {
 		hold: arbProbeHold, fns: arbProbeFns, named: arbProbeNamed, src: arbProbeSrc,
 		stands: arbProbeStands, pick: arbProbePick, buyOrders: arbProbeBuyOrders,
 		findBuy: arbProbeFindBuy, findSell: arbProbeFindSell, go: arbProbeGo,
+		bridge: arbProbeBridge,
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		npcSell: arbProbeNpcSell,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
