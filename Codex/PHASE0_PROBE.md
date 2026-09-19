@@ -250,8 +250,9 @@ way the watchlist groups them — a level 0 buy order does not pay for a level 3
 item.
 
 Results are ordered by price, highest first, and the log prints the spread
-between the top and bottom entries. **That spread is the two-point tax
-measurement** — take the highest and the lowest, not two similar ones.
+between the top and bottom entries. Take the **highest** — the tax rate is
+known now, so one sale confirms it, and a bigger number reads more cleanly
+against rounding.
 
 Then travel and sell:
 
@@ -297,19 +298,47 @@ It also needs no counterparty, so it can be run immediately. **Run it early.**
 
 ---
 
-## Recording the tax
+## The tax rate is known — confirm it, don't fit it
 
-**One data point cannot tell a flat fee from a percentage.** Get **two sell legs
-into player buy orders at clearly different prices**. That is the only taxed leg,
-so that is where both points are needed. If `impliedFeePct` matches at both, it
-is a percentage; if `impliedFee` matches, it is flat.
+Sourced from `kaansoral/adventureland`, `node/server.js`, in
+`calculate_player_stats()`, which assigns `player.tax` from a chain of
+`level > N && rate` clauses. It is a **step function**: no per-level taper,
+nothing below 1%, nothing above 5%.
 
-Every record carries `characterLevel`, because the rate is reduced by some
-unknown factor of merchant level. A rate measured today at one level is **not** a
-constant. `CONFIG.arbitrage.tax` stays `null` until enough points exist to fit a
-formula, and Phase 1's profit test must refuse to pass while it is null rather
-than assume zero — assuming zero over-trades, which is the expensive direction to
-be wrong in.
+| level | tax |
+|---|---|
+| ≤ 20 | 5% |
+| 21–50 | **4%** |
+| 51–60 | 3% |
+| 61–70 | 2.5% |
+| 71–80 | 2% |
+| > 80 | 1% |
+
+The published chain has two consecutive `level > 80` clauses (`0.01` then
+`0.012`). `||` short-circuits on the first truthy value, so the second is
+unreachable and everything above 80 is simply 1%. Transcribed as the live
+behaviour, not the apparent intent — the server runs the code, not the intent.
+
+`arbTaxRate()` prefers `character.tax` if the server exposes it (authoritative,
+and it cannot drift if the bands are rebalanced) and falls back to the table.
+`arbProbeInv()` reports which source was used and whether they agree — **report
+that line**, because if `character.tax` is exposed the table becomes a fallback
+nobody has to maintain.
+
+**This drops the tax work to one confirming trade, not two.** There is no longer
+a flat-vs-percentage fit to do. One sell leg into a real player buy order, at a
+known price, checks the predicted rate against reality:
+
+```
+expected gold in = sellPrice × (1 − taxRate)
+```
+
+At level 30 that is `sellPrice × 0.96`. If the trade returns that, the model
+holds. If it does not, stop and report the numbers — do not adjust anything to
+fit.
+
+**Confirm Meltymerch's level first** (`arbProbeInv()` prints it). The band is
+flat across 21–50, so the answer is robust unless he has crossed 50.
 
 ---
 
