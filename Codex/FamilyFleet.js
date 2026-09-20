@@ -275,6 +275,15 @@ const CONFIG = {
 
 		   Turn this on to get the live merchant's behaviour back. */
 		kissMayWalk: false,
+		/* Run the upgrade pass at all. A switch rather than an assumption,
+		   because an upgrade spends gold on a roll whose failure cost this
+		   repo has not measured - see the note above upgradePass. */
+		upgrade: true,
+		/* And never past this, whatever the plan asks. Tier 3 wants firebow@10
+		   and pants@10; the chance tables put level 10 at about 2%, which is
+		   fifty scrolls for one success and a long run of failures to find out
+		   what a failure costs. Raised deliberately, once that is known. */
+		upgradeMaxLevel: 7,
 		// Ponty is checked before each hop. A gear-plan item is worth buying
 		// only if we can pay for it AND carry it AND do not already hold
 		// enough - which is why the bank contents have to survive the hop.
@@ -1741,6 +1750,15 @@ function betterForSlot(candidate, slot) {
    than one slot in the plan (two rings, two earrings), so this returns the
    first slot it actually improves rather than the first slot it belongs to. */
 function slotToEquip(candidate) {
+	/* The plan is a RANGER's, and this script runs on a merchant too.
+
+	   Without this the merchant's bank window reads an empty helmet slot,
+	   decides a fury is an upgrade for it, and tries to put a ranger's helmet
+	   on a merchant - which the game refuses, so the whole pass stops on the
+	   first item. Worse, shouldBank asks the same question: an item the
+	   merchant "would equip" is one it never hands over, so the bank would
+	   fill with gear it cannot use and cannot give away. */
+	if (myRole() !== 'ranger') return null;
 	const entry = PLAN_INDEX.get(candidate.name);
 	if (!entry) return null;
 	for (const slot of entry.slots) {
@@ -1756,9 +1774,25 @@ function slotToEquip(candidate) {
    stops a character banking the item it is about to equip, and the last is
    what stops the bank filling with a fourth and fifth copy of something two
    characters already wear. */
+/* Is this something the merchant is still part-way through?
+
+   An item below the level the plan asks of it is raw material with work left
+   in it, and the merchant is the character that does that work. It matters on
+   both sides of the bank window: the merchant must not hand back what it is
+   halfway through, and it should take out what it can carry on with. */
+function isWorkItem(it) {
+	const ceiling = planCeiling(it.name);
+	if (ceiling === null) return false;
+	return itemLevel(it) < Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel);
+}
+
 function shouldBank(item) {
 	if (!isPlanItem(item.name)) return false;
 	if (slotToEquip(item)) return false;
+	// The merchant keeps its work. Depositing a half-upgraded item and then
+	// withdrawing it again in the same window is not a bug that breaks
+	// anything, which is exactly why it would have gone unnoticed.
+	if (myRole() === 'merchant' && isWorkItem(item)) return false;
 	return bankWantsMore(item.name);
 }
 
@@ -1777,6 +1811,112 @@ function shouldSell(item) {
 	if (NEVER_SELL.has(item.name)) return false;
 	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
 	return true;
+}
+
+/* ---------------------------------------------------------------- upgrading
+
+   An upgrade raises one item by one level, at Cue, using a scroll from Lucas.
+   Both are in reach of the town spot, which is why this character can run the
+   account's gear economy without moving.
+
+   WHAT IS DELIBERATELY NOT PORTED from Merchant.js: its expected-cost planner,
+   which weighs scroll grades against offerings using the grace tables. Every
+   option it can reach for that this one cannot is the reason - offerings come
+   from Garwyn at (192, -564) and scroll3 from Crun on `level2`, and both are a
+   journey. With no offering and only scroll0-2 available, the choice collapses
+   to "the cheapest scroll that can carry this item's grade", which is what
+   compoundScrollFor already does for compounds.
+
+   OPEN QUESTION, and the reason for upgradeMaxLevel below: what a failed
+   upgrade costs. The item is at best knocked back and at worst destroyed, and
+   this repo has no measurement either way - Merchant.js's tables give the
+   chance of success and say nothing about the consequence of failure. Until
+   that is measured, this only ever pushes an item toward a level the plan
+   actually asks for, and never past it. */
+const MAX_SCROLL_GRADE = 2;          // scroll3 is Crun's, on level2, out of reach
+
+function upgradeScrollFor(item) {
+	let grade = 0;
+	try { grade = item_grade(item) || 0; } catch (e) { grade = 0; }
+	return 'scroll' + Math.max(0, Math.min(MAX_SCROLL_GRADE, grade));
+}
+
+/* The highest level any tier of the plan asks of this item, in any slot.
+
+   "Any slot" matters: pants appear at 6, 9 and 10 across the tiers, and a
+   pair being pushed for a tier-1 character still has tier 3 as its ceiling.
+   Stopping at the nearest target would park every item one tier short. */
+function planCeiling(name) {
+	const entry = PLAN_INDEX.get(name);
+	if (!entry) return null;
+	let best = null;
+	for (const use of entry.tiers) {
+		if (use.method !== 'upgrade') continue;
+		if (best === null || use.level > best) best = use.level;
+	}
+	return best;
+}
+
+/* Which item to put under the scroll next.
+
+   The lowest-level on-plan upgrade item that is still short of its ceiling.
+   Lowest first because the early levels are nearly free - the chance tables
+   start at .9999 for level 1 and are still above .9 at level 3 - so the same
+   scroll spend moves a raw item several levels while it would buy a coin flip
+   on something already at 9. */
+function nextUpgradeTarget() {
+	let best = null;
+	for (const it of inventoryItems()) {
+		const ceiling = planCeiling(it.name);
+		if (ceiling === null) continue;
+		const level = itemLevel(it);
+		if (level >= Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel)) continue;
+		if (!best || level < itemLevel(best)) best = it;
+	}
+	return best;
+}
+
+async function tryUpgrade(item) {
+	const scroll = upgradeScrollFor(item);
+	let scrollIdx = findInventory(scroll);
+	if (scrollIdx < 0) {
+		try { await buy(scroll, 1); } catch (e) {
+			log(`could not buy ${scroll} for ${item.name}: ${e && e.reason ? e.reason : e}`, 'orange');
+			return false;
+		}
+		scrollIdx = findInventory(scroll);
+		if (scrollIdx < 0) return false;
+	}
+	try {
+		await upgrade(item.idx, scrollIdx);
+		log(`upgraded ${item.name}+${itemLevel(item)} with ${scroll}`, '#7FD98A');
+		return true;
+	} catch (e) {
+		log(`upgrade of ${item.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+		return false;
+	}
+}
+
+/* Bounded, and bounded by gold as well as by count.
+
+   An upgrade is a purchase, and this character's gold is also what pays for a
+   Ponty listing that will not be there next hour. The floor is the same one
+   the bank window uses: spend down to it and stop, rather than arriving at
+   Ponty with an empty bag of gold and a stack of +1 pants. */
+async function upgradePass(maxAttempts) {
+	if (!CONFIG.merchant.upgrade) return 0;
+	let done = 0;
+	for (let i = 0; i < (maxAttempts || 8); i++) {
+		if (character.gold <= CONFIG.merchant.leaveInBank) {
+			log('out of spending gold - stopping the upgrade pass', 'orange');
+			break;
+		}
+		const target = nextUpgradeTarget();
+		if (!target) break;
+		if (await tryUpgrade(target)) done++;
+		else break;                            // a refusal will just repeat
+	}
+	return done;
 }
 
 /* Items that can be compounded right now: three identical names at an
@@ -1875,9 +2015,16 @@ async function compoundPass(maxAttempts) {
    Doing 4 before 3 is the obvious ordering and the wrong one: a full bag
    cannot accept the item it came for. */
 
-/* Every bank operation renumbers the slots after the one it touched, so each
-   phase re-reads rather than working from a list it built at the start. That
-   is also why these are bounded loops rather than for-each over a snapshot. */
+/* Each phase re-reads between operations rather than working from a list it
+   built at the start, and is a bounded loop rather than a for-each over a
+   snapshot.
+
+   Not because the slots renumber - the bag and the bank packs are sparse
+   arrays and a removed item leaves a null, so indices are stable. Because the
+   operations are async against the game's own live state: anything can change
+   under an await, an index read before one is an index that was true then, and
+   a loop that keeps asking cannot act on a stale answer. The bound is what
+   stops it asking forever when the answer never changes. */
 const BANK_MAX_OPS = 30;
 
 function bankWindowOpen() {
@@ -2364,9 +2511,85 @@ async function merchantGold() {
 	}
 }
 
-/* The merchant's bank window. Shares the gear phases with the rangers - they
-   are the same operations against the same plan - and differs only in the gold
-   direction and in taking a snapshot on the way out. */
+/* Three copies of the same name at the same level, sitting in the bank.
+
+   Compounding needs exactly that, and the three rangers each banking one
+   spare is how it happens - none of them ever sees a triple in its own bag.
+   The merchant is the only character that can see all three at once, which
+   makes taking them out its job rather than a convenience. */
+function bankCompoundGroup() {
+	const groups = new Map();
+	for (const it of bankItems()) {
+		const key = it.name + '@' + itemLevel(it);
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(it);
+	}
+	for (const [, list] of groups) {
+		if (list.length >= 3 && isPlanItem(list[0].name)) return list.slice(0, 3);
+	}
+	return null;
+}
+
+/* What the merchant takes OUT of the bank: work, not gear.
+
+   The rangers' version of this asks "does it beat what I am wearing", which
+   for a merchant answers no to everything - it cannot wear any of it. The
+   merchant's question is different: what can I carry on with? Two answers,
+   in this order.
+
+     1. a compound group, because three slots become one and the result is a
+        level above all of them - it is the only operation here that makes the
+        bag emptier;
+     2. anything still short of what the plan asks, lowest first.
+
+   The free-slot floor applies to both, and a compound group that will not fit
+   whole is left for the next window rather than half-taken. */
+async function merchantWithdrawWork() {
+	let taken = 0;
+	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
+		const group = bankCompoundGroup();
+		if (group && freeSlots() - 3 > CONFIG.ranger.freeSlotsFloor) {
+			let got = 0;
+			// Highest index first. A precaution rather than a known requirement:
+			// the packs are sparse arrays, so a removal should leave a null and
+			// not shift anything, but this is the one loop here that acts on
+			// three indices read at the same moment, and descending order is
+			// correct under either behaviour.
+			for (const it of [...group].sort((a, b) => b.idx - a.idx)) {
+				try { await bank_retrieve(it.pack, it.idx); got++; taken++; }
+				catch (e) { log(`bank_retrieve ${it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange'); break; }
+			}
+			if (got === 3) {
+				log(`took 3x ${group[0].name}+${itemLevel(group[0])} out to compound`, '#7FD98A');
+				continue;
+			}
+			break;
+		}
+
+		if (freeSlots() <= CONFIG.ranger.freeSlotsFloor) {
+			log('no room to take more work out - leaving the rest for next window', 'orange');
+			break;
+		}
+		const work = bankItems().filter(isWorkItem)
+			.sort((a, b) => itemLevel(a) - itemLevel(b))[0];
+		if (!work) break;
+		try {
+			await bank_retrieve(work.pack, work.idx);
+			log(`took ${work.name}+${itemLevel(work)} out to work on`, '#7FD98A');
+			taken++;
+		} catch (e) {
+			log(`bank_retrieve ${work.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+			break;
+		}
+	}
+	return taken;
+}
+
+/* The merchant's bank window.
+
+   Same shape as the rangers' and a different set of phases, because the
+   rangers come here to dress and the merchant comes here to restock. It does
+   not equip: the plan is a ranger's, and a merchant cannot wear any of it. */
 async function merchantBankRun() {
 	await withScanLock(doScan);
 	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) {
@@ -2377,12 +2600,9 @@ async function merchantBankRun() {
 		log('in the bank map but character.bank is not readable - nothing to do this window', 'orange');
 	} else {
 		await merchantGold();
-		const worn = await bankEquipFromInventory();
-		const given = await bankDepositSpares();
-		const taken = await bankWithdrawUpgrades();
-		if (worn || given || taken) {
-			log(`gear pass: equipped ${worn}, banked ${given}, withdrew ${taken}`, '#7FD98A');
-		}
+		const given = await bankDepositSpares();   // finished work goes back
+		const taken = await merchantWithdrawWork();
+		if (given || taken) log(`gear pass: banked ${given}, took out ${taken}`, '#7FD98A');
 		// Last thing before leaving, so the snapshot reflects the deposits and
 		// withdrawals this window just made rather than the state it arrived in.
 		saveBankSnapshot();
@@ -2418,6 +2638,13 @@ async function merchantTick() {
 		}
 
 		if (await kissRound()) return;
+
+		/* Both of these are town jobs done standing still: Cue is 150 from the
+		   spot and Lucas 286, and neither needs a step. They run before the
+		   hop for the obvious reason - after it we would be somewhere else,
+		   with the same bag and different NPCs. */
+		await compoundPass();
+		await upgradePass();
 
 		const key = shardKey(currentShard());
 		if (pontyDue(key)) {
