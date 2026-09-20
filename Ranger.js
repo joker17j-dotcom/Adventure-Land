@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v48 (game log: the Get Closer tab becomes Noise and now also swallows achievement-progress lines and the courage mechanic's scared/terrified messages. All three are routine client chatter during farming and none of them are actionable: AP[firehazard] in particular wants 20,000 CONSECUTIVE burn last-hits, so a physical last hit from the firebow resets it and the line repeats 1/20,000 rather than counting up. Still a tab rather than a hard suppression, since each is worth reading back when that specific thing is the question.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v49 (fear instrumentation, observation only - nothing branches on it. A feared character stops killing, which reaches checkFarmEconomics as gold/sec <= 0 and is indistinguishable from a poor spot, so a swarmy but rich spot can be abandoned for a reason that belongs to the character rather than the location. Rather than act on that theory, this samples character.fear once a second, accumulates feared time and peak attacker count per spot, and annotates the existing abandon verdict with it. Persisted to CODE storage because the interesting window is hours long and a redeploy or shard hop would otherwise reset it; gaps over 5s are discarded rather than counted as observed time. Read it with farmFearReport(), reset with clearFearReport().)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2514,6 +2514,112 @@ function runFarmSearch() {
 	}
 }
 
+/* FEAR INSTRUMENTATION - observation only. Nothing branches on any of this.
+
+   Courage is the number of monsters that can target you before fear starts
+   (G.classes.ranger sets courage/mcourage/pcourage to 2, and this character
+   carries no gear bonus, so a third attacker trips it). A feared character
+   stops killing, which reaches checkFarmEconomics as gold/sec <= 0 and looks
+   exactly like a poor spot - so a swarmy but rich spot can be abandoned for a
+   reason that belongs to the character rather than the location.
+
+   That is a theory. This records what actually happens so the question can be
+   settled with numbers instead, because the last function to be changed on an
+   unmeasured theory about farming was this one, and it ate ~55 spots.
+
+   Persisted, because the interesting window is hours long and a redeploy or a
+   shard hop would otherwise reset it. Read it with farmFearReport(). */
+const FEAR_STORE = 'fear_log';
+const fearWatch = { lastSample: Date.now(), fearedMs: 0, windowMs: 0, peak: 0, recent: [] };
+
+function fearAttackerCount() {
+	let n = 0;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e && e.type === 'monster' && e.target === character.name) n++;
+	}
+	return n;
+}
+
+function sampleFear() {
+	const now = Date.now();
+	const dt = now - fearWatch.lastSample;
+	fearWatch.lastSample = now;
+	/* A throttled tab or a reload leaves a gap that is not observed time.
+	   Counting it would inflate both numerator and denominator with fiction. */
+	if (dt <= 0 || dt > 5000) return;
+	fearWatch.windowMs += dt;
+	if (character.fear > 0) fearWatch.fearedMs += dt;
+	const n = fearAttackerCount();
+	if (n > fearWatch.peak) fearWatch.peak = n;
+}
+
+function flushFearWindow(key) {
+	const windowMs = fearWatch.windowMs;
+	const fearedMs = fearWatch.fearedMs;
+	const peak = fearWatch.peak;
+	fearWatch.windowMs = 0; fearWatch.fearedMs = 0; fearWatch.peak = 0;
+	if (windowMs <= 0) return null;
+
+	const pct = Math.round((fearedMs / windowMs) * 100);
+	fearWatch.recent.push({ pct, sec: Math.round(fearedMs / 1000), peak });
+	if (fearWatch.recent.length > 6) fearWatch.recent.shift();
+
+	try {
+		const log = get(FEAR_STORE) || { since: Date.now(), bySpot: {} };
+		const row = log.bySpot[key] || { observedMs: 0, fearedMs: 0, peak: 0, windows: 0, abandons: 0 };
+		row.observedMs += windowMs;
+		row.fearedMs += fearedMs;
+		row.windows += 1;
+		if (peak > row.peak) row.peak = peak;
+		log.bySpot[key] = row;
+		set(FEAR_STORE, log);
+	} catch (e) { /* storage is best effort; the live numbers still log */ }
+
+	return { pct, sec: Math.round(fearedMs / 1000), peak };
+}
+
+function noteFearAbandon(key) {
+	try {
+		const log = get(FEAR_STORE) || { since: Date.now(), bySpot: {} };
+		const row = log.bySpot[key] || { observedMs: 0, fearedMs: 0, peak: 0, windows: 0, abandons: 0 };
+		row.abandons = (row.abandons || 0) + 1;
+		log.bySpot[key] = row;
+		set(FEAR_STORE, log);
+	} catch (e) { /* as above */ }
+}
+
+function fearRecentSummary() {
+	if (!fearWatch.recent.length) return 'no fear samples yet';
+	const sec = fearWatch.recent.reduce((a, r) => a + r.sec, 0);
+	const peak = Math.max(...fearWatch.recent.map((r) => r.peak));
+	return `feared ${sec}s over the last ${fearWatch.recent.length} window(s), peak ${peak} attacker(s), courage ${character.courage}`;
+}
+
+/* Console helper. The whole point of the exercise - read this after a few
+   hours of farming and the fear-versus-spot question answers itself. */
+function farmFearReport() {
+	const log = get(FEAR_STORE);
+	if (!log || !log.bySpot || !Object.keys(log.bySpot).length) {
+		game_log('fear report: nothing recorded yet', 'orange');
+		return null;
+	}
+	const rows = Object.entries(log.bySpot).map(([key, r]) => ({
+		spot: key,
+		minutes: +(r.observedMs / 60000).toFixed(1),
+		fearedPct: r.observedMs ? +((r.fearedMs / r.observedMs) * 100).toFixed(1) : 0,
+		fearedMin: +(r.fearedMs / 60000).toFixed(1),
+		peakAttackers: r.peak,
+		abandons: r.abandons || 0,
+	})).sort((a, b) => b.fearedPct - a.fearedPct);
+	game_log(`fear report: ${rows.length} spot(s) since ${new Date(log.since).toLocaleString()}`, '#7FD98A');
+	return show_json({ courage: character.courage, mcourage: character.mcourage, pcourage: character.pcourage, spots: rows });
+}
+
+function clearFearReport() { set(FEAR_STORE, { since: Date.now(), bySpot: {} }); game_log('fear report cleared', 'orange'); }
+
+setInterval(sampleFear, 1000);
+
 function checkFarmEconomics() {
 	if (!home || !mobMap) return;
 
@@ -2570,10 +2676,19 @@ function checkFarmEconomics() {
 	const goldGained = character.gold - economicsTracker.lastGold;
 	const goldPerSecond = goldGained / elapsedSec;
 
+	const spot = spotKey(home, mobMap);
+	const fear = flushFearWindow(spot);
+
 	if (goldPerSecond <= 0) {
 		economicsTracker.consecutiveBadSamples = (economicsTracker.consecutiveBadSamples || 0) + 1;
+		/* Say whether fear was present rather than blaming the spot silently.
+		   This only annotates the verdict - the verdict itself is unchanged. */
+		if (fear && fear.pct > 0) {
+			game_log(`No net gold this minute, and ${fear.pct}% of it was spent feared (peak ${fear.peak} attackers)`, 'orange');
+		}
 		if (economicsTracker.consecutiveBadSamples >= 3) {
-			game_log(`Current farm spot shows no net gold gain for ${economicsTracker.consecutiveBadSamples} consecutive minutes - re-evaluating`, 'red');
+			noteFearAbandon(spot);
+			game_log(`Current farm spot shows no net gold gain for ${economicsTracker.consecutiveBadSamples} consecutive minutes (${fearRecentSummary()}) - re-evaluating`, 'red');
 			runFarmSearch();
 			economicsTracker.consecutiveBadSamples = 0;
 		}
