@@ -354,6 +354,13 @@ class Store:
         # seconds old, which is precisely what sellMaxAgeSec exists to prevent,
         # and the executor would travel to them.
         #
+        # Note the consequence for a LONG outage: an observation older than
+        # MERCHANT_TTL is stored and then evicted in the same call, so the
+        # scout is told it was accepted and clears its buffer. That is the
+        # right outcome - the bridge's own TTL says data that old is worthless,
+        # and the alternative is a scout carrying dead rows forever - but it
+        # means a flush after an hour down is a discard, not a recovery.
+        #
         # Clamped so a skewed clock cannot buy freshness: never newer than the
         # bridge's own now. The relay crosses a LAN for the second account, so
         # the two clocks are not guaranteed to agree. Unparseable falls back to
