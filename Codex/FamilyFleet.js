@@ -2916,8 +2916,15 @@ function startFleet() {
 		return;
 	}
 	restoreBuffer();
+	/* The mode goes in the banner, loudly. A rehearsal that is quietly live is
+	   the expensive mistake here, and so is a live run everyone thinks is a
+	   rehearsal - both are the same missing line. */
+	if (CONFIG.safety.dryRun) {
+		log('DRY RUN - nothing will be sold, spent, destroyed, moved between bank '
+			+ 'and bag, or hopped. Scanning and walking are real.', '#E9C46A');
+	}
 	log(`${character.name}: ${role}, bank window at :${String(myBankMinute()).padStart(2, '0')}, `
-		+ `on ${shardKey(currentShard())}`, '#55BDF0');
+		+ `on ${shardKey(currentShard())}${CONFIG.safety.dryRun ? ' [DRY RUN]' : ''}`, '#55BDF0');
 	setInterval(() => {
 		try { fleetTick(); } catch (e) { console.error('fleetTick error:', e); }
 	}, TICK_MS);
