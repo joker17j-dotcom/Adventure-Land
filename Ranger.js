@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v36 (restored the _plshard stamp in plSend. The standalone party_link.js used to build v35 predated it, so relay-delivered requests reached Meltymerch with no sender shard and were filed under wherever the merchant happened to be - the exact mis-attribution its on_cm comment warns about.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v37 (throttled the three repeating sends: potion requests 30s and gated on the merchant being reachable, pickup requests 15s with a sell-off fallback when no mule can be reached, and farm_spot now burst-on-change and on a member joining rather than every 5s forever. Also gated the mluck location ping on the merchant being high enough level to cast it - it had no exit condition and fired every second.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -245,7 +245,16 @@ const CONFIG = {
 		autoBuy: true,
 		hpThreshold: 400,
 		mpThreshold: 500,
-		minStock: 1000
+		minStock: 1000,
+		// autoBuyPotions runs on the 2s maintenance tick, and the low-stock
+		// condition it fires on is not transient: away from a vendor, or broke,
+		// buy() fails and the count stays under the threshold. That sent two
+		// messages every two seconds, indefinitely, from every fighter.
+		//
+		// The cooldown is the real fix and the gate below is an optimisation on
+		// top of it. That ordering matters: the gate can be wrong about
+		// reachability, but the cooldown bounds the cost either way.
+		requestCooldownMs: 30000,
 	},
 
 	party: {
@@ -295,11 +304,40 @@ const CONFIG = {
 		}
 	},
 
+	/* When the pack is full and no mule is coming, sell junk rather than stop.
+
+	   DESTRUCTIVE, so the protections are the important part of this block and
+	   not the thresholds. Nothing upgraded, nothing special, nothing locked and
+	   nothing named below is ever sold, whatever it is worth - an item's vendor
+	   price is a poor guide to whether you wanted to keep it, which is exactly
+	   why "sell the cheapest" needs a floor under it rather than a sort alone. */
+	inventoryRelief: {
+		enabled: true,
+		// How long the pack must stay full, with the merchant unreachable,
+		// before selling. Long enough that a merchant mid-hop or mid-trade gets
+		// to arrive first; this is a last resort, not a first response.
+		graceMs: 90000,
+		targetFreeSlots: 21,
+		// Ernis in Mainland - the same NPC the merchant restocks potions from,
+		// so it is a known-good vendor location in this codebase rather than a
+		// guess. Any NPC that buys would do.
+		vendor: { map: 'main', x: -35, y: -162 },
+		neverSell: new Set([
+			'hpot0', 'hpot1', 'mpot0', 'mpot1', 'xptome', 'xpbooster', 'luckbooster',
+			'goldbooster', 'pumpkinspice', 'licence', 'tracktrix', 'ancientcomputer',
+			'computer', 'supercomputer', 'cscroll0', 'cscroll1', 'cscroll2',
+			'scroll0', 'scroll1', 'scroll2', 'stand0', 'stand1',
+		]),
+	},
+
 	locationBroadcast: {
 		enabled: true,
 		targetPlayer: 'Meltymerch',
 		checkInterval: 1000,
 		lowInventorySlots: 3,
+		// The pickup request fires on a one-second tick off a condition that
+		// only clears when someone else acts. Same shape as the potion request.
+		pickupCooldownMs: 15000,
 		// Only used if the game's own skill table cannot be read. The real
 		// requirement comes from G.skills.mluck.level at runtime, so it cannot
 		// go stale if the game changes it - this is a floor for the case where
@@ -359,6 +397,7 @@ const state = {
 	lastAngleUpdate: performance.now(),
 	waitingForMerchant: false,
 	waitingForMerchantSince: 0,
+	sellingOff: false,          // freeing slots at a vendor; mainLoop stands down
 	restocking: false,
 };
 
@@ -566,6 +605,9 @@ const findHealTarget = () => {
 async function mainLoop() {
 	try {
 		if (is_disabled(character)) return setTimeout(mainLoop, 250);
+		// Selling junk off to make room. Same shape as waiting for the merchant:
+		// stand down until it finishes, and it always finishes.
+		if (state.sellingOff) return setTimeout(mainLoop, 250);
 		if (state.waitingForMerchant) {
 			if (Date.now() - state.waitingForMerchantSince > MERCHANT_WAIT_TIMEOUT_MS) {
 				state.waitingForMerchant = false;
@@ -1314,14 +1356,59 @@ const inventorySorter = () => {
 	});
 };
 
+/* Can a message to the merchant actually arrive?
+
+   Two channels with different reach. The bridge relay crosses shards, so if it
+   is up the merchant hears us wherever it is. send_cm is realm-local, so it
+   only works when the merchant is on this shard - and the one thing we can
+   check for certain is whether it is visible to this client.
+
+   Anything else is UNKNOWN, not "no". A merchant parked two maps away on this
+   same shard is perfectly reachable by send_cm and invisible to get_player, so
+   treating unknown as unreachable would suppress requests that would have
+   worked. Callers decide what to do with unknown; for a request that is merely
+   repeated too often, the cooldown already bounds the cost, so sending is the
+   right answer. */
+function merchantReach(name) {
+	if (plUp) return { ok: true, how: 'bridge' };
+	try { if (get_player(name)) return { ok: true, how: 'same shard, in view' }; } catch (e) { }
+	return { ok: false, how: 'bridge down and not in view', unknown: true };
+}
+
+let potionAskAt = { hp: 0, mp: 0 };
+let potionGateNote = null;
+
+/* Ask the merchant for a resupply, at most once per cooldown. */
+function askForPotions(kind, have) {
+	const now = Date.now();
+	if (now - (potionAskAt[kind] || 0) < CONFIG.potions.requestCooldownMs) return;
+	const target = CONFIG.locationBroadcast.targetPlayer;
+	const reach = merchantReach(target);
+	// Unknown reachability still sends: see merchantReach. Only a confident
+	// "no" would be worth suppressing, and we cannot have one.
+	if (!reach.ok && !reach.unknown) {
+		if (potionGateNote !== reach.how) {
+			potionGateNote = reach.how;
+			game_log(`[potions] holding requests: ${reach.how}`, '#8b98ab');
+		}
+		return;
+	}
+	potionGateNote = null;
+	potionAskAt[kind] = now;
+	plSend(target, {
+		message: 'low_potions', potion: kind, quantity: have,
+		x: character.x, y: character.y, map: character.map,
+	});
+}
+
 function autoBuyPotions() {
 	if (quantity('hpot1') < CONFIG.potions.minStock) buy('hpot1', CONFIG.potions.minStock);
 	if (quantity('mpot1') < CONFIG.potions.minStock) buy('mpot1', CONFIG.potions.minStock);
 
 	const totalHp = quantity('hpot0') + quantity('hpot1');
 	const totalMp = quantity('mpot0') + quantity('mpot1');
-	if (totalHp < 500) plSend('Meltymerch', { message: 'low_potions', potion: 'hp', quantity: totalHp, x: character.x, y: character.y, map: character.map });
-	if (totalMp < 500) plSend('Meltymerch', { message: 'low_potions', potion: 'mp', quantity: totalMp, x: character.x, y: character.y, map: character.map });
+	if (totalHp < 500) askForPotions('hp', totalHp);
+	if (totalMp < 500) askForPotions('mp', totalMp);
 }
 
 async function buyMissingPotions() {
@@ -1480,6 +1567,85 @@ function mluckState() {
 }
 
 let mluckGateNote = null;
+let pickupAskedAt = 0;
+let packFullSince = 0;
+let reliefRunning = false;
+
+/* Items this character is willing to part with, cheapest first.
+
+   Sorted by what a vendor would pay, per the game's own valuation rather than
+   anything this file guesses. Everything excluded below is excluded on a rule,
+   not a price: an upgraded or special item represents work, a locked one was
+   deliberately protected, and the named list is things whose usefulness has
+   nothing to do with their vendor value. */
+function reliefSellable() {
+	const cfg = CONFIG.inventoryRelief;
+	const out = [];
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (!it || !it.name) continue;
+		if (cfg.neverSell.has(it.name)) continue;
+		if (it.l === 'l') continue;                 // locked by hand
+		if (it.p) continue;                         // special / shiny
+		if ((it.level || 0) > 0) continue;          // upgraded: someone paid for that
+		let value = null;
+		try { value = parent.calculate_item_value(it); } catch (e) { }
+		out.push({ slot: i, name: it.name, q: it.q || 1, value: (typeof value === 'number' && isFinite(value)) ? value : 0 });
+	}
+	out.sort((a, b) => a.value - b.value);
+	return out;
+}
+
+function freeSlots() {
+	return character.items.filter((it) => it === null).length;
+}
+
+/* No mule is coming and the pack is full. Sell the cheapest junk until there
+   is room, then carry on. Runs once at a time and always clears its own flag,
+   because a fighter stuck in a sell that threw would simply stop fighting. */
+async function runInventoryRelief() {
+	const cfg = CONFIG.inventoryRelief;
+	if (reliefRunning) return;
+	reliefRunning = true;
+	state.sellingOff = true;
+	try {
+		const want = cfg.targetFreeSlots;
+		let sellable = reliefSellable();
+		if (!sellable.length) {
+			game_log(`Pack full, no mule, and nothing safe to sell - carrying on full`, 'red');
+			return;
+		}
+		game_log(`No mule reachable - selling junk for ${want} free slots`, '#FFD700');
+		try {
+			await smart_move({ map: cfg.vendor.map, x: cfg.vendor.x, y: cfg.vendor.y });
+		} catch (e) {
+			game_log(`Could not reach the vendor: ${e?.reason || e}`, 'red');
+			return;
+		}
+		let sold = 0;
+		for (const item of sellable) {
+			if (freeSlots() >= want) break;
+			// Re-read the slot: selling shifts nothing, but a mule pickup or a
+			// death could have emptied it since the list was built.
+			const live = character.items[item.slot];
+			if (!live || live.name !== item.name) continue;
+			try {
+				await sell(item.slot, live.q || 1);
+				sold++;
+				await new Promise((r) => setTimeout(r, 250));
+			} catch (e) {
+				game_log(`sell failed for ${item.name}: ${e?.reason || e}`, 'orange');
+			}
+		}
+		game_log(`Sold ${sold} stack(s); ${freeSlots()} slots free`, sold ? '#7FD98A' : 'orange');
+	} catch (e) {
+		console.error('inventory relief failed:', e);
+	} finally {
+		state.sellingOff = false;
+		reliefRunning = false;
+		packFullSince = 0;      // whatever happened, start the clock again
+	}
+}
 
 async function sendLocationUpdate() {
 	if (!CONFIG.locationBroadcast.enabled) return;
@@ -1499,10 +1665,35 @@ async function sendLocationUpdate() {
 			&& (!character.s.mluck || character.s.mluck.f !== CONFIG.locationBroadcast.targetPlayer);
 		const nullCount = character.items.filter(item => item === null).length;
 
-		// The inventory branch is deliberately outside the gate: a full pack
-		// needs the mule whether or not anyone can buff us.
-		if (needsUpdate || nullCount <= CONFIG.locationBroadcast.lowInventorySlots) {
-			plSend(CONFIG.locationBroadcast.targetPlayer, {
+		// The inventory branch is deliberately outside the mluck gate: a full
+		// pack needs the mule whether or not anyone can buff us.
+		const target = CONFIG.locationBroadcast.targetPlayer;
+		const lowInv = nullCount <= CONFIG.locationBroadcast.lowInventorySlots;
+		const now = Date.now();
+
+		if (!lowInv) packFullSince = 0;
+		else if (!packFullSince) packFullSince = now;
+
+		let askPickup = false;
+		if (lowInv) {
+			const reach = merchantReach(target);
+			if (reach.ok) {
+				// Reachable: ask, at most once per cooldown. Whichever channel
+				// carries it, the message gets there.
+				askPickup = now - pickupAskedAt >= CONFIG.locationBroadcast.pickupCooldownMs;
+				if (askPickup) pickupAskedAt = now;
+			} else if (CONFIG.inventoryRelief.enabled
+				&& !reliefRunning
+				&& now - packFullSince >= CONFIG.inventoryRelief.graceMs) {
+				// Not reachable by either channel, and long enough that a mule
+				// mid-hop would have arrived. Free the slots ourselves rather
+				// than stand there full.
+				runInventoryRelief();
+			}
+		}
+
+		if (needsUpdate || askPickup) {
+			plSend(target, {
 				message: 'location',
 				x: character.x,
 				y: character.y,
@@ -1510,8 +1701,8 @@ async function sendLocationUpdate() {
 			});
 		}
 
-		if (nullCount <= CONFIG.locationBroadcast.lowInventorySlots) {
-			plSend(CONFIG.locationBroadcast.targetPlayer, {
+		if (askPickup) {
+			plSend(target, {
 				message: 'inventory_almost_full',
 				emptySlots: nullCount,
 				x: character.x,
@@ -2236,17 +2427,83 @@ function sendUpdates() {
 }
 setInterval(sendUpdates, 20000);
 
-function sendFarmSpot() {
-	if (!home || !mobMap || !destination) return;
-	plSend(['FatherToken', 'MageofOz'], {
+/* Tell the party where we are farming.
+
+   This used to fire every five seconds regardless, resending an unchanged spot
+   forever - the single heaviest source of traffic in the system, and almost
+   all of it repetition.
+
+   Now it is driven by what actually matters. A CHANGE starts a burst: five
+   seconds apart for a minute, because that is when a message is worth
+   repeating - someone may be mid-hop, mid-load, or not listening yet. After
+   the burst it settles to a thirty-second keepalive, which is enough for a
+   member who joins late or misses one.
+
+   A member JOINING also starts a burst, since they have never heard any of it.
+   Tracked by name rather than by count so a swap - one leaves, another joins -
+   is still seen as an arrival. */
+const FARM_SPOT = {
+	burstMs: 5000,
+	burstForMs: 60000,
+	keepaliveMs: 30000,
+	audience: ['FatherToken', 'MageofOz'],
+};
+
+let farmSpotLast = null;       // the spot as last announced
+let farmSpotSentAt = 0;
+let farmSpotBurstUntil = 0;
+let farmSpotKnownParty = new Set();
+
+function farmSpotKey() {
+	if (!home || !mobMap || !destination) return null;
+	return `${home}|${mobMap}|${Math.round(destination.x)}|${Math.round(destination.y)}`;
+}
+
+/* Who is in the party that we care about, right now. */
+function farmSpotAudienceInParty() {
+	const party = (typeof get_party === 'function' ? get_party() : null) || {};
+	return new Set(FARM_SPOT.audience.filter((n) => party[n]));
+}
+
+function sendFarmSpot(reason) {
+	if (!home || !mobMap || !destination) return false;
+	plSend(FARM_SPOT.audience, {
 		message: 'farm_spot',
 		home,
 		mobMap,
 		x: destination.x,
 		y: destination.y,
 	});
+	farmSpotLast = farmSpotKey();
+	farmSpotSentAt = Date.now();
+	if (reason) plLog(`farm spot -> ${reason}`, '#8b98ab');
+	return true;
 }
-setInterval(sendFarmSpot, 5000);
+
+function farmSpotTick() {
+	const key = farmSpotKey();
+	if (!key) return;
+	const now = Date.now();
+
+	const present = farmSpotAudienceInParty();
+	const joined = [...present].filter((n) => !farmSpotKnownParty.has(n));
+	farmSpotKnownParty = present;
+
+	if (key !== farmSpotLast) {
+		farmSpotBurstUntil = now + FARM_SPOT.burstForMs;
+		sendFarmSpot('spot changed');
+		return;
+	}
+	if (joined.length) {
+		farmSpotBurstUntil = now + FARM_SPOT.burstForMs;
+		sendFarmSpot(`${joined.join(', ')} joined`);
+		return;
+	}
+	const due = (now < farmSpotBurstUntil) ? FARM_SPOT.burstMs : FARM_SPOT.keepaliveMs;
+	if (now - farmSpotSentAt >= due) sendFarmSpot(null);
+}
+
+setInterval(farmSpotTick, 1000);
 
 mainLoop();
 actionLoop();
@@ -2255,7 +2512,7 @@ equipmentLoop();
 dragold.startScanning();
 maintenanceLoop();
 potionLoop();
-sendFarmSpot();
+farmSpotTick();
 initializeFarmUI();
 if (parent.$) {
 
