@@ -770,6 +770,63 @@ async function roamerLoop() {
 	}
 }
 
+// ------------------------------------------------------------ sweep timing
+/* How long a full rotation actually takes, measured rather than computed.
+
+   The one figure written down - 2.4 minutes for 11 shards - was measured on
+   Merchant.js's scout, which has no hop floor. This script holds
+   minHopIntervalMs at 30s by design, so its sweep cannot be faster than
+   11 x 30s and nobody has seen the real number. It matters beyond curiosity:
+   sweep time is how stale our own rows are, and Merchant.js v31 now decides
+   row by row against ALData on exactly that.
+
+   A hop restarts this script, so the marks live in CODE storage. Arriving
+   somewhere already marked closes a lap, and the delta is one full sweep back
+   to that shard.
+
+   The spread is the useful half. A sweep that is mostly one pathological shard
+   wants a different fix from one that is evenly slow, and a mean hides which
+   it is - so every lap is kept, not just the latest. */
+function noteArrival() {
+	const key = shardKey(currentShard());
+	const marks = SS.get('sweep_marks', {}) || {};
+	const laps = SS.get('sweep_laps', []) || [];
+	const now = Date.now();
+	const prev = marks[key];
+	marks[key] = now;
+	SS.set('sweep_marks', marks);
+	if (!prev) return null;
+
+	const sec = Math.round((now - prev) / 1000);
+	laps.push({ shard: key, sec: sec, at: new Date(now).toISOString() });
+	// Keep it bounded; a multi-day run would otherwise grow this without limit.
+	while (laps.length > 200) laps.shift();
+	SS.set('sweep_laps', laps);
+	log(`full sweep back to ${key}: ${sec}s`, '#E9C46A');
+	return sec;
+}
+
+/* Console helper: every lap recorded, with the spread that a mean would hide. */
+function sweepTimes() {
+	const laps = SS.get('sweep_laps', []) || [];
+	if (!laps.length) {
+		log('no full sweep recorded yet - needs one rotation back to a shard already visited', 'orange');
+		return { laps: [] };
+	}
+	const secs = laps.map(function (l) { return l.sec; }).sort(function (a, b) { return a - b; });
+	const at = function (q) { return secs[Math.min(secs.length - 1, Math.floor(q * secs.length))]; };
+	const out = {
+		laps: laps.length,
+		medianSec: at(0.5), p90Sec: at(0.9),
+		fastestSec: secs[0], slowestSec: secs[secs.length - 1],
+		slowest: laps.slice().sort(function (a, b) { return b.sec - a.sec; }).slice(0, 5),
+		recent: laps.slice(-10),
+	};
+	try { show_json(out); } catch (e) { console.log(out); }
+	return out;
+}
+try { parent.sweepTimes = sweepTimes; } catch (e) { }
+
 // --------------------------------------------------------------------- boot
 (async function main() {
 	const role = myRole();
@@ -778,8 +835,13 @@ async function roamerLoop() {
 	// not hand over is still in storage.
 	restoreBuffer();
 	if (!CONFIG.roles[myName()]) {
-		log(`${myName()} is not in CONFIG.roles - defaulting to parked`, 'orange');
+		log(`${myName()} is not in CONFIG.roles - defaulting to parked. A parked `
+			+ `scout never hops, so if you meant this one to rotate, add it as `
+			+ `'roamer' rather than expecting the default to do it.`, 'orange');
 	}
+	// Close the lap before either loop starts: this runs once per arrival,
+	// because a hop restarts the script from the top.
+	if (role === 'roamer') noteArrival();
 	try {
 		if (role === 'roamer') await roamerLoop();
 		else await parkedLoop();
