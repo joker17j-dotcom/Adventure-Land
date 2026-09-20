@@ -29,6 +29,20 @@ conversation may not.
   convention in `8026394`, and was caught by the file appearing in the sidebar
   rather than by anything deliberate. Open the existing file and edit it.
 
+## Version headers
+
+- **Prepend to the header, never replace it.** Line 2 of each character script
+  accumulates version entries oldest-last; `Priest.js` carries five. Both
+  sessions bump this line, so it is the one line that conflicts on almost every
+  rebase - and resolving it by taking one side silently deletes the other
+  side's history.
+- **Watch for the deployment markers in there.** A note like "Not deployed to
+  the live slot: Meltymerch stays on his older build" is the only in-file
+  record that repo HEAD is ahead of what a character is actually running. It is
+  exactly what someone needs before deploying, and exactly what a careless
+  header resolution destroys. Lost once, in ba067df, restored after the other
+  session caught it.
+
 ## Handing code to the other chat
 
 - **Send diffs (`git format-patch`), never whole files.** A whole-file handoff
