@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v27 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -4706,6 +4706,236 @@ try {
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
 } catch (e) { }
+
+// ============================================================================
+// GAME LOG FILTER
+// ============================================================================
+// The same filter bar the other three characters run. Guarded on parent.$
+// because this script also has to load where there is no game DOM at all -
+// on Mainframe there is no #gamelog to hang a tab bar on, and every call
+// below would throw on a null element.
+//
+// Tab defaults are inherited rather than re-tuned for a merchant. The one
+// thing worth knowing: initTimestamps() takes over the socket's 'game_log'
+// listener wholesale, so from here on every server-pushed log line arrives
+// stamped. The merchant's own game_log() calls are unaffected - those go
+// through the client function, not the socket event.
+if (parent.$) {
+
+	(function () {
+		const FILTERS = {
+			kills: { show: false, regex: /killed/, label: 'Kills' },
+			gold: { show: true, regex: /gold/, label: 'Gold' },
+			party: { show: true, regex: /party/, label: 'Party' },
+			items: { show: true, regex: /found/, label: 'Items' },
+			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgrades' },
+			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' },
+			/* Routine client chatter that says nothing actionable during farming.
+			   Off by default, but a tab rather than a hard suppression so each
+			   can be read back when it IS the question being debugged.
+
+			     get closer  - emitted on every out-of-range action attempt.
+			                   Measured on Dexon: 80 of 289 entries in a
+			                   four-minute sample.
+			     AP[...]     - achievement progress. A counter that resets on the
+			                   wrong kind of last hit repeats the same fraction
+			                   indefinitely rather than counting up - firehazard,
+			                   which wants 20,000 CONSECUTIVE burn last-hits, sat
+			                   at "1/20,000" on Dexon for exactly that reason.
+			     scared /    - the courage mechanic. Merchants carry courage 1
+			     terrified     and mcourage/pcourage 0, so a single magical or pure
+			                   attacker frightens them outright. Rarely relevant
+			                   standing in town, which is the point of hiding it. */
+			noise: { show: false, regex: /get closer|AP\[|scared|terrified/i, label: 'Noise' }
+		};
+
+		/* Tabs wrap onto rows of this many instead of being squeezed into one.
+		   Each tab is flex 1 1 <basis> rather than a fixed width, so a final
+		   short row grows to fill the bar instead of leaving a gap. */
+		const TABS_PER_ROW = 4;
+
+		const COLORS = {
+			active: ['#151342', '#1D1A5C'],
+			inactive: ['#222', '#333'],
+			activeText: '#FFF',
+			inactiveText: '#999'
+		};
+
+		const TRUNCATE_AT = 1000;
+		const TRUNCATE_TO = 720;
+
+		function padZero(num, length = 2) {
+			return num.toString().padStart(length, '0');
+		}
+
+		function getTimestamp() {
+			const now = new Date();
+			return `${padZero(now.getHours())}:${padZero(now.getMinutes())}:${padZero(now.getSeconds())}`;
+		}
+
+		function createFilterBar() {
+			const existingBar = parent.document.getElementById('gamelog-tab-bar');
+			if (existingBar) existingBar.remove();
+
+			const bar = parent.document.createElement('div');
+			bar.id = 'gamelog-tab-bar';
+			bar.className = 'enableclicks';
+			Object.assign(bar.style, {
+				border: '5px solid gray',
+				height: 'auto',
+				background: 'black',
+				margin: '-5px 0',
+				display: 'flex',
+				flexWrap: 'wrap',
+				fontSize: '20px',
+				fontFamily: 'pixel'
+			});
+
+			Object.entries(FILTERS).forEach(([key, filter], index) => {
+				const tab = parent.document.createElement('div');
+				tab.id = `gamelog-tab-${key}`;
+				tab.className = 'gamelog-tab enableclicks';
+				tab.textContent = filter.label;
+
+				const colors = filter.show ? COLORS.active : COLORS.inactive;
+				const textColor = filter.show ? COLORS.activeText : COLORS.inactiveText;
+
+				Object.assign(tab.style, {
+					height: '24px',
+					flex: `1 1 ${100 / TABS_PER_ROW}%`,
+					boxSizing: 'border-box',
+					textAlign: 'center',
+					lineHeight: '24px',
+					cursor: 'default',
+					background: colors[index % 2],
+					color: textColor
+				});
+
+				tab.addEventListener('click', () => toggleFilter(key));
+				bar.appendChild(tab);
+			});
+
+			const gamelog = parent.document.getElementById('gamelog');
+			gamelog.parentElement.insertBefore(bar, gamelog);
+		}
+
+		function toggleFilter(key) {
+			FILTERS[key].show = !FILTERS[key].show;
+
+			const tab = parent.document.getElementById(`gamelog-tab-${key}`);
+			const index = Array.from(tab.parentElement.children).indexOf(tab);
+			const colors = FILTERS[key].show ? COLORS.active : COLORS.inactive;
+			const textColor = FILTERS[key].show ? COLORS.activeText : COLORS.inactiveText;
+
+			tab.style.background = colors[index % 2];
+			tab.style.color = textColor;
+
+			filterGamelog();
+			scrollGamelogToBottom();
+		}
+
+		/* First matching filter decides, and nothing matching means show. Shared by
+		   all three callers so the rule cannot drift between them. */
+		function shouldShowEntry(text) {
+			for (const filter of Object.values(FILTERS)) {
+				if (filter.regex.test(text)) return filter.show;
+			}
+			return true;
+		}
+
+		function filterGamelog() {
+			const entries = parent.document.querySelectorAll('.gameentry');
+			entries.forEach(entry => {
+				entry.style.display = shouldShowEntry(entry.innerHTML) ? 'block' : 'none';
+			});
+		}
+
+		/* Not every line in #gamelog comes through addLogEntry. The socket hook
+		   below only replaces the `game_log` listener; the client writes others
+		   itself through add_log, and those arrive as .gameentry nodes with no
+		   inline display set - which is exactly how "Get closer" was slipping
+		   past the filters. They were only ever hidden by filterGamelog(), so
+		   they stayed visible until something happened to toggle a tab.
+
+		   Watching for added nodes covers both paths, so the filter bar now
+		   governs the whole log rather than only the half this code writes. */
+		function observeGamelog() {
+			const gamelog = parent.document.getElementById('gamelog');
+			if (!gamelog) return;
+			if (parent.gamelog_filter_observer) parent.gamelog_filter_observer.disconnect();
+			const MO = parent.MutationObserver || MutationObserver;
+			const observer = new MO((records) => {
+				for (const record of records) {
+					for (const node of record.addedNodes) {
+						if (node.nodeType !== 1 || !node.classList || !node.classList.contains('gameentry')) continue;
+						node.style.display = shouldShowEntry(node.innerHTML) ? 'block' : 'none';
+					}
+				}
+			});
+			observer.observe(gamelog, { childList: true });
+			parent.gamelog_filter_observer = observer;
+		}
+
+		function scrollGamelogToBottom() {
+			const gamelog = parent.document.getElementById('gamelog');
+			gamelog.scrollTop = gamelog.scrollHeight;
+		}
+
+		function addLogEntry(message, color = 'white') {
+			if (parent.mode?.dom_tests || parent.inside === 'payments') return;
+
+			const gamelog = parent.document.getElementById('gamelog');
+
+			if (parent.game_logs.length > TRUNCATE_AT) {
+				parent.game_logs = parent.game_logs.slice(-TRUNCATE_TO);
+
+				const truncateMsg = "<div class='gameentry' style='color: gray'>- Truncated -</div>";
+				const entries = parent.game_logs.map(([msg, clr]) =>
+					`<div class='gameentry' style='color: ${clr || 'white'}'>${msg}</div>`
+				).join('');
+
+				gamelog.innerHTML = truncateMsg + entries;
+			}
+
+			parent.game_logs.push([message, color]);
+
+			const display = shouldShowEntry(message) ? 'block' : 'none';
+
+			const entry = parent.document.createElement('div');
+			entry.className = 'gameentry';
+			entry.style.color = color;
+			entry.style.display = display;
+			entry.innerHTML = message;
+
+			gamelog.appendChild(entry);
+			scrollGamelogToBottom();
+		}
+
+		function initTimestamps() {
+			if (parent.socket.hasListeners('game_log')) {
+				parent.socket.removeListener('game_log');
+			}
+
+			parent.socket.on('game_log', data => {
+				parent.draw_trigger(() => {
+					const timestamp = getTimestamp();
+
+					if (typeof data === 'string') {
+						addLogEntry(`${timestamp} | ${data}`, 'gray');
+					} else {
+						if (data.sound) sfx(data.sound);
+						addLogEntry(`${timestamp} | ${data.message}`, data.color);
+					}
+				});
+			});
+		}
+
+		createFilterBar();
+		filterGamelog();
+		observeGamelog();
+		initTimestamps();
+	})();
+}
 
 // ============================================================================
 // STARTUP
