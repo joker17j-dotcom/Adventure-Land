@@ -2689,6 +2689,21 @@ function initializeFarmUI() {
 	   not kept as a preferred branch because the next reader would take it
 	   for documentation of the live markup.
 
+	   .codebuttons measures 0x0 in an inspector. That is `display: contents`
+	   behaving exactly as specified - the span generates no box of its own and
+	   its children lay out in DIV.game-controls' flow - and NOT an empty span.
+	   Measured live: 7 children, 40 characters of text, occupying x 901->1332
+	   while the span itself reports zero. The reading looks alarming and means
+	   nothing. Do not re-anchor on the strength of it.
+
+	   It is also why .before() lands the panel correctly by the box model
+	   rather than by luck: the panel goes immediately before the span in DOM
+	   order, and the span's first child - R&M at left=901 - is the first thing
+	   rendered after it. Anchoring on that first button instead would be
+	   strictly worse, coupling us to whichever button add_top_button happens
+	   to add first, which it can change at any time. Anchor on the container
+	   the game itself appends to.
+
 	   The `hidden` on #toprightcorner is not a problem and not luck: .hidden
 	   is display:none, and game.js's boot calls .show() on that container,
 	   which sets an INLINE display that outranks the class. The class just
