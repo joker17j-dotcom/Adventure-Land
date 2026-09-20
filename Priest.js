@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v24 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2198,9 +2198,32 @@ if (parent.$) {
 			gold: { show: true, regex: /gold/, label: 'Gold' },
 			party: { show: true, regex: /party/, label: 'Party' },
 			items: { show: true, regex: /found/, label: 'Items' },
-			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgr.' },
-			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' }
+			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgrades' },
+			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' },
+			/* Routine client chatter that says nothing actionable during farming.
+			   Off by default, but a tab rather than a hard suppression so each
+			   can be read back when it IS the question being debugged.
+
+			     get closer  - emitted on every out-of-range action attempt.
+			                   Measured on Dexon: 80 of 289 entries in a
+			                   four-minute sample.
+			     AP[...]     - achievement progress. A counter that resets on the
+			                   wrong kind of last hit repeats the same fraction
+			                   indefinitely rather than counting up - firehazard,
+			                   which wants 20,000 CONSECUTIVE burn last-hits, sat
+			                   at "1/20,000" on Dexon for exactly that reason.
+			     scared /    - the courage mechanic. Priests carry courage 2,
+			     terrified     mcourage 5, pcourage 2, so it is physical and pure
+			                   attackers that start fear here, not magical ones.
+			                   Worth seeing while tuning courage, worth hiding
+			                   otherwise. */
+			noise: { show: false, regex: /get closer|AP\[|scared|terrified/i, label: 'Noise' }
 		};
+
+		/* Tabs wrap onto rows of this many instead of being squeezed into one.
+		   Each tab is flex 1 1 <basis> rather than a fixed width, so a final
+		   short row grows to fill the bar instead of leaving a gap. */
+		const TABS_PER_ROW = 4;
 
 		const COLORS = {
 			active: ['#151342', '#1D1A5C'],
@@ -2230,10 +2253,11 @@ if (parent.$) {
 			bar.className = 'enableclicks';
 			Object.assign(bar.style, {
 				border: '5px solid gray',
-				height: '24px',
+				height: 'auto',
 				background: 'black',
 				margin: '-5px 0',
 				display: 'flex',
+				flexWrap: 'wrap',
 				fontSize: '20px',
 				fontFamily: 'pixel'
 			});
@@ -2248,8 +2272,9 @@ if (parent.$) {
 				const textColor = filter.show ? COLORS.activeText : COLORS.inactiveText;
 
 				Object.assign(tab.style, {
-					height: '100%',
-					width: `${100 / Object.keys(FILTERS).length}%`,
+					height: '24px',
+					flex: `1 1 ${100 / TABS_PER_ROW}%`,
+					boxSizing: 'border-box',
 					textAlign: 'center',
 					lineHeight: '24px',
 					cursor: 'default',
@@ -2280,18 +2305,46 @@ if (parent.$) {
 			scrollGamelogToBottom();
 		}
 
+		/* First matching filter decides, and nothing matching means show. Shared by
+		   all three callers so the rule cannot drift between them. */
+		function shouldShowEntry(text) {
+			for (const filter of Object.values(FILTERS)) {
+				if (filter.regex.test(text)) return filter.show;
+			}
+			return true;
+		}
+
 		function filterGamelog() {
 			const entries = parent.document.querySelectorAll('.gameentry');
 			entries.forEach(entry => {
-				let shouldShow = true;
-				for (const filter of Object.values(FILTERS)) {
-					if (filter.regex.test(entry.innerHTML)) {
-						shouldShow = filter.show;
-						break;
+				entry.style.display = shouldShowEntry(entry.innerHTML) ? 'block' : 'none';
+			});
+		}
+
+		/* Not every line in #gamelog comes through addLogEntry. The socket hook
+		   below only replaces the `game_log` listener; the client writes others
+		   itself through add_log, and those arrive as .gameentry nodes with no
+		   inline display set - which is exactly how "Get closer" was slipping
+		   past the filters. They were only ever hidden by filterGamelog(), so
+		   they stayed visible until something happened to toggle a tab.
+
+		   Watching for added nodes covers both paths, so the filter bar now
+		   governs the whole log rather than only the half this code writes. */
+		function observeGamelog() {
+			const gamelog = parent.document.getElementById('gamelog');
+			if (!gamelog) return;
+			if (parent.gamelog_filter_observer) parent.gamelog_filter_observer.disconnect();
+			const MO = parent.MutationObserver || MutationObserver;
+			const observer = new MO((records) => {
+				for (const record of records) {
+					for (const node of record.addedNodes) {
+						if (node.nodeType !== 1 || !node.classList || !node.classList.contains('gameentry')) continue;
+						node.style.display = shouldShowEntry(node.innerHTML) ? 'block' : 'none';
 					}
 				}
-				entry.style.display = shouldShow ? 'block' : 'none';
 			});
+			observer.observe(gamelog, { childList: true });
+			parent.gamelog_filter_observer = observer;
 		}
 
 		function scrollGamelogToBottom() {
@@ -2317,13 +2370,7 @@ if (parent.$) {
 
 			parent.game_logs.push([message, color]);
 
-			let display = 'block';
-			for (const filter of Object.values(FILTERS)) {
-				if (filter.regex.test(message)) {
-					display = filter.show ? 'block' : 'none';
-					break;
-				}
-			}
+			const display = shouldShowEntry(message) ? 'block' : 'none';
 
 			const entry = parent.document.createElement('div');
 			entry.className = 'gameentry';
@@ -2356,6 +2403,7 @@ if (parent.$) {
 
 		createFilterBar();
 		filterGamelog();
+		observeGamelog();
 		initTimestamps();
 	})();
 
