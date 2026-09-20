@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v41 (the v40 dock never took effect: initializeFarmUI bailed out when a panel already existed, and the panel lives in the PARENT document, which survives a code redeploy - so the old build's panel was always still there and the new layout never ran. It now removes and rebuilds, and the fallback keeps looking for the toolbar instead of floating for the rest of the session.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v42 (the dock anchor required .codebuttons to be a DIRECT child of #toprightcorner, which is how the open-source snapshot has it but not how the live client behaves, so the dock missed silently and the panel kept floating. It now anchors on .codebuttons the way the game's own add_top_button does, asserts pointer-events itself rather than relying on the bpclicks ancestry, logs which branch it took on startup, and adds farmUiDiag() for reading the live markup from the console.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2595,6 +2595,34 @@ setInterval(runFarmSearch, FARM_SEARCH.reevaluateIntervalMs);
    this, so a successful dock costs nothing. */
 const FARM_UI_REDOCK = { tries: 0, max: 10, everyMs: 1000 };
 
+/* Where the panel ended up and why. Read it from the console with
+   farmUiDiag() when the panel is not where it should be - guessing at the
+   live client's markup from the open-source snapshot has already cost one
+   round. */
+const FARM_UI_DIAG = { docked: null, via: null, toprightcorner: null, codebuttons: null, at: null };
+
+function farmUiDiag() {
+	const $ = parent.$;
+	const out = Object.assign({}, FARM_UI_DIAG);
+	if ($) {
+		const $panel = $('#farm-spot-ui');
+		out.panelExists = $panel.length > 0;
+		out.panelParent = $panel.length ? ($panel.parent().attr('id') || $panel.parent().attr('class') || $panel.parent().prop('tagName')) : null;
+		out.panelPosition = $panel.length ? $panel.css('position') : null;
+		const $cb = $('.codebuttons').first();
+		out.codebuttonsParent = $cb.length ? ($cb.parent().attr('id') || $cb.parent().attr('class') || $cb.parent().prop('tagName')) : null;
+		out.codebuttonsChain = [];
+		let node = $cb;
+		for (let i = 0; i < 6 && node.length && node.prop('tagName') !== 'BODY'; i++) {
+			out.codebuttonsChain.push(node.prop('tagName') + (node.attr('id') ? '#' + node.attr('id') : '') + (node.attr('class') ? '.' + String(node.attr('class')).split(/\s+/).join('.') : ''));
+			node = node.parent();
+		}
+		out.redockTries = FARM_UI_REDOCK.tries;
+	}
+	show_json(out);
+	return out;
+}
+
 function scheduleFarmUiRedock() {
 	if (FARM_UI_REDOCK.tries >= FARM_UI_REDOCK.max) return;
 	FARM_UI_REDOCK.tries++;
@@ -2644,14 +2672,32 @@ function initializeFarmUI() {
 
 	   If the toolbar isn't there (a UI mode that doesn't render it), fall back
 	   to the old free-floating panel rather than silently having no UI. */
-	const $dock = $('#toprightcorner').children('.codebuttons').first();
+	/* Anchor on .codebuttons, the way the game's own add_top_button does
+	   (`parent.$(".codebuttons").append(...)`) - it never scopes that to a
+	   container. The first attempt required .codebuttons to be a DIRECT child
+	   of #toprightcorner, which is how the open-source snapshot has it but not
+	   how the live client behaved: the dock silently missed and the panel kept
+	   floating. Prefer the specific form when it matches, fall back to the bare
+	   class, and record which one won so this is diagnosable from the console
+	   instead of by inspection. */
+	let $dock = $('#toprightcorner').children('.codebuttons').first();
+	FARM_UI_DIAG.via = $dock.length ? 'direct child of #toprightcorner' : null;
+	if (!$dock.length) {
+		$dock = $('.codebuttons').first();
+		if ($dock.length) FARM_UI_DIAG.via = '.codebuttons anywhere';
+	}
 	const docked = $dock.length > 0;
+	FARM_UI_DIAG.docked = docked;
+	FARM_UI_DIAG.toprightcorner = $('#toprightcorner').length;
+	FARM_UI_DIAG.codebuttons = $('.codebuttons').length;
+	FARM_UI_DIAG.at = new Date().toLocaleTimeString();
+	if (!docked) FARM_UI_DIAG.via = 'nothing matched - floating';
 
 	// Docked, it flows in the toolbar row, so it is sized rather than
 	// positioned - and kept off the left edge on a narrow window. Floating, it
 	// keeps the old fixed placement, drag and resize.
 	const frameStyle = docked
-		? 'display: inline-block; vertical-align: top; width: 600px; max-width: 60vw;'
+		? 'display: inline-block; vertical-align: top; width: 600px; max-width: 60vw; pointer-events: auto;'
 		: 'position: fixed; top: 180px; left: 10px; width: 1000px; min-width: 400px; resize: both;';
 	const headerCursor = docked ? 'default' : 'move';
 
@@ -2726,6 +2772,8 @@ function initializeFarmUI() {
 		}
 		runFarmSearch();
 	});
+
+	game_log(`Farm Spot UI: ${docked ? 'docked' : 'FLOATING'} (${FARM_UI_DIAG.via}) - farmUiDiag() for details`, docked ? '#00FF00' : 'orange');
 
 	updateFarmUI();
 }
