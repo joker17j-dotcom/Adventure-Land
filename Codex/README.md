@@ -111,9 +111,19 @@ is larger than the measurement:
 
 `MerchantScout.js` has never been run (see Fleet mode below), so its sweep time
 is arithmetic, not a result: 11 × 30 s is the floor before a single scan,
-settle, post or page load. The 30-second floor has been there since the file's
-first commit with no recorded rationale, and nothing has established that the
-game needs it — `Merchant.js` has hopped without one for the whole project.
+settle, post or page load.
+
+**The 30-second floor is a deliberate stability decision, not an accident.**
+`change_server()` reloads the page, and a roamer sweeping continuously does
+that thousands of times over a multi-day run. The concern — raised by the
+family member who would be running these scouts — is the browser or the game
+client degrading or crashing under that load. Halving the hop rate is the
+agreed mitigation. It is not a knob to tune for freshness, and the cost in
+sweep time is known and accepted.
+
+Worth noting for consistency rather than as an argument against it:
+`Merchant.js` has no such floor, and it hops both to scout and to execute
+arbitrage. If the crash concern holds, that is the script more exposed to it.
 
 This matters because the sweep time is what the source preference below rests
 on, and it is also most of the `sellMaxAgeSec` budget. At 2.4 minutes a listing

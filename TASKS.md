@@ -277,20 +277,34 @@ persisted through `SS.get('lastHop')`. Eleven shards therefore cannot sweep
 faster than **5.5 minutes** on that script, before any scan, settle, post or
 page load. It has never been run, so nobody has seen the real figure.
 
-### Two things to settle
+### The floor is settled — do not treat it as a cost to remove
 
-1. **Is the 30-second floor needed?** It has been in the file since its first
-   commit with no stated reason, and `Merchant.js` has hopped without one for
-   the whole project with no observed problem. If it is protecting against a
-   game-side rate limit, that limit should be named; if it is caution, it is
-   currently costing more than double the sweep time, and sweep time is most
-   of the `sellMaxAgeSec` budget.
-2. **What is the real number?** Cheap to get: stamp `Date.now()` into CODE
-   storage on each arrival and log the delta when the roamer returns to the
-   shard it started on. One rotation gives a mean and the per-shard spread,
-   and the spread is the more useful half — a sweep that is 2 minutes of
-   scanning and 4 minutes of one pathological shard wants a different fix from
-   one that is evenly slow.
+`minHopIntervalMs: 30000` is a **deliberate design decision by the operator**,
+not an unexplained constant. `change_server()` reloads the page, and a roamer
+sweeping continuously does that thousands of times across a multi-day run. The
+family member who will run these scouts raised the browser or game client
+degrading or crashing under that load, and halving the hop rate is the agreed
+mitigation.
+
+So it is not a freshness knob. The sweep-time cost is known and accepted, and
+anything built on top should inherit the floor rather than reason its way
+around it.
+
+One genuine follow-on, offered as consistency rather than as an argument:
+`Merchant.js` has **no** hop floor, and it hops both to scout and to execute
+arbitrage — an arbitrage trade with buyer and seller on different shards is
+three hops on its own. If the crash concern is real, that script is the more
+exposed of the two, and the mitigation is currently only on the one that has
+never run.
+
+### What is still worth measuring
+
+**The real sweep time, and its spread.** Stamp `Date.now()` into CODE storage
+on arrival and log the delta when the roamer returns to its starting shard.
+The per-shard spread is the more useful half: a sweep that is 2 minutes of
+scanning plus 4 minutes of one pathological shard wants a different fix from
+one that is evenly slow. This is worth knowing regardless of the floor,
+because the answer sets how stale our own rows are in the merge.
 
 Worth doing before `FamilyFleet.js`'s roaming merchant is built, since the
 floor is a choice that script has not made yet — its `hopTo` does not exist.
