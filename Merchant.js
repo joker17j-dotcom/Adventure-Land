@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -495,6 +495,7 @@ const state = {
 	standOpen: false,
 	lastHealRequest: 0,
 	kissAttemptedFor: null, // name of the featured player already attempted this round - avoids retrying the same one
+	kissSkippedFor: null,   // ...and the one we declined while hop sick, so that logs once rather than every tick
 	selfFeaturedFor: null,  // the round in which WE were the featured player
 	selfFeaturedAt: 0,      // when that was established
 };
@@ -1954,6 +1955,26 @@ function getFeaturedLocation() {
 // Bails out early if the featured player changes mid-hunt (their
 // 30-minute round ended or someone new got featured) rather than
 // chasing a name that's no longer the active target.
+/* Are we carrying hop sickness right now?
+
+   Worth a named helper rather than an inline check, because the condition is
+   easy to reason about wrongly. The live rule (node/server_functions.js
+   declares serverhop_logic twice; the SECOND declaration wins and the first,
+   with its hop counting and tapering tiers, is dead code) is:
+
+     arriving anywhere that is not player.p.home, at level >= 60, off PVP
+     -> the flat condition from G: luck -80, gold -80, xp -80, output -20,
+        for 12 minutes of online play
+
+   Returning to p.home clears it immediately, because the same function deletes
+   the condition before deciding whether to re-add it. Below level 60 it is
+   never applied at all, which is why this reads the live flag rather than
+   trying to predict it - the level gate, the home shard and the clock are all
+   the server's business, and character.s is where it reports the answer. */
+function hopSick() {
+	try { return !!(character.s && character.s.hopsickness); } catch (e) { return false; }
+}
+
 async function attemptKiss(name) {
 	const timeoutMs = FEATURED_ROUND_MS;
 	const start = Date.now();
@@ -2030,6 +2051,16 @@ async function anniversaryKissLoop() {
 					state.selfFeaturedFor = name;
 					state.selfFeaturedAt = Date.now();
 					game_log('Anniversary: we are the featured player - staying put for others to reach us', '#FF69B4');
+				}
+			} else if (name && hopSick()) {
+				// Hop sickness blocks kiss rewards outright - G's own explanation
+				// for the condition says so, and it is not in the modifier list, so
+				// nothing about luck/gold/xp/output hints at it. Walking the round
+				// while sick spends the trip, closes the stand and collects nothing.
+				// Sit it out and say why, once per featured player.
+				if (state.kissSkippedFor !== name) {
+					state.kissSkippedFor = name;
+					game_log(`Anniversary: skipping ${name} - hop sick, the reward would be blocked`, 'orange');
 				}
 			} else if (name && state.kissAttemptedFor !== name) {
 				state.busy = true;

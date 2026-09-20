@@ -65,21 +65,51 @@ const CONFIG = {
 
 	// ----------------------------------------------------------- the hopping
 	hop: {
-		// Only the merchant hops. One per hour is the user's rule, and it is
-		// also what keeps hop sickness harmless: `hops` counts non-main server
-		// entries in the last FOUR hours, so this cadence tops out at ~4, which
-		// lands in the -20% band for 160s rather than the -80% band. Raising
-		// this is not free.
-		minIntervalMs: 60 * 60 * 1000,
-		// set_home clears hop sickness outright, but the server allows it once
-		// per 36 HOURS (server.js:4783, fail reason 'sh_time'). So it cannot be
-		// part of the hop cycle. It is attempted opportunistically instead: if
-		// it succeeds, good; if it returns sh_time, we note the hours remaining
-		// and stop asking until then.
+		// Only the merchant hops. One per hour is the user's rule.
 		//
-		// Note also that set_home does NOT change what the server considers
-		// your main server - that is computed from hours spent per shard in
-		// player.p.entries, not from p.home. It is a cure, not a redesignation.
+		// HOP SICKNESS - measured, and NOT what an earlier read of the server
+		// source said. node/server_functions.js declares serverhop_logic TWICE
+		// (lines 928 and 982). The later declaration wins, so the first one -
+		// with its hop counting, four-hour window and escalating -20/-30/-40/
+		// -60/-80 tiers - is dead code. The live rule is the short one:
+		//
+		//   arriving on a server != player.p.home, at level >= 60, off PVP
+		//   -> add_condition(player, 'hopsickness'), flat, from G:
+		//      luck -80, gold -80, xp -80, output -20, for 720000ms (12 min)
+		//
+		// There is no mild band and no tapering. Every hop away from home is the
+		// full penalty. Corroborated from the live datastore (game 17083):
+		// G.conditions.hopsickness carries exactly those values and that
+		// duration, which only makes sense if add_condition is what applies it.
+		//
+		// Two consequences for this fleet:
+		//   - The gate is p.home, not time-spent. Coming back to home clears it
+		//     immediately, because the same function deletes the condition before
+		//     deciding whether to re-add it.
+		//   - The gold -80 still does NOT touch trade income. It reaches goldm,
+		//     which is only ever applied to chest loot. A scouting merchant is
+		//     not farming, so luck/gold/xp cost it nothing real.
+		minIntervalMs: 60 * 60 * 1000,
+		// The one thing that DOES cost: G's own explanation says hop sickness
+		// "blocks kiss rewards". So a sick merchant that walks the kiss event
+		// spends the trip and collects nothing. Skip the kiss while sick rather
+		// than discovering it as a silently missing reward.
+		skipKissWhileSick: true,
+		// Below this level the condition is never applied at all, so none of the
+		// above matters. Merchants gain xp from buying and selling, so a scout
+		// merchant drifts toward this on its own - the guard is written now so
+		// that crossing it is a behaviour change rather than a surprise.
+		sicknessMinLevel: 60,
+		// set_home is the gate itself, not a cure, which makes it worth more
+		// than it first looked - but server.js:4783 allows it once per 36 HOURS
+		// (fail reason 'sh_time'). So it cannot follow the hop cycle. Attempted
+		// opportunistically: if it takes, home moves; if it returns sh_time, we
+		// note the hours and stop asking until then.
+		//
+		// G also says "Bean in Mainland can change your home" - an NPC route
+		// distinct from the set_home call. Whether Bean shares the 36h cooldown
+		// is unknown; the server source does not show a Bean re-home handler at
+		// all, and that source has already proven stale here.
 		trySetHome: true,
 		setHomeCooldownMs: 36 * 60 * 60 * 1000,
 	},
