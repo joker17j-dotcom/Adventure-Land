@@ -57,10 +57,25 @@ const CONFIG = {
 		// The walk is the expensive part; once we are here a scan costs a
 		// synchronous read of parent.entities plus a post.
 		townScanMs: 20 * 1000,
-		// How close to townSpot still counts as "at the spot" for the scan beat.
-		// A plain radius is right here - this is "am I standing there", not a
-		// vision question. Vision is a box; see visionBox below.
+		// How close to townSpot still counts as standing there. Used for the NPC
+		// transactions only - buying, selling, upgrading, Ponty - where the range
+		// is the NPC's, not ours. A plain radius is right for "am I there".
 		townSpotRadius: 60,
+		/* Where the stands are, as a box in world coordinates.
+		
+		   The scan beat runs anywhere in town, not only on the parking spot - but
+		   "in town" has to mean something defensible, because `main` is also
+		   where goo and crabx are farmed. A scan taken from the goo field would
+		   see no stands, and an empty scan REPLACES a shard's listings on the
+		   bridge: the character would wipe a full shard every two minutes from
+		   the other side of the map. So the test is not "on the main map", it is
+		   "can I see the whole stand region from here".
+		
+		   The numbers are the observed cluster padded by about 100 each way. One
+		   sample put six stands inside x -147..161, y -110..92; the other session
+		   was explicit that this is a snapshot rather than a stable distribution,
+		   so the padding is doing real work and this is a knob, not a constant. */
+		standRegion: { minX: -250, maxX: 260, minY: -210, maxY: 190 },
 		/* THE TOWN SPOT. Measured and tested live by the other session against
 		   game data 17083 - not derived, and not guessed from the snapshot.
 		
@@ -1000,13 +1015,37 @@ function inVision(entity) {
 	return Math.abs(ex - me.x) <= v[0] && Math.abs(ey - me.y) <= v[1];
 }
 
-/* Standing at the town spot, near enough for the NPCs and the scan. */
+/* Close enough to the parking spot to transact with the NPCs it was chosen
+   for. This is the tighter of the two town tests. */
 function atTownSpot() {
 	const spot = CONFIG.scout.townSpot;
 	const me = myPos();
 	if (me.map !== spot.map) return false;
 	const dx = me.x - spot.x, dy = me.y - spot.y;
 	return Math.sqrt(dx * dx + dy * dy) <= CONFIG.scout.townSpotRadius;
+}
+
+/* In town, in the sense that matters for scanning: the whole stand region is
+   inside our vision box, so a scan from here reads the market rather than a
+   corner of it.
+
+   Deliberately NOT "on the main map". goo and crabx are farmed on main, and a
+   scan from the goo field sees no stands - which the bridge would store as
+   "nothing trading on this shard", replacing a full set of listings with an
+   empty one. The character would quietly wipe its own shard every couple of
+   minutes. The geometry is what stops that, so it is a real guard and not
+   decoration.
+
+   Uses the box test rather than a radius for the same reason inVision does:
+   vision is [700, 500] and is not circular. */
+function inTown() {
+	const me = myPos();
+	if (me.map !== CONFIG.scout.townSpot.map) return false;
+	const r = CONFIG.scout.standRegion;
+	return inVision({ real_x: r.minX, real_y: r.minY })
+		&& inVision({ real_x: r.maxX, real_y: r.maxY })
+		&& inVision({ real_x: r.minX, real_y: r.maxY })
+		&& inVision({ real_x: r.maxX, real_y: r.minY });
 }
 
 function freeSlots() {
@@ -1184,14 +1223,19 @@ function bagFull() {
 
    One rule rather than a set of them. The spec lists the occasions separately
    - potions, combining, the bank trip in and out, waiting out a full bag - but
-   they are all the same situation once you are standing there, and writing
-   them as separate cases is how one of them ends up forgotten. If we are at
-   the spot and the beat is due, we scan.
+   they are all the same situation once you are in town, and writing them as
+   separate cases is how one of them ends up forgotten. In town and the beat is
+   due: scan.
+
+   In town, not on the spot. The parking spot is where the NPCs are reachable;
+   scanning only needs the stands in view, which is a much larger area, and
+   restricting the beat to a 60-unit circle would throw away every reading
+   taken while walking through.
 
    Returns whether it scanned, so callers that are waiting rather than working
    can tell a tick apart from a no-op. */
 async function maybeTownScan() {
-	if (!atTownSpot()) return false;
+	if (!inTown()) return false;
 	if (Date.now() - fleetState.lastTownScanAt < CONFIG.scout.townScanMs) return false;
 	fleetState.lastTownScanAt = Date.now();
 	await doScan();
@@ -1270,7 +1314,7 @@ async function rangerTick() {
 	if (fleetState.busy) return;
 	// Standing in town for any reason at all: keep the beat. Cheap, and outside
 	// the busy lock because it is a read plus a post, not a claim on movement.
-	if (atTownSpot() && !fleetState.busy) {
+	if (inTown() && !fleetState.busy) {
 		fleetState.busy = true;
 		try { await maybeTownScan(); } finally { fleetState.busy = false; }
 	}
