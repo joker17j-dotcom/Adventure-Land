@@ -318,11 +318,23 @@ hop an hour.
 
 ---
 
-## 5. FamilyFleet: three things it does not know yet
+## 5. FamilyFleet: what it does not know yet
 
-**Status:** the script is complete and tested (365 assertions) but has never
+**Status:** the script is complete and tested (399 assertions) but has never
 been run against the live game. These are the questions the tests cannot
 answer, in the order they will bite.
+
+### 5.0 Rehearsing it on the wrong account
+
+`CONFIG.safety.dryRun` exists for this. With it on, everything that spends,
+sells, destroys, moves an item between bank and bag, or changes shard is
+**logged instead of done** — while scanning, posting, reading Ponty and walking
+all still happen, because a run that never arrives cannot show what it would do
+on arrival.
+
+This matters most for `sellSurplus`, whose rule is "anything the plan does not
+want". The plan is a **ranger's**, so on a mixed account that rule covers
+another class's gear. A dry run prints the list before any of it is real.
 
 ### 5a. What a failed upgrade costs
 
@@ -362,6 +374,21 @@ Two API calls this file makes that nobody has seen work from the town spot:
   distance; `sell` is not.** If the sell pass refuses live, range is the first
   thing to check, and the fix is a short walk in `sellSurplus` rather than
   anything structural.
+
+### 5e. What `character.home` actually looks like
+
+`CONFIG.merchant.kissHomeOnly` is **on**: the anniversary kiss only fires on the
+home shard, as the game records it. `homeShard()` reads `character.home` and
+handles a string (`"USIV"`, `"US-IV"`) or an object (`{region, name}`), but the
+real shape has **not** been confirmed against the live client.
+
+It **fails closed**. If home cannot be read the kiss is skipped, because "we
+could not tell" is not "we are home". So a wrong read presents as the kiss never
+firing, with `anniversary: skipping X - cannot read character.home` in the log —
+never as it firing everywhere.
+
+One line in the console on a live character settles it:
+`[character.home, typeof character.home, character.server, parent.server_region + parent.server_identifier]`.
 
 ### 5d. Not built, deliberately: `set_home` / Bean
 

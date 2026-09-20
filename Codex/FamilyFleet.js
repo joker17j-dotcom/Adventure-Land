@@ -260,6 +260,21 @@ const CONFIG = {
 		goldFloor: 10000000,
 		leaveInBank: 1000000,
 		kissEvent: true,
+		/* Only on the home shard, as the game records it.
+
+		   This is the operator's rule and it is a tighter one than hop
+		   sickness implies. Sickness is about being AWAY from home and it
+		   lapses after twelve minutes; this does not lapse - off home, there
+		   is no kiss, sick or not.
+
+		   It fails CLOSED. If home cannot be read from the client the kiss is
+		   skipped rather than taken, because "we could not tell" is not the
+		   same as "we are home", and the instruction was to only do this at
+		   home. The field is character.home and its shape has NOT been
+		   confirmed live - see TASKS.md 5e. A wrong read presents as the kiss
+		   never firing, with a log line saying exactly that, rather than as it
+		   firing everywhere. */
+		kissHomeOnly: true,
 		/* How close the featured player has to be. The live merchant uses 80
 		   for the same skill; this is the same number, named here because the
 		   whole kiss behaviour on this character turns on it. */
@@ -318,6 +333,32 @@ const CONFIG = {
 			'cscroll0', 'cscroll1', 'cscroll2',
 			'scroll0', 'scroll1', 'scroll2',
 		],
+	},
+
+	/* ------------------------------------------------------------ rehearsal
+
+	   DRY RUN. Everything that spends, sells, destroys, moves an item between
+	   the bank and the bag, or changes shard is logged instead of done.
+
+	   This exists because the first place this script can realistically be
+	   rehearsed is an account it was not written for. The roster names are
+	   placeholders, the gear plan is a ranger's, and sellSurplus's rule is
+	   "anything the plan does not want" - which on a mixed account means
+	   another class's gear. One run with dryRun on prints exactly what it
+	   would have done, against real inventory, before any of it is real.
+
+	   Reading is unaffected: it still scans, posts to the bridge, reads Ponty
+	   and walks. The point is to see the decisions, and a dry run that does
+	   not move cannot show you the decisions it makes when it arrives.
+
+	   ONE THING IT CANNOT SHOW, because nothing actually happens: the phases
+	   do not see each other. A real bank window equips an upgrade and the
+	   deposit phase then sees a bag without it; in a dry run both phases read
+	   the same untouched bag, so an item can appear in two lists. Read each
+	   line as "what this phase would decide, given the bag as it is now",
+	   not as a script of one window. */
+	safety: {
+		dryRun: false,
 	},
 
 	verbose: true,
@@ -450,8 +491,41 @@ function log(msg, color) {
 	try { game_log('[fleet] ' + msg, color || '#8b98ab'); } catch (e) { console.log('[fleet]', msg); }
 }
 
+/* The one gate every irreversible action goes through.
+
+   Returns true when the action must NOT happen, having said what it would
+   have been. Callers use it at the TOP of a pass rather than inside the loop:
+   a dry run leaves the world unchanged, so a loop that skips one item and
+   asks again gets the same answer forever. Compute the list, print it, stop. */
+function blocked(what) {
+	if (!CONFIG.safety.dryRun) return false;
+	log(`DRY RUN: would ${what}`, '#E9C46A');
+	return true;
+}
+
 function currentShard() {
 	return { region: parent.server_region, name: parent.server_identifier };
+}
+
+/* The shard the game says is home, normalised to the same spelling shardKey
+   produces. Null when it cannot be read - which is a different answer from
+   "somewhere else" and is treated as one. */
+function homeShard() {
+	try {
+		const h = character.home;
+		if (!h) return null;
+		if (typeof h === 'string') return h.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+		if (h.region && h.name) return shardKey(h).toUpperCase();
+	} catch (e) { }
+	return null;
+}
+
+/* true / false / null for unknown. The null is the whole point: a caller that
+   must fail closed can tell "not home" apart from "could not tell". */
+function onHomeShard() {
+	const home = homeShard();
+	if (!home) return null;
+	return home === shardKey(currentShard()).toUpperCase();
 }
 
 function shardKey(s) { return String(s.region) + String(s.name); }
@@ -1350,6 +1424,7 @@ async function buyPotions() {
 	for (const kind of [cfg.hp, cfg.mp]) {
 		const have = potionCount(kind);
 		if (have >= cfg.buyTo) continue;
+		if (blocked(`buy ${cfg.buyTo - have} ${kind}`)) continue;
 		try { await buy(kind, cfg.buyTo - have); }
 		catch (e) { log(`could not buy ${kind}: ${e && e.reason ? e.reason : e}`, 'orange'); }
 	}
@@ -1920,6 +1995,11 @@ async function tryUpgrade(item) {
    Ponty with an empty bag of gold and a stack of +1 pants. */
 async function upgradePass(maxAttempts) {
 	if (!CONFIG.merchant.upgrade) return 0;
+	const first = nextUpgradeTarget();
+	if (!first) return 0;
+	if (blocked(`upgrade ${first.name}+${itemLevel(first)} with ${upgradeScrollFor(first)}, `
+		+ `and keep going to +${Math.min(planCeiling(first.name), CONFIG.merchant.upgradeMaxLevel)}`)) return 0;
+
 	let done = 0;
 	for (let i = 0; i < (maxAttempts || 8); i++) {
 		if (character.gold <= CONFIG.merchant.leaveInBank) {
@@ -2000,6 +2080,11 @@ async function tryCompound(triple) {
 /* One pass of compounding. Bounded, and re-reads between attempts because a
    successful compound renumbers every slot after the ones it consumed. */
 async function compoundPass(maxAttempts) {
+	const triples = findCompoundTriples();
+	if (!triples.length) return 0;
+	if (blocked(`compound ` + triples.map((t) => `3x ${t.name}+${t.level}`).join(', ')
+		+ `, buying the scroll`)) return 0;
+
 	let done = 0;
 	for (let i = 0; i < (maxAttempts || 8); i++) {
 		const triples = findCompoundTriples();
@@ -2050,6 +2135,7 @@ async function bankDepositGold() {
 	const keep = CONFIG.bank.rangerKeepGold;
 	if (character.gold <= keep) return 0;
 	const amount = character.gold - keep;
+	if (blocked(`deposit ${amount} gold, keeping ${keep}`)) return 0;
 	try {
 		await bank_deposit(amount);
 		log(`banked ${amount} gold`, '#7FD98A');
@@ -2065,6 +2151,10 @@ async function bankDepositGold() {
    for - ask first and we would withdraw a second copy of something already in
    our hand. */
 async function bankEquipFromInventory() {
+	const would = inventoryItems().map((it) => ({ it, slot: slotToEquip(it) })).filter((x) => x.slot);
+	if (!would.length) return 0;
+	if (blocked(`equip ` + would.map((x) => `${x.it.name}${itemLevel(x.it) ? '+' + itemLevel(x.it) : ''} -> ${x.slot}`).join(', '))) return 0;
+
 	let done = 0;
 	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
 		let found = null;
@@ -2088,6 +2178,10 @@ async function bankEquipFromInventory() {
 /* Hand the others what we are not using. shouldBank already refuses anything
    we would wear and anything the bank has enough of. */
 async function bankDepositSpares() {
+	const would = inventoryItems().filter(shouldBank);
+	if (!would.length) return 0;
+	if (blocked(`bank ` + would.map((i) => i.name + (itemLevel(i) ? '+' + itemLevel(i) : '')).join(', '))) return 0;
+
 	let done = 0;
 	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
 		const it = inventoryItems().find(shouldBank);
@@ -2121,6 +2215,11 @@ async function bankDepositSpares() {
    bag - which means equip refused it. That is exactly when stopping is right,
    and it is why the guard is at the top of the loop rather than gone. */
 async function bankWithdrawUpgrades() {
+	const would = bankItems().filter((b) => slotToEquip(b));
+	if (!would.length) return 0;
+	if (blocked(`withdraw and wear ` + would.map((i) => i.name + (itemLevel(i) ? '+' + itemLevel(i) : '')).join(', ')
+		+ ` (as many as the free-slot floor allows)`)) return 0;
+
 	let done = 0;
 	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
 		if (freeSlots() <= CONFIG.ranger.freeSlotsFloor) {
@@ -2155,6 +2254,11 @@ async function bankWithdrawUpgrades() {
    live run refuses here, the range for selling is the thing to check before
    anything else. */
 async function sellSurplus() {
+	const would = inventoryItems().filter(shouldSell);
+	if (!would.length) return 0;
+	if (blocked(`sell ${would.length}: `
+		+ would.map((i) => i.name + (itemLevel(i) ? '+' + itemLevel(i) : '') + (i.q > 1 ? ' x' + i.q : '')).join(', '))) return 0;
+
 	let sold = 0;
 	for (let i = 0; i < BANK_MAX_OPS; i++) {
 		const it = inventoryItems().find(shouldSell);
@@ -2327,6 +2431,28 @@ async function kissRound() {
 	}
 	if (kissState.attemptedFor === name) return false;
 
+	/* Home only, and unknown counts as not home.
+
+	   Deliberately ahead of the hop-sickness check, because it is the stricter
+	   rule and subsumes it in the normal case: on home there is no sickness to
+	   have. The sickness check stays below for the case that is not normal -
+	   arriving home with the condition still on, in the seconds before the
+	   server clears it. */
+	if (CONFIG.merchant.kissHomeOnly) {
+		const home = onHomeShard();
+		if (home !== true) {
+			if (kissState.skippedFor !== name) {
+				kissState.skippedFor = name;
+				log(home === null
+					? `anniversary: skipping ${name} - cannot read character.home, and the `
+						+ `rule is home only. See TASKS.md 5e.`
+					: `anniversary: skipping ${name} - home is ${homeShard()}, we are on `
+						+ `${shardKey(currentShard())}`, '#8b98ab');
+			}
+			return false;
+		}
+	}
+
 	/* Hop sickness blocks the kiss REWARD outright. That is from G's own
 	   explanation of the condition and it is not in the modifier list, so
 	   nothing about luck/gold/xp/output hints at it - a sick merchant would
@@ -2449,6 +2575,10 @@ async function hopTo(target) {
 		log('bridge back - resuming the rotation', '#7FD98A');
 	}
 
+	// Blocked AFTER the report and the buffer save, both of which are reads
+	// and are exactly what a rehearsal wants exercised. Only the reload stops.
+	if (blocked(`hop ${shardKey(cur)} -> ${shardKey(target)}`)) return false;
+
 	SS.set('lastHop', Date.now());
 	log(`hopping ${shardKey(cur)} -> ${shardKey(target)}`, '#E9C46A');
 	try {
@@ -2517,6 +2647,7 @@ async function merchantGold() {
 		return 0;
 	}
 	const want = Math.min(available, CONFIG.merchant.goldFloor - character.gold);
+	if (blocked(`withdraw ${want} gold, leaving ${CONFIG.merchant.leaveInBank}`)) return 0;
 	try {
 		await bank_withdraw(want);
 		log(`drew ${want} gold from the bank`, '#7FD98A');
@@ -2561,6 +2692,14 @@ function bankCompoundGroup() {
    The free-slot floor applies to both, and a compound group that will not fit
    whole is left for the next window rather than half-taken. */
 async function merchantWithdrawWork() {
+	const group = bankCompoundGroup();
+	const work = bankItems().filter(isWorkItem);
+	if (!group && !work.length) return 0;
+	if (blocked(`take out `
+		+ (group ? `3x ${group[0].name}+${itemLevel(group[0])} to compound` : '')
+		+ (group && work.length ? '; ' : '')
+		+ (work.length ? `work: ` + work.map((i) => i.name + '+' + itemLevel(i)).join(', ') : ''))) return 0;
+
 	let taken = 0;
 	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
 		const group = bankCompoundGroup();
@@ -2656,6 +2795,14 @@ async function pontyBuy(items) {
 	}
 	const acquired = new Map();
 	let bought = 0, unpriced = 0;
+	if (CONFIG.safety.dryRun) {
+		const want = items.filter((it) => isPlanItem(it.name) && bankWantsMore(it.name));
+		if (want.length) {
+			blocked(`buy from Ponty: ` + want.map((it) => `${it.name}${it.level ? '+' + it.level : ''} @ `
+				+ (typeof it.price === 'number' ? it.price : 'no price, so it would be skipped')).join(', '));
+		}
+		return 0;
+	}
 	for (const it of items) {
 		if (freeSlots() <= CONFIG.merchant.ponty.minFreeSlots) {
 			log('bag too full to keep buying from Ponty', '#8b98ab');
