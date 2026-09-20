@@ -67,9 +67,26 @@ const CONFIG = {
 	// until the price is mapping correctly, then turn off.
 	debugPonty: true,
 
-	// Where to stand while scanning. Empty = derive from the game's own map
-	// data (see deriveScanSpots). Override with explicit
-	// [{map,x,y}, ...] if you know a better pitch on your servers.
+	/* Where to stand while scanning.
+
+	   One measured point that reaches Lucas, Cue, Gabriel and Ponty at once,
+	   with the whole player-stand cluster inside the vision box. It is the
+	   centre of the smallest circle enclosing those four, radius 286.05, and
+	   it was verified live: buy from Gabriel, buy from Lucas, upgrade at Cue,
+	   Ponty replying with 225 items, all from exactly here.
+
+	   This replaces walking to NPC anchors. The roamer used to goTo() the
+	   first derived anchor on arrival and then goTo() Ponty separately when
+	   Ponty was due - two walks across town per shard, for a scan that is a
+	   synchronous read of parent.entities and a socket call, neither of which
+	   needed the walk. The same point is what Codex/FamilyFleet.js uses.
+
+	   If the NPC set changes, recompute the smallest enclosing circle rather
+	   than nudging this - Lucas and Ponty are 572.1 apart and form the
+	   diameter, so they are the pair that binds it. */
+	townSpot: { map: 'main', x: -179, y: -72 },
+	// Still derived if townSpot is ever cleared, so the old behaviour remains
+	// reachable rather than deleted.
 	scanSpots: [],
 	// Walk between scan spots, or hold the first one.
 	//
@@ -151,6 +168,7 @@ function npcSpot(mapName, npcId) {
 
 function deriveScanSpots() {
 	if (CONFIG.scanSpots.length) return CONFIG.scanSpots;
+	if (CONFIG.townSpot) return [CONFIG.townSpot];
 	const wanted = ['fancypots', 'secondhands', 'items1', 'newupgrade', 'basics'];
 	const spots = [];
 	for (const id of wanted) {
@@ -363,7 +381,26 @@ function scanPonty() {
 	});
 }
 
+/* Ponty is in range from the town spot - measured at 286.1, with the call
+   returning 225 items from exactly there - so standing on it is enough and the
+   walk is pure cost. Only travel when we are somewhere else. */
+function atTownSpot() {
+	const spot = CONFIG.townSpot;
+	if (!spot) return false;
+	const c = character || {};
+	const x = c.real_x != null ? c.real_x : c.x;
+	const y = c.real_y != null ? c.real_y : c.y;
+	if (c.map !== spot.map) return false;
+	return Math.sqrt((x - spot.x) * (x - spot.x) + (y - spot.y) * (y - spot.y)) <= 60;
+}
+
 async function pontyCheck() {
+	if (atTownSpot()) {
+		const items = await scanPonty();
+		if (items) log(`Ponty: ${items.length} items on ${shardKey(currentShard())}`, '#5ED6A8');
+		else log('Ponty returned nothing (out of range, or the call timed out)', 'orange');
+		return items;
+	}
 	const spot = npcSpot('main', 'secondhands');
 	if (!spot) { log('Ponty not found in map data', 'orange'); return null; }
 	await goTo(spot);
@@ -542,8 +579,24 @@ async function report(extra) {
 		return { reply, confirmed: !!reply, stands: 0, ponty: 0 };
 	}
 
+	/* Stop paying the post gap once the bridge has proved unreachable.
+
+	   The gap exists so one scout does not hammer the bridge with several
+	   writes a second. It has no purpose against a bridge that is DOWN, and
+	   charging it per bucket there is what made a rotation get slower every
+	   hop: with nothing confirming, buckets are never cleared, so the buffer
+	   grows by one shard per hop, and each post pass paid 7s for every bucket
+	   in it. Two passes per hop - the loop's own, then hopTo's - made that
+	   about +14s per hop, compounding. Measured on a live rotation: 72s
+	   between the first two shards climbing monotonically to 168s by the
+	   eighth, with no shard being individually slow.
+
+	   The findings are not lost. Everything unsent stays buffered and stamped
+	   with the shard it was seen on, and goes out when the bridge returns. */
 	let lastReply = null, allOk = true, sent = 0;
+	let offline = false;
 	for (const [key, e] of buckets) {
+		if (offline) { allOk = false; continue; }
 		await respectPostGap();
 		const stands = [...e.stands.values()];
 		const ponty = e.ponty;
@@ -557,6 +610,15 @@ async function report(extra) {
 		lastPostAt = Date.now();
 		lastReply = reply || lastReply;
 
+		if (!reply) {
+			// No reply at all is the bridge being unreachable, not a rejected
+			// payload. Give up on the rest of this pass rather than waiting
+			// out a gap per bucket for writes that cannot land.
+			offline = true;
+			allOk = false;
+			log(`${key}: bridge unreachable - holding this and ${buckets.length - 1 - buckets.findIndex(function (b) { return b[0] === key; })} other shard(s)`, 'orange');
+			continue;
+		}
 		const acc = reply && reply.accepted;
 		const ok = !!(acc && acc.merchants === stands.length
 			&& acc.ponty === (ponty ? ponty.length : 0));
@@ -756,14 +818,17 @@ async function roamerLoop() {
 			await settleScan();
 		}
 
-		// Hand it over and confirm it landed BEFORE leaving. Hopping with an
-		// unacknowledged scan throws the whole visit away.
-		const { reply } = await reportConfirmed();
-
+		// hopTo() confirms before it leaves, so reporting here as well was a
+		// second full pass over every buffered shard - each one paying the post
+		// gap - immediately before the pass that actually matters. Only report
+		// here when we are NOT about to hop, since then nothing else will.
+		let reply = null;
 		if (!canHop()) {                       // single-shard mode: just keep sweeping
+			reply = (await reportConfirmed()).reply;
 			await new Promise((r) => setTimeout(r, CONFIG.scanIntervalMs));
 			continue;
 		}
+		reply = bridge.lastReply;
 		const target = nextShard(reply);
 		if (target) await hopTo(target);
 		else await new Promise((r) => setTimeout(r, CONFIG.scanIntervalMs));
