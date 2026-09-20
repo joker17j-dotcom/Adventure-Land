@@ -1133,7 +1133,26 @@ function chooseSpot() {
    socket call, and without this a slow smart_move would let the next tick
    start a second one on top of it - the same mutual exclusion the merchant
    learned to need. Released in a finally so a throw cannot strand it. */
-const fleetState = { busy: false, parkedFull: false, lastTownScanAt: 0 };
+const fleetState = { busy: false, scanning: false, parkedFull: false, lastTownScanAt: 0 };
+
+/* Scanning gets its own lock, separate from the movement one.
+
+   A scan reads parent.entities and posts. It never moves the character, so it
+   has no business queueing behind smart_move - and queueing behind it was
+   costing every reading that could have been taken while walking across town,
+   which is most of the time a character spends there. One lock of its own
+   stops two scans overlapping without coupling it to travel at all.
+
+   Taking a scan mid-walk is not just safe but slightly better: settleScan
+   absorbs into a Map keyed by stand id and never removes, so passes taken from
+   different positions add coverage rather than replacing it. Walking out of
+   town mid-settle keeps whatever was already seen. */
+async function withScanLock(fn) {
+	if (fleetState.scanning) return false;
+	fleetState.scanning = true;
+	try { await fn(); return true; }
+	finally { fleetState.scanning = false; }
+}
 
 function potionCount(name) {
 	let n = 0;
@@ -1204,9 +1223,10 @@ async function townTrip(reason) {
 	// slots becoming one is worth more than the walk we have already paid for.
 	await compoundPass();
 	// Force the beat: a trip made for a reason always produces a reading, even
-	// if the last one was 19 seconds ago.
+	// if the last one was 19 seconds ago. Through the scan lock, so it cannot
+	// collide with a background scan started while we were walking in.
 	fleetState.lastTownScanAt = Date.now();
-	await doScan();
+	await withScanLock(doScan);
 	ranger.lastTownTripAt = Date.now();
 	return true;
 }
@@ -1237,9 +1257,9 @@ function bagFull() {
 async function maybeTownScan() {
 	if (!inTown()) return false;
 	if (Date.now() - fleetState.lastTownScanAt < CONFIG.scout.townScanMs) return false;
+	if (fleetState.scanning) return false;
 	fleetState.lastTownScanAt = Date.now();
-	await doScan();
-	return true;
+	return await withScanLock(doScan);
 }
 
 /* Bag full and not our bank window yet.
@@ -1311,13 +1331,23 @@ async function attackWithRotation(target) {
 async function rangerTick() {
 	if (character.rip) { try { await respawn(); } catch (e) { } return; }
 	useRangerPotions();
-	if (fleetState.busy) return;
-	// Standing in town for any reason at all: keep the beat. Cheap, and outside
-	// the busy lock because it is a read plus a post, not a claim on movement.
-	if (inTown() && !fleetState.busy) {
-		fleetState.busy = true;
-		try { await maybeTownScan(); } finally { fleetState.busy = false; }
+	/* In town for any reason at all, keep the beat - INCLUDING while a walk is
+	   in progress.
+
+	   This deliberately sits ahead of the movement lock and is deliberately not
+	   awaited. An earlier version put it behind `if (fleetState.busy) return`
+	   and then took that same lock, which meant no scan ever happened during a
+	   smart_move - and a smart_move is most of what a character does in town.
+	   The comment claimed it was outside the lock; it was not.
+
+	   Not awaiting it is what makes travel scanning work: the tick returns and
+	   the walk continues while the scan settles in the background under its own
+	   lock. The catch is load-bearing, since nothing is awaiting this to
+	   surface a rejection. */
+	if (inTown()) {
+		maybeTownScan().catch((e) => log(`town scan failed: ${e && e.message ? e.message : e}`, 'orange'));
 	}
+
 	if (fleetState.busy) return;
 
 	fleetState.busy = true;
@@ -1345,8 +1375,10 @@ async function rangerTick() {
    deposit the gold above the floor - and says plainly that the rest is not
    here yet, rather than silently doing nothing and looking finished. */
 async function bankRun() {
+	// Scan before leaving town - the bank is its own map, so once we are through
+	// the door there is nothing to see until we come back out.
+	await withScanLock(doScan);
 	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) return;
-	await doScan();                        // the spec wants a scan on the way in
 	const keep = CONFIG.bank.rangerKeepGold;
 	if (character.gold > keep) {
 		const amount = character.gold - keep;
