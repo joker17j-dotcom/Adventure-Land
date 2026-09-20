@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v46 (party frames: the merchant no longer gets a frame - excluded by class rather than by name, so it survives a rename and cannot hide a different character with the same name, with the visible count passed to the aligner so the row is not sized for a cell that is not drawn. The xp rate and time-to-next rows drop back to the 17px of the HP/MP/XP bars they sit under. Note the fit is now tight rather than comfortable: "22.9M xp/hr" measures 106 CSS px against a 104 px cell, so it bleeds about a pixel each side, and a wider value such as "123.4M xp/hr" would bleed more. FRAME_WIDTH is the dial if that becomes visible.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v47 (game log: "Get closer" is filterable and off by default - 80 of 289 entries in a four-minute sample. The filter alone was not enough: the socket hook only replaces the game_log listener, while the client writes other lines itself through add_log, and those arrived as .gameentry nodes with no inline display and so were only ever hidden by a filterGamelog() pass - visible until a tab happened to be toggled. A MutationObserver now applies the filters to added nodes as well, so the bar governs the whole log rather than the half this code writes. The three copies of the first-match rule are collapsed into shouldShowEntry. Tabs wrap onto rows of four rather than being squeezed into one, each flex 1 1 basis so a short final row fills the bar, and "Upgr." is spelled out as "Upgrades".)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3068,9 +3068,20 @@ if (parent.$) {
 			gold: { show: true, regex: /gold/, label: 'Gold' },
 			party: { show: true, regex: /party/, label: 'Party' },
 			items: { show: true, regex: /found/, label: 'Items' },
-			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgr.' },
-			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' }
+			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgrades' },
+			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' },
+			/* The client emits this whenever an action is attempted out of range,
+			   which during normal farming is constantly - 80 of 289 entries in a
+			   four-minute sample. Off by default; it is still a tab rather than a
+			   hard suppression so it can be turned back on when range IS the
+			   question being debugged. */
+			getcloser: { show: false, regex: /get closer/i, label: 'Get Closer' }
 		};
+
+		/* Tabs wrap onto rows of this many instead of being squeezed into one.
+		   Each tab is flex 1 1 <basis> rather than a fixed width, so a final
+		   short row grows to fill the bar instead of leaving a gap. */
+		const TABS_PER_ROW = 4;
 
 		const COLORS = {
 			active: ['#151342', '#1D1A5C'],
@@ -3100,10 +3111,11 @@ if (parent.$) {
 			bar.className = 'enableclicks';
 			Object.assign(bar.style, {
 				border: '5px solid gray',
-				height: '24px',
+				height: 'auto',
 				background: 'black',
 				margin: '-5px 0',
 				display: 'flex',
+				flexWrap: 'wrap',
 				fontSize: '20px',
 				fontFamily: 'pixel'
 			});
@@ -3118,8 +3130,9 @@ if (parent.$) {
 				const textColor = filter.show ? COLORS.activeText : COLORS.inactiveText;
 
 				Object.assign(tab.style, {
-					height: '100%',
-					width: `${100 / Object.keys(FILTERS).length}%`,
+					height: '24px',
+					flex: `1 1 ${100 / TABS_PER_ROW}%`,
+					boxSizing: 'border-box',
 					textAlign: 'center',
 					lineHeight: '24px',
 					cursor: 'default',
@@ -3150,18 +3163,46 @@ if (parent.$) {
 			scrollGamelogToBottom();
 		}
 
+		/* First matching filter decides, and nothing matching means show. Shared by
+		   all three callers so the rule cannot drift between them. */
+		function shouldShowEntry(text) {
+			for (const filter of Object.values(FILTERS)) {
+				if (filter.regex.test(text)) return filter.show;
+			}
+			return true;
+		}
+
 		function filterGamelog() {
 			const entries = parent.document.querySelectorAll('.gameentry');
 			entries.forEach(entry => {
-				let shouldShow = true;
-				for (const filter of Object.values(FILTERS)) {
-					if (filter.regex.test(entry.innerHTML)) {
-						shouldShow = filter.show;
-						break;
+				entry.style.display = shouldShowEntry(entry.innerHTML) ? 'block' : 'none';
+			});
+		}
+
+		/* Not every line in #gamelog comes through addLogEntry. The socket hook
+		   below only replaces the `game_log` listener; the client writes others
+		   itself through add_log, and those arrive as .gameentry nodes with no
+		   inline display set - which is exactly how "Get closer" was slipping
+		   past the filters. They were only ever hidden by filterGamelog(), so
+		   they stayed visible until something happened to toggle a tab.
+
+		   Watching for added nodes covers both paths, so the filter bar now
+		   governs the whole log rather than only the half this code writes. */
+		function observeGamelog() {
+			const gamelog = parent.document.getElementById('gamelog');
+			if (!gamelog) return;
+			if (parent.gamelog_filter_observer) parent.gamelog_filter_observer.disconnect();
+			const MO = parent.MutationObserver || MutationObserver;
+			const observer = new MO((records) => {
+				for (const record of records) {
+					for (const node of record.addedNodes) {
+						if (node.nodeType !== 1 || !node.classList || !node.classList.contains('gameentry')) continue;
+						node.style.display = shouldShowEntry(node.innerHTML) ? 'block' : 'none';
 					}
 				}
-				entry.style.display = shouldShow ? 'block' : 'none';
 			});
+			observer.observe(gamelog, { childList: true });
+			parent.gamelog_filter_observer = observer;
 		}
 
 		function scrollGamelogToBottom() {
@@ -3187,13 +3228,7 @@ if (parent.$) {
 
 			parent.game_logs.push([message, color]);
 
-			let display = 'block';
-			for (const filter of Object.values(FILTERS)) {
-				if (filter.regex.test(message)) {
-					display = filter.show ? 'block' : 'none';
-					break;
-				}
-			}
+			const display = shouldShowEntry(message) ? 'block' : 'none';
 
 			const entry = parent.document.createElement('div');
 			entry.className = 'gameentry';
@@ -3226,6 +3261,7 @@ if (parent.$) {
 
 		createFilterBar();
 		filterGamelog();
+		observeGamelog();
 		initTimestamps();
 	})();
 
