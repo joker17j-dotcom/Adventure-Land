@@ -3485,17 +3485,28 @@ if (parent.$) {
 
 		/* Left-align the party block under the R&M button.
 
-		   #newparty is anchored `right: 0` by the game's own id rule, and the
-		   cells pack to its right edge, so the block sat flush against the
-		   viewport - which is why the rightmost frame's text ran off screen
-		   (measured: text right edge 1734 against a 1718 viewport).
+		   The game does not position #newparty at all - it ships as a static
+		   inline-block. WE position it: `.party-container` above sets
+		   `position: absolute; right: 0; width: 1000px`, and the render loop
+		   applies that class with addClass() immediately before calling in here.
+		   So the right-anchoring that pinned the block to the viewport edge -
+		   pushing the rightmost frame's text to 1734 against a 1718 viewport -
+		   is ours, and so is the fix.
+
+		   (An earlier draft of this comment blamed "the game's own id rule".
+		   There is no such rule; the measurement matched .party-container
+		   exactly. Left in the record because a false claim about the DOM, sitting
+		   in the file, reads as documentation - the same reason the dead
+		   `#toprightcorner > .codebuttons` branch was deleted rather than kept.)
+
+		   Written inline because inline beats the class rule we just applied,
+		   which is what otherwise holds `right: 0` and `width: 1000px`.
 
 		   The anchor is read from the live button rather than hard-coded: the
 		   toolbar is itself right-anchored, so R&M's x moves with the window and
-		   any fixed number would be wrong at a different size. An id rule beats
-		   our class rule on specificity, so this writes inline, which beats both.
-		   If the button cannot be found the block is left exactly as the game
-		   placed it - a misaligned panel is better than one flung off screen. */
+		   any fixed number would be wrong at another size. If the button cannot
+		   be found the block is left exactly where it was - a misaligned panel
+		   beats one flung off screen. */
 		let rmButton = null;
 		const findRmButton = () => {
 			if (rmButton && rmButton.isConnected) return rmButton;
@@ -3517,12 +3528,15 @@ if (parent.$) {
 		   writes a new width: a 250ms oscillation. And `left`/`right` would be
 		   ignored outright, so the alignment could not work anyway.
 
-		   The id rule that makes it positioned was measured on the live client,
-		   not read from kaansoral/adventureland - that snapshot has #newparty as
-		   a static inline-block, and it is months behind (it has no
-		   DIV.game-controls either). Rather than trust either source, check the
-		   computed value: positioned, align; static, do nothing and log it once.
-		   Both readings are then safe, and the silent case becomes a loud one. */
+		   What makes it positioned is our own `.party-container`, applied by the
+		   render loop two lines before this runs - not anything the game does.
+		   That is a dependency on our own style block having injected, so it is
+		   worth checking rather than assuming: if `<style id="style-party-frames">`
+		   is ever removed, desynced via party_style_prepared, or refactored away,
+		   the class goes inert and #newparty falls back to the static inline-block
+		   the game ships. Reading the computed value catches exactly that -
+		   positioned, align; static, decline and say so once - instead of writing
+		   a width into an in-flow element and starting the oscillation above. */
 		let alignChecked = false;
 		const partyFrameIsPositioned = (partyFrame) => {
 			const pos = parent.getComputedStyle(partyFrame[0]).position;
