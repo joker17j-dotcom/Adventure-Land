@@ -3507,9 +3507,37 @@ if (parent.$) {
 			return rmButton;
 		};
 
+		/* Only align a POSITIONED #newparty, and say so once if it is not.
+
+		   This rests on #newparty being out of normal flow. It is inside
+		   #toprightcorner, which is `position: fixed; right: 0` with auto width -
+		   so its width is the widest of its IN-FLOW children. If #newparty were
+		   static, writing `width` here would widen that container, which extends
+		   leftward, which moves R&M, which changes the anchor we just read, which
+		   writes a new width: a 250ms oscillation. And `left`/`right` would be
+		   ignored outright, so the alignment could not work anyway.
+
+		   The id rule that makes it positioned was measured on the live client,
+		   not read from kaansoral/adventureland - that snapshot has #newparty as
+		   a static inline-block, and it is months behind (it has no
+		   DIV.game-controls either). Rather than trust either source, check the
+		   computed value: positioned, align; static, do nothing and log it once.
+		   Both readings are then safe, and the silent case becomes a loud one. */
+		let alignChecked = false;
+		const partyFrameIsPositioned = (partyFrame) => {
+			const pos = parent.getComputedStyle(partyFrame[0]).position;
+			if (pos !== 'static') return true;
+			if (!alignChecked) {
+				alignChecked = true;
+				game_log('Party frames: #newparty is position:static - not aligning (left/right would be ignored and width could move the toolbar)', 'orange');
+			}
+			return false;
+		};
+
 		const alignPartyFrames = (partyFrame, count) => {
 			const rm = findRmButton();
 			if (!rm || !count) return;
+			if (!partyFrameIsPositioned(partyFrame)) return;
 			const rmLeft = rm.getBoundingClientRect().left;
 			if (!isFinite(rmLeft) || rmLeft <= 0) return;
 
