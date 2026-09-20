@@ -299,7 +299,12 @@ const CONFIG = {
 		enabled: true,
 		targetPlayer: 'Meltymerch',
 		checkInterval: 1000,
-		lowInventorySlots: 3
+		lowInventorySlots: 3,
+		// Only used if the game's own skill table cannot be read. The real
+		// requirement comes from G.skills.mluck.level at runtime, so it cannot
+		// go stale if the game changes it - this is a floor for the case where
+		// G is unavailable, not a second source of truth.
+		mluckLevelFallback: 40,
 	},
 
 	dragold: {
@@ -1439,13 +1444,63 @@ function teamStarter() {
 }
 setInterval(teamStarter, 3000);
 
+/* What level a merchant must be before mluck exists for it at all. Read from
+   the game's own skill table rather than written down here: a number this file
+   remembers is a number that can disagree with the game later. */
+function mluckLevelRequired() {
+	try {
+		const lvl = parent?.G?.skills?.mluck?.level;
+		if (typeof lvl === 'number' && isFinite(lvl)) return lvl;
+	} catch (e) { }
+	return CONFIG.locationBroadcast.mluckLevelFallback;
+}
+
+/* Is the merchant we ping actually able to cast mluck at us?
+
+   Three answers, not two. Absent from the party means no - nobody is coming.
+   Present but below the level means no - it cannot cast the skill whatever we
+   tell it. Present at an unreadable level means YES: the old behaviour is
+   preserved rather than silently disabling a working feature on missing data.
+
+   mluckState is returned rather than a bare boolean so the caller can say
+   which of those it is, once, instead of going quiet for an unexplained
+   reason. */
+function mluckState() {
+	const want = CONFIG.locationBroadcast.targetPlayer;
+	const party = (typeof get_party === 'function' ? get_party() : null) || {};
+	const m = party[want];
+	if (!m) return { ok: false, why: `${want} is not in the party` };
+	const type = m.type || m.ctype;
+	if (type && type !== 'merchant') return { ok: false, why: `${want} is a ${type}, not a merchant` };
+	const need = mluckLevelRequired();
+	const lvl = m.level;
+	if (typeof lvl !== 'number') return { ok: true, why: `${want}'s level is unreadable - assuming it can` };
+	if (lvl < need) return { ok: false, why: `${want} is level ${lvl}, mluck needs ${need}` };
+	return { ok: true, why: `${want} is level ${lvl}` };
+}
+
+let mluckGateNote = null;
+
 async function sendLocationUpdate() {
 	if (!CONFIG.locationBroadcast.enabled) return;
 
 	try {
-		const needsUpdate = !character.s.mluck || character.s.mluck.f !== CONFIG.locationBroadcast.targetPlayer;
+		// Gated on the merchant being able to cast it. Without this the
+		// condition below is permanently true whenever mluck is out of reach -
+		// an unreachable state, not a transient one - and this fired a location
+		// ping every second forever, asking for a buff nobody could give.
+		const gate = mluckState();
+		if (gate.why !== mluckGateNote) {
+			mluckGateNote = gate.why;
+			game_log(`[mluck] ${gate.ok ? 'requesting' : 'not requesting'}: ${gate.why}`,
+				gate.ok ? '#7FD98A' : '#8b98ab');
+		}
+		const needsUpdate = gate.ok
+			&& (!character.s.mluck || character.s.mluck.f !== CONFIG.locationBroadcast.targetPlayer);
 		const nullCount = character.items.filter(item => item === null).length;
 
+		// The inventory branch is deliberately outside the gate: a full pack
+		// needs the mule whether or not anyone can buff us.
 		if (needsUpdate || nullCount <= CONFIG.locationBroadcast.lowInventorySlots) {
 			plSend(CONFIG.locationBroadcast.targetPlayer, {
 				message: 'location',
