@@ -120,12 +120,30 @@ on, and it is also most of the `sellMaxAgeSec` budget. At 2.4 minutes a listing
 is a sixth of the 15-minute freshness window old when it is posted; at 5.5+ it
 is over a third, before anyone acts on it.
 
-This is why **ALData is the default source and the local bridge is second**.
-ALData covers every shard continuously; a rotating scout produces a rolling
-snapshot. Measured side by side: 267 stands across 11 shards from ALData against
-8 stands on 1 shard from ours. Reverse the preference and a probe hold — which
-stops the rotation — silently leaves you reading the worst view of the market
-rather than the best.
+**Neither source is preferred wholesale any more — they are merged per merchant
+per shard, and the newer row wins.**
+
+It used to be winner-takes-all: ALData was asked first, and if it answered with
+anything at all the bridge was never consulted. That was right while no scouts
+existed. ALData covers every shard continuously; a lone rotating scout produces
+a rolling snapshot of one shard at a time. Measured side by side: 267 stands
+across 11 shards from ALData against 8 stands on 1 shard from ours. Preferring
+ours wholesale meant reading the worst view of the market rather than the best,
+and a probe hold — which stops the rotation — made it worse silently.
+
+It is the wrong rule once scouts are running, because **freshness is a property
+of a row, not of a source**. On the shard a parked scout is sitting on, ours is
+seconds old; three shards away ALData's is better. `arbMergeMarketRows` takes
+both and resolves only the conflicts, by age.
+
+It is a **union**, not an intersection: a merchant only one source knows about
+is kept, because absence from a source is not evidence of departure — neither
+source claims to have looked everywhere. A row with no readable timestamp
+always loses to one with an age.
+
+Pinning a source (`arbProbeSource('bridge')`) stays winner-takes-all on purpose:
+it exists to answer "is the bridge feeding anything at all", and a merge would
+hide exactly the answer it is asked for.
 
 What ALData cannot give you is **Ponty**, who has no public API. That is the
 scout's remaining edge, and it is the one buy source the competition is not

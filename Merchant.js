@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -3495,27 +3495,100 @@ function arbProbeSource(which) {
 	try { return get('probe_source') || 'auto'; } catch (e) { return 'auto'; }
 }
 
+/* One row per merchant per shard, taking whichever source saw it more
+   recently.
+
+   This used to be winner-takes-all: 'auto' asked ALData, and if ALData
+   answered with anything at all the bridge was never consulted. That was the
+   right call while our scouts did not exist - ALData covers every shard
+   continuously and a lone rotating scout produces a rolling snapshot of one
+   shard at a time, so preferring ours wholesale meant reading the worst view
+   of the market rather than the best.
+
+   It is the wrong call once scouts are running. Freshness is not a property of
+   a source, it is a property of a row: on the shard a parked scout is sitting
+   on, our data is seconds old and ALData's is whatever its own refresh cadence
+   gives; three shards away the opposite holds. So both are fetched and merged
+   per merchant per shard, and the newer row wins.
+
+   A union, not an intersection. A merchant only one source knows about is
+   kept: absence from a source is not evidence of departure, because neither
+   source claims to have looked everywhere. Only a CONFLICT is resolved, and
+   only by age.
+
+   A row with no readable timestamp always loses to one that has an age, for
+   the same reason pAgeSec exists - an unknown age must never sort as fresh. */
+function arbMergeMarketRows(aldataRows, bridgeRows) {
+	const by = new Map();
+	let fromBridge = 0, fromAldata = 0, bridgeWins = 0;
+
+	const take = function (row, src) {
+		if (!row || !row.id) return;
+		const key = String(row.serverRegion) + String(row.serverIdentifier) + '|' + row.id;
+		const age = pAgeSec(row.lastSeen);
+		const cur = by.get(key);
+		if (cur) {
+			// Known age beats unknown; otherwise the smaller age wins.
+			const better = (cur.age == null && age != null)
+				|| (age != null && cur.age != null && age < cur.age);
+			if (!better) return;
+			if (cur.src === 'bridge') bridgeWins--;
+		}
+		by.set(key, { row: row, age: age, src: src });
+		if (src === 'bridge') bridgeWins++;
+	};
+
+	for (const r of (aldataRows || [])) { fromAldata++; take(r, 'aldata'); }
+	for (const r of (bridgeRows || [])) { fromBridge++; take(r, 'bridge'); }
+
+	const rows = [];
+	for (const e of by.values()) rows.push(e.row);
+	return { rows: rows, fromAldata: fromAldata, fromBridge: fromBridge, bridgeWins: bridgeWins };
+}
+
 async function arbProbeMarketRows() {
 	const want = arbProbeSource();
-	const attempts = (want === 'bridge') ? ['bridge']
-		: (want === 'aldata') ? ['aldata']
-			: ['aldata', 'bridge'];
 	const errors = {};
-	for (const src of attempts) {
+
+	const fetchOne = async function (src) {
 		try {
 			const rows = (src === 'aldata')
 				? await arbFetchJson(CONFIG.scout.aldata + '/merchants', 8000)
 				: await scoutFetch('/merchants');
-			if (Array.isArray(rows) && rows.length) return { rows: rows, source: src };
+			if (Array.isArray(rows) && rows.length) return rows;
 			errors[src] = Array.isArray(rows) ? 'empty' : 'not an array';
 		} catch (e) {
 			errors[src] = String(e && e.message ? e.message : e);
 		}
+		return null;
+	};
+
+	// Pinning a source stays available and stays winner-takes-all - it exists to
+	// answer "is the bridge feeding anything at all", and a merge would hide
+	// exactly the answer it is asked for.
+	if (want === 'bridge' || want === 'aldata') {
+		const rows = await fetchOne(want);
+		if (rows) return { rows: rows, source: want };
+		pLog('no market rows from pinned source ' + want + ' (' + errors[want]
+			+ ') - falling back to what is in view', 'orange');
+		return { rows: null, source: 'in-view', errors: errors };
 	}
-	pLog('no market rows from ' + attempts.join(' or ') + ' ('
-		+ attempts.map(function (k) { return k + ': ' + errors[k]; }).join('; ')
-		+ ') - falling back to what is in view', 'orange');
-	return { rows: null, source: 'in-view', errors: errors };
+
+	const both = await Promise.all([fetchOne('aldata'), fetchOne('bridge')]);
+	const aldataRows = both[0], bridgeRows = both[1];
+
+	if (!aldataRows && !bridgeRows) {
+		pLog('no market rows from aldata or bridge (aldata: ' + errors.aldata
+			+ '; bridge: ' + errors.bridge + ') - falling back to what is in view', 'orange');
+		return { rows: null, source: 'in-view', errors: errors };
+	}
+	if (!bridgeRows) return { rows: aldataRows, source: 'aldata', errors: errors };
+	if (!aldataRows) return { rows: bridgeRows, source: 'bridge', errors: errors };
+
+	const m = arbMergeMarketRows(aldataRows, bridgeRows);
+	pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
+		+ m.fromBridge + ' bridge; ours was fresher on ' + m.bridgeWins + ')');
+	return { rows: m.rows, source: 'merged', merge: m };
 }
 
 /* Accepts an ISO string or an epoch number - aldata and the bridge need not
