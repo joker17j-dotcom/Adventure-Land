@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v49 (fear instrumentation, observation only - nothing branches on it. A feared character stops killing, which reaches checkFarmEconomics as gold/sec <= 0 and is indistinguishable from a poor spot, so a swarmy but rich spot can be abandoned for a reason that belongs to the character rather than the location. Rather than act on that theory, this samples character.fear once a second, accumulates feared time and peak attacker count per spot, and annotates the existing abandon verdict with it. Persisted to CODE storage because the interesting window is hours long and a redeploy or shard hop would otherwise reset it; gaps over 5s are discarded rather than counted as observed time. Read it with farmFearReport(), reset with clearFearReport().)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3407,7 +3407,29 @@ if (parent.$) {
 		container.append(parent.$("<div id='dpsmetercontent'></div>").css({ display: 'table-cell', verticalAlign: 'middle', padding: '2px', border: '4px solid grey' }));
 		parent.$('#bottomrightcorner').children().first().after(container);
 
-		parent.socket.on('hit', d => {
+		/* Replace OUR previous 'hit' listener, and survive any that outlived us.
+
+		   The socket lives in the game frame and outlives a CODE restart, so
+		   every reload used to add another listener. Measured on Dexon after a
+		   morning of redeploys: nine of them. The orphans belong to destroyed
+		   CODE frames, where `parent` is null - and the line that reads
+		   parent.party_list sat OUTSIDE the try below, so an orphan threw
+		   straight into socket.io's emit loop and aborted the remaining
+		   listeners. The live handler registers last, so it never ran: Dexon's
+		   DPS meter read zero while the rest of the party's read correctly.
+
+		   Two defences, because either alone is insufficient. Removing our own
+		   previous handler stops the pile growing - but only ours, since a
+		   blanket removeListener('hit') would also strip the client's own
+		   damage-number rendering, which is not ours to take. And the guard on
+		   the first line means an orphan that does survive returns quietly
+		   instead of poisoning the chain for every listener behind it.
+
+		   Orphans already on the socket are only cleared by a page reload; a
+		   CODE reload cannot reach them. */
+		if (parent.dps_hit_handler) parent.socket.removeListener('hit', parent.dps_hit_handler);
+		const onHit = d => {
+			if (!parent || !parent.party_list) return;
 			const inParty = id => parent.party_list.includes(id);
 			if (!inParty(d.hid) && !inParty(d.id)) return;
 
@@ -3445,7 +3467,9 @@ if (parent.$) {
 			} catch (err) {
 				console.error('hit handler error', err);
 			}
-		});
+		};
+		parent.dps_hit_handler = onHit;
+		parent.socket.on('hit', onHit);
 
 		const calcVal = (type, e, elapsed) => {
 			const r = 1000 / elapsed;
