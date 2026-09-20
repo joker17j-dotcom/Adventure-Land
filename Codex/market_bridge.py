@@ -452,8 +452,35 @@ class Store:
             return t - self.activity.get(k, {}).get("at", 0)
         rotation = sorted(known, key=staleness, reverse=True)
 
+        parked_shards = {b.get("assigned") for c, b in live.items()
+                         if b.get("role") == "parked" and b.get("assigned")}
+
         if me.get("role") == "roamer":
-            return {"ok": True, "assignment": None, "rotation": rotation,
+            # Every roamer used to receive the same staleness-ordered rotation
+            # and take its head, so two roamers picked the same shard on every
+            # single hop and shadowed each other forever - measured at 8 ticks
+            # out of 8. The second one contributed nothing.
+            #
+            # So the unparked shards are dealt out between them, and each gets a
+            # beat of its own that nobody else walks.
+            #
+            # Dealt from a NAME-sorted list, not from the rotation. The rotation
+            # re-sorts by staleness on every request, so partitioning it would
+            # hand a roamer a different set each tick - the opposite of owning a
+            # beat. Ownership has to come from something that does not move.
+            # Round-robin rather than contiguous blocks so the beats stay within
+            # one shard of each other in size.
+            roamers = sorted([c for c, b in live.items() if b.get("role") == "roamer"])
+            free = sorted(k for k in known if k not in parked_shards)
+            beat: list[str] = []
+            if roamers and free:
+                i = roamers.index(char) if char in roamers else 0
+                beat = free[i::len(roamers)]
+            # Staleness-ordered WITHIN the beat: stable ownership, and inside it
+            # the stalest shard is still the one most worth visiting.
+            beat = sorted(beat, key=staleness, reverse=True)
+            return {"ok": True, "assignment": None, "rotation": rotation, "beat": beat,
+                    "roamers": len(roamers),
                     "parked": {c: b.get("assigned") for c, b in live.items() if b.get("role") == "parked"}}
 
         parked = sorted([c for c, b in live.items() if b.get("role") == "parked"])

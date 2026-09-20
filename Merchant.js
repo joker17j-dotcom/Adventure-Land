@@ -2452,6 +2452,19 @@ function scoutNextShard() {
 	const parked = new Set(Object.values((reply && reply.parked) || {}).filter(Boolean));
 	const fromBridge = (reply && Array.isArray(reply.rotation)) ? reply.rotation : [];
 
+	// A beat of this roamer's own, dealt by the bridge so two roamers never
+	// walk the same shard. Preferred over `rotation`, which every roamer
+	// receives identically and which therefore sent them all to the same head.
+	// Falls through when the bridge is older, or when there are more roamers
+	// than free shards and someone's beat is empty - overlap is unavoidable
+	// then, and standing still is worse.
+	const beat = (reply && Array.isArray(reply.beat)) ? reply.beat : [];
+	if (beat.length) {
+		const mine = beat.filter((k) => k !== here && all.includes(k));
+		if (mine.length) return mine[0];
+		if (beat.length === 1 && beat[0] === here) return null;
+	}
+
 	if (fromBridge.length) {
 		const known = new Set(fromBridge);
 		const unseen = all.filter((k) => !known.has(k));

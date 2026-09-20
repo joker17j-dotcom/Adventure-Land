@@ -131,6 +131,19 @@ and cannot agree who sits where. The bridge ranks shards by observed activity,
 hands each parked scout a different one, and removes a shard from the pool the
 moment it is handed out, so two parked scouts can never collide.
 
+**Roamers are given a beat each.** The unparked shards are dealt out between
+however many roamers are live, so no two ever walk the same one. Before this,
+every roamer received the same staleness-ordered rotation and took its head —
+two roamers therefore picked the same shard on every hop and shadowed each
+other, measured at 8 ticks out of 8, with the second contributing nothing.
+
+The deal is made from a name-sorted list rather than from the rotation, because
+the rotation re-sorts by staleness on every request and partitioning it would
+hand a roamer a different set each tick — the opposite of owning a beat.
+Ownership is stable; within a beat, the stalest shard is still visited first.
+A roamer that goes silent drops out of the split and the rest re-deal its
+shards automatically.
+
 A parked scout only moves when a new shard beats its current one by 25%.
 Without that margin they thrash between near-equal shards, and every move costs
 a `change_server` plus the walk back to the scan spot.

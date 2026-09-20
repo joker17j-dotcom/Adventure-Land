@@ -642,6 +642,21 @@ function nextShard(reply) {
 		return null;
 	};
 
+	// A beat of this roamer's own, dealt by the bridge so two roamers never
+	// walk the same shard. Preferred over `rotation`, which every roamer
+	// receives identically and which therefore sent them all to the same head.
+	// Falls through when the bridge is older, or when there are more roamers
+	// than free shards and someone's beat is empty - overlap is unavoidable
+	// then, and standing still is worse.
+	const beat = (reply && Array.isArray(reply.beat)) ? reply.beat : [];
+	if (beat.length) {
+		const mine = beat.filter((k) => k !== cur && own.includes(k));
+		if (mine.length) return toServer(mine[0]);
+		// The beat is a single shard and we are standing on it: nothing to do
+		// but stay, which is correct - it is ours and nobody else will come.
+		if (beat.length === 1 && beat[0] === cur) return null;
+	}
+
 	if (fromBridge.length) {
 		// Shards the bridge has never heard of come first: no observation at all
 		// is staler than any timestamp. Then its rotation, which is already
