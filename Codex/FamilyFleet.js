@@ -60,6 +60,14 @@ const CONFIG = {
 		minPostGapMs: 7000,
 		postConfirmRetries: 3,
 		pontyEveryMs: 10 * 60 * 1000,
+		pontyTimeoutMs: 8000,
+		// Logs the field names in Ponty's first reply, once per scan. Leave on
+		// until prices map correctly, then turn off.
+		debugPonty: true,
+		// Where to stand while scanning. Empty = derive from the game's own map
+		// data; the rangers use townSpot above, but the merchant roams and reads
+		// the NPC anchors on whatever shard it lands on.
+		scanSpots: [],
 		skipServers: ['PVP'],
 	},
 
@@ -793,14 +801,14 @@ async function report(extra) {
    back in the buffer and will go out when it returns, so blocking the rotation
    forever would cost coverage and save nothing. */
 async function reportConfirmed() {
-	for (let i = 0; i < CONFIG.postConfirmRetries; i++) {
+	for (let i = 0; i < CONFIG.scout.postConfirmRetries; i++) {
 		const r = await report();
 		if (r.confirmed) return r;
 		if (!r.reply) {
 			log('bridge unreachable - carrying the scan forward, will send when it returns', 'orange');
 			return r;
 		}
-		log(`post not acknowledged (${i + 1}/${CONFIG.postConfirmRetries})`, 'orange');
+		log(`post not acknowledged (${i + 1}/${CONFIG.scout.postConfirmRetries})`, 'orange');
 	}
 	log('giving up on confirmation for now - scan stays buffered', 'orange');
 	return { reply: null, confirmed: false, stands: 0, ponty: 0 };
@@ -1000,4 +1008,202 @@ function chooseSpot() {
 		ranger.spot = want;
 	}
 	return ranger.spot;
+}
+
+// ============================================================================
+// RANGER - the tick
+// ============================================================================
+/* One claim on the character at a time. Every branch below awaits travel or a
+   socket call, and without this a slow smart_move would let the next tick
+   start a second one on top of it - the same mutual exclusion the merchant
+   learned to need. Released in a finally so a throw cannot strand it. */
+const fleetState = { busy: false, parkedFull: false, lastParkScanAt: 0 };
+
+function potionCount(name) {
+	let n = 0;
+	const items = (character && character.items) || [];
+	for (const it of items) if (it && it.name === name) n += (it.q || 1);
+	return n;
+}
+
+/* Drink when low. Cheap, synchronous, and runs every tick regardless of what
+   else the character is doing - being in town for the bank is not a reason to
+   die on the way. */
+function useRangerPotions() {
+	const cfg = CONFIG.ranger.potions;
+	try {
+		if (character.hp / character.max_hp <= cfg.hpAt && potionCount('hpot1') > 0) {
+			use_skill('use_hp');
+			return;
+		}
+		if (character.mp / character.max_mp <= cfg.mpAt && potionCount('mpot1') > 0) {
+			use_skill('use_mp');
+		}
+	} catch (e) { }
+}
+
+function potionsLow() {
+	const cfg = CONFIG.ranger.potions;
+	return potionCount('hpot1') < cfg.buyBelow || potionCount('mpot1') < cfg.buyBelow;
+}
+
+async function buyPotions() {
+	const cfg = CONFIG.ranger.potions;
+	for (const kind of ['hpot1', 'mpot1']) {
+		const have = potionCount(kind);
+		if (have >= cfg.buyTo) continue;
+		try { await buy(kind, cfg.buyTo - have); }
+		catch (e) { log(`could not buy ${kind}: ${e && e.reason ? e.reason : e}`, 'orange'); }
+	}
+}
+
+/* The scan itself, wherever we happen to be standing.
+
+   settleScan is doing real work here, not ceremony: an empty scan REPLACES a
+   shard's listings on the bridge, so a read taken before the entity list has
+   streamed in would wipe a shard that is full. Zero only counts once every
+   settle pass is spent. */
+async function doScan() {
+	await settleScan();
+	if (pontyDue(shardKey(currentShard()))) await pontyCheck();
+	const r = await reportConfirmed();
+	if (r && r.reply) bridge.lastReply = r.reply;
+	saveBuffer();
+	ranger.lastScanAt = Date.now();
+	return r;
+}
+
+/* Every trip to town scans, whatever brought us here.
+
+   That is the spec's rule and it is also the cheap one: the walk is the
+   expensive part, the scan is a synchronous read of parent.entities plus one
+   post. A character that has walked to town for potions and does not scan has
+   paid for the scan and thrown it away. */
+async function townTrip(reason) {
+	const spot = CONFIG.scout.townSpot;
+	log(`town: ${reason}`, '#8b98ab');
+	if (!(await goTo(spot))) return false;
+	if (reason === 'potions') await buyPotions();
+	await doScan();
+	ranger.lastTownTripAt = Date.now();
+	return true;
+}
+
+function scanDue() {
+	return Date.now() - ranger.lastScanAt >= CONFIG.scout.scanEveryMs;
+}
+
+function bagFull() {
+	return freeSlots() <= CONFIG.ranger.freeSlotsFloor;
+}
+
+/* Bag full and not our bank window yet.
+
+   The spec's instruction is to wait in town rather than drop anything, and to
+   scan harder while waiting - which turns dead time into the one thing this
+   character can still usefully do. Nothing is sold here: selling belongs after
+   the bank window, once the bank has had its pick.
+
+   Note this deliberately does NOT walk back out to farm in between. Killing
+   things with no room to loot them is how a full bag stays full while looking
+   busy. */
+async function parkFull() {
+	if (!fleetState.parkedFull) {
+		fleetState.parkedFull = true;
+		log(`bag full (${freeSlots()} free) - holding in town until the bank window`, '#E9C46A');
+		await goTo(CONFIG.scout.townSpot);
+	}
+	if (Date.now() - fleetState.lastParkScanAt < CONFIG.scout.fullInventoryScanMs) return;
+	fleetState.lastParkScanAt = Date.now();
+	await doScan();
+}
+
+/* Move to the farm spot and fight what is there. */
+async function farmTick() {
+	const spotName = chooseSpot();
+	const spot = CONFIG.ranger.spots[spotName];
+	if (!spot) return;
+
+	const target = get_nearest_monster({ type: spot.monster });
+	if (!target) {
+		// Nothing of ours in view: walk to the pack rather than standing idle.
+		if (character.map !== spot.map) { await goTo({ map: spot.map, x: 0, y: 0 }); return; }
+		const anywhere = get_nearest_monster({ type: spot.monster, no_target: true });
+		if (anywhere) await goTo({ map: spot.map, x: anywhere.x, y: anywhere.y });
+		return;
+	}
+
+	if (!is_in_range(target)) { try { await move_toward(target); } catch (e) { } return; }
+	await attackWithRotation(target);
+}
+
+/* Best available skill, then a plain attack. skillReady decides availability
+   every time, so this needs no knowledge of what the character has unlocked. */
+async function attackWithRotation(target) {
+	const nearby = (get_entities ? get_entities({ type: 'monster', no_target: true }) : []) || [];
+	const same = nearby.filter((e) => e && e.mtype === target.mtype);
+
+	for (const step of RANGER_ROTATION) {
+		if (!skillReady(step.skill)) continue;
+		if (step.skipIf && step.skipIf(target)) continue;
+		const pool = step.minTargets > 1 ? same.slice(0, step.minTargets) : null;
+		if (pool && pool.length < step.minTargets) continue;
+		try {
+			await use_skill(step.skill, pool ? pool.map((e) => e.id) : target);
+			return;
+		} catch (e) {
+			// A refused skill is information, not a crash. The gate let it
+			// through, so something it cannot see said no - log once and fall
+			// through to the next option rather than dropping the whole tick.
+			log(`${step.skill} refused: ${e && e.reason ? e.reason : e}`, 'orange');
+		}
+	}
+	try { await attack(target); } catch (e) { }
+}
+
+/* Priority ladder. Ordered by what cannot wait, not by what is most common. */
+async function rangerTick() {
+	if (character.rip) { try { await respawn(); } catch (e) { } return; }
+	useRangerPotions();
+	if (fleetState.busy) return;
+
+	fleetState.busy = true;
+	try {
+		if (isMyBankWindow()) {
+			fleetState.parkedFull = false;
+			await bankRun();
+			return;
+		}
+		if (bagFull()) { await parkFull(); return; }
+		fleetState.parkedFull = false;
+
+		if (potionsLow()) { await townTrip('potions'); return; }
+		if (scanDue()) { await townTrip('scan due'); return; }
+		await farmTick();
+	} catch (e) {
+		console.error('rangerTick error:', e);
+	} finally {
+		fleetState.busy = false;
+	}
+}
+
+/* The bank window's work is the gear economy, which is the next piece to
+   build. Until it lands this does the half that is unambiguous and safe -
+   deposit the gold above the floor - and says plainly that the rest is not
+   here yet, rather than silently doing nothing and looking finished. */
+async function bankRun() {
+	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) return;
+	await doScan();                        // the spec wants a scan on the way in
+	const keep = CONFIG.bank.rangerKeepGold;
+	if (character.gold > keep) {
+		const amount = character.gold - keep;
+		try {
+			await bank_deposit(amount);
+			log(`banked ${amount} gold`, '#7FD98A');
+		} catch (e) {
+			log(`bank_deposit failed: ${e && e.reason ? e.reason : e}`, 'red');
+		}
+	}
+	log('gear pass not implemented yet - gold only this window', 'orange');
+	await townTrip('bank window, on the way out');
 }
