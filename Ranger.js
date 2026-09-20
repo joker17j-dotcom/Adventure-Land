@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v43 (v42 docked, so the `#toprightcorner > .codebuttons` branch it preferred is now deleted rather than kept: the live chain is SPAN.codebuttons -> DIV.game-controls -> DIV#toprightcorner, so that form matches nothing and would read as documentation of markup that does not exist. The measured chain is recorded in the comment, along with why the `hidden` class on the container is harmless.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v44 (party frames: the block now left-aligns under the R&M button instead of sitting flush against the viewport, where the rightmost frame's xp line ran off screen - measured at a text right edge of 1734 against a 1718 viewport, with every frame overhanging its 78px cell by about 16px. The xp rate drops its "XP/HR:" label, redundant beside a string that already reads "22.9M xp/hr", and the time-to-next-level moves to its own row beneath it at a smaller size so both sit inside the frame. The toolbar anchor is read from the live R&M button each tick rather than hard-coded, because the toolbar is itself right-anchored and any fixed x would be wrong at another window size; it is written inline because an id rule outranks a class rule, and if the button cannot be found the block is left exactly where the game put it.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3356,7 +3356,7 @@ if (parent.$) {
 </style>`);
 		parent.party_style_prepared = true;
 
-		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate'];
+		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate', 'xpeta'];
 		const FRAME_WIDTH = 80;
 		const INCLUDE = ['mp', 'max_mp', 'hp', 'max_hp', 'name', 'max_xp', 'xp', 'level', 'share', 'cc', 'max_cc'];
 		const SHOW_IMG = true;
@@ -3377,10 +3377,15 @@ if (parent.$) {
 			}
 		};
 
-		const barHTML = (text, val, width, color) =>
-			`<div style="position:relative;width:100%;height:20px;text-align:center;margin-top:3px;">
-<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-weight:bold;font-size:17px;z-index:1;white-space:nowrap;text-shadow:-1px 0 black,0 2px black,2px 0 black,0 -1px black;">${text}: ${val}</div>
-<div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:20px;border:1px solid grey;"></div>
+		/* `text` is the label. Pass an empty string for a bare row - the xp rate and
+		   its ETA are self-describing ("22.9M xp/hr"), and at 78px of frame a
+		   redundant "XP/HR: " prefix is what pushed the line past the edge.
+		   `fontSize` defaults to the 17px the stat bars use; the two xp rows ask
+		   for less so the whole string fits inside the frame. */
+		const barHTML = (text, val, width, color, fontSize) =>
+			`<div style="position:relative;width:100%;height:${fontSize ? 16 : 20}px;text-align:center;margin-top:3px;">
+<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-weight:bold;font-size:${fontSize || 17}px;z-index:1;white-space:nowrap;text-shadow:-1px 0 black,0 2px black,2px 0 black,0 -1px black;">${text ? text + ': ' : ''}${val}</div>
+<div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:${fontSize ? 16 : 20}px;border:1px solid grey;"></div>
 </div>`;
 
 		const XP_SAMPLE_INTERVAL_MS = 5000;
@@ -3408,10 +3413,10 @@ if (parent.$) {
 		}
 
 		function formatXpRate(xpPerHour) {
-			if (xpPerHour <= 0) return '0/hr';
-			if (xpPerHour >= 1000000) return (xpPerHour / 1000000).toFixed(1) + 'M/hr';
-			if (xpPerHour >= 1000) return (xpPerHour / 1000).toFixed(1) + 'k/hr';
-			return Math.round(xpPerHour) + '/hr';
+			if (xpPerHour <= 0) return '0 xp/hr';
+			if (xpPerHour >= 1000000) return (xpPerHour / 1000000).toFixed(1) + 'M xp/hr';
+			if (xpPerHour >= 1000) return (xpPerHour / 1000).toFixed(1) + 'k xp/hr';
+			return Math.round(xpPerHour) + ' xp/hr';
 		}
 
 		function formatDuration(hours) {
@@ -3451,12 +3456,21 @@ if (parent.$) {
 					return { val: pct.toFixed(2) + '%', width: pct };
 				}
 			},
+			/* Two rows, not one. computeXpRateAndEta samples history on a timer, so
+			   calling it twice a tick would be wasteful and could skew the window;
+			   the render loop computes it once and passes it in as `xp`. */
 			xprate: {
-				color: 'purple', label: 'XP/HR',
-				calc: (i) => {
-					if (!i || i.name === undefined || i.xp === undefined || i.level === undefined) return { val: '??', width: 0 };
-					const { rateStr, etaStr } = computeXpRateAndEta(i.name, i);
-					return { val: `${rateStr} · next ${etaStr}`, width: 0 };
+				color: 'purple', label: '', fontSize: 11,
+				calc: (i, partyData, xp) => {
+					if (!xp) return { val: '??', width: 0 };
+					return { val: xp.rateStr, width: 0 };
+				}
+			},
+			xpeta: {
+				color: 'purple', label: '', fontSize: 11,
+				calc: (i, partyData, xp) => {
+					if (!xp) return { val: '??', width: 0 };
+					return { val: `next ${xp.etaStr}`, width: 0 };
 				}
 			},
 			cc: { color: 'grey', calc: (i) => ({ val: i.cc?.toFixed(2) ?? i.cc, width: i.cc / (i.max_cc || 200) * 100 }) },
@@ -3469,11 +3483,57 @@ if (parent.$) {
 			}
 		};
 
+		/* Left-align the party block under the R&M button.
+
+		   #newparty is anchored `right: 0` by the game's own id rule, and the
+		   cells pack to its right edge, so the block sat flush against the
+		   viewport - which is why the rightmost frame's text ran off screen
+		   (measured: text right edge 1734 against a 1718 viewport).
+
+		   The anchor is read from the live button rather than hard-coded: the
+		   toolbar is itself right-anchored, so R&M's x moves with the window and
+		   any fixed number would be wrong at a different size. An id rule beats
+		   our class rule on specificity, so this writes inline, which beats both.
+		   If the button cannot be found the block is left exactly as the game
+		   placed it - a misaligned panel is better than one flung off screen. */
+		let rmButton = null;
+		const findRmButton = () => {
+			if (rmButton && rmButton.isConnected) return rmButton;
+			rmButton = null;
+			parent.$('#toprightcorner *').each((i, el) => {
+				if (rmButton || el.children.length) return;
+				if (/^\s*R&M\s*$/.test(el.textContent || '')) rmButton = el;
+			});
+			return rmButton;
+		};
+
+		const alignPartyFrames = (partyFrame, count) => {
+			const rm = findRmButton();
+			if (!rm || !count) return;
+			const rmLeft = rm.getBoundingClientRect().left;
+			if (!isFinite(rmLeft) || rmLeft <= 0) return;
+
+			const cells = partyFrame.children();
+			let pitch = 82;
+			if (cells.length >= 2) {
+				const a = cells[0].getBoundingClientRect(), b = cells[1].getBoundingClientRect();
+				if (b.left > a.left) pitch = b.left - a.left;
+			} else if (cells.length === 1) {
+				pitch = cells[0].getBoundingClientRect().width + 4;
+			}
+
+			const width = Math.ceil(pitch * count);
+			if (partyFrame.data('alignedTo') === rmLeft && partyFrame.data('alignedW') === width) return;
+			partyFrame.css({ left: Math.round(rmLeft) + 'px', right: 'auto', width: width + 'px' });
+			partyFrame.data('alignedTo', rmLeft).data('alignedW', width);
+		};
+
 		setInterval(() => {
 			const partyFrame = parent.$('#newparty').addClass('party-container');
 			if (!partyFrame.length) return;
 
 			const members = Object.keys(parent.party);
+			alignPartyFrames(partyFrame, members.length);
 			partyFrame.children().each((x, el) => {
 				const name = members[x];
 				let info = get(name + '_newparty_info');
@@ -3486,11 +3546,18 @@ if (parent.$) {
 				const partyData = parent.party[name];
 				let html = `<div style="width:${FRAME_WIDTH}px;height:20px;margin-top:3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${info.name}</div>`;
 
+				const xp = (info && info.name !== undefined && info.xp !== undefined && info.level !== undefined)
+					? computeXpRateAndEta(info.name, info)
+					: null;
+
 				for (const key of DISPLAY_BARS) {
 					const cfg = barConfigs[key];
-					const { val, width } = cfg.calc(info, partyData);
+					const { val, width } = cfg.calc(info, partyData, xp);
 					if (val !== undefined && val !== '??') {
-						html += barHTML(cfg.label || key.toUpperCase(), val, width, cfg.color);
+						/* label may be deliberately empty - only fall back to the key
+						   when the config never declared one. */
+						const label = cfg.label === undefined ? key.toUpperCase() : cfg.label;
+						html += barHTML(label, val, width, cfg.color, cfg.fontSize);
 					}
 				}
 
