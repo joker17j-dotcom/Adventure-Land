@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v45 (party frames: v44 aligned them with getBoundingClientRect, which was wrong twice over - the game UI is scaled, measured 0.7502 here, so rects are device pixels while left/width are CSS pixels, and rect.left is viewport-relative while left is offsetParent-relative. R&M's rect.left of 901 became left:901px when the true offset inside #toprightcorner is 604, so the block sat 297 CSS px right of the anchor and left the viewport entirely at full-screen widths. The width was short by the same scale factor - 327 CSS px for four 104px cells - so the fourth member wrapped to a second row. Alignment is now measured by accumulating offsetLeft, which is already CSS px and already offsetParent-relative, and the row is sized with max-content plus nowrap so no arithmetic can wrap it. A second pass removes the first cell's inset so the leading frame is flush with R&M's left edge.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v46 (party frames: the merchant no longer gets a frame - excluded by class rather than by name, so it survives a rename and cannot hide a different character with the same name, with the visible count passed to the aligner so the row is not sized for a cell that is not drawn. The xp rate and time-to-next rows drop back to the 17px of the HP/MP/XP bars they sit under. Note the fit is now tight rather than comfortable: "22.9M xp/hr" measures 106 CSS px against a 104 px cell, so it bleeds about a pixel each side, and a wider value such as "123.4M xp/hr" would bleed more. FRAME_WIDTH is the dial if that becomes visible.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3460,14 +3460,14 @@ if (parent.$) {
 			   calling it twice a tick would be wasteful and could skew the window;
 			   the render loop computes it once and passes it in as `xp`. */
 			xprate: {
-				color: 'purple', label: '', fontSize: 11,
+				color: 'purple', label: '',
 				calc: (i, partyData, xp) => {
 					if (!xp) return { val: '??', width: 0 };
 					return { val: xp.rateStr, width: 0 };
 				}
 			},
 			xpeta: {
-				color: 'purple', label: '', fontSize: 11,
+				color: 'purple', label: '',
 				calc: (i, partyData, xp) => {
 					if (!xp) return { val: '??', width: 0 };
 					return { val: `next ${xp.etaStr}`, width: 0 };
@@ -3606,10 +3606,20 @@ if (parent.$) {
 			const partyFrame = parent.$('#newparty').addClass('party-container');
 			if (!partyFrame.length) return;
 
+			/* The merchant gets no frame. It is excluded by CLASS rather than by
+			   name, so it keeps working if the merchant is renamed or replaced,
+			   and it does not quietly hide a second character who happens to
+			   share the name. The game builds one cell per party member in
+			   member order, so the cell is hidden in place and the count passed
+			   to alignPartyFrames is the count of VISIBLE cells - otherwise the
+			   row would be sized for a frame that is not drawn. */
 			const members = Object.keys(parent.party);
-			alignPartyFrames(partyFrame, members.length);
+			const frameHidden = (name) => ((parent.party[name] || {}).type === 'merchant');
+			alignPartyFrames(partyFrame, members.filter((n) => !frameHidden(n)).length);
 			partyFrame.children().each((x, el) => {
 				const name = members[x];
+				parent.$(el).toggle(!frameHidden(name));
+				if (frameHidden(name)) return;
 				let info = get(name + '_newparty_info');
 
 				if (!info || Date.now() - info.lastSeen > 1000) {
