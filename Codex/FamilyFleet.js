@@ -294,11 +294,21 @@ const CONFIG = {
 		   because an upgrade spends gold on a roll whose failure cost this
 		   repo has not measured - see the note above upgradePass. */
 		upgrade: true,
-		/* And never past this, whatever the plan asks. Tier 3 wants firebow@10
-		   and pants@10; the chance tables put level 10 at about 2%, which is
-		   fifty scrolls for one success and a long run of failures to find out
-		   what a failure costs. Raised deliberately, once that is known. */
-		upgradeMaxLevel: 7,
+		/* And never past this, whatever the plan asks.
+
+		   A failed upgrade DESTROYS the item, so the cost of a target level is
+		   not scrolls, it is items: about 1 per copy up to +3, 2.6 at +5, 6.4
+		   at +6 and 26 at +7 for an ordinary item. 6 is the plan's own tier-1
+		   target and the last level that costs single figures. Tier 3 asks for
+		   10, which is several hundred items - that tier is a compound and
+		   drop project, not an upgrade one. */
+		upgradeMaxLevel: 6,
+		/* And a floor on the odds themselves, which the level cap cannot
+		   express: a grade-2 item at +6 is a 32% roll where a grade-0 one is
+		   40%, and the same cap is reckless for the first and cautious for the
+		   second. 0.35 lets an ordinary item reach its tier-1 target and stops
+		   a high-grade one a level short of losing itself. */
+		minUpgradeChance: 0.35,
 		// Ponty is checked before each hop. A gear-plan item is worth buying
 		// only if we can pay for it AND carry it AND do not already hold
 		// enough - which is why the bank contents have to survive the hop.
@@ -643,10 +653,13 @@ function normalisePonty(data) {
 		: (data && Array.isArray(data.items) ? data.items : null);
 	if (!list) return null;
 
-	/* One-shot dump of the real payload shape. The price is arriving null in
-	   practice, which means the field is not called "price" on this version of
-	   the game (or is not sent at all and the client computes it). Rather than
-	   guess, print what actually came back and map it for certain. */
+	/* Still dumps the payload shape, for a different reason than it used to.
+
+	   It was here to find the price field. THERE ISN'T ONE - settled during
+	   the standalone ALData work: Ponty's socket payload carries no price at
+	   all and the client computes what it paints on screen. So the dump is now
+	   for the fields that DO matter and are not confirmed - rid, q, p - and
+	   for which pricing function this build exposes. */
 	if (CONFIG.scout.debugPonty && list.length) {
 		log('Ponty raw item keys: ' + Object.keys(list[0] || {}).join(', '), '#E9C46A');
 		const fns = probePricingFns();
@@ -654,16 +667,14 @@ function normalisePonty(data) {
 		try { console.log('[scout] Ponty raw sample:', list[0], '\npricing fns:', fns); } catch (e) { }
 	}
 
-	/* Probe the plausible spellings instead of only "price". Anything
-	   non-numeric stays null - a wrong price is far worse than no price,
-	   because the spread tables would quote it as real profit. */
-	const priceOf = (it) => {
-		for (const k of ['price', 'cost', 'g', 'value', 'gold']) {
-			const v = it[k];
-			if (typeof v === 'number' && isFinite(v)) return v;
-		}
-		return gameItemValue(it);          // fall back to the client's own maths
-	};
+	/* ALWAYS DERIVED. The probe over ['price','cost','g','value','gold'] that
+	   used to be here was worse than useless once the payload was known to
+	   carry no price: `g` is a perfectly plausible key for an item's BASE
+	   value, and taking it as the asking price would have under-quoted every
+	   Ponty listing by 20% - Ponty charges g x buy_to_sell x secondhands_mult,
+	   which is 1.2x base. Silently, and in the direction that looks like a
+	   bargain. */
+	const priceOf = (it) => pontyPrice(it);
 
 	const out = [];
 	for (const it of list) {
@@ -734,6 +745,33 @@ function gameItemValue(it) {
 		} catch (e) { }
 	}
 	return null;
+}
+
+/* What Ponty charges, with the exact answer preferred and a proven fallback.
+
+   For a LEVEL 0 item the price is derivable and does not need the page at all:
+   base value x buy_to_sell x secondhands_mult, which is 1.2x base. Verified
+   four ways - throwingstars 72,000 -> 86,400; snowflakes 92,000 -> 110,400;
+   mcape 480,000 -> 576,000; ringsj 24,000 -> 28,800 - and matching both the
+   in-game display and Ponty's own dialogue.
+
+   For a LEVELLED item it is not derivable from base value: Rugged Pants +1 is
+   1.43x base, Rugged Helmet +2 is 3.08x, and Stinger +4 only 2.21x. A +4
+   costing less than a +2 rules out any function of level alone. Only the
+   client's own routine gets that right, so a levelled item stays unpriced when
+   that routine cannot be found - unknown beats wrong, because a wrong price
+   here is gold spent on a number nobody chose. */
+function pontyPrice(it) {
+	const fromGame = gameItemValue(it);
+	if (fromGame !== null) return fromGame;
+	if ((it.level || 0) > 0) return null;
+
+	const g = (parent && parent.G && parent.G.items
+		&& parent.G.items[it.name] && parent.G.items[it.name].g);
+	const m = (parent && parent.G && parent.G.multipliers) || {};
+	if (typeof g !== 'number' || !isFinite(g)) return null;
+	if (typeof m.buy_to_sell !== 'number' || typeof m.secondhands_mult !== 'number') return null;
+	return Math.round(g * m.buy_to_sell * m.secondhands_mult);
 }
 
 /* One-shot listing of anything in the page that looks like a pricing helper, so
@@ -1917,13 +1955,87 @@ function shouldSell(item) {
    to "the cheapest scroll that can carry this item's grade", which is what
    compoundScrollFor already does for compounds.
 
-   OPEN QUESTION, and the reason for upgradeMaxLevel below: what a failed
-   upgrade costs. The item is at best knocked back and at worst destroyed, and
-   this repo has no measurement either way - Merchant.js's tables give the
-   chance of success and say nothing about the consequence of failure. Until
-   that is measured, this only ever pushes an item toward a level the plan
-   actually asks for, and never past it. */
+   A FAILED UPGRADE DESTROYS THE ITEM. Confirmed by the operator, and it is
+   the fact everything below is shaped around - it makes an upgrade a purchase
+   of a lottery ticket with the item as the stake, not a retryable step.
+
+   What that costs, from the chance tables. Failure destroys the item AND all
+   its progress, so producing one item at level N consumes, on average,
+   1 / (p1 x p2 x ... x pN) fresh items. For an ordinary grade-0 item:
+
+     +1  1.0 items      +4  1.5 items      +7   26 items
+     +2  1.0            +5  2.6            +8   ~170
+     +3  1.1            +6  6.4
+
+   Those are conservative: the tables here carry no grace, the game's pity
+   term, which only ever helps. But the shape is the point - it is flat to +3,
+   bends at +5 and goes vertical after +6. The plan's tier-1 targets are level
+   6 and its tier-3 targets are level 10; tier 3 by upgrading is not a project
+   this account can afford, and upgradeMaxLevel says so rather than finding
+   out one destroyed firebow at a time.
+
+   TWO GUARDS, because a level cap alone is not enough:
+
+     - minUpgradeChance, which reads the odds for THIS item. A higher-grade
+       item has worse odds at every level, so the cap that is right for a pair
+       of pants is reckless for a quiver. The chance guard stops those earlier
+       than any fixed level could.
+     - nothing that currently satisfies a plan tier is ever staked, unless the
+       account holds more than it needs. An item doing a job is not raw
+       material, and the account holding three of something is the rule the
+       whole gear plan exists to serve. */
 const MAX_SCROLL_GRADE = 2;          // scroll3 is Crun's, on level2, out of reach
+
+/* Base success odds by item grade and TARGET level, lifted from Merchant.js.
+
+   No grace term. Grace is the game's pity counter and only ever raises these,
+   so every number here is a floor - which is the right direction for a guard
+   that decides whether to stake an item. */
+const UPGRADE_ODDS = {
+	0: { 1: .9999999, 2: .98, 3: .95, 4: .7, 5: .6, 6: .4, 7: .25, 8: .15, 9: .07, 10: .024, 11: .14, 12: .11 },
+	1: { 1: .99998, 2: .97, 3: .94, 4: .68, 5: .58, 6: .38, 7: .24, 8: .14, 9: .066, 10: .018, 11: .13, 12: .1 },
+	2: { 1: .97, 2: .94, 3: .92, 4: .64, 5: .52, 6: .32, 7: .232, 8: .13, 9: .062, 10: .015, 11: .12, 12: .09 },
+};
+
+function itemGrade(name) {
+	try { return item_grade({ name, level: 0 }) || 0; } catch (e) { return 0; }
+}
+
+/* The odds of the NEXT level landing. Null when the tables say nothing, which
+   is treated as "do not stake it" rather than as "probably fine". */
+function upgradeChance(item) {
+	const row = UPGRADE_ODDS[Math.max(0, Math.min(2, itemGrade(item.name)))];
+	const p = row && row[itemLevel(item) + 1];
+	return (typeof p === 'number') ? p : null;
+}
+
+/* Is this item currently doing a job? An item that satisfies a plan tier in
+   any of its slots is gear, not material - staking it is spending something
+   the account already earned. */
+function satisfiesATier(item) {
+	const entry = PLAN_INDEX.get(item.name);
+	if (!entry) return false;
+	for (const slot of entry.slots) if (planTierOf(item, slot) >= 0) return true;
+	return false;
+}
+
+/* May this item go under a scroll at all? Returns a reason when not, so the
+   log says which guard stopped it rather than just going quiet. */
+function upgradeRefusal(item) {
+	const ceiling = planCeiling(item.name);
+	if (ceiling === null) return 'not an upgrade item on the plan';
+	const level = itemLevel(item);
+	if (level >= Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel)) return 'at its cap';
+	const p = upgradeChance(item);
+	if (p === null) return 'no odds for that level in the tables';
+	if (p < CONFIG.merchant.minUpgradeChance) {
+		return `${Math.round(p * 100)}% is below the ${Math.round(CONFIG.merchant.minUpgradeChance * 100)}% floor`;
+	}
+	if (satisfiesATier(item) && copiesHeldRemote(item.name) <= CONFIG.gear.copiesWanted) {
+		return 'it satisfies a tier and the account has no spare of it';
+	}
+	return null;
+}
 
 function upgradeScrollFor(item) {
 	let grade = 0;
@@ -1957,11 +2069,8 @@ function planCeiling(name) {
 function nextUpgradeTarget() {
 	let best = null;
 	for (const it of inventoryItems()) {
-		const ceiling = planCeiling(it.name);
-		if (ceiling === null) continue;
-		const level = itemLevel(it);
-		if (level >= Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel)) continue;
-		if (!best || level < itemLevel(best)) best = it;
+		if (upgradeRefusal(it)) continue;
+		if (!best || itemLevel(it) < itemLevel(best)) best = it;
 	}
 	return best;
 }
@@ -1977,12 +2086,19 @@ async function tryUpgrade(item) {
 		scrollIdx = findInventory(scroll);
 		if (scrollIdx < 0) return false;
 	}
+	const p = upgradeChance(item);
 	try {
 		await upgrade(item.idx, scrollIdx);
-		log(`upgraded ${item.name}+${itemLevel(item)} with ${scroll}`, '#7FD98A');
+		// The odds go in the log because the stake is the item. A run of these
+		// with no successes is the difference between bad luck and a guard
+		// that is set too low, and neither is visible without the number.
+		log(`upgraded ${item.name}+${itemLevel(item)} with ${scroll} `
+			+ `(${Math.round(p * 100)}% - the item is the stake)`, '#7FD98A');
 		return true;
 	} catch (e) {
-		log(`upgrade of ${item.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+		// A refusal from the game, not a failed roll - a failed roll resolves
+		// as a successful call that comes back with the item gone.
+		log(`upgrade of ${item.name} refused: ${e && e.reason ? e.reason : e}`, 'orange');
 		return false;
 	}
 }
@@ -2249,10 +2365,9 @@ async function bankWithdrawUpgrades() {
    guards it twice: never a tier-3 name at any level, and never an on-plan item
    the bank still wants.
 
-   NOTE, untested: Gabriel is 129 units from the town spot and `buy` from him
-   has been verified working at that distance. `sell` has not. If the first
-   live run refuses here, the range for selling is the thing to check before
-   anything else. */
+   Gabriel is 129 units from the town spot, and both `buy` and `sell` are
+   confirmed working at that distance - so this sells without walking, like
+   everything else this character does from the spot. */
 async function sellSurplus() {
 	const would = inventoryItems().filter(shouldSell);
 	if (!would.length) return 0;

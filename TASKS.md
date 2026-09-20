@@ -320,7 +320,7 @@ hop an hour.
 
 ## 5. FamilyFleet: what it does not know yet
 
-**Status:** the script is complete and tested (399 assertions) but has never
+**Status:** the script is complete and tested (424 assertions) but has never
 been run against the live game. These are the questions the tests cannot
 answer, in the order they will bite.
 
@@ -336,44 +336,67 @@ This matters most for `sellSurplus`, whose rule is "anything the plan does not
 want". The plan is a **ranger's**, so on a mixed account that rule covers
 another class's gear. A dry run prints the list before any of it is real.
 
-### 5a. What a failed upgrade costs
+### 5a. ~~What a failed upgrade costs~~ — ANSWERED
 
-`CONFIG.merchant.upgradeMaxLevel` is **7**, and the plan asks for 10.
+**A failed upgrade destroys the item.** Confirmed by the operator.
 
-`Merchant.js` carries the chance tables (`UPGRADES`, `COMPOUNDS`, the grace
-maths) and they give the probability of **success**. Nothing in this repo says
-what happens on failure — whether the item drops a level, drops to 0, or is
-destroyed. The tables put level 10 at about 2%, so a run to the plan's target
-is roughly fifty scrolls and a long sequence of failures, which is an expensive
-way to find out.
+That reshaped the upgrade pass rather than just setting a number. Failure takes
+the item *and its progress*, so producing one item at level N consumes, on
+average, `1 / (p1 × … × pN)` fresh items. For an ordinary grade-0 item:
 
-Measure it on something worthless: take a junk item to +1, then upgrade it
-repeatedly with `scroll0` and record what the bag holds after each failure.
-Raise the cap once the answer is known.
+| Target | Items consumed |
+|--------|----------------|
+| +1     | 1.0 |
+| +2     | 1.0 |
+| +3     | 1.1 |
+| +4     | 1.5 |
+| +5     | 2.6 |
+| +6     | 6.4 |
+| +7     | 26 |
+| +8     | ~170 |
 
-### 5b. Ponty's price field
+Conservative — the tables carry no grace, which only helps. The shape is the
+point: flat to +3, bending at +5, vertical after +6.
 
-`normalisePonty` probes `price`, `cost`, `g`, `value`, `gold` and falls back to
-the client's own valuation, and in practice the price has been arriving
-**null**. `pontyBuy` therefore skips any listing it cannot price, and logs how
-many it skipped — so a wrong field name presents as "12 listings skipped for
-want of a price" rather than as Ponty having nothing worth buying.
+So `upgradeMaxLevel` is **6**, the plan's own tier-1 target and the last level
+costing single figures. **Tier 3 wants level 10 — several hundred items. That
+tier is a compound-and-drop project, not an upgrade one**, and the plan should
+probably say so.
 
-`CONFIG.scout.debugPonty` is on and dumps the real key list on the first scan
-of each pass. One live rotation answers this.
+Two guards, because a level cap alone is not enough:
 
-Until it is answered the merchant reads Ponty and buys nothing from him.
+- `minUpgradeChance` (0.35) reads the odds for *this* item. A grade-2 item at
+  +6 is a 32% roll where a grade-0 one is 40%; the same cap is reckless for the
+  first and cautious for the second.
+- Nothing that currently satisfies a plan tier is staked unless the account
+  holds more copies than it needs. An item doing a job is not raw material.
 
-### 5c. `buy_from_pont`, and whether selling works at 129 units
+### 5b. ~~Ponty's price field~~ — ANSWERED, and it was a live bug
 
-Two API calls this file makes that nobody has seen work from the town spot:
+**There is no price field.** Ponty's socket payload carries none; the client
+computes what it paints. Established during the standalone ALData work and
+already written down in `Codex/_al_template.html`.
 
-- `buy_from_pont(item)` — guarded on `typeof`, so an absent function logs once
-  and the merchant carries on reading rather than throwing every rotation.
-- `sell(idx, q)` at Gabriel, 129.4 away. **`buy` from him is verified at that
-  distance; `sell` is not.** If the sell pass refuses live, range is the first
-  thing to check, and the fix is a short walk in `sellSurplus` rather than
-  anything structural.
+`normalisePonty` was probing `['price','cost','g','value','gold']` for one.
+`g` is a perfectly plausible key for an item's **base** value — and Ponty
+charges `g × buy_to_sell × secondhands_mult`, which is 1.2× base. A payload
+carrying `g` would have under-quoted every listing by 20%, silently, in the
+direction that looks like a bargain. The probe is gone; the price is always
+derived.
+
+Level 0 needs no page function at all (`g × 0.6 × 2`, verified four ways).
+Levelled items still need the client's own routine, because level alone does
+not determine the multiplier — Rugged Pants +1 is 1.43× base, Rugged Helmet +2
+is 3.08×, Stinger +4 only 2.21×. Those stay unpriced when the routine cannot be
+found, which `pontyBuy` reports as a count of skipped listings.
+
+### 5c. ~~Does `sell` work at 129 units?~~ — ANSWERED
+
+**Yes.** Both `buy` and `sell` work at Gabriel's 129.4 from the town spot, so
+`sellSurplus` sells without walking, like everything else this character does.
+
+`buy_from_pont` is still guarded on `typeof` — absent, it logs once and the
+merchant carries on reading rather than throwing every rotation.
 
 ### 5e. What `character.home` actually looks like
 
