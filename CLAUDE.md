@@ -15,6 +15,7 @@ conversation may not.
 - **Work on `main` only.** No feature branches for this work; commit and push
   to `main` on `joker17j-dotcom/Adventure-Land`.
 - **Do not open pull requests** unless explicitly asked.
+- **Claude pushes through Chrome.** A push from the container fails: its git proxy will not inject credentials for this repo, so commits are made in the GitHub web editor.
 
 ## Handing code to the other chat
 
