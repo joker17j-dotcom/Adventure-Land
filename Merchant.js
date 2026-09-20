@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -278,10 +278,30 @@ const CONFIG = {
 		// starting. It never interrupts a trade already in flight: once gold is
 		// spent, the item reaches a terminal state (sold or banked) first.
 		jobPreemptMs: 10 * 60 * 1000,
-		// A buy order older than this is treated as gone rather than as an offer.
-		// Matches the watchlist's SPREAD_MAX_AGE_MS: the listing is still worth
-		// keeping and showing, it is just not worth travelling to.
-		sellMaxAgeSec: 15 * 60,
+		/* A listing older than this is treated as gone rather than as an offer.
+		   Gates BOTH legs in arbProbeFindFlips, despite the name.
+
+		   Tightened from 15 minutes to 7. The old value matched the watchlist's
+		   SPREAD_MAX_AGE_MS, which is the right window for something you are
+		   looking at - a stale row is still worth showing. It is the wrong window
+		   for something you travel to and spend gold on.
+
+		   7 minutes is roughly three sweeps at the measured rate: Merchant.js's
+		   scout swept 11 shards in about 2.4 minutes, so a row from our own
+		   bridge is at most a sweep old when posted and this leaves margin for
+		   two more before it is disbelieved. At 15 minutes a buy order could be
+		   six sweeps stale and still be picked, and the case that costs real gold
+		   - a fresh seller paired with a dead buyer - is exactly the one a wide
+		   window lets through.
+
+		   CAVEAT worth knowing before tightening further: the primary source is
+		   ALData, not our bridge, and ALData's own refresh cadence has never been
+		   measured. If its rows are typically older than this, the filter starts
+		   rejecting the market rather than the stale part of it. The flip finder
+		   now reports how many listings it dropped as stale and how fresh the
+		   freshest rejected one was, so that shows up as a number rather than as
+		   an unexplained absence of opportunities. */
+		sellMaxAgeSec: 7 * 60,
 		// How close to get to a stand before trading. Not a measured limit - a
 		// deliberately conservative choice below two readings that disagree.
 		//
@@ -3910,16 +3930,29 @@ async function arbProbeFindFlips(opts) {
 		buys.push(Object.assign({ key: r.name + '|' + r.level + '|' + (r.p || ''), map: 'main', x: null, y: null }, r));
 	}
 
+	/* Count what freshness throws away, and how narrowly.
+
+	   Without this a tightened window is indistinguishable from a quiet market:
+	   both produce "no flips". The freshest REJECTED age is the useful half - if
+	   the best thing on the board missed by thirty seconds the window is too
+	   tight, and if it missed by an hour the window is doing its job. */
+	let staleBuys = 0, staleSells = 0;
+	let nearestMiss = null;
+	const missed = function (age) {
+		if (age == null) return;
+		if (nearestMiss == null || age < nearestMiss) nearestMiss = age;
+	};
+
 	const cheapest = new Map();
 	for (const b of buys) {
-		if (!fresh(b.ageSec)) continue;
+		if (!fresh(b.ageSec)) { staleBuys++; missed(b.ageSec); continue; }
 		const cur = cheapest.get(b.key);
 		if (!cur || b.price < cur.price) cheapest.set(b.key, b);
 	}
 
 	const out = [];
 	for (const sell of sells) {
-		if (!fresh(sell.ageSec)) continue;
+		if (!fresh(sell.ageSec)) { staleSells++; missed(sell.ageSec); continue; }
 		const buy = cheapest.get(sell.key);
 		if (!buy) continue;
 		const unitNet = sell.price * (1 - tax) - buy.price;
@@ -3943,12 +3976,19 @@ async function arbProbeFindFlips(opts) {
 	}
 	out.sort(function (a, b) { return b.profit - a.profit; });
 
+	const staleNote = (staleBuys || staleSells)
+		? ' - ' + staleBuys + '/' + buys.length + ' buy-side and ' + staleSells + '/' + sells.length
+		  + ' sell-side dropped as stale'
+		  + (nearestMiss == null ? '' : ', freshest rejected ' + Math.round(nearestMiss / 60 * 10) / 10 + ' min')
+		: '';
+
 	if (!out.length) {
 		pLog('no flip clears ' + minProfit + ' with both sides under ' + Math.round(maxAge / 60)
 			+ ' min old (tax ' + (tax * 100).toFixed(1) + '%, ' + buys.length + ' buy-side, '
-			+ sells.length + ' sell-side listings considered)', 'orange');
+			+ sells.length + ' sell-side listings considered)' + staleNote, 'orange');
 		return pShow([]);
 	}
+	if (staleNote) pLog('freshness' + staleNote);
 	const t = out[0];
 	const unaffordable = out.filter(function (r) { return !r.affordable; }).length;
 	pLog(out.length + ' flip(s) clearing ' + minProfit + '. Best: ' + t.item + ' x' + t.qty
