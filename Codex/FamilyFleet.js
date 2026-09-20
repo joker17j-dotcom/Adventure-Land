@@ -260,6 +260,21 @@ const CONFIG = {
 		goldFloor: 10000000,
 		leaveInBank: 1000000,
 		kissEvent: true,
+		/* How close the featured player has to be. The live merchant uses 80
+		   for the same skill; this is the same number, named here because the
+		   whole kiss behaviour on this character turns on it. */
+		kissRange: 80,
+		/* Walk to the featured player, the way the event expects?
+
+		   No, and this is a decision rather than an oversight. It contradicts
+		   moveOnlyForBank directly - the event wants you to travel, and the
+		   rule for this character is that a bank run is the only thing that
+		   moves it. The movement rule wins and the kiss becomes opportunistic:
+		   taken when the featured player is within reach of the town spot,
+		   skipped with a line in the log when they are not.
+
+		   Turn this on to get the live merchant's behaviour back. */
+		kissMayWalk: false,
 		// Ponty is checked before each hop. A gear-plan item is worth buying
 		// only if we can pay for it AND carry it AND do not already hold
 		// enough - which is why the bank contents have to survive the hop.
@@ -2043,3 +2058,422 @@ async function bankRun() {
 	if (bagFull()) stuckFull();
 	else fleetState.stuck = false;
 }
+
+// ============================================================================
+// THE MERCHANT
+// ============================================================================
+/* One character, three jobs, and a standing rule that shapes all of them: it
+   does not move.
+
+   The town spot reaches Lucas, Cue, Gabriel and Ponty, and the whole stand
+   cluster is inside the vision box from there - so scanning, shopping,
+   upgrading and selling are all things this character does standing still.
+   Position survives change_server, so it arrives on the spot after every hop
+   with no walk at all. The bank run is the only sanctioned exception.
+
+   It does not open a stand. Nothing here calls open_stand. */
+
+/* Are we carrying hop sickness right now?
+
+   Worth a named helper rather than an inline check, because the condition is
+   easy to reason about wrongly. The live rule - node/server_functions.js
+   declares serverhop_logic twice and the SECOND declaration wins, so the
+   first, with its hop counting and tapering tiers, is dead code - is:
+
+     arriving anywhere that is not player.p.home, at level >= 60, off PVP
+     -> the flat condition from G: luck -80, gold -80, xp -80, output -20,
+        for 12 minutes of online play
+
+   Returning to p.home clears it immediately, because the same function deletes
+   the condition before deciding whether to re-add it. Below level 60 it is
+   never applied at all, which is why this reads the live flag rather than
+   trying to predict it: the level gate, the home shard and the clock are all
+   the server's business, and character.s is where it reports the answer. */
+function hopSick() {
+	try { return !!(character.s && character.s.hopsickness); } catch (e) { return false; }
+}
+
+// ------------------------------------------------------------ the anniversary
+/* The featured player, from game state rather than chat.
+
+   parent.S.anniversary is the primary source and the reliable one: live
+   testing on 2026-09-17 had the chat announcement fail to fire for an entire
+   round while S.anniversary.target stayed correct throughout. The chat parse
+   is kept in the live merchant as a second source; it is not carried here,
+   because this character has no chat listener and adding one to a script that
+   reloads on every hop buys a less reliable source at the cost of a listener
+   to get wrong. */
+function featuredPlayer() {
+	try {
+		const a = parent && parent.S && parent.S.anniversary;
+		if (a && a.live && a.target) return a.target;
+	} catch (e) { }
+	return null;
+}
+
+/* Where the featured player is, per game state. get_player only resolves
+   players already nearby, so this is the only source that answers before we
+   are next to them - which is exactly when it is needed. */
+function featuredLocation() {
+	try {
+		const a = parent && parent.S && parent.S.anniversary;
+		if (a && a.live && a.map) return { map: a.map, x: a.x, y: a.y };
+	} catch (e) { }
+	return null;
+}
+
+function featuredDistance(name) {
+	try {
+		const p = get_player(name);
+		if (!p) return null;
+		return distance(character, p);
+	} catch (e) { return null; }
+}
+
+/* Kiss the featured player, but only if they came to us.
+
+   THIS IS NARROWER THAN THE EVENT ALLOWS, and deliberately. The event expects
+   you to travel to the featured player; the standing rule for this character
+   is that a bank run is the only thing that moves it. Those two cannot both
+   hold, so the movement rule wins and the kiss is opportunistic: if the
+   featured player is standing within range of the town spot, take it - the
+   whole stand cluster is in town and so is the kiss target often enough for
+   this to be worth having. If they are not, note it once and carry on.
+
+   CONFIG.merchant.kissMayWalk is the switch. Turning it on makes the kiss
+   behave like the live merchant's - walk the round, take the reward - at the
+   cost of the character leaving the spot, which is the thing the rest of this
+   file is built around. It is off, and it is a decision rather than an
+   oversight. */
+const kissState = { attemptedFor: null, skippedFor: null, unreachableFor: null };
+
+async function kissRound() {
+	if (!CONFIG.merchant.kissEvent) return false;
+	const name = featuredPlayer();
+	if (!name) return false;
+
+	// We cannot kiss ourselves, and get_player does not resolve our own name -
+	// so an unguarded attempt walks to where we already are and spins there for
+	// the whole round. Others come to us; there is nothing to do.
+	if (name === character.name) {
+		if (kissState.skippedFor !== name) {
+			kissState.skippedFor = name;
+			log('anniversary: we are the featured player - staying put for others to reach us', '#FF69B4');
+		}
+		return false;
+	}
+	if (kissState.attemptedFor === name) return false;
+
+	/* Hop sickness blocks the kiss REWARD outright. That is from G's own
+	   explanation of the condition and it is not in the modifier list, so
+	   nothing about luck/gold/xp/output hints at it - a sick merchant would
+	   spend the round and collect nothing. */
+	if (CONFIG.hop.skipKissWhileSick && hopSick()) {
+		if (kissState.skippedFor !== name) {
+			kissState.skippedFor = name;
+			log(`anniversary: skipping ${name} - hop sick, the reward would be blocked`, 'orange');
+		}
+		return false;
+	}
+
+	const d = featuredDistance(name);
+	if (d === null || d > CONFIG.merchant.kissRange) {
+		if (!CONFIG.merchant.kissMayWalk) {
+			if (kissState.unreachableFor !== name) {
+				kissState.unreachableFor = name;
+				log(`anniversary: ${name} is ${d === null ? 'not in sight' : Math.round(d) + ' away'} `
+					+ `- not walking to them, this character only leaves the spot for the bank`, '#8b98ab');
+			}
+			return false;
+		}
+		// The switch is on: go to them, using the location game state carries
+		// rather than waiting for get_player to resolve - it only answers for
+		// players already nearby, which is the situation we are not in.
+		const loc = featuredLocation();
+		if (!loc || !(await goTo(loc))) return false;
+		if ((featuredDistance(name) || Infinity) > CONFIG.merchant.kissRange) return false;
+	}
+
+	try {
+		await use_skill('ikissyou', get_player(name));
+		kissState.attemptedFor = name;         // the event rewards one visit per round
+		log(`anniversary: kissed ${name}`, '#FF69B4');
+		return true;
+	} catch (e) {
+		log(`anniversary: kiss on ${name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+		return false;
+	}
+}
+
+// -------------------------------------------------------------------- the hop
+/* Where to go next.
+
+   Same shape as MerchantScout's: the bridge deals each roamer a beat of its
+   own so two roamers never walk the same shard, and a shard a parked scout
+   already holds is a shard whose data is arriving continuously - the roamer's
+   time is better spent on the blind spots. The three rangers on this account
+   are parked scouts, so on a healthy day most of the list is already covered
+   and this merchant is working the remainder. */
+function nextShard(reply) {
+	const cur = shardKey(currentShard());
+	const own = serverList().map(shardKey);
+	const toServer = (key) => serverList().find((s) => shardKey(s) === key) || null;
+
+	const parked = new Set(Object.values((reply && reply.parked) || {}).filter(Boolean));
+	const beat = (reply && Array.isArray(reply.beat)) ? reply.beat : [];
+	if (beat.length) {
+		const mine = beat.filter((k) => k !== cur && own.includes(k));
+		if (mine.length) return toServer(mine[0]);
+		// Our beat is one shard and we are on it. Staying is correct: it is
+		// ours, and nobody else is coming.
+		if (beat.length === 1 && beat[0] === cur) return null;
+	}
+
+	const rotation = (reply && Array.isArray(reply.rotation)) ? reply.rotation : [];
+	if (rotation.length) {
+		// A shard the bridge has never heard of is staler than any timestamp,
+		// so those come first; the rotation itself is already ordered
+		// oldest-first, which makes its head the shard most worth visiting.
+		const known = new Set(rotation);
+		const pool = [...own.filter((k) => !known.has(k)), ...rotation]
+			.filter((k) => k !== cur && own.includes(k) && !parked.has(k));
+		if (pool.length) return toServer(pool[0]);
+	}
+
+	// No hints, or every other shard is covered by a parked scout: round-robin,
+	// so an outage never leaves the roamer sitting still. The index is stored
+	// rather than held, because change_server reloads the page and a counter
+	// that restarts at the top each hop re-walks the same few shards forever.
+	const any = own.filter((k) => k !== cur);
+	if (!any.length) return null;
+	const i = SS.get('roamIdx', 0) % any.length;
+	SS.set('roamIdx', i + 1);
+	return toServer(any[i]);
+}
+
+/* Leave. Everything that has to survive the page reload goes first. */
+async function hopTo(target) {
+	if (!target || !target.region || !target.name) return false;
+	const cur = currentShard();
+	if (shardKey(cur) === shardKey(target)) return false;
+	if (!canHop()) {
+		log('server hopping unavailable here (no change_server / X.servers) - staying put', 'orange');
+		return false;
+	}
+	const last = SS.get('lastHop', 0);
+	if (Date.now() - last < CONFIG.hop.minIntervalMs) return false;
+
+	await reportConfirmed();            // never carry findings across a hop
+	saveBuffer();                       // and if they could not be sent, keep them
+	saveBankSnapshot();                 // the bank is not readable from a shard
+
+	/* The bridge check sits AFTER the report, not before it.
+
+	   bridge.online is false until something has succeeded, so checking first
+	   would strand a scout that started before the bridge did - permanently,
+	   since nothing else ever tries. The report attempt is what establishes
+	   whether the bridge is there. */
+	const may = mayHop();
+	if (!may.ok) {
+		if (!SS.get('hop_blocked', false)) {
+			SS.set('hop_blocked', true);
+			log(`holding ${shardKey(cur)} rather than rotating: ${may.reason}`, 'orange');
+		}
+		return false;
+	}
+	if (SS.get('hop_blocked', false)) {
+		SS.set('hop_blocked', false);
+		log('bridge back - resuming the rotation', '#7FD98A');
+	}
+
+	SS.set('lastHop', Date.now());
+	log(`hopping ${shardKey(cur)} -> ${shardKey(target)}`, '#E9C46A');
+	try {
+		change_server(target.region, target.name);
+		return true;
+	} catch (e) {
+		log('change_server failed: ' + e, 'red');
+		return false;
+	}
+}
+
+function hopDue() {
+	return Date.now() - SS.get('lastHop', 0) >= CONFIG.hop.minIntervalMs;
+}
+
+// ------------------------------------------------------------- the merchant's
+//                                                                 gold and bank
+/* What the bank held when we last stood in it.
+
+   character.bank is only populated inside the bank map, and this character
+   spends its life on a town spot several shards from wherever it banked last.
+   Every decision about whether to buy something - from Ponty, from Gabriel,
+   anywhere - turns on how many copies the account already holds, and asking
+   that question with no bank in sight answers "none" and buys a fourth.
+
+   So the last reading is stored, with the time it was taken, and it survives
+   the page reload that change_server performs. It is a snapshot and is treated
+   as one: it is used for "do we already have enough", never for "take this
+   specific item out". */
+function saveBankSnapshot() {
+	if (!character.bank) return false;
+	const items = bankItems().map((it) => ({ name: it.name, level: it.level || 0, q: it.q || 1 }));
+	SS.set('bank_snapshot', { at: Date.now(), items });
+	return true;
+}
+
+function bankSnapshot() {
+	const s = SS.get('bank_snapshot', null);
+	return s && Array.isArray(s.items) ? s : null;
+}
+
+/* Copies the account holds, counted against the snapshot when the real bank is
+   out of reach. Same rule as copiesHeld - worn and banked, never in-transit -
+   but usable from a town spot three shards away. */
+function copiesHeldRemote(name) {
+	const worn = equippedItems().filter((it) => it.name === name).length;
+	if (character.bank) return copiesHeld(name);
+	const snap = bankSnapshot();
+	if (!snap) return worn;
+	return worn + snap.items.filter((it) => it.name === name).length;
+}
+
+/* The merchant's gold rule, the mirror of the rangers'.
+
+   They deposit everything above a floor; it withdraws when it falls below one,
+   and only down to leaveInBank. Nothing is deposited: this is the character
+   that spends, and gold sitting in its bag is gold available to a Ponty
+   listing that will be gone by the next window. */
+async function merchantGold() {
+	if (character.gold >= CONFIG.merchant.goldFloor) return 0;
+	const inBank = (character.bank && character.bank.gold) || 0;
+	const available = inBank - CONFIG.merchant.leaveInBank;
+	if (available <= 0) {
+		log(`gold is low (${character.gold}) and the bank cannot help `
+			+ `(${inBank} held, ${CONFIG.merchant.leaveInBank} reserved)`, 'orange');
+		return 0;
+	}
+	const want = Math.min(available, CONFIG.merchant.goldFloor - character.gold);
+	try {
+		await bank_withdraw(want);
+		log(`drew ${want} gold from the bank`, '#7FD98A');
+		return want;
+	} catch (e) {
+		log(`bank_withdraw failed: ${e && e.reason ? e.reason : e}`, 'orange');
+		return 0;
+	}
+}
+
+/* The merchant's bank window. Shares the gear phases with the rangers - they
+   are the same operations against the same plan - and differs only in the gold
+   direction and in taking a snapshot on the way out. */
+async function merchantBankRun() {
+	await withScanLock(doScan);
+	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) {
+		log('could not reach the bank this window', 'orange');
+		return;
+	}
+	if (!character.bank) {
+		log('in the bank map but character.bank is not readable - nothing to do this window', 'orange');
+	} else {
+		await merchantGold();
+		const worn = await bankEquipFromInventory();
+		const given = await bankDepositSpares();
+		const taken = await bankWithdrawUpgrades();
+		if (worn || given || taken) {
+			log(`gear pass: equipped ${worn}, banked ${given}, withdrew ${taken}`, '#7FD98A');
+		}
+		// Last thing before leaving, so the snapshot reflects the deposits and
+		// withdrawals this window just made rather than the state it arrived in.
+		saveBankSnapshot();
+	}
+	await goTo(CONFIG.scout.townSpot);
+	await withScanLock(doScan);
+	await sellSurplus();
+}
+
+// -------------------------------------------------------------------- the tick
+/* Priority ladder, same idea as the ranger's: ordered by what cannot wait.
+
+   The bank window is the only thing that moves this character, so it is first.
+   The kiss is next because the round is five minutes and does not come back.
+   Everything else is standing on the spot reading the market. */
+async function merchantTick() {
+	if (character.rip) { try { await respawn(); } catch (e) { } return; }
+
+	if (inTown()) {
+		maybeTownScan().catch((e) => log(`town scan failed: ${e && e.message ? e.message : e}`, 'orange'));
+	}
+	if (fleetState.busy) return;
+
+	fleetState.busy = true;
+	try {
+		if (isMyBankWindow()) { await merchantBankRun(); return; }
+
+		// Back on the spot after a hop costs nothing - position survives
+		// change_server, so this is a no-op on every tick but the first after a
+		// bank run. goTo returns early when we are already there.
+		if (!atTownSpot() && character.map === CONFIG.scout.townSpot.map) {
+			await goTo(CONFIG.scout.townSpot);
+		}
+
+		if (await kissRound()) return;
+
+		const key = shardKey(currentShard());
+		if (pontyDue(key)) {
+			const items = await pontyCheck();
+			if (items) { absorbPonty(items); pontySeen(key, Date.now()); }
+		}
+		if (scanDue()) { await withScanLock(doScan); return; }
+
+		if (hopDue()) {
+			const r = await report();
+			if (r && r.reply) bridge.lastReply = r.reply;
+			const target = nextShard(bridge.lastReply);
+			if (target) await hopTo(target);
+		}
+	} catch (e) {
+		console.error('merchantTick error:', e);
+	} finally {
+		fleetState.busy = false;
+	}
+}
+
+// ============================================================================
+// STARTUP
+// ============================================================================
+/* One script, four characters, and the roster is what tells them apart. A name
+   that is not in CONFIG.characters does nothing at all rather than guessing a
+   role - an unknown character running the ranger loop would farm on someone
+   else's shard and bank on someone else's minute. */
+const TICK_MS = 1000;
+
+function fleetTick() {
+	const role = myRole();
+	if (role === 'ranger') return rangerTick();
+	if (role === 'merchant') return merchantTick();
+	return null;
+}
+
+function startFleet() {
+	const role = myRole();
+	if (!role) {
+		log(`${character.name} is not in the roster - doing nothing. `
+			+ `Add it to CONFIG.characters to give it a job.`, 'red');
+		return;
+	}
+	restoreBuffer();
+	log(`${character.name}: ${role}, bank window at :${String(myBankMinute()).padStart(2, '0')}, `
+		+ `on ${shardKey(currentShard())}`, '#55BDF0');
+	setInterval(() => {
+		try { fleetTick(); } catch (e) { console.error('fleetTick error:', e); }
+	}, TICK_MS);
+}
+
+/* Guarded, because this file is concatenated whole into its test harness.
+
+   In the game FLEET_AUTOSTART does not exist and the script starts. The
+   harness declares it false, which is the difference between running the
+   suite and starting a one-second interval that farms against a stub and
+   never lets the process exit. */
+if (typeof FLEET_AUTOSTART === 'undefined' || FLEET_AUTOSTART) startFleet();
