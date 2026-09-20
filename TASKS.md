@@ -261,3 +261,37 @@ seen. `FamilyFleet.js` adds `currentShardCount()` and uses it.
 `Merchant.js` is the more urgent of the two: it is the roamer, so it is the
 one the `bufferedCount()` bug can actually reach.
 
+---
+
+## 4. Measure a real sweep time, and justify or drop the 30-second hop floor
+
+**Status:** not started. The one number in the docs is measured, but it is
+measured on a different script from the one the fleet will run.
+
+`Merchant.js` gates hops with nothing but "settle until loaded" and a
+7-second `minPostGapMs`. That is what produced the **2.4 minute** sweep of 11
+shards in `Codex/README.md`, and it is a real measurement.
+
+`Codex/MerchantScout.js` carries `minHopIntervalMs: 30000`, enforced and
+persisted through `SS.get('lastHop')`. Eleven shards therefore cannot sweep
+faster than **5.5 minutes** on that script, before any scan, settle, post or
+page load. It has never been run, so nobody has seen the real figure.
+
+### Two things to settle
+
+1. **Is the 30-second floor needed?** It has been in the file since its first
+   commit with no stated reason, and `Merchant.js` has hopped without one for
+   the whole project with no observed problem. If it is protecting against a
+   game-side rate limit, that limit should be named; if it is caution, it is
+   currently costing more than double the sweep time, and sweep time is most
+   of the `sellMaxAgeSec` budget.
+2. **What is the real number?** Cheap to get: stamp `Date.now()` into CODE
+   storage on each arrival and log the delta when the roamer returns to the
+   shard it started on. One rotation gives a mean and the per-shard spread,
+   and the spread is the more useful half — a sweep that is 2 minutes of
+   scanning and 4 minutes of one pathological shard wants a different fix from
+   one that is evenly slow.
+
+Worth doing before `FamilyFleet.js`'s roaming merchant is built, since the
+floor is a choice that script has not made yet — its `hopTo` does not exist.
+

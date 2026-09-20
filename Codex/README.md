@@ -96,9 +96,29 @@ The scout reads the game's own live server list (`parent.X.servers`) and skips
 `PVP`. That was **11 shards** when last measured; it follows the game if that
 changes.
 
-One scout, rotating — a full sweep takes about **2.4 minutes**, so any given
-shard is accurate at the moment it is scanned and up to a sweep old afterwards.
-It never sees more than one shard at a time.
+One scout, rotating — a full sweep took about **2.4 minutes** when measured.
+Any given shard is accurate at the moment it is scanned and up to a sweep old
+afterwards. It never sees more than one shard at a time.
+
+**That figure was measured on `Merchant.js`'s scout, and does not carry over to
+`MerchantScout.js`.** The two gate their hops differently, and the difference
+is larger than the measurement:
+
+| | hop gating | sweep of 11 shards |
+|---|---|---|
+| `Merchant.js` (`mHopTo`) | none — settle until loaded, then `minPostGapMs` 7s | **2.4 min, measured** |
+| `Codex/MerchantScout.js` (`hopTo`) | `minHopIntervalMs` **30 s**, enforced and persisted | **≥ 5.5 min floor, never measured** |
+
+`MerchantScout.js` has never been run (see Fleet mode below), so its sweep time
+is arithmetic, not a result: 11 × 30 s is the floor before a single scan,
+settle, post or page load. The 30-second floor has been there since the file's
+first commit with no recorded rationale, and nothing has established that the
+game needs it — `Merchant.js` has hopped without one for the whole project.
+
+This matters because the sweep time is what the source preference below rests
+on, and it is also most of the `sellMaxAgeSec` budget. At 2.4 minutes a listing
+is a sixth of the 15-minute freshness window old when it is posted; at 5.5+ it
+is over a third, before anyone acts on it.
 
 This is why **ALData is the default source and the local bridge is second**.
 ALData covers every shard continuously; a rotating scout produces a rolling
