@@ -1,5 +1,5 @@
 // ============================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v47 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it.)
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v48 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -1912,20 +1912,21 @@ if (parent.$) {
 		   .codebuttons once anything is in there, and until then the first laid
 		   out sibling after it, which is where a code button would go. The span
 		   itself is display:contents and generates no box, so it cannot be
-		   measured directly. Re-found whenever the cached node leaves the
-		   document, since clear_buttons() empties that span wholesale. */
-		let anchorEl = null;
+		   measured directly.
+
+		   Resolved fresh every call, deliberately. Caching the result broke the
+		   handover: on a fresh page .codebuttons is empty, so the fallback picks
+		   the X button, and a cached X stays connected and laid out forever - so
+		   when kpm finally appeared the frames stayed under X instead of moving
+		   left to meet it. Observed on FatherToken at left: 327px with the kpm
+		   block sitting at 0. Two DOM reads at the render cadence is nothing
+		   next to getting that wrong. alignPartyFrames still skips the write
+		   unless the measured offset actually changed. */
 		const findAnchor = () => {
-			if (anchorEl && anchorEl.isConnected && anchorEl.offsetWidth) return anchorEl;
-			anchorEl = null;
 			const cb = parent.document.querySelector('.codebuttons');
 			if (!cb) return null;
-			for (const el of cb.children) {
-				if (el.offsetWidth) { anchorEl = el; return anchorEl; }
-			}
-			for (let el = cb.nextElementSibling; el; el = el.nextElementSibling) {
-				if (el.offsetWidth) { anchorEl = el; return anchorEl; }
-			}
+			for (const el of cb.children) if (el.offsetWidth) return el;
+			for (let el = cb.nextElementSibling; el; el = el.nextElementSibling) if (el.offsetWidth) return el;
 			return null;
 		};
 
