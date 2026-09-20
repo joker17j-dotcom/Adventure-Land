@@ -344,6 +344,30 @@ class Store:
         key = shard_key(region, name)
         t = now()
 
+        # WHEN THE STANDS WERE SEEN, not when the post arrived.
+        #
+        # These were the same thing until the scout learned to buffer. They are
+        # not the same thing after an outage: unsent findings are held, stamped
+        # with the shard they were seen on, and flushed when the bridge returns
+        # - and a measured run left an 8-shard backlog sitting in storage for an
+        # hour. Stamping those with ingest time would publish hour-old stands as
+        # seconds old, which is precisely what sellMaxAgeSec exists to prevent,
+        # and the executor would travel to them.
+        #
+        # Clamped so a skewed clock cannot buy freshness: never newer than the
+        # bridge's own now. The relay crosses a LAN for the second account, so
+        # the two clocks are not guaranteed to agree. Unparseable falls back to
+        # ingest time, which is the old behaviour and is the safe direction for
+        # a source that cannot say when it looked.
+        seen_at = t
+        raw_at = body.get("at")
+        if raw_at:
+            try:
+                parsed = datetime.fromisoformat(str(raw_at).replace("Z", "+00:00")).timestamp()
+                seen_at = min(parsed, t)
+            except (ValueError, TypeError):
+                pass
+
         with self.lock:
             self.bots[char] = {
                 **self.bots.get(char, {}),
@@ -403,16 +427,19 @@ class Store:
                         "map": row.get("map"),
                         "x": row.get("x"), "y": row.get("y"),
                         "slots": row.get("slots") or {},
-                        "lastSeen": iso(t),
+                        "lastSeen": iso(seen_at),
                         "via": char,
                     }
                 stands = len(seen)
                 listings = sum(len(r.get("slots") or {}) for r in seen if isinstance(r, dict))
-                self.activity[key] = {"stands": stands, "listings": listings, "at": t}
+                # Activity drives the staleness ranking a roamer is steered by,
+                # so it wants the observation time too - a flushed backlog must
+                # not make a shard look freshly covered.
+                self.activity[key] = {"stands": stands, "listings": listings, "at": seen_at}
 
             pon = body.get("ponty")
             if isinstance(pon, list):
-                self.ponty[key] = {"at": iso(t), "items": pon}
+                self.ponty[key] = {"at": iso(seen_at), "items": pon}
                 stored_p = len(pon)
 
             self._evict(t)

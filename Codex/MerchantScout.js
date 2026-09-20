@@ -863,61 +863,96 @@ async function roamerLoop() {
 	}
 }
 
-// ------------------------------------------------------------ sweep timing
-/* How long a full rotation actually takes, measured rather than computed.
+// -------------------------------------------------- revisit / sweep timing
+/* How long it takes to come back to a shard, and HOW MUCH was covered on the
+   way. The second half is not decoration - without it the first is misread.
 
-   The one figure written down - 2.4 minutes for 11 shards - was measured on
-   Merchant.js's scout, which has no hop floor. This script holds
-   minHopIntervalMs at 30s by design, so its sweep cannot be faster than
-   11 x 30s and nobody has seen the real number. It matters beyond curiosity:
-   sweep time is how stale our own rows are, and Merchant.js v31 now decides
-   row by row against ALData on exactly that.
+   A "lap" here is a REVISIT INTERVAL: the time between two arrivals at the
+   same shard. It is only a full sweep if every shard was visited in between,
+   and with a bridge up that is often false: nextShard() takes the bridge's
+   staleness ordering rather than walking a fixed rotation, so the roamer
+   revisits a hot shard without touching the others. A measured run closed a
+   lap in 36 seconds across 8 known shards - no rotation covers 8 shards in 36
+   seconds, and reporting that as a sweep time would be simply wrong.
 
-   A hop restarts this script, so the marks live in CODE storage. Arriving
-   somewhere already marked closes a lap, and the delta is one full sweep back
-   to that shard.
+   So every arrival is logged, and a lap carries the number of DISTINCT shards
+   seen during it. A lap whose coverage equals the known shard count is a real
+   sweep; anything less is a revisit and is reported as one.
 
-   The spread is the useful half. A sweep that is mostly one pathological shard
-   wants a different fix from one that is evenly slow, and a mean hides which
-   it is - so every lap is kept, not just the latest. */
+   The distribution matters too, and a median over the whole set hides it. The
+   same run produced 36, 93, 93, 125, 241, 241, 241, 243, 251 - nothing at all
+   between 125 and 241. That is two populations, not a spread, and averaging
+   across them describes neither. fullSweeps is reported separately for exactly
+   that reason. */
+const VISIT_LOG_MAX = 400;
+
 function noteArrival() {
 	const key = shardKey(currentShard());
-	const marks = SS.get('sweep_marks', {}) || {};
-	const laps = SS.get('sweep_laps', []) || [];
 	const now = Date.now();
-	const prev = marks[key];
-	marks[key] = now;
-	SS.set('sweep_marks', marks);
-	if (!prev) return null;
+	const visits = SS.get('visits', []) || [];
 
-	const sec = Math.round((now - prev) / 1000);
-	laps.push({ shard: key, sec: sec, at: new Date(now).toISOString() });
-	// Keep it bounded; a multi-day run would otherwise grow this without limit.
+	// How many distinct shards since we were last here, and when that was.
+	let prevAt = null, covered = 0;
+	for (let i = visits.length - 1; i >= 0; i--) {
+		if (visits[i].shard !== key) continue;
+		prevAt = visits[i].at;
+		const seen = {};
+		for (let j = i; j < visits.length; j++) seen[visits[j].shard] = 1;
+		seen[key] = 1;
+		covered = Object.keys(seen).length;
+		break;
+	}
+
+	visits.push({ shard: key, at: now });
+	while (visits.length > VISIT_LOG_MAX) visits.shift();
+	SS.set('visits', visits);
+
+	if (prevAt == null) return null;
+
+	const sec = Math.round((now - prevAt) / 1000);
+	const known = serverList().length || null;
+	const full = known != null && covered >= known;
+	const laps = SS.get('sweep_laps', []) || [];
+	laps.push({ shard: key, sec: sec, covered: covered, known: known, full: full,
+		at: new Date(now).toISOString() });
 	while (laps.length > 200) laps.shift();
 	SS.set('sweep_laps', laps);
-	log(`full sweep back to ${key}: ${sec}s`, '#E9C46A');
+
+	log(`back on ${key} after ${sec}s, ${covered}${known ? '/' + known : ''} shard(s) covered`
+		+ (full ? ' - full sweep' : ' - partial, revisit not sweep'),
+		full ? '#E9C46A' : '#8b98ab');
 	return sec;
 }
 
-/* Console helper: every lap recorded, with the spread that a mean would hide. */
+/* Console helper. Reports full sweeps and partial revisits separately, because
+   they answer different questions and mixing them answers neither. */
 function sweepTimes() {
 	const laps = SS.get('sweep_laps', []) || [];
 	if (!laps.length) {
-		log('no full sweep recorded yet - needs one rotation back to a shard already visited', 'orange');
+		log('no revisit recorded yet - needs a second arrival at a shard already seen', 'orange');
 		return { laps: [] };
 	}
-	const secs = laps.map(function (l) { return l.sec; }).sort(function (a, b) { return a - b; });
-	const at = function (q) { return secs[Math.min(secs.length - 1, Math.floor(q * secs.length))]; };
+	const stat = function (list) {
+		if (!list.length) return null;
+		const s = list.map(function (l) { return l.sec; }).sort(function (a, b) { return a - b; });
+		const at = function (q) { return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+		return { n: s.length, medianSec: at(0.5), p90Sec: at(0.9), fastestSec: s[0], slowestSec: s[s.length - 1] };
+	};
+	const full = laps.filter(function (l) { return l.full; });
 	const out = {
-		laps: laps.length,
-		medianSec: at(0.5), p90Sec: at(0.9),
-		fastestSec: secs[0], slowestSec: secs[secs.length - 1],
-		slowest: laps.slice().sort(function (a, b) { return b.sec - a.sec; }).slice(0, 5),
+		note: 'a lap is a REVISIT interval; only fullSweeps covered every known shard',
+		fullSweeps: stat(full),
+		partialRevisits: stat(laps.filter(function (l) { return !l.full; })),
+		allLapsSec: laps.map(function (l) { return l.sec; }),
 		recent: laps.slice(-10),
 	};
+	if (!full.length) {
+		out.warning = 'no lap covered every known shard - there is no measured sweep time here';
+	}
 	try { show_json(out); } catch (e) { console.log(out); }
 	return out;
 }
+
 try { parent.sweepTimes = sweepTimes; } catch (e) { }
 
 // --------------------------------------------------------------------- boot
