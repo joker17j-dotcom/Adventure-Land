@@ -263,3 +263,547 @@ function isMyBankWindow(now) {
 	const start = minute * 60000;
 	return msIntoHour >= start && msIntoHour < start + CONFIG.bank.windowMs;
 }
+
+// ============================================================================
+// SCAN AND BRIDGE LAYER
+// ============================================================================
+// Lifted from Codex/MerchantScout.js, which is a working scout - deliberately
+// with as little edited as possible, so that a behaviour difference between
+// the two is a real difference rather than a transcription slip. Only the
+// CONFIG paths moved (CONFIG.x -> CONFIG.scout.x) to fit this file's shape.
+//
+// Adventure Land has no module system: one file per code slot, so sharing by
+// import is not available and duplication is the only option. The comments
+// come with it; they carry the reasons, and a copy without them is a copy
+// nobody can safely change.
+// ============================================================================
+
+const SS = {
+	// change_server() tears the script down and re-runs it in a browser tab, so
+	// anything that must outlive a hop goes through the game's own persistent
+	// CODE storage rather than a module-scope variable. Namespaced per script so
+	// a scout and a fleet character sharing a browser cannot tread on each other.
+	get(k, dflt) {
+		try { const v = get('fleet_' + k); return v === null || v === undefined ? dflt : v; }
+		catch (e) { return dflt; }
+	},
+	set(k, v) { try { set('fleet_' + k, v); } catch (e) { } },
+};
+
+function log(msg, color) {
+	if (!CONFIG.verbose) return;
+	try { game_log('[fleet] ' + msg, color || '#8b98ab'); } catch (e) { console.log('[fleet]', msg); }
+}
+
+function currentShard() {
+	return { region: parent.server_region, name: parent.server_identifier };
+}
+
+function shardKey(s) { return String(s.region) + String(s.name); }
+
+/* parent.X.servers is the page's own server list. Mainframe does not expose it,
+   which is the single thing that makes multi-shard work browser-only. */
+function serverList() {
+	const raw = parent && parent.X && parent.X.servers;
+	if (!Array.isArray(raw)) return [];
+	return raw
+		.filter((s) => s && !CONFIG.scout.skipServers.includes(s.name))
+		.map((s) => ({ region: s.region, name: s.name }));
+}
+
+function canHop() {
+	return typeof change_server === 'function' && serverList().length > 0;
+}
+
+async function goTo(spot) {
+	if (!spot) return false;
+	try {
+		await smart_move({ map: spot.map, x: spot.x, y: spot.y });
+		return true;
+	} catch (e) {
+		log('could not reach ' + (spot.map || '?') + ': ' + e, 'orange');
+		return false;
+	}
+}
+
+function npcSpot(mapName, npcId) {
+	const m = parent && parent.G && parent.G.maps && parent.G.maps[mapName];
+	if (!m || !Array.isArray(m.npcs)) return null;
+	for (const n of m.npcs) {
+		if (n && n.id === npcId && Array.isArray(n.position)) {
+			return { map: mapName, x: n.position[0], y: n.position[1] };
+		}
+	}
+	return null;
+}
+
+function deriveScanSpots() {
+	if (CONFIG.scout.scanSpots.length) return CONFIG.scout.scanSpots;
+	const wanted = ['fancypots', 'secondhands', 'items1', 'newupgrade', 'basics'];
+	const spots = [];
+	for (const id of wanted) {
+		const s = npcSpot('main', id);
+		if (s) spots.push(s);
+	}
+	if (!spots.length) {
+		// Last resort: the map's own default spawn. Always exists.
+		const sp = parent && parent.G && parent.G.maps && parent.G.maps.main
+			&& parent.G.maps.main.spawns && parent.G.maps.main.spawns[0];
+		if (sp) spots.push({ map: 'main', x: sp[0], y: sp[1] });
+	}
+	return spots;
+}
+
+
+// ------------------------------------------------------------ stand scanning
+/* Read every open stand currently in view. Trade goods live in slots named
+   trade1..tradeN; a player's other slots are their equipment and must not be
+   mistaken for stock. */
+function scanStands() {
+	const out = [];
+	const ents = (parent && parent.entities) || {};
+	const me = myName();
+	for (const id in ents) {
+		const e = ents[id];
+		if (!e || e.type !== 'character') continue;
+		// NPCs really are in parent.entities - measured, not assumed - so exclude
+		// them explicitly rather than relying on the stand check below to do it.
+		// Several NPCs are themselves vendors, and nothing guarantees their shape
+		// stays distinguishable from a player stand forever.
+		if (e.npc) continue;
+		if (e.name === me) continue;                 // our own stand is not market data
+		if (!e.stand) continue;                      // stand closed = not trading
+		const slots = {};
+		const raw = e.slots || {};
+		for (const k in raw) {
+			if (k.indexOf('trade') !== 0) continue;
+			const s = raw[k];
+			if (!s || !s.name) continue;
+			slots[k] = {
+				name: s.name,
+				price: s.price,
+				b: !!s.b,
+				q: s.q || 1,
+				level: s.level || 0,
+				p: s.p || null,
+				stat_type: s.stat_type || null,
+			};
+		}
+		if (!Object.keys(slots).length) continue;
+		out.push({
+			id: e.name || e.id || id,
+			map: e.map || (character && character.map),
+			x: Math.round(e.real_x != null ? e.real_x : e.x),
+			y: Math.round(e.real_y != null ? e.real_y : e.y),
+			slots,
+		});
+	}
+	return out;
+}
+
+// -------------------------------------------------------------- Ponty (NPC)
+/* Ponty answers the 'secondhands' socket call only while you are standing next
+   to him. The reply shape has changed across game versions, so normalise
+   defensively rather than trusting one layout.
+
+   NOTE: an earlier session crashed the whole browser tab reading this through
+   parent.alert(). Never do that here - every readout goes to the bridge or
+   game_log, both of which are scoped to this character. */
+function normalisePonty(data) {
+	const list = Array.isArray(data) ? data
+		: (data && Array.isArray(data.items) ? data.items : null);
+	if (!list) return null;
+
+	/* One-shot dump of the real payload shape. The price is arriving null in
+	   practice, which means the field is not called "price" on this version of
+	   the game (or is not sent at all and the client computes it). Rather than
+	   guess, print what actually came back and map it for certain. */
+	if (CONFIG.scout.debugPonty && list.length) {
+		log('Ponty raw item keys: ' + Object.keys(list[0] || {}).join(', '), '#E9C46A');
+		const fns = probePricingFns();
+		log('pricing-ish functions on the page: ' + (fns.join(', ') || 'none found'), '#E9C46A');
+		try { console.log('[scout] Ponty raw sample:', list[0], '\npricing fns:', fns); } catch (e) { }
+	}
+
+	/* Probe the plausible spellings instead of only "price". Anything
+	   non-numeric stays null - a wrong price is far worse than no price,
+	   because the spread tables would quote it as real profit. */
+	const priceOf = (it) => {
+		for (const k of ['price', 'cost', 'g', 'value', 'gold']) {
+			const v = it[k];
+			if (typeof v === 'number' && isFinite(v)) return v;
+		}
+		return gameItemValue(it);          // fall back to the client's own maths
+	};
+
+	const out = [];
+	for (const it of list) {
+		if (!it || !it.name) continue;
+		out.push({
+			name: it.name,
+			level: it.level || 0,
+			price: priceOf(it),
+			q: it.q || 1,
+			p: it.p || null,
+			rid: it.rid || null,
+		});
+	}
+	return out;
+}
+
+/* What Ponty charges, straight from the client that renders his window.
+
+   The page can derive a LEVEL 0 price exactly - base value x buy_to_sell x
+   secondhands_mult, confirmed against Dracul's Attire at 576,000 - but levelled
+   items do not follow from that. Observed: Rugged Pants +1 is 1.43x its base,
+   Rugged Helmet +2 is 3.08x, and Stinger +4 is only 2.21x. A +4 costing less
+   than a +2 rules out any function of level alone; grade and upgrade-vs-compound
+   both feed in. Rather than fit a curve to a handful of samples and quote the
+   result as profit, ask the game, which is computing the exact number to paint
+   "42,400 GOLD" on screen anyway.
+
+   Function names differ across builds, so try the plausible ones and take the
+   first that returns a sane number. Returns null if none exist, which leaves
+   levelled items unpriced rather than wrong. */
+
+const PRICE_FNS = [
+	'calculate_item_value', 'item_value', 'calculate_value',
+	'item_price', 'calculate_item_price', 'item_worth',
+];
+let priceFnName = null;
+
+function gameItemValue(it) {
+	/* calculate_item_value() returns what Ponty PAID for the item, not what he
+	   charges - it already has buy_to_sell baked in. His asking price is that
+	   times secondhands_mult. Confirmed against four independent observations:
+
+	     throwingstars  g  72,000 -> 86,400     snowflakes  g  92,000 -> 110,400
+	     mcape          g 480,000 -> 576,000    ringsj      g  24,000 ->  28,800
+
+	   all of which are g * buy_to_sell * secondhands_mult = g * 1.2, matching
+	   both the in-game display and community notes. Returning the raw value
+	   would report half price and roughly double every Ponty spread. */
+	const mult = (parent && parent.G && parent.G.multipliers
+		&& parent.G.multipliers.secondhands_mult);
+	if (typeof mult !== 'number' || !isFinite(mult)) return null;
+
+	for (const n of PRICE_FNS) {
+		const f = parent && parent[n];
+		if (typeof f !== 'function') continue;
+		try {
+			/* Pass the whole item through, level and all. The function handles
+			   level, grade and upgrade-vs-compound internally, which is the part
+			   no formula derived from samples could get right. */
+			const v = f(it);
+			if (typeof v === 'number' && isFinite(v) && v > 0) {
+				if (priceFnName !== n) {
+					priceFnName = n;
+					log(`pricing via parent.${n}() x${mult}`, '#7FD98A');
+				}
+				return Math.round(v * mult);
+			}
+		} catch (e) { }
+	}
+	return null;
+}
+
+/* One-shot listing of anything in the page that looks like a pricing helper, so
+   the right name can be added above if none of the guesses land. */
+function probePricingFns() {
+	const found = [];
+	try {
+		for (const k in parent) {
+			if (typeof parent[k] !== 'function') continue;
+			if (/value|price|cost|worth/i.test(k)) found.push(k);
+		}
+	} catch (e) { }
+	return found;
+}
+
+function scanPonty() {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (v) => {
+			if (settled) return;
+			settled = true;
+			try { parent.socket.off('secondhands', onData); } catch (e) { }
+			resolve(v);
+		};
+		const onData = (data) => finish(normalisePonty(data));
+		try {
+			parent.socket.on('secondhands', onData);
+			parent.socket.emit('secondhands');
+		} catch (e) {
+			log('Ponty query failed: ' + e, 'orange');
+			finish(null);
+			return;
+		}
+		setTimeout(() => finish(null), CONFIG.scout.pontyTimeoutMs);
+	});
+}
+
+
+async function pontyCheck() {
+	const spot = npcSpot('main', 'secondhands');
+	if (!spot) { log('Ponty not found in map data', 'orange'); return null; }
+	await goTo(spot);
+	const items = await scanPonty();
+	if (items) log(`Ponty: ${items.length} items on ${shardKey(currentShard())}`, '#5ED6A8');
+	else log('Ponty returned nothing (out of range, or the call timed out)', 'orange');
+	return items;
+}
+
+// ------------------------------------------------------------ bridge client
+
+/* The bridge speaks parked/roamer. This roster speaks ranger/merchant. They
+   are not the same vocabulary and must not be conflated:
+
+   - A ranger is PARKED. It holds one shard and farms there, so it is a
+     stationary scout in the bridge's sense whatever else it is doing.
+   - The merchant is the ROAMER. It is the only character here that hops.
+
+   Both are also PINNED, and that is the part with teeth. Parked scouts are
+   normally reassigned greedily by score, but a ranger cannot accept an
+   assignment - it is farming where it stands, and the shard is not the
+   bridge's to choose. A scout that accepts a shard it will not travel to
+   advertises coverage that does not exist, and roamers then skip a shard
+   nobody is watching. Worse than claiming nothing.
+
+   The same reasoning already applies to Meltymerch on the other account; the
+   bridge grew its `pinned` handling for exactly this case. */
+function myScoutRole() {
+	return myRole() === 'merchant' ? 'roamer' : 'parked';
+}
+
+function scoutPinned() {
+	// A roaming merchant chooses its own next shard from the bridge's hints, so
+	// it is not pinned. Everything else here is standing still by design.
+	return myScoutRole() === 'parked' ? true : undefined;
+}
+
+const bridge = {
+	online: false,
+	lastReply: null,
+
+	async post(payload) {
+		if (typeof fetch !== 'function') {          // sandbox with no network
+			this.online = false;
+			return null;
+		}
+		try {
+			const r = await fetch(CONFIG.bridge + '/scan', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(payload),
+			});
+			if (!r.ok) throw new Error('HTTP ' + r.status);
+			const j = await r.json();
+			if (!this.online) log('bridge connected', '#7FD98A');
+			this.online = true;
+			this.lastReply = j;
+			return j;
+		} catch (e) {
+			if (this.online) log('bridge lost: ' + e.message, 'orange');
+			this.online = false;
+			return null;
+		}
+	},
+};
+
+// --------------------------------------------------------------- scan buffer
+/* Findings not yet accepted by the bridge, BUCKETED BY SHARD.
+
+   Keying only by merchant id was wrong: a post that failed left the stands
+   buffered, and the next successful post stamped the payload with wherever the
+   scout had since hopped to. Nine merchants scanned on EU I would be filed
+   under US II - the bridge takes the shard from the payload, so the wrong
+   attribution is what the watchlist then quotes, and acting on it means
+   travelling to a shard the merchant was never on. Ponty stock had the same
+   flaw. Each bucket now carries the shard it was actually observed on. */
+const buffer = { shards: new Map() };
+
+function bufferFor(shard) {
+	const k = shardKey(shard);
+	let e = buffer.shards.get(k);
+	if (!e) { e = { shard, stands: new Map(), ponty: null }; buffer.shards.set(k, e); }
+	return e;
+}
+
+function absorb(stands) {
+	const e = bufferFor(currentShard());
+	for (const s of stands) e.stands.set(s.id, s);
+}
+
+function absorbPonty(items) {
+	bufferFor(currentShard()).ponty = items;
+}
+
+function bufferedCount() {
+	let n = 0;
+	for (const e of buffer.shards.values()) n += e.stands.size;
+	return n;
+}
+
+/* Findings the bridge has not acknowledged must outlive the hop that follows.
+   reportConfirmed already refuses to clear the buffer without an
+   acknowledgement, and hopTo calls it before leaving - but when the bridge is
+   down that path deliberately carries the scan forward instead of discarding
+   it, and "forward" was a module-scope Map that change_server destroys. A
+   whole shard's sweep was lost every time the bridge blinked.
+
+   Maps do not survive JSON, so this flattens them on the way out and rebuilds
+   them on the way in. */
+function saveBuffer() {
+	const out = [];
+	for (const e of buffer.shards.values()) {
+		out.push({ shard: e.shard, stands: [...e.stands.values()], ponty: e.ponty });
+	}
+	SS.set('buffer', out);
+}
+
+function restoreBuffer() {
+	const saved = SS.get('buffer', null);
+	if (!Array.isArray(saved)) return 0;
+	let n = 0;
+	for (const e of saved) {
+		if (!e || !e.shard) continue;
+		const b = bufferFor(e.shard);
+		for (const row of (e.stands || [])) { b.stands.set(row.id, row); n++; }
+		if (e.ponty) b.ponty = e.ponty;
+	}
+	if (n) log(`restored ${n} unsent stand(s) from before the last hop`, '#E9C46A');
+	return n;
+}
+
+/* When Ponty was last read, per shard. Was a local in roamerLoop, so every
+   reload - which is to say every hop - forgot it, and the roamer walked to
+   Ponty on arrival at every single shard rather than once every pontyEveryMs.
+   Correct, but it paid for the walk each time. */
+function pontySeen(key, stamp) {
+	const m = SS.get('ponty_seen', {}) || {};
+	if (stamp !== undefined) { m[key] = stamp; SS.set('ponty_seen', m); }
+	return m[key] || 0;
+}
+
+function pontyDue(key) {
+	return Date.now() - pontySeen(key) > CONFIG.scout.pontyEveryMs;
+}
+
+/* Sweep until the visible set stops growing, so a shard that is still
+   streaming entities in is never read half-empty.
+
+   The zero case is the one that matters, and it is not symmetric with the
+   others. A scan reporting an empty merchants array is a real observation to
+   the bridge - "nothing trading here right now" - and it REPLACES that shard's
+   listings. So a freshly landed client, whose entity list has not arrived yet,
+   reads zero twice in a second and a half and wipes a shard that was full.
+   Zero therefore only counts once every pass has been spent. */
+async function settleScan() {
+	let seen = -1;
+	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
+		absorb(scanStands());
+		const n = bufferedCount();
+		if (n > 0 && n === seen) return n;
+		seen = n;
+		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
+	}
+	const n = bufferedCount();
+	if (n === 0) log(`${shardKey(currentShard())}: no stands after ${CONFIG.scout.maxSettlePasses} sweeps`, 'orange');
+	return n;
+}
+
+
+let lastPostAt = 0;
+
+/* Hold until minPostGapMs has passed since this scout's own last post. Per
+   scout, not global - two scouts posting a second apart is fine, one scout
+   posting twice in a second is noise. */
+async function respectPostGap() {
+	if (!lastPostAt) return;
+	const since = Date.now() - lastPostAt;
+	if (since >= CONFIG.scout.minPostGapMs) return;
+	const wait = CONFIG.scout.minPostGapMs - since;
+	log(`holding ${(wait / 1000).toFixed(1)}s before posting (min gap)`);
+	await new Promise((r) => setTimeout(r, wait));
+}
+
+/* Posts every buffered shard, each stamped with the shard it was observed on -
+   never with wherever the scout happens to be standing now. A bucket is only
+   cleared once the bridge acknowledges storing exactly what was sent; anything
+   unconfirmed stays put, still attributed correctly, and goes out next time.
+
+   `confirmed` is true only when every bucket landed. */
+async function report(extra) {
+	const buckets = [...buffer.shards.entries()];
+
+	// Nothing seen yet: still post, so the bridge knows this scout is alive and
+	// where it is, and hands back its rotation hints.
+	if (!buckets.length) {
+		await respectPostGap();
+		const reply = await bridge.post({
+			character: myName(), role: myScoutRole(), pinned: scoutPinned(),
+			shard: currentShard(),
+			at: new Date().toISOString(), merchants: [], ponty: null,
+			...(extra || {}),
+		});
+		lastPostAt = Date.now();
+		return { reply, confirmed: !!reply, stands: 0, ponty: 0 };
+	}
+
+	let lastReply = null, allOk = true, sent = 0;
+	for (const [key, e] of buckets) {
+		await respectPostGap();
+		const stands = [...e.stands.values()];
+		const ponty = e.ponty;
+		const reply = await bridge.post({
+			character: myName(), role: myScoutRole(), pinned: scoutPinned(),
+			shard: e.shard,                       // where it was SEEN, not where we are
+			at: new Date().toISOString(),
+			merchants: stands, ponty: ponty,
+			...(extra || {}),
+		});
+		lastPostAt = Date.now();
+		lastReply = reply || lastReply;
+
+		const acc = reply && reply.accepted;
+		const ok = !!(acc && acc.merchants === stands.length
+			&& acc.ponty === (ponty ? ponty.length : 0));
+		if (ok) {
+			buffer.shards.delete(key);            // accepted, stop carrying it
+			sent += stands.length;
+			log(`${stands.length} stands${ponty ? ` + ${ponty.length} Ponty items` : ''} on ${key} - confirmed`);
+		} else {
+			allOk = false;
+			log(`${key}: not acknowledged, held for retry`, 'orange');
+		}
+	}
+	// Keep the stored copy in step with the live buffer. Without this a bucket
+	// accepted by the bridge would still be sitting in storage, and the next
+	// boot would restore and resend rows that already landed.
+	saveBuffer();
+	return { reply: lastReply, confirmed: allOk, stands: sent, ponty: 0 };
+}
+
+
+/* Post, and keep resending until the bridge confirms it stored the scan. Used
+   before a hop: leaving a shard with an unacknowledged scan means the data was
+   collected and then quietly dropped.
+
+   Bounded on purpose. If the bridge is simply down, the findings are already
+   back in the buffer and will go out when it returns, so blocking the rotation
+   forever would cost coverage and save nothing. */
+async function reportConfirmed() {
+	for (let i = 0; i < CONFIG.postConfirmRetries; i++) {
+		const r = await report();
+		if (r.confirmed) return r;
+		if (!r.reply) {
+			log('bridge unreachable - carrying the scan forward, will send when it returns', 'orange');
+			return r;
+		}
+		log(`post not acknowledged (${i + 1}/${CONFIG.postConfirmRetries})`, 'orange');
+	}
+	log('giving up on confirmation for now - scan stays buffered', 'orange');
+	return { reply: null, confirmed: false, stands: 0, ponty: 0 };
+}
+
+// ---------------------------------------------------------------- hop guard
