@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v21 (the unreachable verdict now counts failed travel attempts instead of wall-clock. The old clock lived in a loop with nothing to do with travel, so a shard hop, a live event, a potion run or a vendor trip condemned a spot that was never walked to - which walked the blacklist down ~55 spots at 180-second intervals. Also ports Merchant.js's travelTo(): smart_move is awaited and caught instead of firing into the void, falls back through town() and retries, is guarded against stacked attempts with a watchdog behind the guard, and records the error and how close it got. Three failures, then the verdict.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v22 (party frames brought in line with Dexon's: the block left-aligns under the kpm readout - this character has no R&M button, and kpm is the leftmost item in #toprightcorner at offsetLeft 0 - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2380,7 +2380,29 @@ if (parent.$) {
 		container.append(parent.$("<div id='dpsmetercontent'></div>").css({ display: 'table-cell', verticalAlign: 'middle', padding: '2px', border: '4px solid grey' }));
 		parent.$('#bottomrightcorner').children().first().after(container);
 
-		parent.socket.on('hit', d => {
+		/* Replace OUR previous 'hit' listener, and survive any that outlived us.
+
+		   The socket lives in the game frame and outlives a CODE restart, so
+		   every reload used to add another listener. Measured on Dexon after a
+		   morning of redeploys: nine of them. The orphans belong to destroyed
+		   CODE frames, where `parent` is null - and the line that reads
+		   parent.party_list sat OUTSIDE the try below, so an orphan threw
+		   straight into socket.io's emit loop and aborted the remaining
+		   listeners. The live handler registers last, so it never ran: Dexon's
+		   DPS meter read zero while the rest of the party's read correctly.
+
+		   Two defences, because either alone is insufficient. Removing our own
+		   previous handler stops the pile growing - but only ours, since a
+		   blanket removeListener('hit') would also strip the client's own
+		   damage-number rendering, which is not ours to take. And the guard on
+		   the first line means an orphan that does survive returns quietly
+		   instead of poisoning the chain for every listener behind it.
+
+		   Orphans already on the socket are only cleared by a page reload; a
+		   CODE reload cannot reach them. */
+		if (parent.dps_hit_handler) parent.socket.removeListener('hit', parent.dps_hit_handler);
+		const onHit = d => {
+			if (!parent || !parent.party_list) return;
 			const inParty = id => parent.party_list.includes(id);
 			if (!inParty(d.hid) && !inParty(d.id)) return;
 
@@ -2424,7 +2446,9 @@ if (parent.$) {
 			} catch (err) {
 				console.error('hit handler error', err);
 			}
-		});
+		};
+		parent.dps_hit_handler = onHit;
+		parent.socket.on('hit', onHit);
 
 		const calcVal = (type, e, elapsed) => {
 			const r = 1000 / elapsed;
@@ -2502,7 +2526,7 @@ if (parent.$) {
 </style>`);
 		parent.party_style_prepared = true;
 
-		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate']; // <-- Add 'cc', 'ping', 'share' as needed
+		const DISPLAY_BARS = ['hp', 'mp', 'xp', 'xprate', 'xpeta']; // <-- Add 'cc', 'ping', 'share' as needed
 		const FRAME_WIDTH = 80;
 		const INCLUDE = ['mp', 'max_mp', 'hp', 'max_hp', 'name', 'max_xp', 'xp', 'level', 'share', 'cc', 'max_cc'];
 		const SHOW_IMG = true;
@@ -2523,10 +2547,14 @@ if (parent.$) {
 			}
 		};
 
-		const barHTML = (text, val, width, color) =>
-			`<div style="position:relative;width:100%;height:20px;text-align:center;margin-top:3px;">
-<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-weight:bold;font-size:17px;z-index:1;white-space:nowrap;text-shadow:-1px 0 black,0 2px black,2px 0 black,0 -1px black;">${text}: ${val}</div>
-<div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:20px;border:1px solid grey;"></div>
+		/* `text` is the label. Pass an empty string for a bare row - the xp rate
+		   and its ETA are self-describing ("22.9M xp/hr"), so a redundant
+		   "XP/HR: " prefix only costs width. `fontSize` defaults to the 17px the
+		   stat bars use. */
+		const barHTML = (text, val, width, color, fontSize) =>
+			`<div style="position:relative;width:100%;height:${fontSize ? 16 : 20}px;text-align:center;margin-top:3px;">
+<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-weight:bold;font-size:${fontSize || 17}px;z-index:1;white-space:nowrap;text-shadow:-1px 0 black,0 2px black,2px 0 black,0 -1px black;">${text ? text + ': ' : ''}${val}</div>
+<div style="position:absolute;top:0;left:0;right:0;bottom:0;background-color:${color};width:${width}%;height:${fontSize ? 16 : 20}px;border:1px solid grey;"></div>
 </div>`;
 
 		// ========================================================================
@@ -2562,10 +2590,10 @@ if (parent.$) {
 		}
 
 		function formatXpRate(xpPerHour) {
-			if (xpPerHour <= 0) return '0/hr';
-			if (xpPerHour >= 1000000) return (xpPerHour / 1000000).toFixed(1) + 'M/hr';
-			if (xpPerHour >= 1000) return (xpPerHour / 1000).toFixed(1) + 'k/hr';
-			return Math.round(xpPerHour) + '/hr';
+			if (xpPerHour <= 0) return '0 xp/hr';
+			if (xpPerHour >= 1000000) return (xpPerHour / 1000000).toFixed(1) + 'M xp/hr';
+			if (xpPerHour >= 1000) return (xpPerHour / 1000).toFixed(1) + 'k xp/hr';
+			return Math.round(xpPerHour) + ' xp/hr';
 		}
 
 		function formatDuration(hours) {
@@ -2606,12 +2634,21 @@ if (parent.$) {
 					return { val: pct.toFixed(2) + '%', width: pct };
 				}
 			},
+			/* Two rows, not one. computeXpRateAndEta samples history on a timer, so
+			   calling it twice a tick would be wasteful and could skew the window;
+			   the render loop computes it once and passes it in as `xp`. */
 			xprate: {
-				color: 'purple', label: 'XP/HR',
-				calc: (i) => {
-					if (!i || i.name === undefined || i.xp === undefined || i.level === undefined) return { val: '??', width: 0 };
-					const { rateStr, etaStr } = computeXpRateAndEta(i.name, i);
-					return { val: `${rateStr} · next ${etaStr}`, width: 0 };
+				color: 'purple', label: '',
+				calc: (i, partyData, xp) => {
+					if (!xp) return { val: '??', width: 0 };
+					return { val: xp.rateStr, width: 0 };
+				}
+			},
+			xpeta: {
+				color: 'purple', label: '',
+				calc: (i, partyData, xp) => {
+					if (!xp) return { val: '??', width: 0 };
+					return { val: `next ${xp.etaStr}`, width: 0 };
 				}
 			},
 			cc: { color: 'grey', calc: (i) => ({ val: i.cc?.toFixed(2) ?? i.cc, width: i.cc / (i.max_cc || 200) * 100 }) },
@@ -2624,13 +2661,107 @@ if (parent.$) {
 			}
 		};
 
+		/* Anchor the party block under the kill-rate readout. Dexon anchors on the
+		   R&M button; this character has no R&M, so the leftmost item in
+		   #toprightcorner is the kpm block, measured at offsetLeft 0 within it.
+
+		   The text changes every tick ("17 kpm", "44 kpm"), so this matches on
+		   the unit rather than the whole string, and re-finds the element when
+		   the cached one leaves the document. */
+		let kpmBlock = null;
+		const findKpmBlock = () => {
+			if (kpmBlock && kpmBlock.isConnected) return kpmBlock;
+			kpmBlock = null;
+			parent.$('#toprightcorner *').each((i, el) => {
+				if (kpmBlock || el.children.length) return;
+				if (/\bkpm\b/i.test(el.textContent || '')) kpmBlock = el;
+			});
+			return kpmBlock;
+		};
+
+		/* Only align a POSITIONED #newparty, and say so once if it is not.
+
+		   What makes it positioned is our own `.party-container`, applied by the
+		   render loop two lines before this runs - the game ships #newparty as a
+		   static inline-block. So if the style block ever fails to inject, the
+		   class goes inert, `left`/`right` would be ignored and writing `width`
+		   into an in-flow child of #toprightcorner would widen that container,
+		   move the anchor, and start a 250ms oscillation. Reading the computed
+		   value catches exactly that. */
+		let alignChecked = false;
+		const partyFrameIsPositioned = (partyFrame) => {
+			const pos = parent.getComputedStyle(partyFrame[0]).position;
+			if (pos !== 'static') return true;
+			if (!alignChecked) {
+				alignChecked = true;
+				game_log('Party frames: #newparty is position:static - not aligning (left/right would be ignored and width could move the toolbar)', 'orange');
+			}
+			return false;
+		};
+
+		/* Distance from `el` to `ancestor` in CSS pixels, by walking offsetParent.
+
+		   NOT getBoundingClientRect(). The game UI is scaled - measured at 0.7502
+		   on this client - so rects come back in device pixels while `left` and
+		   `width` are interpreted as CSS pixels, and rect.left is viewport-relative
+		   while `left` on a positioned element is relative to its offsetParent.
+		   offsetLeft is already CSS px and already relative to offsetParent, so
+		   accumulating it needs no origin correction and no scale factor, and
+		   cannot drift if the client's scale changes. */
+		const offsetLeftWithin = (el, ancestor) => {
+			let x = 0, node = el;
+			while (node && node !== ancestor) { x += node.offsetLeft; node = node.offsetParent; }
+			return node === ancestor ? x : null;
+		};
+
+		const alignPartyFrames = (partyFrame, count) => {
+			const anchor = findKpmBlock();
+			if (!anchor || !count) return;
+			if (!partyFrameIsPositioned(partyFrame)) return;
+
+			const np = partyFrame[0];
+			const anchorBox = np.offsetParent;
+			if (!anchorBox) return;
+
+			/* Both measured against the SAME offsetParent, or not at all: if the
+			   anchor is not inside it the two numbers are in different coordinate
+			   spaces and subtracting them would be meaningless. */
+			const anchorLeft = offsetLeftWithin(anchor, anchorBox);
+			if (anchorLeft === null || !isFinite(anchorLeft)) return;
+
+			/* One row, always. max-content plus nowrap lets the row size itself,
+			   so there is no arithmetic to get wrong and no member count at which
+			   it silently wraps onto a second row. */
+			if (partyFrame.data('alignedTo') === anchorLeft && partyFrame.data('alignedN') === count) return;
+			partyFrame.css({ left: anchorLeft + 'px', right: 'auto', width: 'max-content', 'white-space': 'nowrap' });
+
+			/* Second pass: whatever inset the first cell has once it is laid out
+			   on one row, take it off, so the FIRST member's frame is flush with
+			   the anchor rather than the container's padding edge. Measured after
+			   the write because the inset is a product of that layout. */
+			np.offsetWidth;
+			const inset = np.children[0] ? np.children[0].offsetLeft : 0;
+			if (inset) partyFrame.css('left', (anchorLeft - inset) + 'px');
+
+			partyFrame.data('alignedTo', anchorLeft).data('alignedN', count);
+		};
+
 		setInterval(() => {
 			const partyFrame = parent.$('#newparty').addClass('party-container');
 			if (!partyFrame.length) return;
 
+			/* The merchant gets no frame. Excluded by CLASS rather than by name, so
+			   it survives a rename and cannot hide a different character who
+			   happens to share the name. The game builds one cell per party member
+			   in member order, so the cell is hidden in place and the count passed
+			   to alignPartyFrames is the count of VISIBLE cells. */
 			const members = Object.keys(parent.party);
+			const frameHidden = (name) => ((parent.party[name] || {}).type === 'merchant');
+			alignPartyFrames(partyFrame, members.filter((n) => !frameHidden(n)).length);
 			partyFrame.children().each((x, el) => {
 				const name = members[x];
+				parent.$(el).toggle(!frameHidden(name));
+				if (frameHidden(name)) return;
 				let info = get(name + '_newparty_info');
 
 				if (!info || Date.now() - info.lastSeen > 1000) {
@@ -2641,11 +2772,18 @@ if (parent.$) {
 				const partyData = parent.party[name];
 				let html = `<div style="width:${FRAME_WIDTH}px;height:20px;margin-top:3px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${info.name}</div>`;
 
+				const xp = (info && info.name !== undefined && info.xp !== undefined && info.level !== undefined)
+					? computeXpRateAndEta(info.name, info)
+					: null;
+
 				for (const key of DISPLAY_BARS) {
 					const cfg = barConfigs[key];
-					const { val, width } = cfg.calc(info, partyData);
+					const { val, width } = cfg.calc(info, partyData, xp);
 					if (val !== undefined && val !== '??') {
-						html += barHTML(cfg.label || key.toUpperCase(), val, width, cfg.color);
+						/* label may be deliberately empty - only fall back to the key
+						   when the config never declared one. */
+						const label = cfg.label === undefined ? key.toUpperCase() : cfg.label;
+						html += barHTML(label, val, width, cfg.color, cfg.fontSize);
 					}
 				}
 
