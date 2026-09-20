@@ -1199,7 +1199,30 @@ async function buyPotions() {
    streamed in would wipe a shard that is full. Zero only counts once every
    settle pass is spent. */
 async function doScan() {
-	await settleScan();
+	const found = await settleScan();
+
+	/* An empty result is the only one that can destroy anything.
+
+	   A non-empty scan is additive and safe to post from anywhere: absorb()
+	   sets into a Map keyed by stand id and never removes, so a later pass
+	   taken from further away cannot shrink what an earlier one saw. Drifting
+	   out of town mid-settle costs nothing.
+
+	   Zero is different. The bridge stores it as "nothing is trading on this
+	   shard" and REPLACES the shard's listings, so a false zero wipes a full
+	   market. inTown() is checked when the scan STARTS, but settling takes
+	   several seconds and the character may have walked out by the end - and a
+	   zero read while leaving town is exactly the false one.
+
+	   So: a zero only goes out if we are still standing where the whole stand
+	   region is visible. Otherwise it is dropped rather than buffered, because
+	   a stale zero is not an observation worth keeping. */
+	if (found === 0 && !inTown()) {
+		log('scan came back empty from outside town - not posting it', 'orange');
+		ranger.lastScanAt = Date.now();
+		return null;
+	}
+
 	if (pontyDue(shardKey(currentShard()))) await pontyCheck();
 	const r = await reportConfirmed();
 	if (r && r.reply) bridge.lastReply = r.reply;
