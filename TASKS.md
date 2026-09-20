@@ -208,3 +208,56 @@ Also worth knowing: the `190` in `interaction_context_range` is a UI gate for
 whether the NPC panel renders, **not** a transaction range. Lucas sold at 286
 with no panel open. Do not use 190 for anything transactional.
 
+---
+
+## 3. The same scan-buffer staleness exists in MerchantScout.js and Merchant.js
+
+**Status:** fixed in `Codex/FamilyFleet.js`, present in the other two.
+Not applied there - they are deployed and this was not the task in hand.
+
+Found by asking what happens to a stand's data when the stand closes.
+
+### The bug
+
+The bridge is right: `ingest` deletes every merchant row for a shard and
+rewrites from the payload, because each sweep is a COMPLETE observation. The
+scout side was not keeping that contract.
+
+- `absorb()` only ever adds - `e.stands.set(s.id, s)`, never removes.
+- A bucket is cleared only when a post is **confirmed**.
+
+So a stand that packs up while the bridge is unreachable stays in the buffer,
+is re-absorbed alongside the stands still there, and goes out on the next
+successful post as though it were live. Someone reading the watchlist travels
+to a stand that left minutes ago. `restoreBuffer()` carries the same staleness
+across a reload.
+
+**Fix:** clear the CURRENT shard's stands at the start of each sweep.
+Accumulate within a sweep - that is what the settle passes are for, letting a
+streaming entity list finish arriving - and replace between sweeps. Only the
+current shard: a roamer holding an unsent sweep of somewhere else keeps it,
+since that is the last thing known about a shard it cannot see from here.
+
+### The second bug, in the same place
+
+`settleScan`'s stopping test is "the count has stopped growing", measured with
+`bufferedCount()` - which sums **every** shard in the buffer.
+
+A roamer that failed to post 5 stands on one shard, then hops, starts the test
+at 5 on the new shard. Pass 1 reads 5, pass 2 reads 5, the test fires, and the
+sweep is declared settled having read **nothing at all** on the shard it is
+standing on. It then posts an empty current shard - the one result that
+destroys data.
+
+Only bites a roamer with a failed post behind it, which is why it has not been
+seen. `FamilyFleet.js` adds `currentShardCount()` and uses it.
+
+### Where
+
+- `Codex/MerchantScout.js` - `absorb`, `bufferedCount`, `settleScan`.
+- `Merchant.js` - the same functions under the `scout` prefix
+  (`scoutSettleScan`, and the shard buffer around `scoutSaveBuffer`).
+
+`Merchant.js` is the more urgent of the two: it is the roamer, so it is the
+one the `bufferedCount()` bug can actually reach.
+

@@ -698,6 +698,40 @@ function bufferedCount() {
 	return n;
 }
 
+/* How many stands are buffered for the shard we are standing on.
+
+   settleScan needs THIS, not the total. Its stopping test is "the count has
+   stopped growing", and with the total it counts stands held for other shards
+   whose post failed - so a roamer landing on a new shard starts the test at
+   five instead of zero, sees five twice, and declares the sweep settled having
+   read nothing at all. It would then post an empty current shard, which is the
+   one result that destroys data. */
+function currentShardCount() {
+	const e = buffer.shards.get(shardKey(currentShard()));
+	return e ? e.stands.size : 0;
+}
+
+/* Drop what we hold for this shard, so the sweep that follows replaces it
+   rather than adding to it.
+
+   Each sweep is a COMPLETE observation of the shard - that is the contract the
+   bridge is built on, and why it deletes and rewrites a shard's listings
+   rather than merging. The scout's buffer has to keep the same contract, and
+   it did not: absorb() only ever adds, and a bucket is cleared only when a
+   post is CONFIRMED. So a stand that packed up while the bridge was
+   unreachable stayed in the buffer, was re-absorbed alongside the stands that
+   are still there, and went out on the next successful post as though it were
+   live. Someone reading the watchlist would travel to a stand that left
+   minutes ago.
+
+   Only this shard is cleared. A roamer holding an unsent sweep of another
+   shard keeps it - that is the last thing known about somewhere it cannot see
+   from here, and it is not refreshable by standing still. */
+function resetCurrentShardStands() {
+	const e = buffer.shards.get(shardKey(currentShard()));
+	if (e) e.stands.clear();
+}
+
 /* Findings the bridge has not acknowledged must outlive the hop that follows.
    reportConfirmed already refuses to clear the buffer without an
    acknowledgement, and hopTo calls it before leaving - but when the bridge is
@@ -753,15 +787,19 @@ function pontyDue(key) {
    reads zero twice in a second and a half and wipes a shard that was full.
    Zero therefore only counts once every pass has been spent. */
 async function settleScan() {
+	// Accumulate WITHIN a sweep, replace BETWEEN sweeps. The passes exist to let
+	// a streaming entity list finish arriving; they are not a running tally
+	// across visits.
+	resetCurrentShardStands();
 	let seen = -1;
 	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
 		absorb(scanStands());
-		const n = bufferedCount();
+		const n = currentShardCount();
 		if (n > 0 && n === seen) return n;
 		seen = n;
 		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
 	}
-	const n = bufferedCount();
+	const n = currentShardCount();
 	if (n === 0) log(`${shardKey(currentShard())}: no stands after ${CONFIG.scout.maxSettlePasses} sweeps`, 'orange');
 	return n;
 }
