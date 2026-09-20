@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v42 (the dock anchor required .codebuttons to be a DIRECT child of #toprightcorner, which is how the open-source snapshot has it but not how the live client behaves, so the dock missed silently and the panel kept floating. It now anchors on .codebuttons the way the game's own add_top_button does, asserts pointer-events itself rather than relying on the bpclicks ancestry, logs which branch it took on startup, and adds farmUiDiag() for reading the live markup from the console.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v43 (v42 docked, so the `#toprightcorner > .codebuttons` branch it preferred is now deleted rather than kept: the live chain is SPAN.codebuttons -> DIV.game-controls -> DIV#toprightcorner, so that form matches nothing and would read as documentation of markup that does not exist. The measured chain is recorded in the comment, along with why the `hidden` class on the container is harmless.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2672,26 +2672,37 @@ function initializeFarmUI() {
 
 	   If the toolbar isn't there (a UI mode that doesn't render it), fall back
 	   to the old free-floating panel rather than silently having no UI. */
-	/* Anchor on .codebuttons, the way the game's own add_top_button does
-	   (`parent.$(".codebuttons").append(...)`) - it never scopes that to a
-	   container. The first attempt required .codebuttons to be a DIRECT child
-	   of #toprightcorner, which is how the open-source snapshot has it but not
-	   how the live client behaved: the dock silently missed and the panel kept
-	   floating. Prefer the specific form when it matches, fall back to the bare
-	   class, and record which one won so this is diagnosable from the console
-	   instead of by inspection. */
-	let $dock = $('#toprightcorner').children('.codebuttons').first();
-	FARM_UI_DIAG.via = $dock.length ? 'direct child of #toprightcorner' : null;
-	if (!$dock.length) {
-		$dock = $('.codebuttons').first();
-		if ($dock.length) FARM_UI_DIAG.via = '.codebuttons anywhere';
-	}
+	/* Anchor on .codebuttons unscoped, exactly as the game's own
+	   add_top_button does (`parent.$(".codebuttons").append(...)`).
+
+	   MEASURED against the live client, not inferred - two earlier attempts
+	   were wrong because they were read off kaansoral/adventureland, whose
+	   snapshot is months behind what is actually served. The real chain is:
+
+	       SPAN.codebuttons
+	         -> DIV.game-controls                  <- absent from the snapshot
+	           -> DIV#toprightcorner.hidden.disableclicks.bpclicks
+
+	   So .codebuttons is a GRANDCHILD of #toprightcorner, and a SPAN rather
+	   than a DIV. Any `#toprightcorner > .codebuttons` form matches nothing
+	   here; it is not merely redundant, it is wrong, and it is deliberately
+	   not kept as a preferred branch because the next reader would take it
+	   for documentation of the live markup.
+
+	   The `hidden` on #toprightcorner is not a problem and not luck: .hidden
+	   is display:none, and game.js's boot calls .show() on that container,
+	   which sets an INLINE display that outranks the class. The class just
+	   stays behind as a stale label. It is applied to all five corner
+	   containers, so if it ever became load-bearing the whole game UI would
+	   go, not this panel - which is the right coupling for something that
+	   lives in the toolbar. */
+	const $dock = $('.codebuttons').first();
 	const docked = $dock.length > 0;
 	FARM_UI_DIAG.docked = docked;
+	FARM_UI_DIAG.via = docked ? '.codebuttons' : 'nothing matched - floating';
 	FARM_UI_DIAG.toprightcorner = $('#toprightcorner').length;
 	FARM_UI_DIAG.codebuttons = $('.codebuttons').length;
 	FARM_UI_DIAG.at = new Date().toLocaleTimeString();
-	if (!docked) FARM_UI_DIAG.via = 'nothing matched - floating';
 
 	// Docked, it flows in the toolbar row, so it is sized rather than
 	// positioned - and kept off the left edge on a narrow window. Floating, it
