@@ -701,7 +701,13 @@ function scanPonty() {
 async function pontyCheck() {
 	const spot = npcSpot('main', 'secondhands');
 	if (!spot) { log('Ponty not found in map data', 'orange'); return null; }
-	await goTo(spot);
+	/* Do not walk to him from the town spot.
+
+	   Ponty is 286.1 away from it and answered a live query at exactly that
+	   distance with 225 items, so the walk buys nothing and costs the one rule
+	   this character is built around. The walk is kept for anywhere else,
+	   because "anywhere else" is a character that is lost rather than parked. */
+	if (!atTownSpot()) await goTo(spot);
 	const items = await scanPonty();
 	if (items) log(`Ponty: ${items.length} items on ${shardKey(currentShard())}`, '#5ED6A8');
 	else log('Ponty returned nothing (out of range, or the call timed out)', 'orange');
@@ -1693,10 +1699,19 @@ function copiesHeld(name) {
    upgrade the quota exists to serve, and the quota would look satisfied while
    progress stopped. Upgrade-method items have no such appetite: one is enough
    to work on, so they cap at three regardless. */
-function bankWantsMore(name) {
+function bankWantsMore(name, extraHeld) {
 	const entry = PLAN_INDEX.get(name);
 	if (!entry) return false;
-	const held = copiesHeld(name);
+	/* Counted remotely, which for a character standing in the bank is the same
+	   count - copiesHeldRemote uses the live bank whenever there is one and
+	   only falls back to the stored snapshot when there is not. That fallback
+	   is the whole reason the merchant can answer this question from a town
+	   spot three shards from where it banked.
+
+	   extraHeld is for a pass that is part-way through acquiring copies: five
+	   dexrings on one Ponty list would otherwise each be measured against the
+	   same starting count and all five bought. */
+	const held = copiesHeldRemote(name) + (extraHeld || 0);
 	if (held < CONFIG.gear.copiesWanted) return true;
 	if (!CONFIG.gear.compoundOverstock) return false;
 
@@ -2199,6 +2214,7 @@ async function bankRun() {
 		}
 	}
 
+	saveBankSnapshot();
 	await townTrip('bank window, on the way out');
 	await sellSurplus();
 
@@ -2612,6 +2628,62 @@ async function merchantBankRun() {
 	await sellSurplus();
 }
 
+// ------------------------------------------------------------------ Ponty
+/* Ponty sells what other players have sold to him, per shard, and the stock
+   turns over - which is why this is evaluated on arrival rather than saved for
+   a bank window that might be forty minutes away.
+
+   THE QUESTION IT ASKS is the same one the bank window asks, and it can only
+   ask it because of the snapshot: is this on the plan, and does the account
+   already hold enough copies? Asked with no bank in sight the answer is always
+   "we have none", and the merchant buys a fourth and fifth copy of something
+   two rangers are already wearing.
+
+   PRICE IS NOT TRUSTED WHEN IT IS NOT A NUMBER. The field name for it has not
+   been established on this version of the game - normalisePonty probes five
+   spellings and falls back to the client's own valuation, and in practice it
+   has been arriving null. An unknown price cannot be budgeted against, so an
+   item with one is skipped rather than bought blind. A wrong price here is
+   worse than no price: it is gold spent on a number nobody chose. */
+async function pontyBuy(items) {
+	if (!items || !items.length) return 0;
+	if (typeof buy_from_pont !== 'function') {
+		if (!SS.get('no_pont_buy', false)) {
+			SS.set('no_pont_buy', true);
+			log('buy_from_pont is not available on this client - reading Ponty, not buying from him', 'orange');
+		}
+		return 0;
+	}
+	const acquired = new Map();
+	let bought = 0, unpriced = 0;
+	for (const it of items) {
+		if (freeSlots() <= CONFIG.merchant.ponty.minFreeSlots) {
+			log('bag too full to keep buying from Ponty', '#8b98ab');
+			break;
+		}
+		const budget = character.gold - CONFIG.merchant.leaveInBank;
+		if (budget <= 0) break;
+		if (!isPlanItem(it.name)) continue;
+		if (!bankWantsMore(it.name, acquired.get(it.name) || 0)) continue;
+		if (typeof it.price !== 'number' || !isFinite(it.price)) { unpriced++; continue; }
+		if (it.price > budget) continue;
+		try {
+			await buy_from_pont(it);
+			acquired.set(it.name, (acquired.get(it.name) || 0) + 1);
+			bought++;
+			log(`bought ${it.name}${it.level ? '+' + it.level : ''} from Ponty for ${it.price}`, '#7FD98A');
+		} catch (e) {
+			log(`Ponty buy of ${it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+			break;
+		}
+	}
+	if (unpriced) {
+		log(`${unpriced} Ponty listing(s) skipped for want of a price - `
+			+ `the field name is still unconfirmed, see normalisePonty`, '#E9C46A');
+	}
+	return bought;
+}
+
 // -------------------------------------------------------------------- the tick
 /* Priority ladder, same idea as the ranger's: ordered by what cannot wait.
 
@@ -2649,7 +2721,14 @@ async function merchantTick() {
 		const key = shardKey(currentShard());
 		if (pontyDue(key)) {
 			const items = await pontyCheck();
-			if (items) { absorbPonty(items); pontySeen(key, Date.now()); }
+			if (items) {
+				absorbPonty(items);
+				pontySeen(key, Date.now());
+				// Evaluated here, on arrival, because his stock is per shard and
+				// turns over. Holding it for the bank window would be holding it
+				// until after we had hopped away from it.
+				await pontyBuy(items);
+			}
 		}
 		if (scanDue()) { await withScanLock(doScan); return; }
 

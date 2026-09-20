@@ -306,6 +306,72 @@ scanning plus 4 minutes of one pathological shard wants a different fix from
 one that is evenly slow. This is worth knowing regardless of the floor,
 because the answer sets how stale our own rows are in the merge.
 
-Worth doing before `FamilyFleet.js`'s roaming merchant is built, since the
-floor is a choice that script has not made yet — its `hopTo` does not exist.
+~~Worth doing before `FamilyFleet.js`'s roaming merchant is built, since the
+floor is a choice that script has not made yet — its `hopTo` does not exist.~~
+
+**Update:** `hopTo` now exists, and FamilyFleet made the opposite choice
+deliberately: `CONFIG.hop.minIntervalMs` is **one hour**, not 30 seconds. It is
+a merchant that also farms the account's gear economy, not a dedicated scout,
+so it is not trying to sweep at all — coverage comes from the three parked
+rangers. The crash concern the 30-second floor mitigates does not arise at one
+hop an hour.
+
+---
+
+## 5. FamilyFleet: three things it does not know yet
+
+**Status:** the script is complete and tested (365 assertions) but has never
+been run against the live game. These are the questions the tests cannot
+answer, in the order they will bite.
+
+### 5a. What a failed upgrade costs
+
+`CONFIG.merchant.upgradeMaxLevel` is **7**, and the plan asks for 10.
+
+`Merchant.js` carries the chance tables (`UPGRADES`, `COMPOUNDS`, the grace
+maths) and they give the probability of **success**. Nothing in this repo says
+what happens on failure — whether the item drops a level, drops to 0, or is
+destroyed. The tables put level 10 at about 2%, so a run to the plan's target
+is roughly fifty scrolls and a long sequence of failures, which is an expensive
+way to find out.
+
+Measure it on something worthless: take a junk item to +1, then upgrade it
+repeatedly with `scroll0` and record what the bag holds after each failure.
+Raise the cap once the answer is known.
+
+### 5b. Ponty's price field
+
+`normalisePonty` probes `price`, `cost`, `g`, `value`, `gold` and falls back to
+the client's own valuation, and in practice the price has been arriving
+**null**. `pontyBuy` therefore skips any listing it cannot price, and logs how
+many it skipped — so a wrong field name presents as "12 listings skipped for
+want of a price" rather than as Ponty having nothing worth buying.
+
+`CONFIG.scout.debugPonty` is on and dumps the real key list on the first scan
+of each pass. One live rotation answers this.
+
+Until it is answered the merchant reads Ponty and buys nothing from him.
+
+### 5c. `buy_from_pont`, and whether selling works at 129 units
+
+Two API calls this file makes that nobody has seen work from the town spot:
+
+- `buy_from_pont(item)` — guarded on `typeof`, so an absent function logs once
+  and the merchant carries on reading rather than throwing every rotation.
+- `sell(idx, q)` at Gabriel, 129.4 away. **`buy` from him is verified at that
+  distance; `sell` is not.** If the sell pass refuses live, range is the first
+  thing to check, and the fix is a short walk in `sellSurplus` rather than
+  anything structural.
+
+### 5d. Not built, deliberately: `set_home` / Bean
+
+`CONFIG.hop.trySetHome` and `setHomeCooldownMs` exist and **nothing reads
+them.** Home is the gate hop sickness tests against, so moving it is the only
+real cure — but `set_home` has a 36-hour cooldown, which cannot follow an
+hourly rotation, and a roaming merchant has no single shard that being "home"
+would help. On top of that the merchant is under level 60, where the condition
+is never applied at all.
+
+So the machinery would run and change nothing. Left as config with no reader,
+which is visible, rather than as code that looks like a feature.
 
