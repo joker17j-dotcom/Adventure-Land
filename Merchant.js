@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v26 (v25 plus: anniversary guard tightened to 5m10s, the agreed arbitrage spec recorded in CONFIG.arbitrage, and a hand-driven PHASE 0 PROBE section that discovers the trade/bank API instead of assuming it. Nothing in the probe runs on its own. Bump this header when you change the file - v24's survived thirteen commits and led a handoff to record this file as untouched)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v27 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -177,6 +177,20 @@ const CONFIG = {
 	homeServer: 'USIV',
 	scout: {
 		enabled: true,
+		/* PARKED - hold the party's home shard and never hop just to scout.
+		
+		   The family's MerchantScout fleet now covers the rotation, so the
+		   merchant's shard-hopping was duplicating work it is much worse at: a
+		   hop reloads the page, and every hop risks stranding deliveries, the
+		   stand and an in-flight trade behind a page load. A dedicated scout
+		   pays that cost for nothing else; the merchant pays it with the party's
+		   economy on its back.
+		
+		   Parked, it holds CONFIG.homeServer, rescans it every heldScanMs, and
+		   still scans wherever else the script legitimately takes it - arbitrage,
+		   deliveries - it just never travels FOR a scan. Set false to restore
+		   the old roaming rotation. */
+		parked: true,
 		bridge: 'http://127.0.0.1:8787',
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// covers every server continuously and is not affected by whatever this
@@ -2324,7 +2338,24 @@ async function scoutReport() {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					character: character.name, role: 'roamer', shard,
+					character: character.name,
+					/* Parked, and PINNED - two separate claims.
+					
+					   role tells the bridge to count this shard as covered so roamers
+					   leave it out of their beats. Claiming 'roamer' while never
+					   hopping would be worse than saying nothing: the bridge deals the
+					   unparked shards between self-declared roamers, so a roamer that
+					   never moves silently shrinks every real roamer's beat and its own
+					   share goes unwalked.
+					
+					   pinned says the assignment is not the bridge's to make. Parked
+					   scouts are normally reassigned greedily by score, and a merchant
+					   that accepted one would advertise coverage of a shard it is not
+					   standing on - which is worse than no claim, because roamers would
+					   then skip a shard nobody is watching. */
+					role: CONFIG.scout.parked ? 'parked' : 'roamer',
+					pinned: CONFIG.scout.parked || undefined,
+					shard,
 					at: new Date().toISOString(), merchants: stands, ponty: ponty,
 				}),
 			});
@@ -2567,6 +2598,29 @@ async function scoutVisitNextShard() {
 			scoutSaveBuffer();
 		} finally { state.busy = false; scout.cycleStartedAt = 0; }
 		return;                       // hop on the NEXT tick, not this one
+	}
+
+	/* This shard is already scanned. Roaming would hop to the next one here;
+	   parked, there is no next one.
+
+	   Off-home and idle means whatever took us here - a delivery, a finished
+	   trade - is done, so go back and hold the party's shard. The scan above
+	   has already run by then, so the trip out still contributed a reading;
+	   that is the whole of "scouts while doing its normal work", and it is
+	   opportunistic by nature. Note it will not fire mid-delivery or mid-trade:
+	   both hold state.busy (or ARB.cur) for their duration and scoutLoop stands
+	   clear of them deliberately, which is a guarantee worth more than an extra
+	   reading.
+
+	   At home, scoutHeldScan re-reads and re-posts on its own cadence, which is
+	   what keeps the shard from ageing out of the bridge. `scanned` is a
+	   one-shot latch, so without it a parked scout would post once and go
+	   quiet. */
+	if (CONFIG.scout.parked) {
+		const home = mHomeShard();
+		if (here !== home) await scoutGoHome(`parked on ${home}`);
+		else await scoutHeldScan();
+		return;
 	}
 
 	const target = scoutNextShard();

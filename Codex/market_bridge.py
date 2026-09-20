@@ -333,6 +333,12 @@ class Store:
     def ingest(self, body: dict) -> dict:
         char = str(body.get("character") or "?")
         role = "roamer" if body.get("role") == "roamer" else "parked"
+        # A pinned scout holds the shard it is standing on and is not the
+        # bridge's to move. The merchant sets this: it parks on the party's
+        # home shard for reasons that have nothing to do with coverage, so an
+        # assignment elsewhere would be ignored, and the bridge would then be
+        # telling roamers that a shard nobody is on is covered.
+        pinned = bool(body.get("pinned"))
         sh = body.get("shard") or {}
         region, name = str(sh.get("region") or ""), str(sh.get("name") or "")
         key = shard_key(region, name)
@@ -342,6 +348,7 @@ class Store:
             self.bots[char] = {
                 **self.bots.get(char, {}),
                 "role": role, "shard": key, "last": t,
+                "pinned": pinned,
                 "region": region, "name": name,
             }
 
@@ -486,11 +493,24 @@ class Store:
         parked = sorted([c for c, b in live.items() if b.get("role") == "parked"])
         ranked = sorted(known, key=lambda k: self._score(k, t), reverse=True)
 
+        # Pinned scouts are placed first and are simply told where they already
+        # are. Doing this BEFORE the greedy pass is what makes it correct: their
+        # shards leave `free`, so no movable scout is sent to double up on one,
+        # and `parked_shards` above reports the shard actually being held rather
+        # than one the bridge wished for.
+        pinned_result: dict[str, str | None] = {}
+        for c in parked:
+            b = live.get(c, {})
+            if not b.get("pinned"):
+                continue
+            pinned_result[c] = b.get("shard")
+        parked = [c for c in parked if c not in pinned_result]
+
         # Greedy, in a stable order so every bot computes the same picture:
         # each parked scout keeps its shard unless another free shard beats it
         # by the hysteresis margin. Uniqueness is structural - a shard is
         # removed from `free` the moment it is handed out.
-        free = list(ranked)
+        free = [k for k in ranked if k not in set(pinned_result.values())]
         result: dict[str, str | None] = {}
         for c in parked:
             cur = self.bots.get(c, {}).get("assigned")
@@ -503,6 +523,7 @@ class Store:
             if pick in free:
                 free.remove(pick)
 
+        result.update(pinned_result)
         for c, pick in result.items():
             if c in self.bots:
                 self.bots[c]["assigned"] = pick
