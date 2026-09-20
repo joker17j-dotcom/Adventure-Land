@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v39 (the unreachable verdict now counts failed travel attempts instead of wall-clock. The old clock lived in a loop with nothing to do with travel, so a shard hop, a live event, a potion run or a vendor trip condemned a spot that was never walked to - which walked the blacklist down ~55 spots at 180-second intervals. Also ports Merchant.js's travelTo(): smart_move is awaited and caught instead of firing into the void, falls back through town() and retries, is guarded against stacked attempts with a watchdog behind the guard, and records the error and how close it got. Three failures, then the verdict.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v40 (removed the 🔄 button: it hard-killed the merchant's iframe with no cleanup and could lose its queue, and the only other thing it did - disarming teamStarter - a page reload already does. The Farm Spot panel now docks in the game's top-right toolbar immediately left of R&M instead of floating over the map, falling back to the old floating panel if that toolbar isn't rendered.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2013,14 +2013,20 @@ function topButtons() {
 
 	add_top_button('showLoot', '💼', displayLoot);
 
+	/* Freezes the graphics (parent.pause() is a renderer toggle - the character
+	   keeps playing) and arms teamStarter, which restarts any of the three
+	   teammates that isn't running, rechecking every 3s.
+
+	   There is deliberately no matching off-switch button. The old one paired
+	   this with stop_character('Meltymerch'), which removes that character's
+	   iframe outright: a hard kill with no on_destroy, taking the merchant
+	   offline and losing whatever was in state.queue unless a hop had happened
+	   to persist it. Disarming is not worth that - CONFIG is module scope, so
+	   reloading Dexon (or any change_server hop) already resets enabled to
+	   false. */
 	add_top_button('Pause2', '⏸️', () => {
 		pause();
 		CONFIG.characterStarter.enabled = true
-	});
-
-	add_top_button('Stop', '🔄', () => {
-		stop_character('Meltymerch');
-		CONFIG.characterStarter.enabled = false
 	});
 }
 topButtons();
@@ -2588,9 +2594,37 @@ function initializeFarmUI() {
 	const $ = parent.$;
 	if ($('#farm-spot-ui').length > 0) return;
 
+	/* Dock into the game's own top-right toolbar, immediately left of the first
+	   code button (R&M), rather than floating over the map.
+
+	   Two details decide the insertion point:
+
+	   - It goes NEXT TO .codebuttons, never inside it. clear_buttons() is
+	     `$('.codebuttons').html("")` - anything living in that span gets wiped
+	     with the buttons.
+
+	   - #toprightcorner carries `bpclicks`: pointer-events:none on itself,
+	     with `.bpclicks > *` restoring auto for DIRECT children only. A direct
+	     child gets clicks back and its own descendants inherit that, so the
+	     candidate chips and the Auto button stay clickable. A deeper insertion
+	     point would render but swallow every click.
+
+	   If the toolbar isn't there (a UI mode that doesn't render it), fall back
+	   to the old free-floating panel rather than silently having no UI. */
+	const $dock = $('#toprightcorner').children('.codebuttons').first();
+	const docked = $dock.length > 0;
+
+	// Docked, it flows in the toolbar row, so it is sized rather than
+	// positioned - and kept off the left edge on a narrow window. Floating, it
+	// keeps the old fixed placement, drag and resize.
+	const frameStyle = docked
+		? 'display: inline-block; vertical-align: top; width: 600px; max-width: 60vw;'
+		: 'position: fixed; top: 180px; left: 10px; width: 1000px; min-width: 400px; resize: both;';
+	const headerCursor = docked ? 'default' : 'move';
+
 	const uiHtml = `
-		<div id="farm-spot-ui" style="position: fixed; top: 180px; left: 10px; width: 1000px; min-width: 400px; min-height: 60px; background: rgba(0, 0, 0, 0.9); color: #fff; border-radius: 6px; font-family: monospace; font-size: 11px; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.3); box-sizing: border-box; user-select: none; resize: both; overflow: auto;">
-			<div id="farm-spot-header" style="padding: 6px 12px; background: rgba(30, 30, 30, 0.95); border-top-left-radius: 6px; border-top-right-radius: 6px; cursor: move; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #555;">
+		<div id="farm-spot-ui" style="${frameStyle} min-height: 60px; background: rgba(0, 0, 0, 0.9); color: #fff; border-radius: 6px; font-family: monospace; font-size: 11px; z-index: 9999; box-shadow: 0 4px 6px rgba(0,0,0,0.3); box-sizing: border-box; user-select: none; overflow: auto;">
+			<div id="farm-spot-header" style="padding: 6px 12px; background: rgba(30, 30, 30, 0.95); border-top-left-radius: 6px; border-top-right-radius: 6px; cursor: ${headerCursor}; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #555;">
 				<div style="font-weight: bold; display: flex; align-items: center; gap: 6px;">
 					<span>Farm Spot</span>
 					<button id="ui-reset-override" style="background: #444; color: #fff; border: 1px solid #777; cursor: pointer; font-size: 9px; padding: 2px 5px; border-radius: 3px;">Auto</button>
@@ -2603,12 +2637,13 @@ function initializeFarmUI() {
 		</div>
 	`;
 
-	$('body').append(uiHtml);
+	if (docked) $dock.before(uiHtml);
+	else $('body').append(uiHtml);
 
 	let isDragging = false;
 	let startX, startY;
 
-	$(document).off("mousedown", "#farm-spot-header").on("mousedown", "#farm-spot-header", function (e) {
+	if (!docked) $(document).off("mousedown", "#farm-spot-header").on("mousedown", "#farm-spot-header", function (e) {
 		if ($(e.target).is("button")) return;
 		isDragging = true;
 		startX = e.clientX - $("#farm-spot-ui").offset().left;
