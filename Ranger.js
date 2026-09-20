@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v40 (removed the 🔄 button: it hard-killed the merchant's iframe with no cleanup and could lose its queue, and the only other thing it did - disarming teamStarter - a page reload already does. The Farm Spot panel now docks in the game's top-right toolbar immediately left of R&M instead of floating over the map, falling back to the old floating panel if that toolbar isn't rendered.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v41 (the v40 dock never took effect: initializeFarmUI bailed out when a panel already existed, and the panel lives in the PARENT document, which survives a code redeploy - so the old build's panel was always still there and the new layout never ran. It now removes and rebuilds, and the fallback keeps looking for the toolbar instead of floating for the rest of the session.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2588,11 +2588,44 @@ function checkFarmEconomics() {
 setTimeout(runFarmSearch, 8000);
 setInterval(runFarmSearch, FARM_SEARCH.reevaluateIntervalMs);
 
+/* The toolbar is static markup in the game's index.html, so it is normally
+   there long before any CODE runs and the dock succeeds first time. If it
+   somehow is not, keep checking for a while rather than leaving the panel
+   floating for the rest of the session. Only the fallback branch schedules
+   this, so a successful dock costs nothing. */
+const FARM_UI_REDOCK = { tries: 0, max: 10, everyMs: 1000 };
+
+function scheduleFarmUiRedock() {
+	if (FARM_UI_REDOCK.tries >= FARM_UI_REDOCK.max) return;
+	FARM_UI_REDOCK.tries++;
+	setTimeout(() => {
+		if (!parent.$) return;
+		if (parent.$('#toprightcorner').children('.codebuttons').length === 0) {
+			scheduleFarmUiRedock();
+			return;
+		}
+		initializeFarmUI();   // removes the floating panel and rebuilds it docked
+	}, FARM_UI_REDOCK.everyMs);
+}
+
 function initializeFarmUI() {
 	if (character.name !== 'Dexon') return;
 	if (!parent.$) return;
 	const $ = parent.$;
-	if ($('#farm-spot-ui').length > 0) return;
+
+	/* Rebuild rather than bail when a panel already exists.
+
+	   The guard here used to be `if ($('#farm-spot-ui').length) return`, which
+	   is wrong across a code redeploy: the CODE iframe restarts but the PARENT
+	   document does not, so the previous build's panel is still attached to its
+	   body. The new script would find it, return, and never run its own layout -
+	   so a change to where the panel goes could never take effect without a full
+	   page reload, and it looked like the new code had done nothing.
+
+	   Removing first prevents duplicates just as well and relocates too. The
+	   handlers below are all delegated through $(document).off().on(), so they
+	   rebind cleanly rather than stacking. */
+	$('#farm-spot-ui').remove();
 
 	/* Dock into the game's own top-right toolbar, immediately left of the first
 	   code button (R&M), rather than floating over the map.
@@ -2637,8 +2670,12 @@ function initializeFarmUI() {
 		</div>
 	`;
 
-	if (docked) $dock.before(uiHtml);
-	else $('body').append(uiHtml);
+	if (docked) {
+		$dock.before(uiHtml);
+	} else {
+		$('body').append(uiHtml);
+		scheduleFarmUiRedock();
+	}
 
 	let isDragging = false;
 	let startX, startY;
