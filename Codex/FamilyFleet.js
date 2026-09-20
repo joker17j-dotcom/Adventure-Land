@@ -807,3 +807,197 @@ async function reportConfirmed() {
 }
 
 // ---------------------------------------------------------------- hop guard
+
+// ============================================================================
+// SKILLS - use what is unlocked, attempt nothing that is not
+// ============================================================================
+/* Driven entirely by what G declares about each skill rather than by a list
+   written here. Two reasons.
+
+   First, the requirement to honour is "high enough level AND holding the items
+   that unlock it", and the item half is not knowable from a hardcoded table -
+   a ranger's multi-shot needs a bow equipped, and which items count as a bow
+   is G's business, not ours.
+
+   Second, G is served from the datastore and is not in the repository, so any
+   shape written down here would be a guess. This reads the fields if they are
+   there and treats a field it does not recognise as "no restriction" rather
+   than inventing one. The failure mode that matters is refusing to use a skill
+   we could have used, which costs dps; the opposite - attempting one we cannot
+   - is what produces the error spam this is here to avoid. */
+
+function skillDef(name) {
+	try { return (parent.G && parent.G.skills && parent.G.skills[name]) || null; }
+	catch (e) { return null; }
+}
+
+function itemDef(name) {
+	try { return (parent.G && parent.G.items && parent.G.items[name]) || null; }
+	catch (e) { return null; }
+}
+
+/* G expresses "one of these" as either a bare string or an array, depending on
+   the field and the game version. Normalise rather than guessing which. */
+function asList(v) {
+	if (v === undefined || v === null) return null;
+	return Array.isArray(v) ? v : [v];
+}
+
+/* Does the equipped mainhand satisfy a skill's weapon-type requirement? A
+   skill with no wtype has no weapon requirement and passes. */
+function weaponAllows(def) {
+	const want = asList(def.wtype);
+	if (!want) return true;
+	const held = character.slots && character.slots.mainhand;
+	if (!held || !held.name) return false;
+	const it = itemDef(held.name);
+	if (!it) return false;                 // unknown item: refuse rather than assume
+	return want.indexOf(it.wtype) !== -1;
+}
+
+/* Some skills name a slot that must be filled, e.g. an offhand. Expressed as a
+   slot name or a list of them. */
+function slotsAllow(def) {
+	const want = asList(def.slot);
+	if (!want) return true;
+	for (const entry of want) {
+		// Seen as a plain slot name, and as [slot, item] pairs. Handle both.
+		const slot = Array.isArray(entry) ? entry[0] : entry;
+		const item = Array.isArray(entry) ? entry[1] : null;
+		const held = character.slots && character.slots[slot];
+		if (!held || !held.name) return false;
+		if (item && held.name !== item) return false;
+	}
+	return true;
+}
+
+function classAllows(def) {
+	const want = asList(def.class);
+	if (!want) return true;
+	return want.indexOf(character.ctype) !== -1;
+}
+
+function skillOffCooldown(name) {
+	try { return ms_to_next_skill(name) <= 0; } catch (e) { return true; }
+}
+
+/* The single gate. Everything that wants a skill asks this and nothing else,
+   so there is one place to correct when a G field turns out to have a shape
+   this does not expect. */
+function skillReady(name) {
+	const def = skillDef(name);
+	if (!def) return false;                                   // not a skill this game knows
+	if (!classAllows(def)) return false;
+	if (def.level !== undefined && character.level < def.level) return false;
+	if (def.mp !== undefined && character.mp < def.mp) return false;
+	if (!weaponAllows(def)) return false;
+	if (!slotsAllow(def)) return false;
+	if (!skillOffCooldown(name)) return false;
+	return true;
+}
+
+/* Skills this character will reach for, best first. Being on the list is not a
+   claim that it is available - skillReady decides that every tick, so a skill
+   simply starts working the moment the character out-levels or re-equips into
+   it, with no edit here. */
+const RANGER_ROTATION = [
+	{ skill: '5shot', minTargets: 5 },
+	{ skill: '3shot', minTargets: 3 },
+	{ skill: 'supershot', minTargets: 1, buff: true },
+	{ skill: 'huntersmark', minTargets: 1, buff: true, skipIf: (t) => !!(t.s && t.s.marked) },
+];
+
+// ============================================================================
+// RANGER - farm, keep yourself alive, and be in town when the scan is due
+// ============================================================================
+
+const ranger = {
+	spot: null,             // 'goo' | 'crabx'
+	lastReadinessCheck: 0,
+	lastScanAt: 0,
+	lastTownTripAt: 0,
+	parked: false,          // full bag, waiting out the clock in town
+};
+
+function monsterDef(type) {
+	try { return (parent.G && parent.G.monsters && parent.G.monsters[type]) || null; }
+	catch (e) { return null; }
+}
+
+function freeSlots() {
+	try { return character.esize; } catch (e) { return 0; }
+}
+
+/* Our sustained healing throughput, in hp per second.
+
+   An estimate, and labelled as one. A ranger's sustain is potions, so this is
+   potion size over potion cooldown - which ignores regeneration, party heals
+   we do not have, and the fact that a potion cannot be drunk while moving out
+   of range. It is deliberately conservative: the number decides whether to
+   walk a character into a harder spot, and being wrong in the optimistic
+   direction means dying there repeatedly. */
+function healThroughput() {
+	const def = itemDef('hpot1');
+	const heal = (def && def.gives && def.gives[0] && def.gives[0][1]) || 400;
+	const cooldown = 2;     // seconds; the potion cooldown the client enforces
+	return heal / cooldown;
+}
+
+function myDps() {
+	return (character.attack || 0) * (character.frequency || 0);
+}
+
+/* Mitigated damage, the same shape the party's farm scorer uses so the two
+   agree about what a spot costs. */
+function mitigated(dps, defense) {
+	const K = 900;
+	return dps * (1 - (defense / (defense + K)));
+}
+
+/* Is this character comfortably able to farm crabx?
+
+   Three questions, all answered from live stats so the verdict tracks gear and
+   levels rather than being decided once at startup:
+     - past the level floor,
+     - the pack's incoming damage leaves the required headroom against our
+       sustain,
+     - and a single target dies inside a sane window, because standing next to
+       something we cannot kill is not farming.
+
+   Re-checked on a timer, and it demotes as readily as it promotes. */
+function crabxReady() {
+	const cfg = CONFIG.ranger.crabxReady;
+	if (character.level < cfg.minLevel) return false;
+
+	const mob = monsterDef(CONFIG.ranger.spots.crabx.monster);
+	if (!mob) return false;                   // unknown monster: do not gamble
+
+	const incoming = (mob.attack || 0) * (mob.frequency || 1) * cfg.maxAttackers;
+	const sustain = healThroughput();
+	if (incoming * cfg.minSurvivalMargin > sustain) return false;
+
+	const effective = Math.max(mitigated(myDps(), mob.armor || 0), 1);
+	const ttk = (mob.hp || 1) / effective;
+	if (ttk > cfg.maxSecondsToKill) return false;
+
+	return true;
+}
+
+/* Which spot we should be on right now. goo is the floor and is never gated -
+   a character that cannot handle goo has bigger problems than spot selection. */
+function chooseSpot() {
+	const now = Date.now();
+	if (ranger.spot && now - ranger.lastReadinessCheck < CONFIG.ranger.crabxReady.checkEveryMs) {
+		return ranger.spot;
+	}
+	ranger.lastReadinessCheck = now;
+	const want = crabxReady() ? 'crabx' : 'goo';
+	if (want !== ranger.spot) {
+		log(ranger.spot === null
+			? `farming ${want}`
+			: (want === 'crabx' ? 'stats now carry crabx - moving up' : 'crabx is no longer comfortable - dropping back to goo'),
+			want === 'crabx' ? '#7FD98A' : '#E9C46A');
+		ranger.spot = want;
+	}
+	return ranger.spot;
+}
