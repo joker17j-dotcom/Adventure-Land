@@ -1207,3 +1207,315 @@ async function bankRun() {
 	log('gear pass not implemented yet - gold only this window', 'orange');
 	await townTrip('bank window, on the way out');
 }
+
+// ============================================================================
+// GEAR - the plan, and what the account already has against it
+// ============================================================================
+/* The plan is three tiers deep per slot. "Progress" for a slot means the
+   lowest tier whose target the character has not yet met - so a ranger wearing
+   a tier-1 helmet at the tier-1 level is working on tier 2 for that slot, and
+   the slots advance independently. Nothing here assumes a character is
+   uniformly on one tier; in practice they never are. */
+
+const GEAR_SLOTS = Object.keys(RANGER_GEAR[1]);   // tier 2 is fully populated
+
+/* Every item the plan mentions, at any tier, with the tiers it appears in.
+   Built once from RANGER_GEAR so the plan stays the single source of truth. */
+const PLAN_INDEX = (() => {
+	const idx = new Map();
+	RANGER_GEAR.forEach((tier, t) => {
+		for (const slot of Object.keys(tier)) {
+			const spec = tier[slot];
+			if (!spec) continue;
+			let e = idx.get(spec.item);
+			if (!e) { e = { item: spec.item, slots: new Set(), tiers: [] }; idx.set(spec.item, e); }
+			e.slots.add(slot);
+			e.tiers.push({ tier: t, slot, level: spec.level, method: spec.method });
+		}
+	});
+	return idx;
+})();
+
+function isPlanItem(name) {
+	return PLAN_INDEX.has(name);
+}
+
+function itemLevel(it) {
+	return (it && it.level) || 0;
+}
+
+/* Does this item satisfy a plan entry? Name must match exactly; level must be
+   at or above the target. A higher level than asked for still satisfies it -
+   overshooting is not a reason to go looking for a replacement. */
+function satisfies(it, spec) {
+	if (!it || !spec) return false;
+	if (it.name !== spec.item) return false;
+	return itemLevel(it) >= spec.level;
+}
+
+/* The highest plan tier an item would satisfy in a slot, or -1 for none.
+
+   Highest, not first. A tier-3 item usually also satisfies tier 2, and the
+   ranger's helmet line is the clear case: tier 1 is helmet@6 while tiers 2 and
+   3 are both fury. Reading the FIRST unsatisfied tier sent a character wearing
+   fury@9 back to hunt a tier-1 helmet, because fury does not satisfy a spec
+   that names helmet. Progress has to be measured by the best thing an item
+   satisfies, never by the first thing it does not. */
+function planTierOf(item, slot) {
+	let best = -1;
+	for (let t = 0; t < RANGER_GEAR.length; t++) {
+		const spec = RANGER_GEAR[t][slot];
+		if (spec && satisfies(item, spec)) best = t;
+	}
+	return best;
+}
+
+/* The furthest tier this slot has reached. Used for the "enough for three
+   characters of the gear furthest along" rule - which is per slot, because
+   that is the only reading under which it can be satisfied: a single pool of
+   "three sets" across all slots is not something you can hold or act on,
+   whereas three helmets is. */
+function slotReachedTier(slot) {
+	return planTierOf((character.slots && character.slots[slot]) || null, slot);
+}
+
+/* The slot's active goal: the next tier up from whatever it has reached.
+   Returns null once tier 3 is met, which is the only "done" state there is. */
+function slotGoal(slot) {
+	const reached = slotReachedTier(slot);
+	for (let t = reached + 1; t < RANGER_GEAR.length; t++) {
+		const spec = RANGER_GEAR[t][slot];
+		if (spec) return { ...spec, tier: t, slot };
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------- inventories
+function inventoryItems() {
+	const out = [];
+	const items = (character && character.items) || [];
+	items.forEach((it, i) => { if (it && it.name) out.push({ ...it, where: 'inventory', idx: i }); });
+	return out;
+}
+
+/* The bank is split across packs. Enumerate whatever packs are present rather
+   than assuming how many there are - the number has changed with account
+   upgrades and is not ours to hardcode. */
+function bankPacks() {
+	const b = (character && character.bank) || null;
+	if (!b) return [];
+	return Object.keys(b).filter((k) => k.indexOf('items') === 0 && Array.isArray(b[k]));
+}
+
+function bankItems() {
+	const out = [];
+	const b = (character && character.bank) || null;
+	if (!b) return out;
+	for (const pack of bankPacks()) {
+		b[pack].forEach((it, i) => { if (it && it.name) out.push({ ...it, where: 'bank', pack, idx: i }); });
+	}
+	return out;
+}
+
+function equippedItems() {
+	const out = [];
+	const slots = (character && character.slots) || {};
+	for (const slot of Object.keys(slots)) {
+		const it = slots[slot];
+		if (it && it.name) out.push({ ...it, where: 'equipped', slot });
+	}
+	return out;
+}
+
+/* How many copies of a named item the account holds where it counts.
+
+   Worn and banked only - the spec's rule is about what the bank and the
+   characters between them hold, and an item sitting in a bag on its way
+   somewhere is in neither state yet. Counting it would let a bag in transit
+   satisfy the quota and then leave with it. */
+function copiesHeld(name) {
+	let n = 0;
+	for (const it of equippedItems()) if (it.name === name) n += (it.q || 1);
+	for (const it of bankItems()) if (it.name === name) n += (it.q || 1);
+	return n;
+}
+
+/* Should the bank take another of these?
+
+   Base rule: three, one per character on the account that can use it.
+
+   The exception matters more than it looks. Compounding consumes THREE copies
+   to produce one, so a slot still below its compound target needs copies in
+   flight well past the headcount - capping at three would starve the very
+   upgrade the quota exists to serve, and the quota would look satisfied while
+   progress stopped. Upgrade-method items have no such appetite: one is enough
+   to work on, so they cap at three regardless. */
+function bankWantsMore(name) {
+	const entry = PLAN_INDEX.get(name);
+	if (!entry) return false;
+	const held = copiesHeld(name);
+	if (held < CONFIG.gear.copiesWanted) return true;
+	if (!CONFIG.gear.compoundOverstock) return false;
+
+	// Is any tier that uses this item a compound target we have not reached?
+	for (const use of entry.tiers) {
+		if (use.method !== 'compound') continue;
+		if (slotReachedTier(use.slot) < use.tier) return true;
+	}
+	return false;
+}
+
+// ============================================================================
+// GEAR - the three decisions
+// ============================================================================
+/* Everything the bank window does reduces to asking these of each item:
+   wear it, store it for someone else, or let it go. They are deliberately
+   separate and deliberately ordered - equipping is checked first because an
+   upgrade in hand is worth more than the same item in the bank, and selling
+   last because it is the only irreversible one. */
+
+/* Is `candidate` a better answer for `slot` than what is worn there?
+
+   Measured in plan tiers first, then level within a tier. Only the plan's
+   opinion counts: a higher-stat off-plan item is not an upgrade here, because
+   the point of a plan shared across three characters is that they converge on
+   the same items, and one that wanders off it stops being able to hand
+   anything useful to the others.
+
+   Note what this deliberately does NOT do: an item that is the NEXT tier's
+   named item but not yet at its level - a raw fury@0 against a finished
+   helmet@6 - is not an upgrade. Wearing it would drop the slot from reached
+   tier 0 to reached nothing. It is raw material, and shouldBank sends it to
+   the bank where the merchant can work on it. */
+function betterForSlot(candidate, slot) {
+	const planSlots = PLAN_INDEX.get(candidate.name);
+	if (!planSlots || !planSlots.slots.has(slot)) return false;
+
+	const worn = (character.slots && character.slots[slot]) || null;
+	if (!worn) return true;                        // empty slot, anything on-plan beats nothing
+
+	const mine = planTierOf(candidate, slot);
+	const theirs = planTierOf(worn, slot);
+	if (mine !== theirs) return mine > theirs;
+	// Same tier: a higher level is progress toward the next one, but only when
+	// it is the same item - levels are not comparable across item names.
+	if (candidate.name !== worn.name) return false;
+	return itemLevel(candidate) > itemLevel(worn);
+}
+
+/* Which slot, if any, this item should be worn in. An item can appear in more
+   than one slot in the plan (two rings, two earrings), so this returns the
+   first slot it actually improves rather than the first slot it belongs to. */
+function slotToEquip(candidate) {
+	const entry = PLAN_INDEX.get(candidate.name);
+	if (!entry) return null;
+	for (const slot of entry.slots) {
+		if (betterForSlot(candidate, slot)) return slot;
+	}
+	return null;
+}
+
+/* Should this go in the bank for one of the others?
+
+   Three conditions, all necessary: it is on the plan, it is not an upgrade for
+   us right now, and the bank still wants copies of it. The middle one is what
+   stops a character banking the item it is about to equip, and the last is
+   what stops the bank filling with a fourth and fifth copy of something two
+   characters already wear. */
+function shouldBank(item) {
+	if (!isPlanItem(item.name)) return false;
+	if (slotToEquip(item)) return false;
+	return bankWantsMore(item.name);
+}
+
+/* Should this be sold to an NPC?
+
+   Only after the bank has had its pick, and never for tier 3 at any level -
+   that is the spec's rule and it is the right one: a tier-3 name in the bag is
+   either progress or the raw material for it.
+
+   Beyond that, anything the plan mentions is spared while the bank still wants
+   copies. An on-plan item the bank is full of is genuinely surplus and may
+   go - otherwise a finished slot would keep accumulating copies nobody can
+   use and nothing could ever be cleared. */
+function shouldSell(item) {
+	if (NEVER_SELL.has(item.name)) return false;
+	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
+	return true;
+}
+
+/* Items that can be compounded right now: three identical names at an
+   identical level. Compounding is what the "buy the item to do so and combine
+   them to save space" rule is about - three slots become one, and the result
+   is a level higher than any of them. */
+function findCompoundTriples() {
+	const groups = new Map();
+	for (const it of inventoryItems()) {
+		const key = it.name + '@' + itemLevel(it);
+		if (!groups.has(key)) groups.set(key, []);
+		groups.get(key).push(it);
+	}
+	const out = [];
+	for (const [key, list] of groups) {
+		for (let i = 0; i + 2 < list.length; i += 3) {
+			out.push({
+				name: list[i].name,
+				level: itemLevel(list[i]),
+				slots: [list[i].idx, list[i + 1].idx, list[i + 2].idx],
+			});
+		}
+	}
+	return out;
+}
+
+/* The scroll a compound needs, by the item's grade. Read from the game rather
+   than mapped here: grade thresholds are item data and have moved before. */
+function compoundScrollFor(item) {
+	let grade = 0;
+	try { grade = item_grade(item) || 0; } catch (e) { grade = 0; }
+	return 'cscroll' + Math.max(0, Math.min(2, grade));
+}
+
+function findInventory(name) {
+	const items = (character && character.items) || [];
+	for (let i = 0; i < items.length; i++) if (items[i] && items[i].name === name) return i;
+	return -1;
+}
+
+/* Buy the scroll if we do not have one, then compound. Returns true if a
+   compound was actually attempted, so the caller can re-read the inventory
+   rather than working from a stale picture - the slot indices move. */
+async function tryCompound(triple) {
+	const sample = { name: triple.name, level: triple.level };
+	const scroll = compoundScrollFor(sample);
+	let scrollIdx = findInventory(scroll);
+	if (scrollIdx < 0) {
+		try { await buy(scroll, 1); } catch (e) {
+			log(`could not buy ${scroll} for ${triple.name}: ${e && e.reason ? e.reason : e}`, 'orange');
+			return false;
+		}
+		scrollIdx = findInventory(scroll);
+		if (scrollIdx < 0) return false;
+	}
+	try {
+		await compound(triple.slots[0], triple.slots[1], triple.slots[2], scrollIdx);
+		log(`compounded 3x ${triple.name}+${triple.level}`, '#7FD98A');
+		return true;
+	} catch (e) {
+		log(`compound of ${triple.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+		return false;
+	}
+}
+
+/* One pass of compounding. Bounded, and re-reads between attempts because a
+   successful compound renumbers every slot after the ones it consumed. */
+async function compoundPass(maxAttempts) {
+	let done = 0;
+	for (let i = 0; i < (maxAttempts || 8); i++) {
+		const triples = findCompoundTriples();
+		if (!triples.length) break;
+		if (await tryCompound(triples[0])) done++;
+		else break;                                // a failure will just repeat
+	}
+	return done;
+}
