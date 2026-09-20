@@ -203,7 +203,29 @@ const CONFIG = {
 	},
 
 	// ---------------------------------------------------------- the merchant
+	/* THE MERCHANT NEVER OPENS A STAND, AND BARELY MOVES.
+
+	   No stand: this character is reading the market and running the account's
+	   gear economy, not competing in the market. Nothing here calls open_stand
+	   and nothing should - a stand would also pin it in place and make its
+	   position a commitment rather than a choice.
+
+	   Barely moves: everything it needs is reachable from scout.townSpot.
+	   Lucas for scrolls, Cue for upgrades and compounds, Gabriel for basics and
+	   selling, Ponty for secondhand stock, and the whole stand cluster in the
+	   vision box - all from one point, measured. A character keeps its position
+	   across change_server, so a merchant parked on that spot arrives on it
+	   after every hop and needs no walk at all.
+
+	   The ONLY sanctioned movement is the bank run: out to the bank map and
+	   back. Anything else that moves this character is a bug, and the two
+	   things that would most plausibly introduce one are walking to an NPC that
+	   is already in range, and walking "back" to a spot it never left. */
 	merchant: {
+		// Leaving the spot is a bank trip and nothing else. Kept as a flag rather
+		// than an assumption so that anything that wants to move the merchant has
+		// to say so explicitly and be seen doing it.
+		moveOnlyForBank: true,
 		// Mirror of bank.rangerKeepGold. Below the floor the merchant draws the
 		// bank down to leaveInBank; at or above it, it withdraws nothing.
 		goldFloor: 10000000,

@@ -1,5 +1,10 @@
 // ============================================================================
 // MerchantScout - market + Ponty scanner for up to 4 merchant characters
+//
+// NO STAND. This never calls open_stand, by design: a scout is reading the
+// market, not competing in it, and a stand would also anchor it where it
+// stands. scanStands() skips our own name anyway, so a stand opened by
+// something else is still not mistaken for market data.
 // ============================================================================
 // Run this as the CODE for each scout merchant. One file, both roles; the role
 // is resolved from CONFIG.roles below, so there is nothing to edit per
@@ -184,8 +189,20 @@ function deriveScanSpots() {
 	return spots;
 }
 
+/* Travel only when we are not already there.
+
+   A character keeps its position across change_server - observed rather than
+   assumed: after a live rotation the scout was standing on Ponty's exact
+   coordinates on the shard it finished on, carried over from the shard before.
+   So a roamer that starts on the town spot arrives on the town spot, every
+   hop, and calling smart_move to where it already stands is a call that can
+   fail or hang for no gain.
+
+   The walk is kept for the cases that need it: the first load, and anything
+   that displaces the character. */
 async function goTo(spot) {
 	if (!spot) return false;
+	if (atSpot(spot)) return true;
 	try {
 		await smart_move({ map: spot.map, x: spot.x, y: spot.y });
 		return true;
@@ -381,17 +398,28 @@ function scanPonty() {
 	});
 }
 
+/* Are we standing on this spot already?
+
+   real_x / real_y, never x / y. On the top window those are screen
+   coordinates - measured at (1147, 416) while the character stood at
+   (-123, -52) - and NPC entities have .x === .real_x, so the discrepancy is
+   invisible until something cross-checks. It has cost this project once
+   already. */
+function atSpot(spot, within) {
+	if (!spot) return false;
+	const c = character || {};
+	if (c.map !== spot.map) return false;
+	const x = c.real_x != null ? c.real_x : c.x;
+	const y = c.real_y != null ? c.real_y : c.y;
+	const dx = x - spot.x, dy = y - spot.y;
+	return Math.sqrt(dx * dx + dy * dy) <= (within || 60);
+}
+
 /* Ponty is in range from the town spot - measured at 286.1, with the call
    returning 225 items from exactly there - so standing on it is enough and the
    walk is pure cost. Only travel when we are somewhere else. */
 function atTownSpot() {
-	const spot = CONFIG.townSpot;
-	if (!spot) return false;
-	const c = character || {};
-	const x = c.real_x != null ? c.real_x : c.x;
-	const y = c.real_y != null ? c.real_y : c.y;
-	if (c.map !== spot.map) return false;
-	return Math.sqrt((x - spot.x) * (x - spot.x) + (y - spot.y) * (y - spot.y)) <= 60;
+	return atSpot(CONFIG.townSpot);
 }
 
 async function pontyCheck() {
