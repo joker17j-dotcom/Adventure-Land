@@ -6,8 +6,8 @@ Things deliberately left unfinished, with enough context to pick them up cold.
 
 ## 1. The farm-spot auto-blacklist ratchets until nothing is left to farm
 
-**Status:** root cause identified, not yet fixed; whitelist workaround in place.
-Priority: high — it disables farming outright.
+**Status:** root cause fixed in v39 / v21 / v45. Two follow-ups left (below).
+Priority: was high — it disabled farming outright.
 
 ### What happens
 
@@ -82,25 +82,44 @@ there — written because a seasonal map can lose its route out once the event
 ends. Porting it gives the other three both the fallback and, more valuably, an
 actual error message instead of silence.
 
-### The fix
+### The fix — done (Ranger v39, Priest v21, Mage v45)
 
-1. **Change the unit.** Count *failed travel attempts*, not elapsed wall-clock.
-   Only advance the counter when travel was actually attempted and failed. This
-   alone kills the ladder: no attempt, no count, no blacklist.
-2. **Port `travelTo()`** into `Ranger.js` / `Priest.js` / `Mage.js`, with an
-   in-flight guard (same shape as `state.sellingOff`) so the tick loop cannot
-   stack concurrent attempts on an async helper.
-3. **Bound the town fallback.** N retries (3 is reasonable), then blacklist.
-   Do *not* make the timer pause-and-reset on reaching town without a cap:
-   nearly every map has a town and `town()` works from almost anywhere, so an
-   uncapped version can never fire — a genuinely unreachable spot would loop
-   town → attempt → fail → town forever, never blacklisted and never farmed.
-   That trades one no-exit loop for another.
-4. **Record what happened.** `distance(character, destination)` and the
-   rejection reason at the moment of the verdict, in the blacklist entry.
-5. Still worth doing from the original list: expire entries rather than keeping
-   them forever, and give routing verdicts and economics verdicts separate
-   lifetimes.
+1. **The unit changed.** The verdict now fires on `travelState.failures >=
+   TRAVEL.maxAttempts` (3), counted only when a travel attempt actually ran and
+   failed. `UNREACHABLE_TIMEOUT_MS` is gone from all three scripts. No attempt,
+   no count, no blacklist — so a shard hop, a live event, a potion run or a
+   vendor trip can no longer condemn a spot nobody walked to.
+2. **`travelTo()` ported** into all three scripts from `Merchant.js`. It awaits
+   `smart_move`, catches the rejection, falls back through `town()`, and retries
+   the real route from there. `travelState.inFlight` keeps the synchronous tick
+   loops from stacking concurrent attempts on an async helper, and
+   `travelWatchdog()` orphans an attempt that outlives `attemptTimeoutMs`
+   (3 min) — `attemptId` makes the orphan's late resolution a no-op — so a
+   `smart_move` that never settles is counted as the failure it is rather than
+   hiding behind the guard forever.
+3. **The town fallback is capped** at 3 failed attempts, each of which has
+   already been through `town()` once. Then the spot is judged.
+4. **The verdict records what happened**: number of attempts, the rejection
+   reason, and how close he got — measured *before* `town()` relocates him,
+   since "142 units short on winterland" is the diagnostic and "where town is"
+   is not. Stored on the blacklist entry under `details`, and carried across
+   the party link so a healer's report arrives with the same fields.
+
+Fixed in passing: `handleReturnHome()` compared `distance(character, destination)`
+without checking the map, so matching coordinates on the wrong map read as
+"arrived" and travel never happened.
+
+### Still open
+
+- **Expire blacklist entries.** They are still permanent once written. Now that
+  the verdict is earned they are far rarer, but a spot blocked by a temporary
+  condition stays condemned forever.
+- **Separate lifetimes for the two verdicts.** A routing failure and a
+  net-negative-xp result share one blacklist and one expiry policy; they should
+  not.
+- **Clear the existing damage.** The ~55 entries already in storage were all
+  written by the old clock and none of them mean anything. `clearBlacklist()`
+  from the console wipes them; the coded lists are unaffected.
 
 ### Ruled out
 

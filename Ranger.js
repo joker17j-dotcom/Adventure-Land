@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v38 (the auto-blacklist had ratcheted through ~55 farm spots and was heading for all of them, so two coded lists now bound it: PERMANENT_WHITELIST spots can never be blacklisted and are un-blacklisted on read, PERMANENT_BLACKLIST spots are never scored at all, and if scoring rejects everything the whitelist is used unscored rather than farming nothing. Stopgap - see the TASK note above spotKey().)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v39 (the unreachable verdict now counts failed travel attempts instead of wall-clock. The old clock lived in a loop with nothing to do with travel, so a shard hop, a live event, a potion run or a vendor trip condemned a spot that was never walked to - which walked the blacklist down ~55 spots at 180-second intervals. Also ports Merchant.js's travelTo(): smart_move is awaited and caught instead of firing into the void, falls back through town() and retries, is guarded against stacked attempts with a watchdog behind the guard, and records the error and how close it got. Three failures, then the verdict.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -1164,13 +1164,167 @@ const dragold = {
 	}
 };
 
+// ============================================================================
+// TRAVEL HELPER - a smart_move that reports its own failures
+// ============================================================================
+// Ported from Merchant.js travelTo(). Two jobs.
+//
+// 1. SURFACE THE FAILURE. handleReturnHome() used to call smart_move() with no
+//    await and no .catch(). A rejection became an unhandled promise rejection
+//    and vanished, smart.moving went false, and the next tick re-issued it -
+//    a silent hot loop indistinguishable, from outside, from walking there
+//    slowly. Now every attempt ends in a verdict: arrived, or failed with a
+//    reason and a distance.
+//
+// 2. FALL BACK THROUGH town(). A seasonal or event map can lose its route out
+//    once the event ends. town() gets us somewhere routable, and the real
+//    route is tried again from there.
+//
+// WHY A COUNTER AND NOT A CLOCK. The unreachable verdict used to fire on
+// wall-clock since the spot was assigned, measured in a loop that has nothing
+// to do with travel - so a shard hop, a live event, a potion run or a trip to
+// the vendor blacklisted the spot merely for taking three minutes, while
+// travel was often never attempted at all. That is what walked the auto-
+// blacklist down the whole candidate list at 180-second intervals. Counting
+// failed ATTEMPTS judges a spot only on something it is responsible for.
+//
+// WHY THE IN-FLIGHT GUARD. The tick loops are synchronous and this is not;
+// without it each tick would stack another attempt on the last. Same shape as
+// the sell-off stand-down.
+//
+// WHY THE WATCHDOG. An in-flight guard is itself a new way to hang: if
+// smart_move never settles, inFlight stays true, no attempt ever completes,
+// and nothing is ever judged. The watchdog orphans an attempt that outlives
+// attemptTimeoutMs - bumping attemptId makes the orphan's late resolution a
+// no-op - and counts it as the failure it is.
+// ============================================================================
+const TRAVEL = {
+	maxAttempts: 3,                  // failed attempts before the spot is judged unreachable
+	attemptTimeoutMs: 3 * 60 * 1000, // an attempt that outlives this never settled
+};
+
+const travelState = {
+	inFlight: false,
+	attemptId: 0,
+	startedAt: 0,
+	failures: 0,         // consecutive failures against `target`
+	lastError: null,
+	lastDistance: null,  // readable: how far off we were when it failed
+	target: null,
+};
+
+function travelKey(dest) {
+	return dest ? `${dest.map}|${Math.round(dest.x)}|${Math.round(dest.y)}` : null;
+}
+
+function travelWhy(e) {
+	return (e && (e.reason || e.message)) || String(e);
+}
+
+/* Where we ended up relative to the target, for the blacklist entry. Across
+   maps an x/y distance is meaningless, so say that instead of printing a
+   number that reads like one. */
+function travelDistanceNote(dest) {
+	if (!dest) return 'no destination';
+	if (character.map !== dest.map) return `stuck on ${character.map}, target is on ${dest.map}`;
+	return `${Math.round(distance(character, dest))} units short on ${dest.map}`;
+}
+
+/* Failures count against ONE destination. A new spot starts at zero - without
+   this, a spot inherits the previous spot's strikes and is condemned before it
+   has been tried even once. */
+function noteTravelTarget(dest) {
+	const key = travelKey(dest);
+	if (key === travelState.target) return;
+	travelState.target = key;
+	travelState.failures = 0;
+	travelState.lastError = null;
+	travelState.lastDistance = null;
+}
+
+function travelArrived() {
+	travelState.failures = 0;
+	travelState.lastError = null;
+	travelState.lastDistance = null;
+}
+
+/* `note` is how close we got BEFORE town() moved us. Pass it whenever it is
+   known: "142 units short" is the diagnostic that distinguishes a pathing
+   problem at the target from a spot he never got near, and reading the
+   position after the town() fallback would report where town is instead. */
+function noteTravelFailure(dest, why, note) {
+	travelState.failures++;
+	travelState.lastError = why;
+	travelState.lastDistance = note || travelDistanceNote(dest);
+	game_log(`Travel attempt ${travelState.failures}/${TRAVEL.maxAttempts} failed: ${why} (${travelState.lastDistance})`, 'orange');
+}
+
+/* One sentence for a log line or a blacklist entry. */
+function travelFailureDetail() {
+	return `${travelState.failures} failed travel attempts; last error: ${travelState.lastError}; ${travelState.lastDistance}`;
+}
+
+async function travelTo(dest) {
+	if (!dest || travelState.inFlight) return false;
+	noteTravelTarget(dest);
+
+	const myAttempt = ++travelState.attemptId;
+	const mine = () => travelState.attemptId === myAttempt;
+	travelState.inFlight = true;
+	travelState.startedAt = Date.now();
+
+	let closest = null;   // how near we got before town() relocated us
+	try {
+		try {
+			await smart_move(dest);
+			if (mine()) travelArrived();
+			return true;
+		} catch (e) {
+			if (!mine()) return false;   // the watchdog already gave up on this attempt
+			travelState.lastError = travelWhy(e);
+			closest = travelDistanceNote(dest);
+		}
+
+		// town() only reaches the CURRENT map's town point, so it is a way out
+		// of a dead end rather than a way to the target - the real route still
+		// has to be tried again afterwards.
+		try {
+			await town();
+		} catch (e) {
+			if (mine()) noteTravelFailure(dest, `no route (${travelState.lastError}) and town() failed too (${travelWhy(e)})`, closest);
+			return false;
+		}
+		if (!mine()) return false;
+
+		try {
+			await smart_move(dest);
+			if (mine()) travelArrived();
+			return true;
+		} catch (e) {
+			if (mine()) noteTravelFailure(dest, `still no route after town(): ${travelWhy(e)}`, closest);
+			return false;
+		}
+	} finally {
+		if (mine()) travelState.inFlight = false;
+	}
+}
+
+function travelWatchdog(dest) {
+	if (!travelState.inFlight) return;
+	if (Date.now() - travelState.startedAt < TRAVEL.attemptTimeoutMs) return;
+	travelState.attemptId++;        // orphan it: the late resolution becomes a no-op
+	travelState.inFlight = false;
+	noteTravelFailure(dest, `smart_move never returned after ${Math.round(TRAVEL.attemptTimeoutMs / 1000)}s`);
+}
+
 function handleReturnHome() {
 	if (!destination) return;
-	if (distance(character, destination) < 20) return;
-
-	if (!smart.moving) {
-		smart_move(destination);
-	}
+	noteTravelTarget(destination);
+	// Only compare positions on the same map - an x/y distance across maps is
+	// meaningless, and a coincidental match would park us on the wrong map.
+	if (character.map === destination.map && distance(character, destination) < 20) return;
+	if (smart.moving || travelState.inFlight) return;
+	travelTo(destination);   // handles its own failures; nothing here can reject
 }
 
 async function walkInCircle() {
@@ -2014,7 +2168,6 @@ const economicsTracker = {
 };
 
 const ARRIVAL_RADIUS = 100;
-const UNREACHABLE_TIMEOUT_MS = 3 * 60 * 1000;
 
 const arrivalState = {
 	assignedAt: null,
@@ -2109,7 +2262,7 @@ function getBlacklist() {
 // Returns the key on success, or null if the spot is whitelisted and the
 // report was refused. Callers must check - "nothing was blacklisted" is a
 // different outcome from "blacklisted", not an error.
-function addToBlacklist(home, mobMap, reason, reportedBy) {
+function addToBlacklist(home, mobMap, reason, reportedBy, details) {
 	const key = spotKey(home, mobMap);
 	if (isWhitelistedSpot(key)) {
 		game_log(`Refused to blacklist "${key}" - permanent whitelist (was: ${reason})`, 'orange');
@@ -2117,6 +2270,7 @@ function addToBlacklist(home, mobMap, reason, reportedBy) {
 	}
 	const blacklist = getBlacklist();
 	blacklist[key] = { reason, reportedBy, blacklistedAt: Date.now() };
+	if (details) blacklist[key].details = details;
 	set(BLACKLIST_STORAGE_KEY, blacklist);
 	return key;
 }
@@ -2345,6 +2499,7 @@ function runFarmSearch() {
 			arrivalState.assignedAt = Date.now();
 			arrivalState.reachedAt = null;
 			arrivalState.reported = false;
+			noteTravelTarget(destination);
 		}
 		sendFarmSpot();
 		updateFarmUI();
@@ -2361,20 +2516,33 @@ function checkFarmEconomics() {
 		economicsTracker.lastCheckTime = Date.now();
 		economicsTracker.consecutiveBadSamples = 0;
 
-		if (!arrivalState.reported && arrivalState.assignedAt &&
-			Date.now() - arrivalState.assignedAt > UNREACHABLE_TIMEOUT_MS) {
+		// The verdict runs on failed travel ATTEMPTS, not on elapsed time. This
+		// loop is independent of the one that travels, so a clock here measures
+		// shard hops, live events, potion runs and vendor trips just as happily
+		// as it measures a bad route - which is how the blacklist ate ~55 spots
+		// at exactly 180-second intervals without ever calling smart_move.
+		noteTravelTarget(destination);
+		travelWatchdog(destination);
+
+		if (!arrivalState.reported && travelState.failures >= TRAVEL.maxAttempts) {
 			arrivalState.reported = true;
-			const stuckSec = Math.round((Date.now() - arrivalState.assignedAt) / 1000);
+			const detail = travelFailureDetail();
 			if (isWhitelistedSpot(spotKey(home, mobMap))) {
-				// Whitelisted: keep walking. handleReturnHome() re-issues smart_move
-				// whenever it isn't already moving, so staying here means "keep
+				// Whitelisted: keep walking. handleReturnHome() re-issues travelTo()
+				// whenever nothing is in flight, so staying here means "keep
 				// trying", not "give up". reported stays true so this logs once
 				// instead of every tick.
-				game_log(`Still haven't reached ${home}@${mobMap} after ${stuckSec}s - whitelisted, so staying put and still trying`, 'orange');
+				game_log(`Can't route to ${home}@${mobMap} (${detail}) - whitelisted, so staying put and still trying`, 'orange');
 				return;
 			}
-			game_log(`Still haven't reached ${home}@${mobMap} after ${stuckSec}s - blacklisting as unreachable`, 'red');
-			addToBlacklist(home, mobMap, `Dexon couldn't reach this spot (stuck ${stuckSec}s without arriving)`, 'Dexon');
+			const assignedSec = arrivalState.assignedAt ? Math.round((Date.now() - arrivalState.assignedAt) / 1000) : null;
+			game_log(`Can't route to ${home}@${mobMap} (${detail}) - blacklisting as unreachable`, 'red');
+			addToBlacklist(home, mobMap, `Dexon couldn't route here - ${detail}`, 'Dexon', {
+				attempts: travelState.failures,
+				lastError: travelState.lastError,
+				stoppedAt: travelState.lastDistance,
+				assignedSecAgo: assignedSec,
+			});
 			runFarmSearch();
 		}
 		return;
@@ -2382,6 +2550,7 @@ function checkFarmEconomics() {
 
 	if (arrivalState.reachedAt === null) {
 		arrivalState.reachedAt = Date.now();
+		travelArrived();
 		economicsTracker.lastGold = character.gold;
 		economicsTracker.lastCheckTime = Date.now();
 		economicsTracker.consecutiveBadSamples = 0;
@@ -2522,7 +2691,7 @@ function on_cm(name, data) {
 	}
 
 	if ((name === 'FatherToken' || name === 'MageofOz') && data.message === 'blacklist_spot') {
-		const key = addToBlacklist(data.home, data.mobMap, data.reason, name);
+		const key = addToBlacklist(data.home, data.mobMap, data.reason, name, data.details);
 		if (!key) return;   // whitelisted - addToBlacklist said so, and nothing changed
 		game_log(`Blacklisted "${key}" - ${data.reason} (reported by ${name})`, 'red');
 		if (manualOverride && spotKey(manualOverride.home, manualOverride.mobMap) === key) {

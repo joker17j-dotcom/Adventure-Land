@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v20 (restored the _plshard stamp in plSend. The standalone party_link.js used to build v19 predated it, so relay-delivered requests reached Meltymerch with no sender shard and were filed under wherever the merchant happened to be - the exact mis-attribution its on_cm comment warns about.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v21 (the unreachable verdict now counts failed travel attempts instead of wall-clock. The old clock lived in a loop with nothing to do with travel, so a shard hop, a live event, a potion run or a vendor trip condemned a spot that was never walked to - which walked the blacklist down ~55 spots at 180-second intervals. Also ports Merchant.js's travelTo(): smart_move is awaited and caught instead of firing into the void, falls back through town() and retries, is guarded against stacked attempts with a watchdog behind the guard, and records the error and how close it got. Three failures, then the verdict.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -404,8 +404,6 @@ let destination = null;
 // one, and sampling doesn't start until arrival - otherwise travel time
 // would unfairly count against the spot.
 // ============================================================================
-const UNREACHABLE_TIMEOUT_MS = 5 * 60 * 1000; // assigned but never arrived after this long - something (e.g. a stuck smart_move) is blocking travel entirely
-
 const xpTracker = {
 	lastXp: character.xp,
 	lastLevel: character.level,
@@ -428,6 +426,7 @@ function resetXpTracker() {
 	xpTracker.arrivedAtSpot = (character.map === mobMap); // already there - no travel needed
 	xpTracker.assignedAt = Date.now();
 	xpTracker.reportedUnreachable = false;
+	noteTravelTarget(destination);
 	xpTracker.lastXp = character.xp;
 	xpTracker.lastLevel = character.level;
 	xpTracker.lastCheckTime = Date.now();
@@ -451,26 +450,35 @@ function checkOwnXpEconomics() {
 			// from whenever the spot was assigned (which may have included
 			// travel time).
 			xpTracker.arrivedAtSpot = true;
+			travelArrived();
 			xpTracker.lastXp = character.xp;
 			xpTracker.lastLevel = character.level;
 			xpTracker.lastCheckTime = Date.now();
 			return;
 		}
 
-		// Still traveling. If this drags on far longer than any reasonable
-		// travel time, something is actually preventing arrival (a stuck
-		// smart_move, an unreachable map, etc.) - report it the same way as
-		// a bad-xp spot so Dexon blacklists it and moves the party on,
-		// rather than waiting here forever with the 3-strike counter never
-		// even starting.
-		if (!xpTracker.reportedUnreachable && Date.now() - xpTracker.assignedAt > UNREACHABLE_TIMEOUT_MS) {
+		// Still traveling. Judge the spot on failed travel ATTEMPTS, never on
+		// elapsed time: this loop is independent of the one that travels, so a
+		// clock here counts shard hops, live events and vendor trips against a
+		// spot nobody tried to walk to. Three real failures - each of which has
+		// already fallen back through town() - and Dexon hears about it.
+		noteTravelTarget(destination);
+		travelWatchdog(destination);
+		if (!xpTracker.reportedUnreachable && travelState.failures >= TRAVEL.maxAttempts) {
 			xpTracker.reportedUnreachable = true;
-			game_log(`Still haven't reached ${home}@${mobMap} after ${Math.round(UNREACHABLE_TIMEOUT_MS / 60000)} minutes - reporting to Dexon for blacklist`, 'red');
+			const detail = travelFailureDetail();
+			game_log(`Can't route to ${home}@${mobMap} (${detail}) - reporting to Dexon for blacklist`, 'red');
 			plSend('Dexon', {
 				message: 'blacklist_spot',
 				home,
 				mobMap,
-				reason: `${character.name} couldn't reach ${home}@${mobMap} after ${Math.round(UNREACHABLE_TIMEOUT_MS / 60000)} minutes - likely unreachable`,
+				reason: `${character.name} couldn't route to ${home}@${mobMap} - ${detail}`,
+				details: {
+					attempts: travelState.failures,
+					lastError: travelState.lastError,
+					stoppedAt: travelState.lastDistance,
+					assignedSecAgo: xpTracker.assignedAt ? Math.round((Date.now() - xpTracker.assignedAt) / 1000) : null,
+				},
 			});
 		}
 		return;
@@ -1166,12 +1174,167 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
 	}
 }
 
-function handleReturnHome() {
-	if (distance(character, destination) < 20) return;
+// ============================================================================
+// TRAVEL HELPER - a smart_move that reports its own failures
+// ============================================================================
+// Ported from Merchant.js travelTo(). Two jobs.
+//
+// 1. SURFACE THE FAILURE. handleReturnHome() used to call smart_move() with no
+//    await and no .catch(). A rejection became an unhandled promise rejection
+//    and vanished, smart.moving went false, and the next tick re-issued it -
+//    a silent hot loop indistinguishable, from outside, from walking there
+//    slowly. Now every attempt ends in a verdict: arrived, or failed with a
+//    reason and a distance.
+//
+// 2. FALL BACK THROUGH town(). A seasonal or event map can lose its route out
+//    once the event ends. town() gets us somewhere routable, and the real
+//    route is tried again from there.
+//
+// WHY A COUNTER AND NOT A CLOCK. The unreachable verdict used to fire on
+// wall-clock since the spot was assigned, measured in a loop that has nothing
+// to do with travel - so a shard hop, a live event, a potion run or a trip to
+// the vendor blacklisted the spot merely for taking three minutes, while
+// travel was often never attempted at all. That is what walked the auto-
+// blacklist down the whole candidate list at 180-second intervals. Counting
+// failed ATTEMPTS judges a spot only on something it is responsible for.
+//
+// WHY THE IN-FLIGHT GUARD. The tick loops are synchronous and this is not;
+// without it each tick would stack another attempt on the last. Same shape as
+// the sell-off stand-down.
+//
+// WHY THE WATCHDOG. An in-flight guard is itself a new way to hang: if
+// smart_move never settles, inFlight stays true, no attempt ever completes,
+// and nothing is ever judged. The watchdog orphans an attempt that outlives
+// attemptTimeoutMs - bumping attemptId makes the orphan's late resolution a
+// no-op - and counts it as the failure it is.
+// ============================================================================
+const TRAVEL = {
+	maxAttempts: 3,                  // failed attempts before the spot is judged unreachable
+	attemptTimeoutMs: 3 * 60 * 1000, // an attempt that outlives this never settled
+};
 
-	if (!smart.moving) {
-		smart_move(destination);
+const travelState = {
+	inFlight: false,
+	attemptId: 0,
+	startedAt: 0,
+	failures: 0,         // consecutive failures against `target`
+	lastError: null,
+	lastDistance: null,  // readable: how far off we were when it failed
+	target: null,
+};
+
+function travelKey(dest) {
+	return dest ? `${dest.map}|${Math.round(dest.x)}|${Math.round(dest.y)}` : null;
+}
+
+function travelWhy(e) {
+	return (e && (e.reason || e.message)) || String(e);
+}
+
+/* Where we ended up relative to the target, for the blacklist entry. Across
+   maps an x/y distance is meaningless, so say that instead of printing a
+   number that reads like one. */
+function travelDistanceNote(dest) {
+	if (!dest) return 'no destination';
+	if (character.map !== dest.map) return `stuck on ${character.map}, target is on ${dest.map}`;
+	return `${Math.round(distance(character, dest))} units short on ${dest.map}`;
+}
+
+/* Failures count against ONE destination. A new spot starts at zero - without
+   this, a spot inherits the previous spot's strikes and is condemned before it
+   has been tried even once. */
+function noteTravelTarget(dest) {
+	const key = travelKey(dest);
+	if (key === travelState.target) return;
+	travelState.target = key;
+	travelState.failures = 0;
+	travelState.lastError = null;
+	travelState.lastDistance = null;
+}
+
+function travelArrived() {
+	travelState.failures = 0;
+	travelState.lastError = null;
+	travelState.lastDistance = null;
+}
+
+/* `note` is how close we got BEFORE town() moved us. Pass it whenever it is
+   known: "142 units short" is the diagnostic that distinguishes a pathing
+   problem at the target from a spot he never got near, and reading the
+   position after the town() fallback would report where town is instead. */
+function noteTravelFailure(dest, why, note) {
+	travelState.failures++;
+	travelState.lastError = why;
+	travelState.lastDistance = note || travelDistanceNote(dest);
+	game_log(`Travel attempt ${travelState.failures}/${TRAVEL.maxAttempts} failed: ${why} (${travelState.lastDistance})`, 'orange');
+}
+
+/* One sentence for a log line or a blacklist entry. */
+function travelFailureDetail() {
+	return `${travelState.failures} failed travel attempts; last error: ${travelState.lastError}; ${travelState.lastDistance}`;
+}
+
+async function travelTo(dest) {
+	if (!dest || travelState.inFlight) return false;
+	noteTravelTarget(dest);
+
+	const myAttempt = ++travelState.attemptId;
+	const mine = () => travelState.attemptId === myAttempt;
+	travelState.inFlight = true;
+	travelState.startedAt = Date.now();
+
+	let closest = null;   // how near we got before town() relocated us
+	try {
+		try {
+			await smart_move(dest);
+			if (mine()) travelArrived();
+			return true;
+		} catch (e) {
+			if (!mine()) return false;   // the watchdog already gave up on this attempt
+			travelState.lastError = travelWhy(e);
+			closest = travelDistanceNote(dest);
+		}
+
+		// town() only reaches the CURRENT map's town point, so it is a way out
+		// of a dead end rather than a way to the target - the real route still
+		// has to be tried again afterwards.
+		try {
+			await town();
+		} catch (e) {
+			if (mine()) noteTravelFailure(dest, `no route (${travelState.lastError}) and town() failed too (${travelWhy(e)})`, closest);
+			return false;
+		}
+		if (!mine()) return false;
+
+		try {
+			await smart_move(dest);
+			if (mine()) travelArrived();
+			return true;
+		} catch (e) {
+			if (mine()) noteTravelFailure(dest, `still no route after town(): ${travelWhy(e)}`, closest);
+			return false;
+		}
+	} finally {
+		if (mine()) travelState.inFlight = false;
 	}
+}
+
+function travelWatchdog(dest) {
+	if (!travelState.inFlight) return;
+	if (Date.now() - travelState.startedAt < TRAVEL.attemptTimeoutMs) return;
+	travelState.attemptId++;        // orphan it: the late resolution becomes a no-op
+	travelState.inFlight = false;
+	noteTravelFailure(dest, `smart_move never returned after ${Math.round(TRAVEL.attemptTimeoutMs / 1000)}s`);
+}
+
+function handleReturnHome() {
+	if (!destination) return;
+	noteTravelTarget(destination);
+	// Only compare positions on the same map - an x/y distance across maps is
+	// meaningless, and a coincidental match would park us on the wrong map.
+	if (character.map === destination.map && distance(character, destination) < 20) return;
+	if (smart.moving || travelState.inFlight) return;
+	travelTo(destination);   // handles its own failures; nothing here can reject
 }
 
 async function walkInCircle() {
