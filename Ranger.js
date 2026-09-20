@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v37 (throttled the three repeating sends: potion requests 30s and gated on the merchant being reachable, pickup requests 15s with a sell-off fallback when no mule can be reached, and farm_spot now burst-on-change and on a member joining rather than every 5s forever. Also gated the mluck location ping on the merchant being high enough level to cast it - it had no exit condition and fired every second.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v38 (the auto-blacklist had ratcheted through ~55 farm spots and was heading for all of them, so two coded lists now bound it: PERMANENT_WHITELIST spots can never be blacklisted and are un-blacklisted on read, PERMANENT_BLACKLIST spots are never scored at all, and if scoring rejects everything the whitelist is used unscored rather than farming nothing. Stopgap - see the TASK note above spotKey().)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -2029,23 +2029,103 @@ function hasReachedFarmSpot() {
 
 const BLACKLIST_STORAGE_KEY = 'farm_spot_blacklist';
 
+// ============================================================================
+// CODED LISTS - the two verdicts the auto-blacklist is not allowed to make
+// ============================================================================
+// The unreachable heuristic further down (3 minutes without arriving -> blacklist
+// forever) has been firing on spots that are perfectly fine to farm, and nothing
+// ever expires, so it ratchets: ~55 spots are blacklisted already, nearly all of
+// them "stuck 180s without arriving" at exactly 180-second intervals - i.e. the
+// timeout fired, the next spot was picked, that one timed out too, and so on down
+// the list. Run long enough it blacklists everything and the party farms nothing.
+//
+// These two lists bound it from both ends. They are a floor under the damage,
+// not the fix - see the TASK note below them.
+
+// Never blacklisted, whatever Dexon or the healers report. An incoming report
+// naming one of these is refused, AND any entry already sitting in storage is
+// dropped on the next read - so the three spots the ratchet already ate come
+// back on their own, without the user clearing anything by hand.
+const PERMANENT_WHITELIST = new Set([
+	'crab@main',
+	'arcticbee@winterland',
+	'snake@main',
+]);
+
+// Never scored as a candidate at all. Cheaper than blacklisting them (they
+// never reach the UI list, never become the auto pick, never become a manual
+// override) and it cannot be undone by removeFromBlacklist() the way a stored
+// entry can - to change it, edit this list.
+const PERMANENT_BLACKLIST = new Set([
+	'gscorpion@desertland',
+	'mrpumpkin@halloween',
+	'mummy@level3',
+	'ghost@halloween',
+	'mummy@level4',
+]);
+
+// TASK - come back to this. The lists above are a stopgap; the real bug is the
+// reachability verdict in checkFarmEconomics(). Two halves to it:
+//   1. Why does smart_move keep failing to arrive? Candidates: doors/instances
+//      the router won't cross, a spot whose boundary midpoint sits inside
+//      geometry, or ARRIVAL_RADIUS (100) being tighter than where smart_move
+//      actually stops - in which case Dexon IS there and is blacklisting the
+//      spot he is standing in.
+//   2. Whatever the cause, the verdict must stop being permanent and absolute:
+//      expire entries after a while, require N failures rather than one, and
+//      record how close he actually got so a near-miss is told apart from a
+//      spot the router genuinely cannot reach.
+// Until that is done the whitelist is the only thing guaranteeing the party has
+// anywhere to farm at all.
+
+let whitelistFallbackLogged = false;
+
 function spotKey(home, mobMap) {
 	return `${home}@${mobMap}`;
 }
 
-function getBlacklist() {
-	return get(BLACKLIST_STORAGE_KEY) || {};
+function isWhitelistedSpot(key) {
+	return PERMANENT_WHITELIST.has(key);
 }
 
+function isPermanentlyBlacklisted(key) {
+	return PERMANENT_BLACKLIST.has(key);
+}
+
+function getBlacklist() {
+	const stored = get(BLACKLIST_STORAGE_KEY) || {};
+	// Self-healing: a whitelisted spot blacklisted before this list existed is
+	// dropped here and the pruned map written back, so it stays gone.
+	let pruned = false;
+	for (const key in stored) {
+		if (!isWhitelistedSpot(key)) continue;
+		delete stored[key];
+		pruned = true;
+	}
+	if (pruned) set(BLACKLIST_STORAGE_KEY, stored);
+	return stored;
+}
+
+// Returns the key on success, or null if the spot is whitelisted and the
+// report was refused. Callers must check - "nothing was blacklisted" is a
+// different outcome from "blacklisted", not an error.
 function addToBlacklist(home, mobMap, reason, reportedBy) {
-	const blacklist = getBlacklist();
 	const key = spotKey(home, mobMap);
+	if (isWhitelistedSpot(key)) {
+		game_log(`Refused to blacklist "${key}" - permanent whitelist (was: ${reason})`, 'orange');
+		return null;
+	}
+	const blacklist = getBlacklist();
 	blacklist[key] = { reason, reportedBy, blacklistedAt: Date.now() };
 	set(BLACKLIST_STORAGE_KEY, blacklist);
 	return key;
 }
 
 function removeFromBlacklist(key) {
+	if (isPermanentlyBlacklisted(key)) {
+		game_log(`"${key}" is on the permanent blacklist in the script - edit PERMANENT_BLACKLIST to change that`, 'orange');
+		return false;
+	}
 	const blacklist = getBlacklist();
 	if (!blacklist[key]) {
 		game_log(`"${key}" isn't on the blacklist`, 'orange');
@@ -2057,10 +2137,21 @@ function removeFromBlacklist(key) {
 	return true;
 }
 
+function clearBlacklist() {
+	const count = Object.keys(getBlacklist()).length;
+	set(BLACKLIST_STORAGE_KEY, {});
+	game_log(`Cleared ${count} stored blacklist entries (the coded lists are unaffected)`, '#00FF00');
+	return count;
+}
+
 function listBlacklist() {
-	const blacklist = getBlacklist();
-	show_json(blacklist);
-	return blacklist;
+	const view = {
+		permanentWhitelist: [...PERMANENT_WHITELIST],
+		permanentBlacklist: [...PERMANENT_BLACKLIST],
+		blacklisted: getBlacklist(),
+	};
+	show_json(view);
+	return view;
 }
 
 function myOwnDps() {
@@ -2120,7 +2211,9 @@ function scoreAllFarmSpots() {
 			const mobData = parent.G.monsters[spot.type];
 			if (!mobData || !mobData.hp || !mobData.xp) continue;
 			if (mobData.hp > FARM_SEARCH.maxViableHp) continue;
-			if (blacklist[spotKey(spot.type, mapName)]) continue;
+			const key = spotKey(spot.type, mapName);
+			if (isPermanentlyBlacklisted(key)) continue;
+			if (blacklist[key]) continue;
 
 			const effPhysical = mitigated(dps.physical, mobData.armor || 0);
 			const effMagical = mitigated(dps.magical, mobData.resistance || 0);
@@ -2180,7 +2273,45 @@ function scoreAllFarmSpots() {
 	}
 
 	candidates.sort((a, b) => b.expPerSecond - a.expPerSecond);
-	return candidates;
+	if (candidates.length) {
+		whitelistFallbackLogged = false;
+		return candidates;
+	}
+
+	// Nothing survived scoring. Rather than stand still, fall back to the
+	// whitelisted spots unscored - they are hand-picked, so "is it worth it"
+	// is already answered. Only reachable from here, so it changes nothing
+	// whenever the normal path produces even one candidate.
+	const fallback = whitelistFallbackCandidates();
+	if (fallback.length && !whitelistFallbackLogged) {
+		whitelistFallbackLogged = true;
+		game_log(`No spot passed scoring - falling back to the ${fallback.length} whitelisted spot(s)`, 'orange');
+	}
+	return fallback;
+}
+
+function whitelistFallbackCandidates() {
+	if (!parent.G || !parent.G.maps) return [];
+	const out = [];
+	for (const mapName in parent.G.maps) {
+		const mapData = parent.G.maps[mapName];
+		if (!mapData || !mapData.monsters) continue;
+		for (const spot of mapData.monsters) {
+			if (!isWhitelistedSpot(spotKey(spot.type, mapName))) continue;
+			if (!Array.isArray(spot.boundary) || spot.boundary.length < 4) continue;
+			const [bx1, by1, bx2, by2] = spot.boundary;
+			out.push({
+				home: spot.type,
+				mobMap: mapName,
+				x: (bx1 + bx2) / 2,
+				y: (by1 + by2) / 2,
+				expPerSecond: 0,
+				uptimeFraction: 1,
+				whitelistFallback: true,
+			});
+		}
+	}
+	return out;
 }
 
 function findBestFarmSpot() {
@@ -2234,6 +2365,14 @@ function checkFarmEconomics() {
 			Date.now() - arrivalState.assignedAt > UNREACHABLE_TIMEOUT_MS) {
 			arrivalState.reported = true;
 			const stuckSec = Math.round((Date.now() - arrivalState.assignedAt) / 1000);
+			if (isWhitelistedSpot(spotKey(home, mobMap))) {
+				// Whitelisted: keep walking. handleReturnHome() re-issues smart_move
+				// whenever it isn't already moving, so staying here means "keep
+				// trying", not "give up". reported stays true so this logs once
+				// instead of every tick.
+				game_log(`Still haven't reached ${home}@${mobMap} after ${stuckSec}s - whitelisted, so staying put and still trying`, 'orange');
+				return;
+			}
 			game_log(`Still haven't reached ${home}@${mobMap} after ${stuckSec}s - blacklisting as unreachable`, 'red');
 			addToBlacklist(home, mobMap, `Dexon couldn't reach this spot (stuck ${stuckSec}s without arriving)`, 'Dexon');
 			runFarmSearch();
@@ -2384,6 +2523,7 @@ function on_cm(name, data) {
 
 	if ((name === 'FatherToken' || name === 'MageofOz') && data.message === 'blacklist_spot') {
 		const key = addToBlacklist(data.home, data.mobMap, data.reason, name);
+		if (!key) return;   // whitelisted - addToBlacklist said so, and nothing changed
 		game_log(`Blacklisted "${key}" - ${data.reason} (reported by ${name})`, 'red');
 		if (manualOverride && spotKey(manualOverride.home, manualOverride.mobMap) === key) {
 			manualOverride = null;
