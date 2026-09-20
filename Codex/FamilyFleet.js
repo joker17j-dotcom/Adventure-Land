@@ -52,9 +52,40 @@ const CONFIG = {
 	// ------------------------------------------------------------ the scan
 	scout: {
 		// Rangers hold one shard each and never hop. The merchant roams.
-		scanEveryMs: 2 * 60 * 1000,     // the standing beat: town, scan, back out
-		fullInventoryScanMs: 20 * 1000, // stuck with a full bag: scan harder while waiting
-		townSpot: { map: 'main', x: 0, y: 0 },
+		scanEveryMs: 2 * 60 * 1000,     // the standing beat: go to town, scan, back out
+		// While standing at the town spot - for ANY reason - scan on this beat.
+		// The walk is the expensive part; once we are here a scan costs a
+		// synchronous read of parent.entities plus a post.
+		townScanMs: 20 * 1000,
+		// How close to townSpot still counts as "at the spot" for the scan beat.
+		// A plain radius is right here - this is "am I standing there", not a
+		// vision question. Vision is a box; see visionBox below.
+		townSpotRadius: 60,
+		/* THE TOWN SPOT. Measured and tested live by the other session against
+		   game data 17083 - not derived, and not guessed from the snapshot.
+		
+		   It is the centre of the smallest circle enclosing Lucas, Cue, Gabriel
+		   and Ponty, radius 286.05. Lucas and Ponty are 572.1 apart and form the
+		   diameter; Cue and Gabriel fall inside without constraining it. So no
+		   point in town beats 286 on the worst-case NPC distance.
+		
+		   Verified working from exactly here: buy from Gabriel (129.4), buy from
+		   Lucas (286.0), upgrade at Cue (150.6), Ponty replied with 225 items
+		   (286.1), and all six visible stands inside the vision box.
+		
+		   IF THE NPC SET CHANGES, recompute the smallest enclosing circle rather
+		   than nudging this point - the binding pair may change. */
+		townSpot: { map: 'main', x: -179, y: -72 },
+		/* Who this spot is chosen to reach, and what for. Positions are from
+		   G.maps.main.npcs and are here for the re-optimisation above, not for
+		   navigation - nothing walks to them individually. */
+		townNpcs: {
+			scrolls:     { name: 'Lucas',   at: [-464, -96],  for: 'scroll0-2, cscroll0-2' },
+			newupgrade:  { name: 'Cue',     at: [-207, -220], for: 'upgrade and compound' },
+			basics:      { name: 'Gabriel', at: [-89, -165],  for: 'basic gear, and selling' },
+			secondhands: { name: 'Ponty',   at: [106, -47],   for: 'secondhand listings' },
+			fancypots:   { name: 'Ernis',   at: null,         for: 'potions' },
+		},
 		settleMs: 1500,
 		maxSettlePasses: 5,
 		minPostGapMs: 7000,
@@ -932,6 +963,52 @@ function monsterDef(type) {
 	catch (e) { return null; }
 }
 
+/* OUR position in world space.
+
+   character.x / character.y are NOT world coordinates on the top window -
+   measured at (1147, 416) while the character actually stood at (-123, -52).
+   NPC entities have .x === .real_x, so G-derived geometry never shows this and
+   the discrepancy stays invisible until something cross-checks. It has already
+   cost this project once: a phantom 1,307-unit trade range in the merchant,
+   read from the top window's character object.
+
+   Everything that needs our position goes through here. */
+function myPos() {
+	const c = character || {};
+	return {
+		map: c.map,
+		x: c.real_x != null ? c.real_x : c.x,
+		y: c.real_y != null ? c.real_y : c.y,
+	};
+}
+
+/* Is an entity inside our vision?
+
+   character.vision is [700, 500] and the test is a BOX, not a radius:
+   |dx| <= 700 && |dy| <= 500. A stand 690 east is visible; one 510 north is
+   not. Any distance check here would be wrong in both directions - too
+   generous on the diagonal, too strict on the long axis.
+
+   Not currently on the scan path, which reads whatever parent.entities already
+   holds, but here so that anything which does need the test uses the right
+   one. */
+function inVision(entity) {
+	const me = myPos();
+	const v = (character && character.vision) || [700, 500];
+	const ex = entity.real_x != null ? entity.real_x : entity.x;
+	const ey = entity.real_y != null ? entity.real_y : entity.y;
+	return Math.abs(ex - me.x) <= v[0] && Math.abs(ey - me.y) <= v[1];
+}
+
+/* Standing at the town spot, near enough for the NPCs and the scan. */
+function atTownSpot() {
+	const spot = CONFIG.scout.townSpot;
+	const me = myPos();
+	if (me.map !== spot.map) return false;
+	const dx = me.x - spot.x, dy = me.y - spot.y;
+	return Math.sqrt(dx * dx + dy * dy) <= CONFIG.scout.townSpotRadius;
+}
+
 function freeSlots() {
 	try { return character.esize; } catch (e) { return 0; }
 }
@@ -1017,7 +1094,7 @@ function chooseSpot() {
    socket call, and without this a slow smart_move would let the next tick
    start a second one on top of it - the same mutual exclusion the merchant
    learned to need. Released in a finally so a throw cannot strand it. */
-const fleetState = { busy: false, parkedFull: false, lastParkScanAt: 0 };
+const fleetState = { busy: false, parkedFull: false, lastTownScanAt: 0 };
 
 function potionCount(name) {
 	let n = 0;
@@ -1082,8 +1159,14 @@ async function doScan() {
 async function townTrip(reason) {
 	const spot = CONFIG.scout.townSpot;
 	log(`town: ${reason}`, '#8b98ab');
-	if (!(await goTo(spot))) return false;
+	if (!atTownSpot() && !(await goTo(spot))) return false;
 	if (reason === 'potions') await buyPotions();
+	// Compounding is a town job too - Cue is in reach from this spot, and three
+	// slots becoming one is worth more than the walk we have already paid for.
+	await compoundPass();
+	// Force the beat: a trip made for a reason always produces a reading, even
+	// if the last one was 19 seconds ago.
+	fleetState.lastTownScanAt = Date.now();
 	await doScan();
 	ranger.lastTownTripAt = Date.now();
 	return true;
@@ -1097,12 +1180,30 @@ function bagFull() {
 	return freeSlots() <= CONFIG.ranger.freeSlotsFloor;
 }
 
+/* Standing at the town spot, whatever brought us here, scan on the 20s beat.
+
+   One rule rather than a set of them. The spec lists the occasions separately
+   - potions, combining, the bank trip in and out, waiting out a full bag - but
+   they are all the same situation once you are standing there, and writing
+   them as separate cases is how one of them ends up forgotten. If we are at
+   the spot and the beat is due, we scan.
+
+   Returns whether it scanned, so callers that are waiting rather than working
+   can tell a tick apart from a no-op. */
+async function maybeTownScan() {
+	if (!atTownSpot()) return false;
+	if (Date.now() - fleetState.lastTownScanAt < CONFIG.scout.townScanMs) return false;
+	fleetState.lastTownScanAt = Date.now();
+	await doScan();
+	return true;
+}
+
 /* Bag full and not our bank window yet.
 
    The spec's instruction is to wait in town rather than drop anything, and to
-   scan harder while waiting - which turns dead time into the one thing this
-   character can still usefully do. Nothing is sold here: selling belongs after
-   the bank window, once the bank has had its pick.
+   scan while waiting - which turns dead time into the one thing this character
+   can still usefully do. Nothing is sold here: selling belongs after the bank
+   window, once the bank has had its pick.
 
    Note this deliberately does NOT walk back out to farm in between. Killing
    things with no room to loot them is how a full bag stays full while looking
@@ -1111,11 +1212,12 @@ async function parkFull() {
 	if (!fleetState.parkedFull) {
 		fleetState.parkedFull = true;
 		log(`bag full (${freeSlots()} free) - holding in town until the bank window`, '#E9C46A');
-		await goTo(CONFIG.scout.townSpot);
 	}
-	if (Date.now() - fleetState.lastParkScanAt < CONFIG.scout.fullInventoryScanMs) return;
-	fleetState.lastParkScanAt = Date.now();
-	await doScan();
+	// Walk if we need to, then scan in the same tick. Returning after the walk
+	// would spend a whole tick arriving and do nothing with it, which for a
+	// character whose only remaining job is scanning is the wrong trade.
+	if (!atTownSpot() && !(await goTo(CONFIG.scout.townSpot))) return;
+	await maybeTownScan();
 }
 
 /* Move to the farm spot and fight what is there. */
@@ -1165,6 +1267,13 @@ async function attackWithRotation(target) {
 async function rangerTick() {
 	if (character.rip) { try { await respawn(); } catch (e) { } return; }
 	useRangerPotions();
+	if (fleetState.busy) return;
+	// Standing in town for any reason at all: keep the beat. Cheap, and outside
+	// the busy lock because it is a read plus a post, not a claim on movement.
+	if (atTownSpot() && !fleetState.busy) {
+		fleetState.busy = true;
+		try { await maybeTownScan(); } finally { fleetState.busy = false; }
+	}
 	if (fleetState.busy) return;
 
 	fleetState.busy = true;

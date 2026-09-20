@@ -145,3 +145,66 @@ keeps moving until within **20** units while `hasReachedFarmSpot()` accepts
 
 This guarantees the party always has somewhere to farm. It does not stop the
 ratchet from eating everything else.
+
+---
+
+## 2. Adopt the measured town NPC spot in the main party's scripts
+
+**Status:** not started, and deliberately not applied. `Codex/FamilyFleet.js`
+uses it; `Ranger.js`, `Priest.js`, `Mage.js` and `Merchant.js` do not. The
+operator asked for it to be recorded rather than rolled out.
+
+### The spot
+
+    { map: 'main', x: -179, y: -72 }
+
+One position that reaches Lucas (scrolls), Cue (upgrade/compound), Gabriel
+(basics, and selling) and Ponty (secondhands) simultaneously, with the whole
+player-stand cluster inside the vision box. Measured and tested live by the
+other session against game data 17083 - verified working, not derived:
+
+| Action                        | Result                        | Distance |
+|-------------------------------|-------------------------------|----------|
+| `buy('helmet')` - Gabriel     | OK                            | 129.4    |
+| `buy('scroll0')` - Lucas      | OK                            | 286.0    |
+| `upgrade(h, s)` - Cue         | OK, rolled success            | 150.6    |
+| `socket.emit('secondhands')`  | replied, 225 items            | 286.1    |
+| stands visible                | 6 of 6                        | box 340 x 164 |
+
+It is the centre of the smallest circle enclosing all four, radius 286.05.
+Lucas and Ponty are 572.1 apart and form the diameter. **If the NPC set
+changes, recompute the SEC rather than nudging the point** - the binding pair
+may change.
+
+Interaction range is bounded but not pinned: confirmed working at 286, and
+independently at 370.01. So this sits with at least 84 units of slack. The
+exact cutoff would take a walk-out from Lucas retrying `buy('scroll0', 1)`.
+
+### Where it would go
+
+- `Merchant.js` - `CONFIG.stand.candidates` / `scoutGoToScanSpot`, and the
+  arbitrage approach logic. The merchant is the one that buys scrolls,
+  upgrades and reads Ponty, so it gains the most.
+- `Ranger.js` / `Priest.js` / `Mage.js` - potion runs and the vendor trip in
+  `runInventoryRelief`, which currently walks to Ernis at (-35, -162).
+
+### Two traps to carry across with it
+
+1. **`character.x` / `character.y` are not world coordinates** on the top
+   window - measured at (1147, 416) while the character stood at (-123, -52).
+   Use `real_x` / `real_y`. NPC entities have `.x === .real_x`, so G-derived
+   geometry never exposes this and it stays invisible until something
+   cross-checks. **This has already cost this project once**: the phantom
+   1,307-unit trade range in the merchant came from reading position off the
+   top window's character object. Audit every `character.x` in the four
+   scripts before moving any of them to this spot.
+2. **Vision is a box, not a radius.** `character.vision` is `[700, 500]` and
+   the test is `|dx| <= 700 && |dy| <= 500`. A stand 690 east is visible; one
+   510 north is not. Any distance check against vision is wrong in both
+   directions. `FamilyFleet.js` has `inVision()` written correctly - lift it
+   rather than rewriting it.
+
+Also worth knowing: the `190` in `interaction_context_range` is a UI gate for
+whether the NPC panel renders, **not** a transaction range. Lucas sold at 286
+with no panel open. Do not use 190 for anything transactional.
+
