@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v47 (game log: "Get closer" is filterable and off by default - 80 of 289 entries in a four-minute sample. The filter alone was not enough: the socket hook only replaces the game_log listener, while the client writes other lines itself through add_log, and those arrived as .gameentry nodes with no inline display and so were only ever hidden by a filterGamelog() pass - visible until a tab happened to be toggled. A MutationObserver now applies the filters to added nodes as well, so the bar governs the whole log rather than the half this code writes. The three copies of the first-match rule are collapsed into shouldShowEntry. Tabs wrap onto rows of four rather than being squeezed into one, each flex 1 1 basis so a short final row fills the bar, and "Upgr." is spelled out as "Upgrades".)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v48 (game log: the Get Closer tab becomes Noise and now also swallows achievement-progress lines and the courage mechanic's scared/terrified messages. All three are routine client chatter during farming and none of them are actionable: AP[firehazard] in particular wants 20,000 CONSECUTIVE burn last-hits, so a physical last hit from the firebow resets it and the line repeats 1/20,000 rather than counting up. Still a tab rather than a hard suppression, since each is worth reading back when that specific thing is the question.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3070,12 +3070,20 @@ if (parent.$) {
 			items: { show: true, regex: /found/, label: 'Items' },
 			upgrade: { show: true, regex: /(upgrade|combination)/, label: 'Upgrades' },
 			errors: { show: true, regex: /(error|line|column)/i, label: 'Errors' },
-			/* The client emits this whenever an action is attempted out of range,
-			   which during normal farming is constantly - 80 of 289 entries in a
-			   four-minute sample. Off by default; it is still a tab rather than a
-			   hard suppression so it can be turned back on when range IS the
-			   question being debugged. */
-			getcloser: { show: false, regex: /get closer/i, label: 'Get Closer' }
+			/* Routine client chatter that says nothing actionable during farming.
+			   Off by default, but a tab rather than a hard suppression so each
+			   can be read back when it IS the question being debugged.
+
+			     get closer  - emitted on every out-of-range action attempt;
+			                   80 of 289 entries in a four-minute sample.
+			     AP[...]     - achievement progress. Mostly firehazard, which
+			                   wants 20,000 CONSECUTIVE burn last-hits, so a
+			                   physical last hit resets it and the line repeats
+			                   "1/20,000" forever rather than counting up.
+			     scared /    - the courage mechanic. Rangers have base courage 2,
+			     terrified     so a third attacker starts fear. Worth seeing
+			                   while tuning courage, worth hiding otherwise. */
+			noise: { show: false, regex: /get closer|AP\[|scared|terrified/i, label: 'Noise' }
 		};
 
 		/* Tabs wrap onto rows of this many instead of being squeezed into one.
