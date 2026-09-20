@@ -15,7 +15,19 @@ conversation may not.
 - **Work on `main` only.** No feature branches for this work; commit and push
   to `main` on `joker17j-dotcom/Adventure-Land`.
 - **Do not open pull requests** unless explicitly asked.
-- **Claude pushes through Chrome.** A push from the container fails: its git proxy will not inject credentials for this repo, so commits are made in the GitHub web editor.
+- **How you push depends on which session you are.** Try a normal
+  `git push -u origin main` first and believe the result.
+  - The Claude Code container session pushes directly and does so routinely.
+  - The browser-driven session's git proxy will not inject credentials for
+    this repo, so a push from there fails and commits go through the GitHub
+    web editor instead.
+  Stated unqualified ("Claude pushes through Chrome"), this reads as a fact
+  about the repo and would stop a session that *can* push from trying.
+- **Read a file before writing it in the web editor.** Opening `/new/<path>`
+  for a file that already exists overwrites it wholesale rather than merging.
+  One near miss already: `/new/main` for `CLAUDE.md` would have dropped every
+  convention in `8026394`, and was caught by the file appearing in the sidebar
+  rather than by anything deliberate. Open the existing file and edit it.
 
 ## Handing code to the other chat
 
