@@ -67,6 +67,24 @@ const CONFIG = {
 	maxSettlePasses: 5,
 	pontyEveryMs: 10 * 60 * 1000,// per-shard Ponty re-check interval
 	minHopIntervalMs: 30000,     // floor between change_server calls
+	/* Do not hop while the bridge is unreachable.
+
+	   A hop costs a page reload and exists to put findings somewhere. With
+	   nothing to put them in, rotating is pure cost: the scans still happen
+	   and still buffer, but coverage of a shard nobody can read is worth
+	   nothing, and page reloads are the thing minHopIntervalMs exists to
+	   limit in the first place.
+
+	   Staying put is also strictly better for recovery. The scout keeps
+	   sweeping the shard it is on, that sweep replaces itself each cycle
+	   rather than accumulating, and the moment the bridge answers the next
+	   post lands and hopping resumes.
+
+	   This covers both failure modes on the second account without needing to
+	   tell them apart: the relay being down makes the fetch throw, and the
+	   bridge being down behind a live relay makes it answer 502 with a
+	   bridge-shaped body. Either way bridge.online goes false. */
+	requireBridgeToHop: true,
 	pontyTimeoutMs: 8000,
 	// Logs the field names in Ponty's first reply, once per scan. Leave on
 	// until the price is mapping correctly, then turn off.
@@ -704,6 +722,22 @@ async function hopTo(target) {
 
 	await reportConfirmed();            // never carry findings across a hop
 	saveBuffer();                       // and if it could not be sent, keep it
+
+	// Checked AFTER the report, because the report attempt is what establishes
+	// whether the bridge is there. Checking first would strand a scout that
+	// started before the bridge did: online is false until something succeeds.
+	if (CONFIG.requireBridgeToHop && !bridge.online) {
+		if (!SS.get('hop_blocked', false)) {
+			SS.set('hop_blocked', true);
+			log(`bridge unreachable - holding ${shardKey(cur)} rather than rotating. `
+				+ `Scans continue and go out when it returns.`, 'orange');
+		}
+		return false;
+	}
+	if (SS.get('hop_blocked', false)) {
+		SS.set('hop_blocked', false);
+		log('bridge back - resuming the rotation', '#7FD98A');
+	}
 	SS.set('lastHop', Date.now());
 	log(`hopping ${shardKey(cur)} -> ${shardKey(target)}`, '#E9C46A');
 	try {

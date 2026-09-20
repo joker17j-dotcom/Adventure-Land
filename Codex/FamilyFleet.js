@@ -144,6 +144,28 @@ const CONFIG = {
 		//     which is only ever applied to chest loot. A scouting merchant is
 		//     not farming, so luck/gold/xp cost it nothing real.
 		minIntervalMs: 60 * 60 * 1000,
+		/* Do not hop while the bridge is unreachable.
+
+		   A hop costs a page reload and exists to put findings somewhere. With
+		   nothing to put them in, rotating is pure cost - the scans still happen
+		   and still buffer, but coverage of a shard nobody can read is worth
+		   nothing.
+
+		   This account reaches the bridge through Codex/relay/bridge_relay.py,
+		   so there are two things that can be down, and the guard deliberately
+		   does not try to tell them apart:
+
+		     - the relay itself: the fetch throws, connection refused;
+		     - the bridge behind a live relay: the relay answers 502 with a
+		       bridge-shaped body, so `!r.ok` throws in bridge.post.
+
+		   Both end at bridge.online === false, which is the only thing this
+		   needs to know. Distinguishing them would be a diagnostic nicety that
+		   changes no decision.
+
+		   The rangers are unaffected: they are parked and never hop at all. This
+		   binds the roaming merchant, whose loop is not built yet. */
+		requireBridgeToHop: true,
 		// The one thing that DOES cost: G's own explanation says hop sickness
 		// "blocks kiss rewards". So a sick merchant that walks the kiss event
 		// spends the trip and collects nothing. Skip the kiss while sick rather
@@ -226,6 +248,8 @@ const CONFIG = {
 		// than an assumption so that anything that wants to move the merchant has
 		// to say so explicitly and be seen doing it.
 		moveOnlyForBank: true,
+		// ...and leaving the SHARD additionally requires the bridge to be
+		// answering - see hop.requireBridgeToHop.
 		// Mirror of bank.rangerKeepGold. Below the floor the merchant draws the
 		// bank down to leaveInBank; at or above it, it withdraws nothing.
 		goldFloor: 10000000,
@@ -1098,6 +1122,20 @@ function atTownSpot() {
 
    Uses the box test rather than a radius for the same reason inVision does:
    vision is [700, 500] and is not circular. */
+/* May the merchant change shards right now?
+
+   Kept as a named predicate rather than an inline check because it has two
+   reasons to say no and they are easy to conflate. The bridge being
+   unreachable is not the same as the hop interval not having elapsed, and a
+   caller that treats them as one will log the wrong reason. */
+function mayHop() {
+	if (!CONFIG.hop.requireBridgeToHop) return { ok: true };
+	if (!bridge.online) {
+		return { ok: false, reason: 'bridge unreachable - scans continue and go out when it returns' };
+	}
+	return { ok: true };
+}
+
 function inTown() {
 	const me = myPos();
 	if (me.map !== CONFIG.scout.townSpot.map) return false;
