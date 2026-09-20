@@ -371,6 +371,27 @@ class Store:
                     del self.merchants[k]
                     dropped += 1
 
+                # A character is on exactly ONE shard at a time, so seeing a
+                # merchant here is positive evidence it is not where we last
+                # saw it. Rows are keyed "<shard>|<name>", so a merchant that
+                # hopped left a copy behind on its old shard - and nothing
+                # removed it, because only its old shard's own rescan deletes
+                # those, and that may be a whole rotation away. Until then the
+                # watchlist showed the same trader in two places, and a
+                # merchant acting on the stale one would hop to a shard the
+                # trader had already left: a page reload, and hop sickness,
+                # spent on nothing.
+                #
+                # Character names are unique account-wide and cannot contain
+                # "|", so splitting on the first one is safe.
+                here = {r["id"] for r in seen
+                        if isinstance(r, dict) and r.get("id")}
+                for k in [k for k in self.merchants
+                          if not k.startswith(key + "|")
+                          and k.split("|", 1)[-1] in here]:
+                    del self.merchants[k]
+                    dropped += 1
+
                 for row in seen:
                     if not isinstance(row, dict) or not row.get("id"):
                         continue
