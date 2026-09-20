@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v44 (party frames: the block now left-aligns under the R&M button instead of sitting flush against the viewport, where the rightmost frame's xp line ran off screen - measured at a text right edge of 1734 against a 1718 viewport, with every frame overhanging its 78px cell by about 16px. The xp rate drops its "XP/HR:" label, redundant beside a string that already reads "22.9M xp/hr", and the time-to-next-level moves to its own row beneath it at a smaller size so both sit inside the frame. The toolbar anchor is read from the live R&M button each tick rather than hard-coded, because the toolbar is itself right-anchored and any fixed x would be wrong at another window size; it is written inline because an id rule outranks a class rule, and if the button cannot be found the block is left exactly where the game put it.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v45 (party frames: v44 aligned them with getBoundingClientRect, which was wrong twice over - the game UI is scaled, measured 0.7502 here, so rects are device pixels while left/width are CSS pixels, and rect.left is viewport-relative while left is offsetParent-relative. R&M's rect.left of 901 became left:901px when the true offset inside #toprightcorner is 604, so the block sat 297 CSS px right of the anchor and left the viewport entirely at full-screen widths. The width was short by the same scale factor - 327 CSS px for four 104px cells - so the fourth member wrapped to a second row. Alignment is now measured by accumulating offsetLeft, which is already CSS px and already offsetParent-relative, and the row is sized with max-content plus nowrap so no arithmetic can wrap it. A second pass removes the first cell's inset so the leading frame is flush with R&M's left edge.)
 // ============================================================================
 // ============================================================================
 // COMPATIBILITY SHIM - Mainframe's sandboxed vm context doesn't expose the
@@ -3548,26 +3548,58 @@ if (parent.$) {
 			return false;
 		};
 
+		/* Distance from `el` to `ancestor` in CSS pixels, by walking offsetParent.
+
+		   NOT getBoundingClientRect(). The game UI is scaled - measured at 0.7502
+		   on this client - so rects come back in device pixels while `left` and
+		   `width` are interpreted as CSS pixels. Mixing the two was wrong twice
+		   over: rect.left is also viewport-relative, while `left` on a positioned
+		   element is relative to its offsetParent. Reading R&M's rect.left of 901
+		   and writing `left: 901px` put the block 297 CSS px right of where it
+		   belonged, because the true offset within #toprightcorner is 604.
+		   offsetLeft is already CSS px and already relative to offsetParent, so
+		   accumulating it needs no origin correction and no scale factor, and
+		   cannot drift if the client's scale changes. */
+		const offsetLeftWithin = (el, ancestor) => {
+			let x = 0, node = el;
+			while (node && node !== ancestor) { x += node.offsetLeft; node = node.offsetParent; }
+			return node === ancestor ? x : null;
+		};
+
 		const alignPartyFrames = (partyFrame, count) => {
 			const rm = findRmButton();
 			if (!rm || !count) return;
 			if (!partyFrameIsPositioned(partyFrame)) return;
-			const rmLeft = rm.getBoundingClientRect().left;
-			if (!isFinite(rmLeft) || rmLeft <= 0) return;
 
-			const cells = partyFrame.children();
-			let pitch = 82;
-			if (cells.length >= 2) {
-				const a = cells[0].getBoundingClientRect(), b = cells[1].getBoundingClientRect();
-				if (b.left > a.left) pitch = b.left - a.left;
-			} else if (cells.length === 1) {
-				pitch = cells[0].getBoundingClientRect().width + 4;
-			}
+			const np = partyFrame[0];
+			const anchorBox = np.offsetParent;
+			if (!anchorBox) return;
 
-			const width = Math.ceil(pitch * count);
-			if (partyFrame.data('alignedTo') === rmLeft && partyFrame.data('alignedW') === width) return;
-			partyFrame.css({ left: Math.round(rmLeft) + 'px', right: 'auto', width: width + 'px' });
-			partyFrame.data('alignedTo', rmLeft).data('alignedW', width);
+			/* Both measured against the SAME offsetParent, or not at all: if R&M
+			   is not inside it the two numbers are in different coordinate spaces
+			   and subtracting them would be meaningless. */
+			const rmLeft = offsetLeftWithin(rm, anchorBox);
+			if (rmLeft === null || !isFinite(rmLeft)) return;
+
+			/* One row, always. The previous width was pitch * count computed from
+			   device-pixel rects, which at 0.75 scale came out ~25% short - 327 CSS
+			   px for four 104px cells - and the fourth member wrapped onto a second
+			   row. max-content plus nowrap lets the row size itself, so there is no
+			   arithmetic left to get wrong and no count at which it silently wraps. */
+			if (partyFrame.data('alignedTo') === rmLeft && partyFrame.data('alignedN') === count) return;
+			partyFrame.css({ left: rmLeft + 'px', right: 'auto', width: 'max-content', 'white-space': 'nowrap' });
+
+			/* Second pass: whatever inset the first cell has once it is laid out on
+			   one row, take it off, so the FIRST member's frame is flush with R&M
+			   rather than the container's padding edge. Measured after the write
+			   because the inset is a product of that layout - it reads 5 while the
+			   block is wrapped and 0 once it is not, and subtracting the stale one
+			   overshoots by exactly that much. */
+			np.offsetWidth;
+			const inset = np.children[0] ? np.children[0].offsetLeft : 0;
+			if (inset) partyFrame.css('left', (rmLeft - inset) + 'px');
+
+			partyFrame.data('alignedTo', rmLeft).data('alignedN', count);
 		};
 
 		setInterval(() => {
