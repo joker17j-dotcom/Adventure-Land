@@ -214,6 +214,11 @@ const CONFIG = {
 			checkEveryMs: 60 * 1000,
 		},
 		potions: {
+			// Named here rather than written into the four places that used to
+			// spell them out, because the sell pass has to know what this
+			// character drinks in order not to sell it.
+			hp: 'hpot1',
+			mp: 'mpot1',
 			hpAt: 0.55,
 			mpAt: 0.35,
 			buyBelow: 200,
@@ -276,6 +281,19 @@ const CONFIG = {
 		// still below its target level is allowed to stack past copiesWanted.
 		// Without this the cap starves the very upgrades it exists to serve.
 		compoundOverstock: true,
+		/* Not gear, and not the sell pass's business.
+
+		   The sell rule is "anything the plan does not want", which is the
+		   right rule for gear and catastrophic for everything else in the bag:
+		   as first written it would have sold the character's own potions, the
+		   compound scrolls it had just bought, and the computer it shops from.
+		   Everything here is something a character buys or is given on
+		   purpose, so selling it is never the answer. */
+		keepItems: [
+			'computer', 'supercomputer', 'tracker',
+			'cscroll0', 'cscroll1', 'cscroll2',
+			'scroll0', 'scroll1', 'scroll2',
+		],
 	},
 
 	verbose: true,
@@ -323,6 +341,19 @@ const RANGER_GEAR = [
 const NEVER_SELL = new Set(
 	Object.values(RANGER_GEAR[2]).filter(Boolean).map((s) => s.item)
 );
+
+/* Everything that is not gear at all and must survive the sell pass.
+
+   Kept separate from NEVER_SELL because they are different rules that happen
+   to share an outcome: NEVER_SELL is "tier 3 is either progress or the raw
+   material for it", derived from the plan and moving with it. KEEP_ITEMS is
+   "the plan has no opinion about this and neither should the sell pass".
+   Merging them would make the potion list look like part of the gear plan. */
+const KEEP_ITEMS = new Set([
+	CONFIG.ranger.potions.hp,
+	CONFIG.ranger.potions.mp,
+	...CONFIG.gear.keepItems,
+]);
 
 /* Which character am I, and what do I do? Everything role- and
    schedule-shaped is derived from CONFIG.characters so that adding a person is
@@ -860,7 +891,11 @@ async function respectPostGap() {
 	if (!lastPostAt) return;
 	const since = Date.now() - lastPostAt;
 	if (since >= CONFIG.scout.minPostGapMs) return;
-	const wait = CONFIG.scout.minPostGapMs - since;
+	// Clamped, because `since` can come back negative: the wall clock moving
+	// backwards under an NTP correction makes the gap look like it has not
+	// started yet, and an unclamped wait becomes a number setTimeout cannot
+	// hold. Never wait longer than the gap itself.
+	const wait = Math.min(CONFIG.scout.minPostGapMs, CONFIG.scout.minPostGapMs - since);
 	log(`holding ${(wait / 1000).toFixed(1)}s before posting (min gap)`);
 	await new Promise((r) => setTimeout(r, wait));
 }
@@ -1159,7 +1194,7 @@ function freeSlots() {
    walk a character into a harder spot, and being wrong in the optimistic
    direction means dying there repeatedly. */
 function healThroughput() {
-	const def = itemDef('hpot1');
+	const def = itemDef(CONFIG.ranger.potions.hp);
 	const heal = (def && def.gives && def.gives[0] && def.gives[0][1]) || 400;
 	const cooldown = 2;     // seconds; the potion cooldown the client enforces
 	return heal / cooldown;
@@ -1231,7 +1266,7 @@ function chooseSpot() {
    socket call, and without this a slow smart_move would let the next tick
    start a second one on top of it - the same mutual exclusion the merchant
    learned to need. Released in a finally so a throw cannot strand it. */
-const fleetState = { busy: false, scanning: false, parkedFull: false, lastTownScanAt: 0 };
+const fleetState = { busy: false, scanning: false, parkedFull: false, stuck: false, lastTownScanAt: 0 };
 
 /* Scanning gets its own lock, separate from the movement one.
 
@@ -1265,11 +1300,11 @@ function potionCount(name) {
 function useRangerPotions() {
 	const cfg = CONFIG.ranger.potions;
 	try {
-		if (character.hp / character.max_hp <= cfg.hpAt && potionCount('hpot1') > 0) {
+		if (character.hp / character.max_hp <= cfg.hpAt && potionCount(cfg.hp) > 0) {
 			use_skill('use_hp');
 			return;
 		}
-		if (character.mp / character.max_mp <= cfg.mpAt && potionCount('mpot1') > 0) {
+		if (character.mp / character.max_mp <= cfg.mpAt && potionCount(cfg.mp) > 0) {
 			use_skill('use_mp');
 		}
 	} catch (e) { }
@@ -1277,12 +1312,12 @@ function useRangerPotions() {
 
 function potionsLow() {
 	const cfg = CONFIG.ranger.potions;
-	return potionCount('hpot1') < cfg.buyBelow || potionCount('mpot1') < cfg.buyBelow;
+	return potionCount(cfg.hp) < cfg.buyBelow || potionCount(cfg.mp) < cfg.buyBelow;
 }
 
 async function buyPotions() {
 	const cfg = CONFIG.ranger.potions;
-	for (const kind of ['hpot1', 'mpot1']) {
+	for (const kind of [cfg.hp, cfg.mp]) {
 		const have = potionCount(kind);
 		if (have >= cfg.buyTo) continue;
 		try { await buy(kind, cfg.buyTo - have); }
@@ -1478,6 +1513,7 @@ async function rangerTick() {
 			await bankRun();
 			return;
 		}
+		if (fleetState.stuck) { await parkFull(); return; }
 		if (bagFull()) { await parkFull(); return; }
 		fleetState.parkedFull = false;
 
@@ -1489,29 +1525,6 @@ async function rangerTick() {
 	} finally {
 		fleetState.busy = false;
 	}
-}
-
-/* The bank window's work is the gear economy, which is the next piece to
-   build. Until it lands this does the half that is unambiguous and safe -
-   deposit the gold above the floor - and says plainly that the rest is not
-   here yet, rather than silently doing nothing and looking finished. */
-async function bankRun() {
-	// Scan before leaving town - the bank is its own map, so once we are through
-	// the door there is nothing to see until we come back out.
-	await withScanLock(doScan);
-	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) return;
-	const keep = CONFIG.bank.rangerKeepGold;
-	if (character.gold > keep) {
-		const amount = character.gold - keep;
-		try {
-			await bank_deposit(amount);
-			log(`banked ${amount} gold`, '#7FD98A');
-		} catch (e) {
-			log(`bank_deposit failed: ${e && e.reason ? e.reason : e}`, 'red');
-		}
-	}
-	log('gear pass not implemented yet - gold only this window', 'orange');
-	await townTrip('bank window, on the way out');
 }
 
 // ============================================================================
@@ -1745,6 +1758,7 @@ function shouldBank(item) {
    go - otherwise a finished slot would keep accumulating copies nobody can
    use and nothing could ever be cleared. */
 function shouldSell(item) {
+	if (KEEP_ITEMS.has(item.name)) return false;
 	if (NEVER_SELL.has(item.name)) return false;
 	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
 	return true;
@@ -1824,4 +1838,208 @@ async function compoundPass(maxAttempts) {
 		else break;                                // a failure will just repeat
 	}
 	return done;
+}
+
+// ============================================================================
+// THE BANK WINDOW
+// ============================================================================
+/* Four minutes, one character at a time, and the window is the only thing
+   keeping two of them out of the bank at once - so every phase below re-checks
+   it and stops rather than overrunning. Overrunning is not a slow bank trip,
+   it is two characters in the bank.
+
+   Order is deliberate and is not the order the spec lists them in:
+
+     1. gold, because it is unconditional and cannot fail for want of space
+     2. equip what we are already carrying - this changes what counts as an
+        upgrade for everything after it, so doing it later would make the
+        withdraw step ask the wrong question
+     3. deposit spares, which FREES slots
+     4. withdraw upgrades, which NEEDS them
+
+   Doing 4 before 3 is the obvious ordering and the wrong one: a full bag
+   cannot accept the item it came for. */
+
+/* Every bank operation renumbers the slots after the one it touched, so each
+   phase re-reads rather than working from a list it built at the start. That
+   is also why these are bounded loops rather than for-each over a snapshot. */
+const BANK_MAX_OPS = 30;
+
+function bankWindowOpen() {
+	return isMyBankWindow();
+}
+
+async function bankDepositGold() {
+	const keep = CONFIG.bank.rangerKeepGold;
+	if (character.gold <= keep) return 0;
+	const amount = character.gold - keep;
+	try {
+		await bank_deposit(amount);
+		log(`banked ${amount} gold`, '#7FD98A');
+		return amount;
+	} catch (e) {
+		log(`bank_deposit failed: ${e && e.reason ? e.reason : e}`, 'red');
+		return 0;
+	}
+}
+
+/* Wear anything in the bag that improves a slot. Done before the bank is
+   touched at all, because what we are wearing decides what the bank is asked
+   for - ask first and we would withdraw a second copy of something already in
+   our hand. */
+async function bankEquipFromInventory() {
+	let done = 0;
+	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
+		let found = null;
+		for (const it of inventoryItems()) {
+			const slot = slotToEquip(it);
+			if (slot) { found = { it, slot }; break; }
+		}
+		if (!found) break;
+		try {
+			await equip(found.it.idx, found.slot);
+			log(`equipped ${found.it.name}${itemLevel(found.it) ? '+' + itemLevel(found.it) : ''} to ${found.slot}`, '#7FD98A');
+			done++;
+		} catch (e) {
+			log(`equip ${found.it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+			break;             // a refusal will just repeat; stop rather than spin
+		}
+	}
+	return done;
+}
+
+/* Hand the others what we are not using. shouldBank already refuses anything
+   we would wear and anything the bank has enough of. */
+async function bankDepositSpares() {
+	let done = 0;
+	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
+		const it = inventoryItems().find(shouldBank);
+		if (!it) break;
+		try {
+			await bank_store(it.idx);
+			log(`banked ${it.name}${itemLevel(it) ? '+' + itemLevel(it) : ''}`, '#7FD98A');
+			done++;
+		} catch (e) {
+			log(`bank_store ${it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+			break;
+		}
+	}
+	return done;
+}
+
+/* Take out anything the others left that beats what we are wearing.
+
+   Needs a free slot, so it runs after the deposit pass. The floor is the same
+   one the farm loop uses: leaving with a bag at the brim means the next kill
+   has nowhere to go, and the whole point of the window is to leave with room.
+
+   Each item is worn as it comes out, inside the loop rather than in one pass
+   afterwards. That is not tidiness - it is what lets a character with three
+   free slots collect five upgrades. An item put on vacates the bag slot it
+   arrived in, so withdraw-then-equip returns the slot before the next
+   iteration asks for one; withdrawing everything first would stop at the floor
+   with the rest still in the bank and nothing wrong reported.
+
+   The floor check therefore only bites when an item comes out and STAYS in the
+   bag - which means equip refused it. That is exactly when stopping is right,
+   and it is why the guard is at the top of the loop rather than gone. */
+async function bankWithdrawUpgrades() {
+	let done = 0;
+	for (let i = 0; i < BANK_MAX_OPS && bankWindowOpen(); i++) {
+		if (freeSlots() <= CONFIG.ranger.freeSlotsFloor) {
+			log('no room to withdraw more - leaving the rest for next window', 'orange');
+			break;
+		}
+		const it = bankItems().find((b) => slotToEquip(b));
+		if (!it) break;
+		try {
+			await bank_retrieve(it.pack, it.idx);
+			log(`withdrew ${it.name}${itemLevel(it) ? '+' + itemLevel(it) : ''} from ${it.pack}`, '#7FD98A');
+			done++;
+		} catch (e) {
+			log(`bank_retrieve ${it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
+			break;
+		}
+		await bankEquipFromInventory();
+	}
+	return done;
+}
+
+/* Sell what is left, to Gabriel, from the town spot.
+
+   AFTER the bank, never before. The bank gets first refusal on everything,
+   because a spare the others can use is worth more in the bank than it is as
+   gold - and once it is sold that judgement cannot be revisited. shouldSell
+   guards it twice: never a tier-3 name at any level, and never an on-plan item
+   the bank still wants.
+
+   NOTE, untested: Gabriel is 129 units from the town spot and `buy` from him
+   has been verified working at that distance. `sell` has not. If the first
+   live run refuses here, the range for selling is the thing to check before
+   anything else. */
+async function sellSurplus() {
+	let sold = 0;
+	for (let i = 0; i < BANK_MAX_OPS; i++) {
+		const it = inventoryItems().find(shouldSell);
+		if (!it) break;
+		try {
+			await sell(it.idx, it.q || 1);
+			sold++;
+		} catch (e) {
+			log(`sell ${it.name} failed: ${e && e.reason ? e.reason : e} - stopping`, 'orange');
+			break;
+		}
+	}
+	if (sold) log(`sold ${sold} surplus item(s)`, '#7FD98A');
+	return sold;
+}
+
+/* Everything has been tried and the bag is still full.
+
+   The bank would not take it, it is not sellable - which for this plan means
+   it is tier-3 material, or on-plan and still wanted - and there is nowhere
+   left to put it. Farming from here would loot into a bag with no room, so the
+   character stops and says so rather than pretending to work.
+
+   It keeps scanning, because that is the one thing it can still do that has
+   value, and it is the reason this is a park rather than a halt. */
+function stuckFull() {
+	if (!fleetState.stuck) {
+		fleetState.stuck = true;
+		log(`bag still full after the bank window (${freeSlots()} free) - `
+			+ `nothing left to bank or sell. Holding in town and scanning until `
+			+ `someone looks at it.`, 'red');
+	}
+}
+
+/* The window, start to finish. */
+async function bankRun() {
+	// Scan before leaving town - the bank is its own map, so once we are through
+	// the door there is nothing to see until we come back out.
+	await withScanLock(doScan);
+	if (!(await goTo({ map: CONFIG.bank.map, x: 0, y: -100 }))) {
+		log('could not reach the bank this window', 'orange');
+		return;
+	}
+
+	await bankDepositGold();
+
+	// character.bank is only populated while standing in it, so everything that
+	// reads the bank has to happen here and cannot be deferred.
+	if (!character.bank) {
+		log('in the bank map but character.bank is not readable - gold only this window', 'orange');
+	} else {
+		const worn = await bankEquipFromInventory();
+		const given = await bankDepositSpares();
+		const taken = await bankWithdrawUpgrades();
+		if (worn || given || taken) {
+			log(`gear pass: equipped ${worn}, banked ${given}, withdrew ${taken}`, '#7FD98A');
+		}
+	}
+
+	await townTrip('bank window, on the way out');
+	await sellSurplus();
+
+	if (bagFull()) stuckFull();
+	else fleetState.stuck = false;
 }
