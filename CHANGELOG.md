@@ -12,6 +12,82 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v42
+
+the long comments move to Codex/MerchantComments.md. They were 43.7% of the
+file - 107,305 chars of 245,699 - and the file had been trimmed twice in one
+evening just to keep deploying, once down to seven characters of headroom.
+Merchant.js is now 189,886.
+
+111 block and run comments were lifted. Each site keeps its first line as a
+summary and gains a pointer, "-> MerchantComments.md#anchor"; the full text
+lives under that anchor, which is the function or config key it sat on. Every
+pointer resolves: 111 pointers, 111 anchors, none missing, orphaned or
+duplicated. The extraction was mechanical and the result verified by stripping
+all comments from the before and after and comparing - the code is byte
+identical, same SHA. Nothing was rewritten, only relocated.
+
+The header now says so, because a summary that looks like the whole comment is
+worse than no comment: most of these numbers were measured live rather than
+chosen, and several record a theory that was tried and discarded, both of which
+invite tidying by someone who only sees the one-liner.
+
+Two claims in the header were also corrected rather than carried forward. The
+"240 KiB" ceiling was wrong - 245,706 loaded and 238,214 did not, so size alone
+does not explain that failure. And the backtick rule was overstated: the bisect
+that produced it was real, but Codex/FamilyFleet.js carries backticks in
+comments and runs, so it is not general and the mechanism is unknown. Both now
+say what was actually observed and tell the next person to bisect rather than
+trust a number.
+
+## v41
+
+the trade verifier stops opening a modal on every leg. arbProbeVerify is a
+hand-run probe that returns through pShow, and arbStillThere calls it to check
+both legs of every trade - so each attempt put one modal on screen per leg.
+Twelve identical MuaBan/trade10 boxes were stacked when this was found, which
+is the same fault v37 fixed in arbProbeFindFlips and the same cause: a probe
+written for a person, reused by the automated path with its display side
+effects intact. It gains the same quiet option, passed by arbStillThere only;
+the return value is byte-identical, so selection and verification behaviour do
+not move, and the reason still reaches the ledger through arbFinish.
+
+Worth noting for whoever edits this next: the file is now 245,699 chars and
+the largest size PROVEN to load is 245,706. That is seven characters of room.
+The 240 KiB figure in the header is not trustworthy - it was inferred before
+the backtick bisect and a 238,214-char build later failed to load while a
+245,706-char one succeeded, so size and that failure are not the same thing.
+Before adding anything substantial here, either establish the real limit or
+spend a pass trimming prose, of which there is plenty.
+
+## v40
+
+two fixes, both cases of a cached value drifting from the truth. The stand
+first: ensureStandClosed early-returned on state.standOpen, which is only our
+note of the stand, not the stand. change_server reloads the page on every shard
+hop, so state comes back with standOpen false while the stand itself, being
+server side, is still standing - the close was then skipped and the merchant
+walked and hopped with it up. Caught live on EU III: stand0 open,
+state.standOpen false, moving true, mid-trade. It now asks the game
+(character.stand) as well as the flag. v39 closed the stand in arbApproach,
+which was necessary and not sufficient; this is the other half.
+
+Second, the abandon path now records the failure. arbMarkUsed only ever fired
+on a consumed listing, so a listing that is real, freshly advertised and always
+gone on arrival was re-picked the moment it reappeared in the feed. Kazhag on
+EU I is the case: slice_mint at 100,000 in all four trade slots, genuinely
+re-listed every couple of minutes with a lastSeen two minutes old, and five
+separate trades opened against him inside 90 seconds, every one abandoned at
+slot_gone. 707 abandons on the day. This is NOT the v38 cache bug - v38 is
+confirmed running, and the row really was fresh through the merchant's own
+arbProbeMarketRows; he simply loses the race every time, which a 10x spread on
+a public feed guarantees. Failures are now keyed on shard|target with an
+escalating hold (2 min doubling to 60), forgotten two hours after the hold
+lapses, and cleared by any completed trade. Keyed on the seller rather than the
+slot because four slots advertising one item would otherwise burn four cycles
+before that stand went quiet, and escalating because a flat cooldown only turns
+a permanent loop into a duty cycle.
+
 ## v39
 
 the stand no longer stays open while the merchant walks. Stand safety was
