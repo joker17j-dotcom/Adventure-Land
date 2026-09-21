@@ -889,7 +889,8 @@ function scanPonty() {
 }
 
 
-async function pontyCheck() {
+async function pontyCheck(opts) {
+	opts = opts || {};
 	const spot = npcSpot('main', 'secondhands');
 	if (!spot) { log('Ponty not found in map data', 'orange'); return null; }
 	/* Do not walk to him from the town spot.
@@ -898,7 +899,25 @@ async function pontyCheck() {
 	   distance with 225 items, so the walk buys nothing and costs the one rule
 	   this character is built around. The walk is kept for anywhere else,
 	   because "anywhere else" is a character that is lost rather than parked. */
-	if (!atTownSpot()) await goTo(spot);
+	/* Only walk when the caller owns the movement lock.
+
+	   The scan lock is deliberately separate from the movement lock, on the
+	   stated grounds that "a scan reads parent.entities and posts, it never moves
+	   the character". doScan breaks that premise right here: it calls pontyCheck,
+	   and pontyCheck used to walk. Since maybeTownScan is fired from the tick
+	   UNAWAITED and ABOVE the movement lock, that walk raced whatever the locked
+	   flow was already doing, and the game rejected one of the two smart_moves.
+	   That is the 'could not reach main: interrupted' in the family's logs - the
+	   rangers kept having their travel cancelled and never settled to farm.
+
+	   So the invariant is restored rather than patched: the scan path never
+	   moves. Callers that hold the lock - the merchant's town round - pass
+	   mayMove and still get the walk. From the town spot Ponty is in range
+	   anyway, which is the whole point of that spot. */
+	if (!atTownSpot()) {
+		if (!opts.mayMove) return null;
+		await goTo(spot);
+	}
 	const items = await scanPonty();
 	if (items) log(`Ponty: ${items.length} items on ${shardKey(currentShard())}`, '#5ED6A8');
 	else log('Ponty returned nothing (out of range, or the call timed out)', 'orange');
@@ -3543,7 +3562,7 @@ async function merchantTick() {
 
 		const key = shardKey(currentShard());
 		if (pontyDue(key)) {
-			const items = await pontyCheck();
+			const items = await pontyCheck({ mayMove: true });
 			if (items) {
 				absorbPonty(items);
 				pontySeen(key, Date.now());
