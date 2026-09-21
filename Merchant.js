@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v38
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v39
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2581,6 +2581,7 @@ async function scoutPontyCheck() {
 	   from. The walk is kept for anywhere else, because anywhere else means
 	   the merchant is mid-errand rather than parked. */
 	if (!atTownSpot()) {
+		await ensureStandClosed();   // same bypass as arbApproach
 		try { await smart_move({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
 		catch (e) { return; }
 	}
@@ -3226,6 +3227,13 @@ async function arbApproach(targetName) {
 	if (!e) return { ok: false, reason: 'not_loaded' };
 	const t = pWhere(e), me = pWhere(character);
 	if (t.map === me.map && pDist(me.x, me.y, t.x, t.y) <= want) return { ok: true, moved: false };
+	// Past the in-range return, so this only fires when we are actually going
+	// to move. travelTo() is where stand safety normally lives, but the
+	// executor does not use it - it smart_moves straight to a counterparty,
+	// which is how a stand stayed open across a walk and a shard hop. Seen
+	// live 2026-09-21: stand0 open, state.standOpen true, moving true, with a
+	// trade picked for another shard.
+	await ensureStandClosed();
 	try {
 		await smart_move({ map: t.map, x: t.x, y: t.y });
 	} catch (err) {
@@ -3581,6 +3589,19 @@ async function arbLoop() {
 				}
 			}
 		}
+		/* Put the stand back once the trade is done.
+
+		   shouldHoldStand() already says a stand and an in-flight trade do not
+		   belong together, but only openStandAtBestSpot() consulted it, so the
+		   rule only ever governed OPENING. Nothing closed the stand when a trade
+		   started and nothing reopened it afterwards - every other reopen hangs
+		   off a delivery batch, the gear loop, the kiss, a hop home, or script
+		   load, none of which an arbitrage run touches.
+
+		   The guards matter: shouldHoldStand() inside refuses while ARB.cur is
+		   set or we are off the home shard, and standOpen stops this re-issuing
+		   open_stand on every tick. */
+		if (!ARB.cur && !ARB.busy && !state.busy && !state.standOpen) await openStandAtBestSpot();
 	} catch (e) {
 		console.error('arbLoop error:', e);
 		ARB.busy = false;
@@ -4826,6 +4847,7 @@ async function arbProbeStep(targetName, dist) {
 	const px = t.x + (dx / len) * want, py = t.y + (dy / len) * want;
 
 	const errors = [];
+	await ensureStandClosed();   // same bypass as arbApproach
 	try { await smart_move({ map: t.map, x: px, y: py }); }
 	catch (err) {
 		errors.push('smart_move: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)));
