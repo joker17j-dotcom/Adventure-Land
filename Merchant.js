@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v32 (two scan-buffer bugs ported from FamilyFleet, both in live-gold paths. scoutSettleScan measured settling with scoutBufferedCount - every shard still being carried - so an unsent backlog made the two-passes-agree test pass on the second pass before the new shard had been looked at once, and the roamer posted whatever it happened to hold. It now counts THIS shard. And the buffer never cleared a shard between visits, so a stand that closed was merged forward and re-reported as live on every return; sweeps now replace rather than accumulate, which is what stops the bridge being fed ghosts it has no way to detect. scoutPostGap's wait is also clamped, since a backwards clock made it a number setTimeout cannot hold. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v33 (all five Mainland NPC errands now happen from one measured position, (-179, -72): Lucas for scrolls, Cue for upgrade and compound, Gabriel for basics and selling, Ernis for potions, Ponty for secondhands. It is the centre of the smallest circle enclosing the four that were measured live - Gabriel 129.4, Cue 150.6, Lucas 286.0, Ponty 286.1 - and Ernis turns out to sit inside it at 169.8, so adding him does not move the optimum. The gear loop walks there ONCE and then buys the scroll, compounds and upgrades without another step; before, each material had its own travelTo and the roll then happened wherever the last one left the character, which for a plain scroll was Lucas, from whom Cue is 285.4 - at the very edge of range and the only reason it worked. Ponty is no longer walked to from the spot, and potions go to the spot rather than to Ernis, who can do only the one thing. Garwyn (616 away) and Crun (on level2) are out of reach of anywhere in the cluster and still travel. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v32 (two scan-buffer bugs ported from FamilyFleet, both in live-gold paths. scoutSettleScan measured settling with scoutBufferedCount - every shard still being carried - so an unsent backlog made the two-passes-agree test pass on the second pass before the new shard had been looked at once, and the roamer posted whatever it happened to hold. It now counts THIS shard. And the buffer never cleared a shard between visits, so a stand that closed was merged forward and re-reported as live on every return; sweeps now replace rather than accumulate, which is what stops the bridge being fed ghosts it has no way to detect. scoutPostGap's wait is also clamped, since a backwards clock made it a number setTimeout cannot hold. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -407,6 +407,33 @@ const CONFIG = {
 	// Ernis sells HP/MP potions in Mainland, beside Gabriel.
 	npc: { name: 'Ernis', map: 'main', x: -35, y: -162 },
 
+	/* THE TOWN SPOT - one position that reaches five NPCs.
+
+	   Measured and tested live against game data 17083, not derived and not
+	   guessed. It is the centre of the smallest circle enclosing Lucas, Cue,
+	   Gabriel and Ponty, radius 286.05; Lucas and Ponty are 572.1 apart and
+	   form the diameter, so no point in town beats 286 on the worst case.
+
+	   Distances from it, all computed from the NPCs' own map positions:
+
+	     Gabriel  (basics, selling)     129.4   verified: buy
+	     Cue      (upgrade, compound)   150.6   verified: upgrade rolled
+	     Ernis    (potions)             169.8
+	     Lucas    (scrolls, cscrolls)   286.0   verified: buy
+	     Ponty    (secondhands)         286.1   verified: replied, 225 items
+
+	   Ernis was not in the original four and turns out to sit well inside the
+	   circle, so adding him does not move the optimum - the worst case goes
+	   from 286.05 to 286.09, which is the same two NPCs binding it.
+
+	   WHAT IS STILL A JOURNEY, and deliberately: Garwyn (offerings) is 616
+	   away and Crun (scroll3/cscroll3) is on `level2`. The upgrade planner can
+	   still choose those and will still travel for them.
+
+	   IF THE NPC SET CHANGES, recompute the smallest enclosing circle rather
+	   than nudging this point - the binding pair may change. */
+	townSpot: { name: 'town spot', map: 'main', x: -179, y: -72, radius: 60 },
+
 	deliveryAmount: 1000,
 	restockBuffer: 500, // buy a bit past the delivery amount so stock doesn't immediately dip low again
 
@@ -542,6 +569,21 @@ async function ensureStandClosed() {
 	} catch (e) {
 		console.error('close_stand failed:', e);
 	}
+}
+
+/* Standing where all five NPCs are in reach? A plain radius is the right test
+   here: the question is "am I there", not "can I see something". */
+function atTownSpot() {
+	const t = CONFIG.townSpot;
+	return character.map === t.map && distance(character, t) <= t.radius;
+}
+
+/* Go there, once. Returns early when we have already arrived, which is what
+   makes it safe to call before every NPC interaction rather than reasoning
+   about who walked where last. */
+async function goToTownSpot() {
+	if (atTownSpot()) return true;
+	return await travelTo(CONFIG.townSpot.map, CONFIG.townSpot.x, CONFIG.townSpot.y);
 }
 
 async function travelTo(map, x, y) {
@@ -1022,9 +1064,15 @@ async function pickupItemsFrom(recipientName) {
 }
 
 async function ensureStock(itemName, targetAmount) {
-	if (character.map !== CONFIG.npc.map || distance(character, CONFIG.npc) > 300) {
-		const arrived = await travelTo(CONFIG.npc.map, CONFIG.npc.x, CONFIG.npc.y);
-		if (!arrived) return false;
+	/* To the town spot rather than to Ernis himself.
+
+	   He is 169.8 from it, comfortably inside the 300 this function already
+	   accepted as close enough - so nothing about the purchase changes, but
+	   the merchant ends up somewhere it can also buy scrolls, upgrade, sell
+	   and read Ponty without moving again. Standing on Ernis can do only the
+	   one thing. */
+	if (!atTownSpot() && distance(character, CONFIG.npc) > 300) {
+		if (!(await goToTownSpot())) return false;
 	}
 
 	const needed = targetAmount - quantity(itemName);
@@ -1191,6 +1239,11 @@ potionLoop();
 // ============================================================================
 // SELLING TRASH TO AN NPC MERCHANT (not the player stand)
 // ============================================================================
+/* Selling needs Gabriel in range - 129.4 from the town spot, and both buy and
+   sell are confirmed working at that distance. So this is another thing the
+   merchant does without moving, PROVIDED it is standing there; called from
+   anywhere else it is the caller's business to have got in range, which is
+   unchanged from before. */
 function sellTrash() {
 	if (!CONFIG.selling.enabled) return;
 	const whitelist = new Set(CONFIG.selling.whitelist);
@@ -1654,20 +1707,42 @@ const MATERIAL_VENDORS = {
 // Buys whatever's missing, traveling to each material's own real vendor -
 // the scroll and the offering can require two different trips, since
 // they're not always sold by the same NPC (see MATERIAL_VENDORS above).
+/* Vendors the town spot reaches. Lucas carries every scroll the planner can
+   normally pick; Crun and Garwyn are the exceptions that still need a trip. */
+const SPOT_VENDORS = new Set(['scroll0', 'scroll1', 'scroll2',
+	'cscroll0', 'cscroll1', 'cscroll2']);
+
+/* Walk to ONE place and buy everything from there.
+
+   Each material used to get its own travelTo, so a step needing a scroll and
+   an offering made two journeys and the upgrade itself then happened wherever
+   the last one left the character standing. For a plain scroll that was
+   Lucas, from whom Cue is 285.4 away - right at the edge of range, and the
+   reason the upgrade worked at all. From the town spot Cue is 150.6, and the
+   scroll, the roll and the selling afterwards all happen without another
+   step. */
 async function ensureUpgradeMaterials(scrollName, offeringName) {
-	if (quantity(scrollName) < 1) {
-		const vendor = MATERIAL_VENDORS[scrollName];
-		if (!vendor) throw new Error(`No known vendor sells ${scrollName} - cannot buy it.`);
-		const arrived = await travelTo(vendor.map, vendor.x, vendor.y);
-		if (!arrived) throw new Error(`Could not reach ${vendor.name} at ${vendor.map} (${vendor.x}, ${vendor.y}) for ${scrollName}`);
-		await buy(scrollName, 1);
+	const needs = [];
+	if (quantity(scrollName) < 1) needs.push(scrollName);
+	if (offeringName !== 'none' && quantity(offeringName) < 1) needs.push(offeringName);
+	if (!needs.length) return;
+
+	// One walk covers every material the spot can reach.
+	if (needs.some((n) => SPOT_VENDORS.has(n))) {
+		if (!(await goToTownSpot())) {
+			throw new Error(`Could not reach the town spot for ${needs.join(', ')}`);
+		}
+		for (const n of needs.filter((x) => SPOT_VENDORS.has(x))) await buy(n, 1);
 	}
-	if (offeringName !== 'none' && quantity(offeringName) < 1) {
-		const vendor = MATERIAL_VENDORS[offeringName];
-		if (!vendor) throw new Error(`No known vendor sells ${offeringName} - cannot buy it.`);
+
+	// Anything else keeps its own journey - Garwyn at (192, -564) and Crun on
+	// level2 are not in reach of anywhere in Mainland's NPC cluster.
+	for (const n of needs.filter((x) => !SPOT_VENDORS.has(x))) {
+		const vendor = MATERIAL_VENDORS[n];
+		if (!vendor) throw new Error(`No known vendor sells ${n} - cannot buy it.`);
 		const arrived = await travelTo(vendor.map, vendor.x, vendor.y);
-		if (!arrived) throw new Error(`Could not reach ${vendor.name} at ${vendor.map} (${vendor.x}, ${vendor.y}) for ${offeringName}`);
-		await buy(offeringName, 1);
+		if (!arrived) throw new Error(`Could not reach ${vendor.name} at ${vendor.map} (${vendor.x}, ${vendor.y}) for ${n}`);
+		await buy(n, 1);
 	}
 }
 
@@ -1875,6 +1950,15 @@ async function gearProgressionLoop() {
 				}
 
 				if (hasBankable) await bankFullyProgressedItems();
+
+				/* One walk, then everything. The bank pass above is its own
+				   map and has to be its own trip, but from here on the scroll,
+				   the compound and the upgrade are all reachable from a single
+				   position - so go there once rather than letting each step
+				   walk itself somewhere and leave the next one to find its own
+				   way back. goToTownSpot returns early if we are already
+				   standing there, which after a bank return we are not. */
+				if (hasDuplicateGroup || hasPlanCandidate) await goToTownSpot();
 
 				const combined = await autoCombineOneBaseDuplicateGroup(character.gold);
 				if (!combined) await attemptBestPlanStep(character.gold);
@@ -2378,8 +2462,15 @@ async function scoutPontyCheck() {
 	const m = parent && parent.G && parent.G.maps && parent.G.maps.main;
 	const npc = m && (m.npcs || []).find((n) => n && n.id === 'secondhands');
 	if (!npc || !Array.isArray(npc.position)) return;
-	try { await smart_move({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
-	catch (e) { return; }
+	/* Do not walk to him from the town spot. He is 286.1 away from it and has
+	   answered a live query at exactly that distance with 225 items, so the
+	   walk buys nothing and costs the position everything else is reachable
+	   from. The walk is kept for anywhere else, because anywhere else means
+	   the merchant is mid-errand rather than parked. */
+	if (!atTownSpot()) {
+		try { await smart_move({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
+		catch (e) { return; }
+	}
 	const items = await scoutPontyQuery();
 	if (items) {
 		scoutBufferFor(scoutHere()).ponty = items;

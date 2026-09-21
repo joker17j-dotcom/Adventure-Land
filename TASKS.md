@@ -150,9 +150,34 @@ ratchet from eating everything else.
 
 ## 2. Adopt the measured town NPC spot in the main party's scripts
 
-**Status:** not started, and deliberately not applied. `Codex/FamilyFleet.js`
-uses it; `Ranger.js`, `Priest.js`, `Mage.js` and `Merchant.js` do not. The
-operator asked for it to be recorded rather than rolled out.
+**Status:** **`Merchant.js` DONE** (`v33`). `Codex/FamilyFleet.js` and
+`Codex/MerchantScout.js` already used it. Still not applied to `Ranger.js`,
+`Priest.js` or `Mage.js` — those three were the "record it, don't roll it out"
+part and remain on hold.
+
+### What went into Merchant.js
+
+All five Mainland errands now happen from `(-179, -72)`: Lucas (scrolls), Cue
+(upgrade/compound), Gabriel (basics and selling), Ernis (potions), Ponty
+(secondhands).
+
+**Ernis was never in the measured set** — `FamilyFleet.js` carried him as
+`at: null`. He is at `(-35, -162)`, which is **169.8** from the spot, well
+inside it. Adding him moves the worst case from 286.05 to 286.09, so the
+optimum is unchanged and Lucas/Ponty still bind it.
+
+The gear loop now walks there **once** and then buys, compounds and upgrades
+without another step. Before, each material had its own `travelTo` and the roll
+happened wherever the last one left the character standing — for a plain scroll
+that was Lucas, **from whom Cue is 285.4**. That is at the very edge of range
+and is the only reason upgrading worked at all from there; from the spot Cue is
+150.6.
+
+`Garwyn` (616 away) and `Crun` (on `level2`) are out of reach of anywhere in the
+cluster and still travel. The planner can still pick them.
+
+Covered by `spot_test.js`, which cuts the functions out of the real file rather
+than copying them.
 
 ### The spot
 
