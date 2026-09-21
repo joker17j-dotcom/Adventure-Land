@@ -32,6 +32,17 @@ const CONFIG = {
 
 	bridge: 'http://127.0.0.1:8787',
 
+	/* How long one tick may hold the movement lock before it is forced open.
+
+	   Has to clear the longest legitimate hold, and that is the bank run: it
+	   walks to the bank map, deposits gold, runs three gear passes, walks back
+	   to town and sells surplus, with no internal bound. bank.windowMs is four
+	   minutes and nothing enforces even that on the run itself, so a ceiling
+	   under it would interrupt real bank runs - which is worse than the stall
+	   it is meant to cure. Eight minutes leaves room and still bounds a wedged
+	   character to one window rather than forever. */
+	lockCeilingMs: 8 * 60 * 1000,
+
 	// ------------------------------------------------------------- the bank
 	bank: {
 		// Minutes past the hour for index 0; each later character is offset by
@@ -623,7 +634,12 @@ async function goTo(spot) {
 		await smart_move({ map: spot.map, x: spot.x, y: spot.y });
 		return true;
 	} catch (e) {
-		log('could not reach ' + (spot.map || '?') + ': ' + e, 'orange');
+		// e is a game rejection object, not an Error - string-concatenating it
+		// prints [object Object] and throws the reason away, which is exactly
+		// what the family's logs showed while their rangers were wedged.
+		// goToMonster, one function above, already does this correctly.
+		log('could not reach ' + (spot.map || '?') + ': '
+			+ (e && e.reason ? e.reason : (e && e.message ? e.message : JSON.stringify(e))), 'orange');
 		return false;
 	}
 }
@@ -1473,7 +1489,55 @@ function chooseSpot() {
    socket call, and without this a slow smart_move would let the next tick
    start a second one on top of it - the same mutual exclusion the merchant
    learned to need. Released in a finally so a throw cannot strand it. */
-const fleetState = { busy: false, scanning: false, parkedFull: false, stuck: false, lastTownScanAt: 0 };
+const fleetState = {
+	busy: false, busySince: 0, busyToken: 0,
+	scanning: false, parkedFull: false, stuck: false, lastTownScanAt: 0,
+};
+
+/* Taking and releasing the movement lock, by token.
+
+   The lock is released in a finally, which covers a throw. It does NOT cover an
+   await that never settles - and that is what happens in practice. Measured on
+   the family's account 2026-09-21: both rangers sat with busy true across
+   repeated reads, a goo at distance 0, is_in_range true and every other gate
+   open, doing nothing. They still LOOKED alive, because the town scan sits
+   above this lock in the tick while farming sits below it, so the log kept
+   filling with Ponty and stand readings while the character never fought again.
+   Their logs carry a matching 'could not reach main' from goTo, so smart_move
+   is the suspect: when it rejects you get that line, and when it simply never
+   settles the finally never runs.
+
+   The token is what makes forcing the lock safe. Clearing the flag does not
+   cancel the stuck operation, so it can still wake up later and run its own
+   finally - which would release a lock a FRESH flow legitimately holds. Each
+   acquisition takes a generation number and a release only applies if it still
+   owns it, so a stale flow's release is a no-op. */
+function takeBusy() {
+	fleetState.busy = true;
+	fleetState.busySince = Date.now();
+	return ++fleetState.busyToken;
+}
+
+function freeBusy(token) {
+	if (fleetState.busyToken !== token) return;   // stale flow, not ours to release
+	fleetState.busy = false;
+}
+
+/* Held past the ceiling? Say so loudly and force it open.
+
+   Loudly is the point. The recovery is worth having, but an operation that
+   silently wedges every few hours and silently recovers is still a bug nobody
+   can chase - the log line is what turns it into something with a timestamp
+   and a duration next to it. */
+function busyExpired() {
+	if (!fleetState.busy) return false;
+	const held = Date.now() - fleetState.busySince;
+	if (held < CONFIG.lockCeilingMs) return false;
+	log('movement lock held ' + Math.round(held / 1000) + 's - forcing it open. '
+		+ 'Something awaited never settled; the next tick starts clean.', 'red');
+	fleetState.busy = false;
+	return true;
+}
 
 /* Scanning gets its own lock, separate from the movement one.
 
@@ -1729,6 +1793,9 @@ async function farmTick() {
 	await attackWithRotation(target);
 }
 
+let lastAttackWarnAt = 0;
+const ATTACK_WARN_EVERY_MS = 60 * 1000;
+
 /* Best available skill, then a plain attack. skillReady decides availability
    every time, so this needs no knowledge of what the character has unlocked. */
 async function attackWithRotation(target) {
@@ -1762,7 +1829,20 @@ async function attackWithRotation(target) {
 			log(`${step.skill} refused: ${e && e.reason ? e.reason : e}`, 'orange');
 		}
 	}
-	try { await attack(target); } catch (e) { }
+	try { await attack(target); } catch (e) {
+		/* This catch used to be empty, so every refused attack vanished. A
+		   contested field refuses a lot of them - the target dies to someone
+		   else between picking it and swinging, and the server answers
+		   not_there - so this is throttled rather than logged every time.
+		   Silence was the wrong trade: a character that cannot attack AT ALL
+		   looked identical to one that was simply between targets. */
+		const now = Date.now();
+		if (now - lastAttackWarnAt > ATTACK_WARN_EVERY_MS) {
+			lastAttackWarnAt = now;
+			log('attack refused: ' + (e && e.reason ? e.reason : JSON.stringify(e))
+				+ ' (throttled - logged at most once a minute)', 'orange');
+		}
+	}
 }
 
 /* Priority ladder. Ordered by what cannot wait, not by what is most common. */
@@ -1786,9 +1866,9 @@ async function rangerTick() {
 		maybeTownScan().catch((e) => log(`town scan failed: ${e && e.message ? e.message : e}`, 'orange'));
 	}
 
-	if (fleetState.busy) return;
+	if (fleetState.busy && !busyExpired()) return;
 
-	fleetState.busy = true;
+	const lock = takeBusy();
 	try {
 		if (isMyBankWindow()) {
 			fleetState.parkedFull = false;
@@ -1805,7 +1885,7 @@ async function rangerTick() {
 	} catch (e) {
 		console.error('rangerTick error:', e);
 	} finally {
-		fleetState.busy = false;
+		freeBusy(lock);
 	}
 }
 
@@ -3439,9 +3519,9 @@ async function merchantTick() {
 	if (inTown()) {
 		maybeTownScan().catch((e) => log(`town scan failed: ${e && e.message ? e.message : e}`, 'orange'));
 	}
-	if (fleetState.busy) return;
+	if (fleetState.busy && !busyExpired()) return;
 
-	fleetState.busy = true;
+	const lock = takeBusy();
 	try {
 		if (isMyBankWindow()) { await merchantBankRun(); return; }
 
@@ -3484,7 +3564,7 @@ async function merchantTick() {
 	} catch (e) {
 		console.error('merchantTick error:', e);
 	} finally {
-		fleetState.busy = false;
+		freeBusy(lock);
 	}
 }
 
