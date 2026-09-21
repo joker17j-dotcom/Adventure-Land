@@ -223,6 +223,10 @@ const CONFIG = {
 			mpAt: 0.35,
 			buyBelow: 200,
 			buyTo: 500,
+			// How long to farm without them after a trip that could not afford
+			// any. Long enough that the gold has a chance to accumulate, short
+			// enough that a character is not running dry all afternoon.
+			retryMs: 10 * 60 * 1000,
 		},
 		// Full bag and not our bank window: park in town and scan instead of
 		// dropping anything.
@@ -574,6 +578,24 @@ function serverList() {
 
 function canHop() {
 	return typeof change_server === 'function' && serverList().length > 0;
+}
+
+/* Travel to where a monster spawns, using the game's own pathfinding.
+
+   smart_move accepts a monster name and routes to its spawn - that is the
+   documented form, but it has NOT been measured against this client, so it is
+   tried first and falls through rather than being relied on. A false return
+   means "that did not work, use the coordinate route below it", never "there
+   is nowhere to go". */
+async function goToMonster(type) {
+	try {
+		await smart_move({ to: type });
+		return true;
+	} catch (e) {
+		log(`smart_move to ${type} did not take (${e && e.reason ? e.reason : e}) `
+			+ `- falling back to map coordinates`, '#8b98ab');
+		return false;
+	}
 }
 
 async function goTo(spot) {
@@ -1254,6 +1276,8 @@ const ranger = {
 	lastScanAt: 0,
 	lastTownTripAt: 0,
 	parked: false,          // full bag, waiting out the clock in town
+	potionTripAt: 0,        // last trip made FOR potions
+	potionsUnaffordable: false,
 };
 
 function monsterDef(type) {
@@ -1479,15 +1503,53 @@ function potionsLow() {
 	return potionCount(cfg.hp) < cfg.buyBelow || potionCount(cfg.mp) < cfg.buyBelow;
 }
 
+/* Buy as many as the purse allows, rather than the full restock or nothing.
+
+   A NEW ACCOUNT IS THE CASE THIS EXISTS FOR. hpot1 is 100 gold and buyTo is
+   500, so a full restock of both kinds is 100,000 gold - which a character
+   that has never farmed does not have. The all-or-nothing version asked for
+   500, the game refused the whole purchase, and the character came back from
+   town with nothing. Fifty potions is not a restock but it is enough to farm
+   goos, and farming goos is how the gold for the next fifty arrives.
+
+   Returns how many it actually bought, because the caller has to be able to
+   tell "restocked" from "could not afford a single one" - those need
+   different behaviour and they used to look identical. */
 async function buyPotions() {
 	const cfg = CONFIG.ranger.potions;
+	let bought = 0;
 	for (const kind of [cfg.hp, cfg.mp]) {
 		const have = potionCount(kind);
 		if (have >= cfg.buyTo) continue;
-		if (blocked(`buy ${cfg.buyTo - have} ${kind}`)) continue;
-		try { await buy(kind, cfg.buyTo - have); }
+		let want = cfg.buyTo - have;
+
+		const price = basePrice(kind);
+		if (price !== null && price > 0) {
+			const affordable = Math.floor(character.gold / price);
+			if (affordable <= 0) continue;
+			want = Math.min(want, affordable);
+		}
+		if (blocked(`buy ${want} ${kind}`)) continue;
+		try { await buy(kind, want); bought += want; }
 		catch (e) { log(`could not buy ${kind}: ${e && e.reason ? e.reason : e}`, 'orange'); }
 	}
+	return bought;
+}
+
+/* Is another potion trip worth making?
+
+   Without this a character that cannot afford potions goes to town, buys
+   nothing, returns, and is still low - so the next tick sends it to town
+   again, forever. It never farms, so it never earns the gold for the potions
+   it is going to town to buy. A new account deadlocks on the first tick.
+
+   So a trip that bought nothing buys quiet instead: back out to the farm, and
+   do not come in for potions again until the retry window is up. A ranger with
+   no potions is a worse ranger, not a broken one - useRangerPotions simply
+   finds none and the fight goes on. */
+function potionTripDue() {
+	if (!ranger.potionsUnaffordable) return true;
+	return Date.now() - ranger.potionTripAt >= CONFIG.ranger.potions.retryMs;
 }
 
 /* The scan itself, wherever we happen to be standing.
@@ -1539,7 +1601,15 @@ async function townTrip(reason) {
 	const spot = CONFIG.scout.townSpot;
 	log(`town: ${reason}`, '#8b98ab');
 	if (!atTownSpot() && !(await goTo(spot))) return false;
-	if (reason === 'potions') await buyPotions();
+	if (reason === 'potions') {
+		const got = await buyPotions();
+		ranger.potionTripAt = Date.now();
+		ranger.potionsUnaffordable = got === 0;
+		if (got === 0) {
+			log(`could not afford any potions (${character.gold} gold) - farming without them `
+				+ `and trying again in ${Math.round(CONFIG.ranger.potions.retryMs / 60000)} min`, '#E9C46A');
+		}
+	}
 	// Compounding is a town job too - Cue is in reach from this spot, and three
 	// slots becoming one is worth more than the walk we have already paid for.
 	// A no-op on a ranger, which is deliberate and explained at compoundPass:
@@ -1616,6 +1686,13 @@ async function farmTick() {
 	const target = get_nearest_monster({ type: spot.monster });
 	if (!target) {
 		// Nothing of ours in view: walk to the pack rather than standing idle.
+		//
+		// Ask the game where the monster lives FIRST. The old version walked to
+		// the map's (0, 0) and then looked around, which on `main` is the town
+		// end - goos are not visible from there, so a character that arrived
+		// with an empty screen stood at the origin indefinitely. On a new
+		// account that is every character's first tick, and it never farms.
+		if (await goToMonster(spot.monster)) return;
 		if (character.map !== spot.map) { await goTo({ map: spot.map, x: 0, y: 0 }); return; }
 		const anywhere = get_nearest_monster({ type: spot.monster, no_target: true });
 		if (anywhere) await goTo({ map: spot.map, x: anywhere.x, y: anywhere.y });
@@ -1684,7 +1761,7 @@ async function rangerTick() {
 		if (bagFull()) { await parkFull(); return; }
 		fleetState.parkedFull = false;
 
-		if (potionsLow()) { await townTrip('potions'); return; }
+		if (potionsLow() && potionTripDue()) { await townTrip('potions'); return; }
 		if (scanDue()) { await townTrip('scan due'); return; }
 		await farmTick();
 	} catch (e) {
@@ -2081,8 +2158,9 @@ function satisfiesATier(item) {
 
 /* May this item go under a scroll at all? Returns a reason when not, so the
    log says which guard stopped it rather than just going quiet. */
-/* What the next attempt's scroll costs, from the game's own price. */
-function scrollCost(name) {
+/* What an item costs, from the game's own data. Used for scrolls and for
+   potions - both are "what will this purchase take out of the float". */
+function basePrice(name) {
 	try {
 		const g = parent.G.items[name].g;
 		return (typeof g === 'number' && isFinite(g)) ? g : null;
@@ -2120,7 +2198,7 @@ function upgradeRefusal(item) {
 	if (p < CONFIG.merchant.minUpgradeChance) {
 		return `${Math.round(p * 100)}% is below the ${Math.round(CONFIG.merchant.minUpgradeChance * 100)}% floor`;
 	}
-	const cost = scrollCost(upgradeScrollFor(item));
+	const cost = basePrice(upgradeScrollFor(item));
 	if (cost !== null) {
 		if (cost > CONFIG.merchant.maxScrollSpend) {
 			return `${upgradeScrollFor(item)} costs ${cost}, over the ${CONFIG.merchant.maxScrollSpend} per-attempt limit`;
@@ -2266,7 +2344,7 @@ function compoundRefusal(sample) {
 	const ceiling = compoundCeiling(sample.name);
 	if (ceiling === null) return 'no tier compounds this item';
 	if (itemLevel(sample) >= ceiling) return 'already at the highest level any tier asks';
-	const cost = scrollCost(compoundScrollFor(sample));
+	const cost = basePrice(compoundScrollFor(sample));
 	if (cost !== null) {
 		if (cost > CONFIG.merchant.maxScrollSpend) {
 			return `${compoundScrollFor(sample)} costs ${cost}, over the ${CONFIG.merchant.maxScrollSpend} per-attempt limit`;

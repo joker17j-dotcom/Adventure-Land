@@ -320,9 +320,34 @@ hop an hour.
 
 ## 5. FamilyFleet: what it does not know yet
 
-**Status:** the script is complete and tested (477 assertions) but has never
+**Status:** the script is complete and tested (495 assertions) but has never
 been run against the live game. These are the questions the tests cannot
 answer, in the order they will bite.
+
+### 5.0a First deploy on a NEW account — what was blocking it
+
+Two hard deadlocks, both found by asking what a character with no gold and no
+gear actually does on its first tick. Neither was reachable by any test in the
+suite, because every fixture started a character that had already been farming.
+
+**The potion deadlock.** `hpot1` is 100 gold and `buyTo` is 500, so a full
+restock of both kinds is 100,000 gold. `buy` refused the whole order, the
+character came back from town with nothing, `potionsLow()` was still true, and
+the next tick sent it straight back. It never farmed, so it never earned the
+gold for the potions it kept going to town to buy. Fixed two ways: buy what the
+purse allows rather than all-or-nothing, and a trip that bought nothing sets
+`potionsUnaffordable` so the ladder farms instead of retrying for
+`potions.retryMs` (10 min).
+
+**The empty-screen deadlock.** `farmTick` walked to the map's `(0, 0)` and then
+looked for monsters in vision. On `main` that is the town end — goos are not
+visible from there, so a character that arrived with an empty screen stood at
+the origin indefinitely. That is every character's first tick on a new account.
+`goToMonster()` now asks the game to route to the monster's spawn first, and
+falls back to the old coordinate route if the client refuses that form.
+
+Both are covered by tests 40–40c, which are the only ones in the suite that
+start from nothing.
 
 ### 5.0 Rehearsing it on the wrong account
 
