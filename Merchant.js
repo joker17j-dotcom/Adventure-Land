@@ -186,7 +186,7 @@ const CONFIG = {
 		   pays that cost for nothing else; the merchant pays it with the party's
 		   economy on its back.
 		
-		   Parked, it holds CONFIG.homeServer, rescans it every heldScanMs, and
+		   Parked, it holds CONFIG.homeServer, rescans it every townScanMs, and
 		   still scans wherever else the script legitimately takes it - arbitrage,
 		   deliveries - it just never travels FOR a scan. Set false to restore
 		   the old roaming rotation. */
@@ -211,6 +211,10 @@ const CONFIG = {
 		// While a probe holds the merchant, the shard it is standing on is still
 		// rescanned and reposted this often. Without it the hold starves the
 		// bridge it is meant to be probing - see scoutHeldScan.
+		/* DEAD as of v34 - nothing reads it. The in-town beat is townScanMs
+		   below, and it is 20s rather than this 30s. Kept for one version only
+		   so a diff against v33 is readable; delete it next time this file is
+		   touched. */
 		heldScanMs: 30000,
 		/* The standing beat while in town, matching FamilyFleet. Once we are
 		   here the walk is already paid for and a scan costs a synchronous
@@ -3664,9 +3668,11 @@ function arbProbeHold(on) {
 	// off the shard the operator just went to.
 	try { set('probe_hold', PROBE.hold); } catch (e) { }
 	pLog(PROBE.hold
-		? 'HOLD ON - no hops, no gear spending, no sellTrash. This shard is still '
-			+ 'scanned and posted every ' + Math.round(CONFIG.scout.heldScanMs / 1000)
-			+ 's while parked at the scan spot. Survives a reload.'
+		? 'HOLD ON - no hops, no gear spending, no sellTrash, NO ARBITRAGE. This '
+			+ 'shard is still scanned and posted every '
+			+ Math.round(CONFIG.scout.townScanMs / 1000)
+			+ 's while the stand region is in view. Survives a reload - clear it '
+			+ 'with arbProbeHold(false).'
 		: 'HOLD OFF - normal behaviour resumes', '#FFD700');
 	return PROBE.hold;
 }
