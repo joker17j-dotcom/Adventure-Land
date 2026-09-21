@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v39
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v40
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -408,6 +408,15 @@ const CONFIG = {
 		// this, the executor would re-fill an order it had just exhausted,
 		// bank the goods, and go round again.
 		usedCooldownMs: 20 * 60 * 1000,
+		// First shelving for a counterparty whose route keeps failing before any
+		// gold moves, doubling per consecutive failure. Two minutes is about one
+		// feed refresh, so a seller genuinely back is retried almost at once, and
+		// one never really there falls out rather than returning every 18s.
+		failBackoffMs: 2 * 60 * 1000,
+		failBackoffMaxMs: 60 * 60 * 1000,
+		// How long after a hold expires the failure COUNT survives. Without it
+		// the count resets as the hold lapses and escalation never escalates.
+		failForgetMs: 2 * 60 * 60 * 1000,
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
 		// gold into stock, and a run of them means the market being traded
@@ -635,7 +644,13 @@ function sleep(ms) {
 // trip ran before processBatch()'s own close step.
 // ============================================================================
 async function ensureStandClosed() {
-	if (!state.standOpen) return;
+	/* character.stand is the game's answer; state.standOpen is only our note of
+	   it. They come apart on every shard hop: change_server reloads the page, so
+	   state is rebuilt with standOpen false while the stand, being server side,
+	   is still standing. The old early return believed the flag and skipped the
+	   close, so the merchant walked and hopped with the stand up. Seen live
+	   2026-09-21 on EU III: stand0 open, flag false, moving, mid-trade. */
+	if (!state.standOpen && !character.stand) return;
 	try {
 		await close_stand();
 		state.standOpen = false;
@@ -3059,6 +3074,7 @@ const ARB = {
 const ARB_KEY = 'arb_trade';
 const ARB_BUF_KEY = 'arb_ledger_buffer';
 const ARB_USED_KEY = 'arb_used';
+const ARB_FAIL_KEY = 'arb_fails';
 const ARB_STRAND_KEY = 'arb_strandings';
 
 /* Listings this merchant has already traded against, and when they stop being
@@ -3088,6 +3104,69 @@ function arbMarkUsed(shard, target, slot) {
 function arbIsUsed(shard, target, slot, used) {
 	const m = used || arbLoadUsed();
 	return !!m[arbUsedKey(shard, target, slot)];
+}
+
+/* Counterparties that keep failing, and how long to leave them alone.
+
+   arbMarkUsed only fired on a CONSUMED listing. An abandon marked nothing, so
+   a listing that is real, freshly advertised and always gone on arrival was
+   re-picked the moment it reappeared. Measured 2026-09-21: Kazhag on EU I,
+   slice_mint at 100,000 in all four slots, re-listed every couple of minutes
+   with a two-minute-old lastSeen - five trades opened against him inside 90
+   seconds, all abandoned at slot_gone, 707 abandons on the day. No gold cost,
+   since verification precedes the buy; the cost is the whole throughput.
+
+   Keyed on shard|target, not the slot: four slots advertising the same item
+   would otherwise burn four cycles before that stand went quiet. It does hold
+   off the seller's other goods, which is right when the race is with them.
+
+   Escalating, because a flat cooldown only makes a duty cycle - quiet, then
+   another burst of doomed trades, forever. Doubling drops a stand we never win
+   out of rotation while keeping one we sometimes win. Cleared by a success. */
+function arbFailKey(shard, target) { return String(shard) + '|' + String(target); }
+
+function arbLoadFails() {
+	let m = {};
+	try { m = get(ARB_FAIL_KEY) || {}; } catch (e) { m = {}; }
+	const now = Date.now();
+	let changed = false;
+	for (const k in m) {
+		// Forget the whole record once the hold has expired AND a grace period
+		// has passed, so an occasional failure does not accumulate forever into
+		// a permanent ban on a seller that is mostly fine.
+		if (!(m[k] && m[k].until + CONFIG.arbitrage.failForgetMs > now)) { delete m[k]; changed = true; }
+	}
+	if (changed) { try { set(ARB_FAIL_KEY, m); } catch (e) { } }
+	return m;
+}
+
+function arbNoteFailure(shard, target) {
+	if (!shard || !target) return;
+	const m = arbLoadFails();
+	const k = arbFailKey(shard, target);
+	const n = ((m[k] && m[k].n) || 0) + 1;
+	const cfg = CONFIG.arbitrage;
+	const hold = Math.min(cfg.failBackoffMs * Math.pow(2, n - 1), cfg.failBackoffMaxMs);
+	m[k] = { n: n, until: Date.now() + hold };
+	try { set(ARB_FAIL_KEY, m); } catch (e) { }
+	arbLog('shelving ' + target + ' on ' + shard + ' for '
+		+ Math.round(hold / 60000) + ' min (failure ' + n + ')', 'orange');
+}
+
+/* A success says the earlier failures were situational, so the count goes. */
+function arbClearFailure(shard, target) {
+	if (!shard || !target) return;
+	const m = arbLoadFails();
+	const k = arbFailKey(shard, target);
+	if (!m[k]) return;
+	delete m[k];
+	try { set(ARB_FAIL_KEY, m); } catch (e) { }
+}
+
+function arbFailBlocked(shard, target, fails) {
+	const m = fails || arbLoadFails();
+	const e = m[arbFailKey(shard, target)];
+	return !!(e && e.until > Date.now());
 }
 
 function arbStrandings(delta) {
@@ -3209,6 +3288,18 @@ function arbBankShare(net) {
 function arbFinish(t, event, extra) {
 	const ev = Object.assign({ id: t.id, event: event }, extra || {});
 	arbLedger(ev);
+	/* The abandon path recorded nothing, which let an always-gone listing be
+	   re-picked whenever it reappeared. Blame the side that failed: buy-side
+	   (not_loaded, slot_gone) is the seller, sell-side the buyer. A close clears
+	   the count, so an occasional miss never accumulates into a ban. */
+	if (event === 'closed') {
+		arbClearFailure(t.buyShard, t.buyFrom);
+		arbClearFailure(t.sellShard, t.sellTo);
+	} else if (t.phase === 'at_sell' || t.phase === 'holding' || t.phase === 'stranded') {
+		arbNoteFailure(t.sellShard, t.sellTo);
+	} else {
+		arbNoteFailure(t.buyShard, t.buyFrom);
+	}
 	arbLog(event === 'closed'
 		? 'closed ' + t.item + ' x' + t.qty + ' for ' + (extra && extra.net) + ' net'
 		: 'abandoned ' + t.item + ' x' + t.qty + ' (' + (extra && extra.reason) + ')',
@@ -3551,6 +3642,7 @@ async function arbLookForWork() {
 	const flips = await arbProbeFindFlips({ quiet: true });
 	if (!flips || !flips.length) return;
 	const used = arbLoadUsed();
+	const fails = arbLoadFails();
 	let suppressed = 0;
 	const pick = flips.find(function (f) {
 		if (!f.affordable || !arbAffordable(f.spend, character.gold)) return false;
@@ -3559,6 +3651,11 @@ async function arbLookForWork() {
 		// gold to rediscover - but a stand we emptied is equally not there.
 		if (arbIsUsed(f.buyShard, f.buyFrom, f.buySlot, used)
 			|| arbIsUsed(f.sellShard, f.sellTo, f.sellSlot, used)) { suppressed++; return false; }
+		// Shelved after repeated failures against that counterparty - see
+		// arbNoteFailure. Checked here rather than in arbIsUsed because it is a
+		// different question: not "did we consume this" but "do we keep losing".
+		if (arbFailBlocked(f.buyShard, f.buyFrom, fails)
+			|| arbFailBlocked(f.sellShard, f.sellTo, fails)) { suppressed++; return false; }
 		return true;
 	});
 	if (!pick) {
