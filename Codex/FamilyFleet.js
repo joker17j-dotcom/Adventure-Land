@@ -294,21 +294,33 @@ const CONFIG = {
 		   because an upgrade spends gold on a roll whose failure cost this
 		   repo has not measured - see the note above upgradePass. */
 		upgrade: true,
-		/* And never past this, whatever the plan asks.
+		/* THERE IS NO LEVEL CAP. The ratchet climbs as far as the plan asks.
 
-		   A failed upgrade DESTROYS the item, so the cost of a target level is
-		   not scrolls, it is items: about 1 per copy up to +3, 2.6 at +5, 6.4
-		   at +6 and 26 at +7 for an ordinary item. 6 is the plan's own tier-1
-		   target and the last level that costs single figures. Tier 3 asks for
-		   10, which is several hundred items - that tier is a compound and
-		   drop project, not an upgrade one. */
-		upgradeMaxLevel: 6,
-		/* And a floor on the odds themselves, which the level cap cannot
-		   express: a grade-2 item at +6 is a 32% roll where a grade-0 one is
-		   40%, and the same cap is reckless for the first and cautious for the
-		   second. 0.35 lets an ordinary item reach its tier-1 target and stops
-		   a high-grade one a level short of losing itself. */
-		minUpgradeChance: 0.35,
+		   There used to be one, at 6, to stop the account spending itself into
+		   the ground. Reading the game's own scroll prices against its odds
+		   tables showed the cap was a second, blunter copy of a limit that was
+		   already holding: expected total gold to make one finished item runs
+		   32k for helmet+6 and 501k for firebow+5, but 19.1M for coat+9, 76.4M
+		   for t2quiver+7, 732M for firebow+9 - and 49 BILLION for firebow+10.
+
+		   Tier 3 is not reachable and never was. What stops it is the merchant
+		   running out of gold and holding, which is the correct behaviour and
+		   needs no help from a number I picked. maxScrollSpend below is the
+		   only ceiling, and it is denominated in the thing that actually runs
+		   out. */
+		/* A floor on the odds, which nothing else expresses: a grade-2 item at
+		   +6 is a 32% roll where a grade-0 one is 40%. Low, because under the
+		   ratchet every staked item has already been refused by all three
+		   rangers - the loss is a scroll, not gear the account needed. */
+		minUpgradeChance: 0.1,
+		/* The most gold one attempt may cost.
+
+		   Scroll prices step hard with item grade: scroll0 1k, scroll1 40k,
+		   scroll2 1.6M; cscroll0 6.4k, cscroll1 240k, cscroll2 9.2M. And grade
+		   is per item, not per level - fury and supermittens are grade 2 from
+		   +0, so every single attempt on them is a 1.6M scroll. 9.2M against a
+		   10M floor would be the whole float on one roll of a 20% dice. */
+		maxScrollSpend: 2000000,
 		/* Require the rangers to have seen an item and left it before staking
 		   it. See "offered, and declined" further down - this is the rule that
 		   lets tier progression happen at all, since counting copies says no
@@ -1824,6 +1836,31 @@ function copiesHeld(name) {
    upgrade the quota exists to serve, and the quota would look satisfied while
    progress stopped. Upgrade-method items have no such appetite: one is enough
    to work on, so they cap at three regardless. */
+/* How many copies the account actually needs.
+
+   copiesWanted is per CHARACTER, and some plan items fill two slots on the
+   same character: dexearring is both earrings, dexring and suckerpunch are
+   both rings. Three rangers therefore need SIX dexearrings, not three - and
+   reading copiesWanted straight meant the bank called itself full at half
+   stocked, refused to keep the next three, and left the merchant thinking a
+   set that was still short was surplus. */
+function slotsUsing(name) {
+	const entry = PLAN_INDEX.get(name);
+	return entry ? entry.slots.size : 0;
+}
+
+function neededCopies(name) {
+	return CONFIG.gear.copiesWanted * Math.max(1, slotsUsing(name));
+}
+
+/* Copies beyond what every ranger can wear. This is the "enough for them and
+   still extra" test, and it is deliberately separate from the decline ledger:
+   a surplus this large needs no verdict from anyone, because no arrangement of
+   the rangers could use it. */
+function surplusCopies(name) {
+	return copiesHeldRemote(name) - neededCopies(name);
+}
+
 function bankWantsMore(name, extraHeld) {
 	const entry = PLAN_INDEX.get(name);
 	if (!entry) return false;
@@ -1837,7 +1874,7 @@ function bankWantsMore(name, extraHeld) {
 	   dexrings on one Ponty list would otherwise each be measured against the
 	   same starting count and all five bought. */
 	const held = copiesHeldRemote(name) + (extraHeld || 0);
-	if (held < CONFIG.gear.copiesWanted) return true;
+	if (held < neededCopies(name)) return true;
 	if (!CONFIG.gear.compoundOverstock) return false;
 
 	// Is any tier that uses this item a compound target we have not reached?
@@ -1923,16 +1960,23 @@ function slotToEquip(candidate) {
 function isWorkItem(it) {
 	const ceiling = planCeiling(it.name);
 	if (ceiling === null) return false;
-	return itemLevel(it) < Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel);
+	return itemLevel(it) < ceiling;
 }
 
 function shouldBank(item) {
 	if (!isPlanItem(item.name)) return false;
 	if (slotToEquip(item)) return false;
-	// The merchant keeps its work. Depositing a half-upgraded item and then
-	// withdrawing it again in the same window is not a bug that breaks
-	// anything, which is exactly why it would have gone unnoticed.
-	if (myRole() === 'merchant' && isWorkItem(item)) return false;
+	if (myRole() === 'merchant') {
+		// Advanced since the last window: hand it back to be judged, whatever
+		// the copy count says. This is the return half of the ratchet and it
+		// outranks everything below, including "the bank has enough of these" -
+		// the point is the verdict, not the stock level.
+		if (advancedThisWindow(item)) return true;
+		// Otherwise the merchant keeps its work. Depositing a half-upgraded
+		// item and withdrawing it again in the same window is not a bug that
+		// breaks anything, which is exactly why it would go unnoticed.
+		if (isWorkItem(item)) return false;
+	}
 	return bankWantsMore(item.name);
 }
 
@@ -1981,21 +2025,25 @@ function shouldSell(item) {
 
    Those are conservative: the tables here carry no grace, the game's pity
    term, which only ever helps. But the shape is the point - it is flat to +3,
-   bends at +5 and goes vertical after +6. The plan's tier-1 targets are level
-   6 and its tier-3 targets are level 10; tier 3 by upgrading is not a project
-   this account can afford, and upgradeMaxLevel says so rather than finding
-   out one destroyed firebow at a time.
+   bends at +5 and goes vertical after +6.
 
-   TWO GUARDS, because a level cap alone is not enough:
+   THE RATCHET is what makes climbing it safe anyway. Nothing is staked that
+   the rangers have not been shown and refused, one level at a time, so the
+   account never loses gear it was using - only gear all three had already
+   passed over. That is why there is no level cap here: see maxScrollSpend in
+   CONFIG for what actually stops the climb, which is gold.
+
+   THREE GUARDS:
 
      - minUpgradeChance, which reads the odds for THIS item. A higher-grade
-       item has worse odds at every level, so the cap that is right for a pair
-       of pants is reckless for a quiver. The chance guard stops those earlier
-       than any fixed level could.
-     - nothing that currently satisfies a plan tier is ever staked, unless the
-       account holds more than it needs. An item doing a job is not raw
-       material, and the account holding three of something is the rule the
-       whole gear plan exists to serve. */
+       item has worse odds at every level, so one number cannot serve a pair
+       of pants and a quiver alike.
+     - maxScrollSpend, and affordability against the gold reserve. Scroll
+       price steps hard with item grade, and grade is per ITEM: fury and
+       supermittens are grade 2 from +0, so every attempt on them is 1.6M.
+     - nothing that currently satisfies a plan tier is staked unless the
+       rangers have declined it, or the account holds more copies than every
+       slot on every character could wear. */
 const MAX_SCROLL_GRADE = 2;          // scroll3 is Crun's, on level2, out of reach
 
 /* Base success odds by item grade and TARGET level, lifted from Merchant.js.
@@ -2033,24 +2081,60 @@ function satisfiesATier(item) {
 
 /* May this item go under a scroll at all? Returns a reason when not, so the
    log says which guard stopped it rather than just going quiet. */
+/* What the next attempt's scroll costs, from the game's own price. */
+function scrollCost(name) {
+	try {
+		const g = parent.G.items[name].g;
+		return (typeof g === 'number' && isFinite(g)) ? g : null;
+	} catch (e) { return null; }
+}
+
 function upgradeRefusal(item) {
 	const ceiling = planCeiling(item.name);
 	if (ceiling === null) return 'not an upgrade item on the plan';
 	const level = itemLevel(item);
-	if (level >= Math.min(ceiling, CONFIG.merchant.upgradeMaxLevel)) return 'at its cap';
+	/* THE CEILING IS THE PLAN'S OWN TARGET, not a level cap of ours.
+
+	   There used to be an upgradeMaxLevel here, set at 6 to keep the account
+	   from spending itself into the ground on a 2% roll. It is gone, and the
+	   reason is that GOLD is the real limiter and it was already being
+	   respected - the level cap was a second, blunter copy of a rule that
+	   holds by itself.
+
+	   The numbers, expected total gold to produce one finished item from raw,
+	   read off the game's own scroll prices and odds tables:
+
+	     helmet+6      32k        coat+9        19.1M      firebow+10    49B
+	     firebow+5    501k        fury+4        11.1M      fury+8         3B
+	     bcape+4      250k        t2quiver+7    76.4M      wingedboots+10 13B
+	     dexbelt+3    858k        firebow+9    732.7M      orbofdex+5     2B
+
+	   Tier 1 is small change. Tier 2 is a serious project. Tier 3 is not
+	   reachable at all, and no cap of mine was ever what stopped it - the
+	   merchant simply runs out of gold and holds, which is the correct
+	   behaviour and needs no help. So the ratchet is allowed to climb as far
+	   as the plan asks and stops where the wallet does. */
+	if (level >= ceiling) return 'at the tier-3 target';
 	const p = upgradeChance(item);
 	if (p === null) return 'no odds for that level in the tables';
 	if (p < CONFIG.merchant.minUpgradeChance) {
 		return `${Math.round(p * 100)}% is below the ${Math.round(CONFIG.merchant.minUpgradeChance * 100)}% floor`;
 	}
+	const cost = scrollCost(upgradeScrollFor(item));
+	if (cost !== null) {
+		if (cost > CONFIG.merchant.maxScrollSpend) {
+			return `${upgradeScrollFor(item)} costs ${cost}, over the ${CONFIG.merchant.maxScrollSpend} per-attempt limit`;
+		}
+		if (cost > character.gold - CONFIG.merchant.leaveInBank) {
+			return `cannot afford ${upgradeScrollFor(item)} (${cost}) and keep the reserve`;
+		}
+	}
 	/* An item doing a job is only staked once the rangers have said they do
-	   not want it - or once the account holds more than it needs, which is the
-	   same conclusion reached by counting instead of by asking. Either is
-	   enough; the decline is the one that actually unblocks tier progression,
+	   not want it - or once the account holds more than every ranger can wear,
+	   which is the same conclusion reached by counting instead of by asking.
+	   Either is enough; the decline is the one that unblocks tier progression,
 	   because the count is exactly right most of the time. */
-	if (satisfiesATier(item)
-		&& !provenDeclined(item)
-		&& copiesHeldRemote(item.name) <= CONFIG.gear.copiesWanted) {
+	if (satisfiesATier(item) && !provenDeclined(item) && surplusCopies(item.name) < 1) {
 		return 'it satisfies a tier, no ranger has declined it yet, and there is no spare';
 	}
 	return null;
@@ -2088,6 +2172,7 @@ function planCeiling(name) {
 function nextUpgradeTarget() {
 	let best = null;
 	for (const it of inventoryItems()) {
+		if (advancedThisWindow(it)) continue;   // one level, then the rangers judge
 		if (upgradeRefusal(it)) continue;
 		if (!best || itemLevel(it) < itemLevel(best)) best = it;
 	}
@@ -2111,8 +2196,10 @@ async function tryUpgrade(item) {
 		// The odds go in the log because the stake is the item. A run of these
 		// with no successes is the difference between bad luck and a guard
 		// that is set too low, and neither is visible without the number.
+		noteAdvanced(item.name, itemLevel(item) + 1);
 		log(`upgraded ${item.name}+${itemLevel(item)} with ${scroll} `
-			+ `(${Math.round(p * 100)}% - the item is the stake)`, '#7FD98A');
+			+ `(${Math.round(p * 100)}% - the item is the stake). `
+			+ `Back to the bank next window for the rangers to judge.`, '#7FD98A');
 		return true;
 	} catch (e) {
 		// A refusal from the game, not a failed roll - a failed roll resolves
@@ -2132,8 +2219,9 @@ async function upgradePass(maxAttempts) {
 	if (!CONFIG.merchant.upgrade) return 0;
 	const first = nextUpgradeTarget();
 	if (!first) return 0;
-	if (blocked(`upgrade ${first.name}+${itemLevel(first)} with ${upgradeScrollFor(first)}, `
-		+ `and keep going to +${Math.min(planCeiling(first.name), CONFIG.merchant.upgradeMaxLevel)}`)) return 0;
+	if (blocked(`upgrade ${first.name}+${itemLevel(first)} with ${upgradeScrollFor(first)} `
+		+ `(one level, then back to the bank for the rangers to judge; the plan `
+		+ `wants +${planCeiling(first.name)})`)) return 0;
 
 	let done = 0;
 	for (let i = 0; i < (maxAttempts || 8); i++) {
@@ -2143,6 +2231,9 @@ async function upgradePass(maxAttempts) {
 		}
 		const target = nextUpgradeTarget();
 		if (!target) break;
+		// nextUpgradeTarget already skips anything advanced this window, so a
+		// success here ends that item's climb until the rangers have seen it.
+		// The loop continues only because there may be OTHER items to advance.
 		if (await tryUpgrade(target)) done++;
 		else break;                            // a refusal will just repeat
 	}
@@ -2175,9 +2266,21 @@ function compoundRefusal(sample) {
 	const ceiling = compoundCeiling(sample.name);
 	if (ceiling === null) return 'no tier compounds this item';
 	if (itemLevel(sample) >= ceiling) return 'already at the highest level any tier asks';
-	if (satisfiesATier(sample)
-		&& !provenDeclined(sample)
-		&& copiesHeldRemote(sample.name) <= CONFIG.gear.copiesWanted) {
+	const cost = scrollCost(compoundScrollFor(sample));
+	if (cost !== null) {
+		if (cost > CONFIG.merchant.maxScrollSpend) {
+			return `${compoundScrollFor(sample)} costs ${cost}, over the ${CONFIG.merchant.maxScrollSpend} per-attempt limit`;
+		}
+		if (cost > character.gold - CONFIG.merchant.leaveInBank) {
+			return `cannot afford ${compoundScrollFor(sample)} (${cost}) and keep the reserve`;
+		}
+	}
+	/* Three spare copies need no verdict from anyone: a compound consumes
+	   three, and holding three MORE than every ranger can wear means no
+	   arrangement of them could use these. That is the "take them out on first
+	   sight" case, and it deliberately skips the decline wait. */
+	if (surplusCopies(sample.name) >= 3) return null;
+	if (satisfiesATier(sample) && !provenDeclined(sample) && surplusCopies(sample.name) < 1) {
 		return 'it satisfies a tier, no ranger has declined it yet, and there is no spare';
 	}
 	return null;
@@ -2197,6 +2300,7 @@ function findCompoundTriples() {
 		   produce one slightly better drop. Now it is only ever a step the
 		   plan actually asks for - and only on material the rangers have
 		   passed over, since three items is a lot to lose on a 20% roll. */
+		if (advancedThisWindow(list[0])) continue;   // one level, then the rangers judge
 		if (compoundRefusal(list[0])) continue;
 		for (let i = 0; i + 2 < list.length; i += 3) {
 			out.push({
@@ -2240,7 +2344,8 @@ async function tryCompound(triple) {
 	}
 	try {
 		await compound(triple.slots[0], triple.slots[1], triple.slots[2], scrollIdx);
-		log(`compounded 3x ${triple.name}+${triple.level}`, '#7FD98A');
+		noteAdvanced(triple.name, triple.level + 1);
+		log(`compounded 3x ${triple.name}+${triple.level} -> +${triple.level + 1}`, '#7FD98A');
 		return true;
 	} catch (e) {
 		log(`compound of ${triple.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
@@ -2854,13 +2959,24 @@ function bankCompoundGroup() {
 		if (!groups.has(key)) groups.set(key, []);
 		groups.get(key).push(it);
 	}
+	/* Surplus first, and on sight.
+
+	   A group the rangers could not use between them - three copies MORE than
+	   every slot on every character can hold - needs no verdict and no waiting
+	   cycle, because there is no arrangement of them under which it is wanted.
+	   Taking those first also means a bank holding both kinds spends its three
+	   free slots on the one that is certainly free to use. */
+	const ready = [];
 	for (const [, list] of groups) {
 		// Same refusal the compound itself would apply. Without this the
 		// merchant fills three bag slots with a group it will then decline to
 		// compound, every window, forever.
-		if (list.length >= 3 && !compoundRefusal(list[0])) return list.slice(0, 3);
+		if (list.length < 3 || compoundRefusal(list[0])) continue;
+		ready.push(list);
 	}
-	return null;
+	if (!ready.length) return null;
+	ready.sort((a, b) => surplusCopies(b[0].name) - surplusCopies(a[0].name));
+	return ready[0].slice(0, 3);
 }
 
 /* What the merchant takes OUT of the bank: work, not gear.
@@ -2911,7 +3027,8 @@ async function merchantWithdrawWork() {
 			log('no room to take more work out - leaving the rest for next window', 'orange');
 			break;
 		}
-		const work = bankItems().filter(isWorkItem)
+		const work = bankItems()
+			.filter((b) => isWorkItem(b) && !advancedThisWindow(b) && !upgradeRefusal(b))
 			.sort((a, b) => itemLevel(a) - itemLevel(b))[0];
 		if (!work) break;
 		try {
@@ -2944,9 +3061,14 @@ async function merchantBankRun() {
 		// left it. Anything put in during this window has not been offered yet.
 		noteBankOffers();
 		await merchantGold();
-		const given = await bankDepositSpares();   // finished work goes back
+		const given = await bankDepositSpares();   // finished work, and this cycle's ratchet step
 		const taken = await merchantWithdrawWork();
 		if (given || taken) log(`gear pass: banked ${given}, took out ${taken}`, '#7FD98A');
+		/* Cleared only now, after the deposit that handed this cycle's advanced
+		   items back and the withdrawal that deliberately left them behind.
+		   Clearing earlier would let the merchant take back the very item it
+		   just advanced, and the rangers would never get their look at it. */
+		SS.set('advanced', []);
 		// Last thing before leaving, so the snapshot reflects the deposits and
 		// withdrawals this window just made rather than the state it arrived in.
 		saveBankSnapshot();
@@ -3089,6 +3211,34 @@ function noteBankOffers() {
 }
 
 /* Has this item been offered to every ranger and left behind? */
+/* THE RATCHET: one level, then hand it back.
+
+   An item the merchant has advanced this window goes into the bank at the
+   bank window and is NOT taken out again in the same visit. The rangers get
+   their look at it on the next three windows, and the merchant either finds
+   it gone - somebody wanted it - or finds it still there, which is a fresh
+   decline and licence to push one more level.
+
+   Why one level rather than running it to the target in a single window: the
+   decline that authorised the stake was a verdict on the item AT THE LEVEL
+   THE RANGERS SAW. A fury+4 nobody wanted says nothing about whether they
+   want a fury+5, and pushing straight to +8 spends seven more stakes on one
+   verdict. Stepping it returns the item for judgement at every level, which
+   is what makes the whole climb safe rather than just its first rung. */
+function advancedKeys() {
+	return SS.get('advanced', []) || [];
+}
+
+function noteAdvanced(name, level) {
+	const keys = advancedKeys();
+	const k = name + '@' + level;
+	if (!keys.includes(k)) { keys.push(k); SS.set('advanced', keys); }
+}
+
+function advancedThisWindow(item) {
+	return advancedKeys().includes(offerKey(item));
+}
+
 function provenDeclined(item) {
 	if (!CONFIG.merchant.requireDeclineToStake) return true;
 	if (!rotaSupportsDecline()) return false;

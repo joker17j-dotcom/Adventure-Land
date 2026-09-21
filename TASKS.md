@@ -320,7 +320,7 @@ hop an hour.
 
 ## 5. FamilyFleet: what it does not know yet
 
-**Status:** the script is complete and tested (453 assertions) but has never
+**Status:** the script is complete and tested (477 assertions) but has never
 been run against the live game. These are the questions the tests cannot
 answer, in the order they will bite.
 
@@ -340,37 +340,64 @@ another class's gear. A dry run prints the list before any of it is real.
 
 **A failed upgrade destroys the item.** Confirmed by the operator.
 
-That reshaped the upgrade pass rather than just setting a number. Failure takes
-the item *and its progress*, so producing one item at level N consumes, on
-average, `1 / (p1 × … × pN)` fresh items. For an ordinary grade-0 item:
+Failure takes the item *and its progress*, so producing one at level N consumes
+`1 / (p1 × … × pN)` fresh items. But **items are not the binding constraint —
+gold is.** Expected total gold to produce one finished item from raw, computed
+from the game's own scroll prices against its odds tables:
 
-| Target | Items consumed |
-|--------|----------------|
-| +1     | 1.0 |
-| +2     | 1.0 |
-| +3     | 1.1 |
-| +4     | 1.5 |
-| +5     | 2.6 |
-| +6     | 6.4 |
-| +7     | 26 |
-| +8     | ~170 |
+| slot | tier 1 | tier 2 | tier 3 |
+|---|---|---|---|
+| helmet | `helmet+6` 32k | `fury+4` 11.1M | `fury+8` **3B** |
+| mainhand | `firebow+5` 501k | `firebow+9` 732.7M | `firebow+10` **49B** |
+| chest | `coat+6` 32k | `coat+9` 19.1M | `tshirt9+4` 250k |
+| offhand | `t2quiver+5` 3.6M | `t2quiver+7` 76.4M | `alloyquiver+9` **5B** |
+| cape | `bcape+4` 250k | `ecape+7` 6.1M | `ecape+9` 980.6M |
+| pants | `pants+6` 32k | `pants+9` 19.1M | `pants+10` **1B** |
+| shoes | `shoes+6` 32k | `wingedboots+8` 10.8M | `wingedboots+10` **13B** |
+| gloves | `gloves+6` 32k | `supermittens+5` 24.4M | `supermittens+6` 81.3M |
+| earrings | `dexearring+1` 6k | `dexearring+4` 14.1M | `dexearring+5` 283M |
+| belt | `dexbelt+1` 6k | `dexbelt+3` 858k | `dexbelt+5` 283M |
+| orb | `orbg+1` 6k | `orbofdex+3` 3.4M | `orbofdex+5` **2B** |
 
-Conservative — the tables carry no grace, which only helps. The shape is the
-point: flat to +3, bending at +5, vertical after +6.
+Tier 1 is small change. Tier 2 is a serious project. **Tier 3 is not reachable
+at all** — and no level cap was ever what stopped it. The merchant runs out of
+gold and holds, which is correct and needs no help.
 
-So `upgradeMaxLevel` is **6**, the plan's own tier-1 target and the last level
-costing single figures. **Tier 3 wants level 10 — several hundred items. That
-tier is a compound-and-drop project, not an upgrade one**, and the plan should
-probably say so.
+So `upgradeMaxLevel` is **gone**. What remains:
 
-Three guards, because a level cap alone is not enough:
+- `minUpgradeChance` **0.1** — lowered from 0.35, because the ratchet changed
+  what a failure costs: every staked item has already been refused by all three
+  rangers, so the loss is a scroll, not gear anyone was using.
+- `maxScrollSpend` **2M** — denominated in the thing that actually runs out.
+  Scroll price steps hard with item **grade**, and grade is per *item*, not per
+  level: `fury` and `supermittens` are grade 2 from +0, so every attempt on them
+  is a 1.6M `scroll2`. `cscroll2` is 9.2M — against a 10M floor that is the
+  whole float on one roll of a 20% dice.
 
-- `minUpgradeChance` (0.35) reads the odds for *this* item. A grade-2 item at
-  +6 is a 32% roll where a grade-0 one is 40%; the same cap is reckless for the
-  first and cautious for the second.
-- Nothing that currently satisfies a plan tier is staked unless the account
-  holds more copies than it needs. An item doing a job is not raw material.
-- **...or unless the rangers have been offered it and left it.** See below.
+Nothing in the plan needs a scroll above grade 2, so Crun on `level2` stays out
+of reach and `MAX_SCROLL_GRADE = 2` covers the whole plan.
+
+### 5a-iii. The ratchet: one level, then hand it back
+
+The merchant advances a staked item by **one level per bank window**, deposits
+it, and does not take it back that visit. The rangers see it on their next three
+windows and either take it or leave it; if it is still there, that is a fresh
+decline and licence for one more level.
+
+One level rather than a run to the target, because the decline that authorised
+the stake was a verdict on the item **at the level the rangers saw**. A `fury+4`
+nobody wanted says nothing about a `fury+5`, and pushing straight to +8 spends
+seven more stakes on one verdict.
+
+Two supporting fixes:
+
+- **`copiesWanted` is per character, and three plan items fill two slots each.**
+  `dexearring`, `dexring` and `suckerpunch` need **six**, not three. Reading
+  `copiesWanted` straight had the bank call itself full at half stocked.
+- **Surplus beyond the whole set is taken on sight**, with no cycle waited: a
+  stack three copies larger than every slot on every character could hold needs
+  no verdict, because no arrangement of them is wanted. Raw material below every
+  tier target also needs none — nobody is wearing it.
 
 ### 5a-ii. "Offered and declined", and why the rota is the evidence
 
