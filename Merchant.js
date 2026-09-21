@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v40
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v41
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -644,12 +644,11 @@ function sleep(ms) {
 // trip ran before processBatch()'s own close step.
 // ============================================================================
 async function ensureStandClosed() {
-	/* character.stand is the game's answer; state.standOpen is only our note of
-	   it. They come apart on every shard hop: change_server reloads the page, so
-	   state is rebuilt with standOpen false while the stand, being server side,
-	   is still standing. The old early return believed the flag and skipped the
-	   close, so the merchant walked and hopped with the stand up. Seen live
-	   2026-09-21 on EU III: stand0 open, flag false, moving, mid-trade. */
+	/* character.stand is the game's answer; state.standOpen only our note of it.
+	   They part on every shard hop: change_server reloads the page, so state
+	   returns with standOpen false while the stand, server side, still stands.
+	   The old early return believed the flag and skipped the close, so the
+	   merchant walked and hopped with it up. Seen live 2026-09-21 on EU III. */
 	if (!state.standOpen && !character.stand) return;
 	try {
 		await close_stand();
@@ -3108,13 +3107,11 @@ function arbIsUsed(shard, target, slot, used) {
 
 /* Counterparties that keep failing, and how long to leave them alone.
 
-   arbMarkUsed only fired on a CONSUMED listing. An abandon marked nothing, so
-   a listing that is real, freshly advertised and always gone on arrival was
+   arbMarkUsed only fired on a CONSUMED listing, so an always-gone listing was
    re-picked the moment it reappeared. Measured 2026-09-21: Kazhag on EU I,
-   slice_mint at 100,000 in all four slots, re-listed every couple of minutes
-   with a two-minute-old lastSeen - five trades opened against him inside 90
-   seconds, all abandoned at slot_gone, 707 abandons on the day. No gold cost,
-   since verification precedes the buy; the cost is the whole throughput.
+   slice_mint at 100,000 in all four slots, re-listed every couple of minutes,
+   five trades opened inside 90 seconds, all abandoned at slot_gone, 707 on the
+   day. No gold cost, since verification precedes the buy; throughput is.
 
    Keyed on shard|target, not the slot: four slots advertising the same item
    would otherwise burn four cycles before that stand went quiet. It does hold
@@ -3131,9 +3128,8 @@ function arbLoadFails() {
 	const now = Date.now();
 	let changed = false;
 	for (const k in m) {
-		// Forget the whole record once the hold has expired AND a grace period
-		// has passed, so an occasional failure does not accumulate forever into
-		// a permanent ban on a seller that is mostly fine.
+		// Forget the record once the hold has expired AND a grace period has
+		// passed, so occasional failures never compound into a permanent ban.
 		if (!(m[k] && m[k].until + CONFIG.arbitrage.failForgetMs > now)) { delete m[k]; changed = true; }
 	}
 	if (changed) { try { set(ARB_FAIL_KEY, m); } catch (e) { } }
@@ -3288,10 +3284,9 @@ function arbBankShare(net) {
 function arbFinish(t, event, extra) {
 	const ev = Object.assign({ id: t.id, event: event }, extra || {});
 	arbLedger(ev);
-	/* The abandon path recorded nothing, which let an always-gone listing be
-	   re-picked whenever it reappeared. Blame the side that failed: buy-side
-	   (not_loaded, slot_gone) is the seller, sell-side the buyer. A close clears
-	   the count, so an occasional miss never accumulates into a ban. */
+	/* Blame the side that failed: buy-side (not_loaded, slot_gone) is the
+	   seller, sell-side the buyer. A close clears the count, so an occasional
+	   miss never accumulates into a ban. */
 	if (event === 'closed') {
 		arbClearFailure(t.buyShard, t.buyFrom);
 		arbClearFailure(t.sellShard, t.sellTo);
@@ -3344,7 +3339,8 @@ async function arbApproach(targetName) {
 function arbStillThere(t, side) {
 	const v = arbProbeVerify(side === 'buy'
 		? { target: t.buyFrom, slot: t.buySlot, name: t.item, level: t.level, price: t.buyPrice, b: false }
-		: { target: t.sellTo, slot: t.sellSlot, name: t.item, level: t.level, price: t.sellPrice, b: true });
+		: { target: t.sellTo, slot: t.sellSlot, name: t.item, level: t.level, price: t.sellPrice, b: true },
+		{ quiet: true });
 	return v;
 }
 
@@ -4876,14 +4872,22 @@ function arbProbeDistanceCheck(targetName) {
    target loaded, the slot still holding the same item at the same price and
    side. A price that has moved is not a smaller opportunity, it is a different
    trade that has not been evaluated. */
-function arbProbeVerify(expect) {
+function arbProbeVerify(expect, opts) {
 	expect = expect || {};
+	opts = opts || {};
+	/* Quiet, as arbProbeFindFlips in v37 and for the same reason: a hand-run
+	   probe the automated path also calls. arbStillThere verifies both legs of
+	   every trade, so each attempt opened a modal per leg - twelve identical
+	   boxes were stacked when this was found. Return value unchanged; the
+	   reason still reaches the ledger. */
+	const show = opts.quiet ? function (x) { return x; } : pShow;
+	const note = opts.quiet ? function () { } : pLog;
 	const out = { target: expect.target, slot: expect.slot, ok: false };
 	const e = expect.target ? pEntity(expect.target) : null;
 	if (!e) {
 		out.reason = 'not_loaded';
-		pLog(expect.target + ' is not loaded here - the listing is stale or we are out of range', 'orange');
-		return pShow(out);
+		note(expect.target + ' is not loaded here - the listing is stale or we are out of range', 'orange');
+		return show(out);
 	}
 	out.loaded = true;
 	const me = pWhere(character), t = pWhere(e);
@@ -4892,8 +4896,8 @@ function arbProbeVerify(expect) {
 	const sl = (e.slots || {})[expect.slot];
 	if (!sl) {
 		out.reason = 'slot_gone';
-		pLog(expect.target + ' is here but ' + expect.slot + ' is empty - the stand was rearranged', 'orange');
-		return pShow(out);
+		note(expect.target + ' is here but ' + expect.slot + ' is empty - the stand was rearranged', 'orange');
+		return show(out);
 	}
 	out.live = { name: sl.name, level: sl.level || 0, price: sl.price, q: sl.q, b: !!sl.b };
 	const mismatch = [];
@@ -4903,12 +4907,12 @@ function arbProbeVerify(expect) {
 	if (expect.b != null && !!sl.b !== !!expect.b) mismatch.push('side changed');
 	out.mismatch = mismatch;
 	out.ok = mismatch.length === 0;
-	pLog(out.ok
+	note(out.ok
 		? 'verified: ' + expect.target + '.' + expect.slot + ' is ' + sl.name + ' @ ' + sl.price
 			+ ', ' + out.distance + ' units away'
 		: 'CHANGED since the listing: ' + mismatch.join('; ') + ' - re-evaluate before trading',
 		out.ok ? null : 'orange');
-	return pShow(out);
+	return show(out);
 }
 
 /* Stand `dist` units from a target, and REPORT WHETHER IT ACTUALLY HAPPENED.
