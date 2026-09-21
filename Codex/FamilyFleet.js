@@ -24,10 +24,10 @@ const CONFIG = {
 	// bank window (index 0 gets :00, index 1 gets :05, and so on), which is
 	// what keeps two of them from walking into the bank together.
 	characters: {
-		Ranger1: { role: 'ranger' },
-		Ranger2: { role: 'ranger' },
-		Ranger3: { role: 'ranger' },
-		Merchant1: { role: 'merchant' },
+		LorienSwifty: { role: 'ranger' },
+		BranSwifty: { role: 'ranger' },
+		CassySwifty: { role: 'ranger' },
+		IKnowAGuy: { role: 'merchant' },
 	},
 
 	bridge: 'http://127.0.0.1:8787',
