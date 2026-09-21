@@ -587,6 +587,25 @@ function canHop() {
    tried first and falls through rather than being relied on. A false return
    means "that did not work, use the coordinate route below it", never "there
    is nowhere to go". */
+/* Where the map data says this monster spawns. Read rather than guessed, and
+   null when the map has no entry - the caller then has nowhere better to be
+   than where it already is, which beats walking to an arbitrary point. */
+function monsterSpawn(mapName, type) {
+	try {
+		const m = parent.G.maps[mapName];
+		for (const s of (m.monsters || [])) {
+			if (s && s.type === type) {
+				if (Array.isArray(s.boundary)) {
+					const b = s.boundary;      // [x1, y1, x2, y2]
+					return { map: mapName, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+				}
+				if (Array.isArray(s.position)) return { map: mapName, x: s.position[0], y: s.position[1] };
+			}
+		}
+	} catch (e) { }
+	return null;
+}
+
 async function goToMonster(type) {
 	try {
 		await smart_move({ to: type });
@@ -1694,8 +1713,15 @@ async function farmTick() {
 		// account that is every character's first tick, and it never farms.
 		if (await goToMonster(spot.monster)) return;
 		if (character.map !== spot.map) { await goTo({ map: spot.map, x: 0, y: 0 }); return; }
-		const anywhere = get_nearest_monster({ type: spot.monster, no_target: true });
-		if (anywhere) await goTo({ map: spot.map, x: anywhere.x, y: anywhere.y });
+		/* Last resort: the map's own spawn table.
+
+		   What used to be here was another get_nearest_monster, with
+		   no_target: true, described as looking "anywhere". It does not -
+		   no_target means "not currently attacking anyone", which is NARROWER
+		   than the call that just returned null, not wider. The branch could
+		   never find anything the line above had missed. */
+		const spawn = monsterSpawn(spot.map, spot.monster);
+		if (spawn) await goTo(spawn);
 		return;
 	}
 
@@ -1706,8 +1732,20 @@ async function farmTick() {
 /* Best available skill, then a plain attack. skillReady decides availability
    every time, so this needs no knowledge of what the character has unlocked. */
 async function attackWithRotation(target) {
+	/* NOTE the two helpers read `type` from different fields: here it is the
+	   entity type ('monster'), while get_nearest_monster's `type` is the mtype
+	   ('goo'). Same key, different field - the game's design, and easy to get
+	   backwards. mtype is filtered separately below. */
 	const nearby = (get_entities ? get_entities({ type: 'monster', no_target: true }) : []) || [];
-	const same = nearby.filter((e) => e && e.mtype === target.mtype);
+	/* The target goes in FIRST and unconditionally.
+
+	   The pool was built from no_target entities only, and the monster we are
+	   fighting is usually attacking us - so it had a target, was filtered out,
+	   and a 3shot aimed at "three of these" hit three OTHER monsters while
+	   leaving ours untouched. Pulling more of the pack in is the opposite of
+	   what the rotation is for. */
+	const same = [target].concat(
+		nearby.filter((e) => e && e.mtype === target.mtype && e.id !== target.id));
 
 	for (const step of RANGER_ROTATION) {
 		if (!skillReady(step.skill)) continue;
