@@ -8,12 +8,20 @@
 //
 // Adventure Land will not run a CODE slot past roughly 240 KiB (245,760
 // chars). save_code ACCEPTS an oversized slot and returns success; the runner
-// then never evaluates it, leaving a frame where `character` exists and every
+// then never evaluates it, leaving a frame where the character object exists and every
 // script function is undefined, with nothing in the console. Measured
 // 2026-09-21: v37 at 244,398 ran, v38 at 247,463 did not. That is why the
 // changelog moved out - it had reached 9,255 chars of the budget. Check the
 // file size before deploying, and if a deploy comes up with the functions
 // missing and the console clean, suspect the cap before anything else.
+//
+// NEVER put a backtick in a comment in this file. It does not throw, it does
+// not log, it silently stops the whole slot loading - the same empty-frame
+// signature as the size cap. Proven 2026-09-21 by bisect: two identical
+// 239,029-char builds, one with a backtick pair around a word in the comment
+// above and one with quotes instead. The quoted one loads, the other does
+// not. Backticks in real template literals are fine - there are ~196 in this
+// file. Use quotes when naming an identifier in prose.
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
