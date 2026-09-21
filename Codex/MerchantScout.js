@@ -300,15 +300,31 @@ function normalisePonty(data) {
 		try { console.log('[scout] Ponty raw sample:', list[0], '\npricing fns:', fns); } catch (e) { }
 	}
 
-	/* Probe the plausible spellings instead of only "price". Anything
-	   non-numeric stays null - a wrong price is far worse than no price,
-	   because the spread tables would quote it as real profit. */
+	/* ALWAYS DERIVED. There is no price field - settled during the standalone
+	   ALData work: Ponty's socket payload carries none and the client computes
+	   what it paints.
+
+	   The probe over ['price','cost','g','value','gold'] that used to be here
+	   was worse than useless once that was known. `g` is a perfectly plausible
+	   key for an item's BASE value, and Ponty charges g x buy_to_sell x
+	   secondhands_mult, which is 1.2x base - so a payload carrying g would have
+	   under-quoted every listing by 20%. Silently, and in the direction that
+	   looks like a bargain, which is the direction that gets acted on. */
 	const priceOf = (it) => {
-		for (const k of ['price', 'cost', 'g', 'value', 'gold']) {
-			const v = it[k];
-			if (typeof v === 'number' && isFinite(v)) return v;
-		}
-		return gameItemValue(it);          // fall back to the client's own maths
+		const fromGame = gameItemValue(it);
+		if (fromGame !== null) return fromGame;
+		// A level-0 item needs no help from the page: base value x the two
+		// multipliers, verified four ways (mcape 480,000 -> 576,000 among them).
+		// A levelled one is not derivable from base value and stays null rather
+		// than guessed - unknown beats wrong when the number is spent.
+		if ((it.level || 0) > 0) return null;
+		try {
+			const g = parent.G.items[it.name].g;
+			const m = parent.G.multipliers || {};
+			if (typeof g !== 'number' || !isFinite(g)) return null;
+			if (typeof m.buy_to_sell !== 'number' || typeof m.secondhands_mult !== 'number') return null;
+			return Math.round(g * m.buy_to_sell * m.secondhands_mult);
+		} catch (e) { return null; }
 	};
 
 	const out = [];
@@ -574,16 +590,44 @@ function pontyDue(key) {
    listings. So a freshly landed client, whose entity list has not arrived yet,
    reads zero twice in a second and a half and wipes a shard that was full.
    Zero therefore only counts once every pass has been spent. */
+/* Stands buffered for THIS shard only.
+
+   settleScan used bufferedCount(), which is every shard the scout is still
+   carrying. With an unsent backlog that is non-zero before the new shard has
+   been looked at even once, so `n > 0 && n === seen` was true on the second
+   pass and the sweep "settled" without observing anything. The scout then
+   posted whatever it happened to have. The whole point of settling is to give
+   a freshly landed client time to stream its entity list in, and a count that
+   includes four other shards cannot measure that. */
+function currentShardCount() {
+	const e = buffer.shards.get(shardKey(currentShard()));
+	return e ? e.stands.size : 0;
+}
+
+/* Drop this shard's stands before a sweep starts.
+
+   Accumulate WITHIN a sweep - the passes exist so a streaming entity list can
+   finish arriving - but REPLACE between visits. Without this a returning scout
+   merged the new view into the old one, so a stand that closed between visits
+   was never removed and got re-reported as live for as long as the scout kept
+   coming back. The bridge stores what it is sent; it cannot know a row is a
+   ghost. */
+function resetCurrentShardStands() {
+	const e = buffer.shards.get(shardKey(currentShard()));
+	if (e) e.stands.clear();
+}
+
 async function settleScan() {
+	resetCurrentShardStands();
 	let seen = -1;
 	for (let pass = 0; pass < CONFIG.maxSettlePasses; pass++) {
 		absorb(scanStands());
-		const n = bufferedCount();
+		const n = currentShardCount();
 		if (n > 0 && n === seen) return n;
 		seen = n;
 		await new Promise((r) => setTimeout(r, CONFIG.settleMs));
 	}
-	const n = bufferedCount();
+	const n = currentShardCount();
 	if (n === 0) log(`${shardKey(currentShard())}: no stands after ${CONFIG.maxSettlePasses} sweeps`, 'orange');
 	return n;
 }
@@ -598,7 +642,10 @@ async function respectPostGap() {
 	if (!lastPostAt) return;
 	const since = Date.now() - lastPostAt;
 	if (since >= CONFIG.minPostGapMs) return;
-	const wait = CONFIG.minPostGapMs - since;
+	// Clamped: `since` comes back negative if the wall clock moves backwards
+	// under an NTP correction, and an unclamped wait is then a number
+	// setTimeout cannot hold. Never wait longer than the gap itself.
+	const wait = Math.min(CONFIG.minPostGapMs, CONFIG.minPostGapMs - since);
 	log(`holding ${(wait / 1000).toFixed(1)}s before posting (min gap)`);
 	await new Promise((r) => setTimeout(r, wait));
 }

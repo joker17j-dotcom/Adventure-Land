@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v32 (two scan-buffer bugs ported from FamilyFleet, both in live-gold paths. scoutSettleScan measured settling with scoutBufferedCount - every shard still being carried - so an unsent backlog made the two-passes-agree test pass on the second pass before the new shard had been looked at once, and the roamer posted whatever it happened to hold. It now counts THIS shard. And the buffer never cleared a shard between visits, so a stand that closed was merged forward and re-reported as live on every return; sweeps now replace rather than accumulate, which is what stops the bridge being fed ghosts it has no way to detect. scoutPostGap's wait is also clamped, since a backwards clock made it a number setTimeout cannot hold. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -2283,12 +2283,39 @@ function scoutScanStands() {
 /* Sweep until the visible set stops growing. After a change_server the client
    is still streaming entities in, and one instant scan can read it half-empty.
    Exits as soon as two passes agree - a convergence test, not a dwell. */
+/* Stands buffered for THIS shard only.
+
+   scoutSettleScan used scoutBufferedCount(), which is every shard still being
+   carried. With an unsent backlog that is non-zero before the new shard has
+   been looked at even once, so the two-passes-agree test passed on the second
+   pass and the sweep "settled" without observing anything. Settling exists to
+   give a freshly landed client time to stream its entity list in, and a count
+   that includes four other shards cannot measure that. */
+function scoutCurrentShardCount() {
+	const e = scout.shards.get(mShardKey());
+	return e ? e.stands.size : 0;
+}
+
+/* Drop this shard's stands before a sweep starts.
+
+   Accumulate WITHIN a sweep - the passes are there so a streaming entity list
+   can finish arriving - but REPLACE between visits. Without this a returning
+   roamer merged the new view into the old, so a stand that closed between
+   visits was never removed and went on being reported as live every time the
+   roamer came back. The bridge stores what it is sent; it cannot know a row is
+   a ghost. */
+function scoutResetCurrentShardStands() {
+	const e = scout.shards.get(mShardKey());
+	if (e) e.stands.clear();
+}
+
 async function scoutSettleScan() {
+	scoutResetCurrentShardStands();
 	let seen = -1;
 	for (let pass = 0; pass < CONFIG.scout.maxSettlePasses; pass++) {
 		const bucket = scoutBufferFor(scoutHere());
 		for (const row of scoutScanStands()) bucket.stands.set(row.id, row);
-		const n = scoutBufferedCount();
+		const n = scoutCurrentShardCount();
 		// Two passes agreeing means the list has settled - EXCEPT at zero, where
 		// "nothing yet" and "nothing here" look identical. Reading an empty
 		// entity list twice in 1.5s said a shard was empty and reported it as
@@ -2297,7 +2324,7 @@ async function scoutSettleScan() {
 		seen = n;
 		await new Promise((r) => setTimeout(r, CONFIG.scout.settleMs));
 	}
-	if (scoutBufferedCount() === 0) {
+	if (scoutCurrentShardCount() === 0) {
 		scoutLog(`${mShardKey()}: no stands after ${CONFIG.scout.maxSettlePasses} sweeps`, 'orange');
 	}
 }
@@ -2371,7 +2398,11 @@ async function scoutPostGap() {
 	if (!scout.lastPostAt) return;
 	const since = Date.now() - scout.lastPostAt;
 	if (since >= CONFIG.scout.minPostGapMs) return;
-	await new Promise((r) => setTimeout(r, CONFIG.scout.minPostGapMs - since));
+	// Clamped: `since` comes back negative if the wall clock moves backwards
+	// under an NTP correction, and an unclamped wait is then a number
+	// setTimeout cannot hold. Never wait longer than the gap itself.
+	const wait = Math.min(CONFIG.scout.minPostGapMs, CONFIG.scout.minPostGapMs - since);
+	await new Promise((r) => setTimeout(r, wait));
 }
 
 /* Posts every buffered shard, each stamped with the shard it was observed on -

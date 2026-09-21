@@ -210,57 +210,41 @@ with no panel open. Do not use 190 for anything transactional.
 
 ---
 
-## 3. The same scan-buffer staleness exists in MerchantScout.js and Merchant.js
+## 3. ~~The same scan-buffer staleness exists in MerchantScout.js and Merchant.js~~ — DONE
 
-**Status:** fixed in `Codex/FamilyFleet.js`, present in the other two.
-Not applied there - they are deployed and this was not the task in hand.
+**Status:** ported to both, `d6036f9`..`HEAD`. Merchant.js is `v32`; it stays
+off the live slot by its own deployment marker until arbitrage testing resumes.
 
-Found by asking what happens to a stand's data when the stand closes.
+Three fixes went across, all of them in live-gold paths:
 
-### The bug
+1. **Settling measured the wrong thing.** Both counted *every* buffered shard,
+   so an unsent backlog made the two-passes-agree test pass on the second pass
+   before the new shard had been looked at once — and the scout posted whatever
+   it happened to be holding. Settling exists to let a freshly landed client
+   stream its entity list in; a count that includes four other shards cannot
+   measure that. Now counts the current shard only.
+2. **Sweeps accumulated instead of replacing.** Neither cleared a shard's stands
+   between visits, so a stand that closed was merged forward and re-reported as
+   live on every return. The bridge stores what it is sent — it has no way to
+   detect a ghost. Now `reset…CurrentShardStands()` before each sweep.
+3. **The post-gap wait was unclamped**, so a wall clock moving backwards under
+   an NTP correction made it a number `setTimeout` cannot hold.
 
-The bridge is right: `ingest` deletes every merchant row for a shard and
-rewrites from the payload, because each sweep is a COMPLETE observation. The
-scout side was not keeping that contract.
+And one that was **only** in MerchantScout.js:
 
-- `absorb()` only ever adds - `e.stands.set(s.id, s)`, never removes.
-- A bucket is cleared only when a post is **confirmed**.
+4. **The Ponty price probe.** It read `['price','cost','g','value','gold']` off
+   the payload. There is no price field — the client computes it — and `g` is a
+   perfectly plausible key for an item's **base** value. Ponty charges 1.2× base,
+   so a payload carrying `g` would have under-quoted every listing by 20%,
+   silently, in the direction that looks like a bargain. Now always derived.
 
-So a stand that packs up while the bridge is unreachable stays in the buffer,
-is re-absorbed alongside the stands still there, and goes out on the next
-successful post as though it were live. Someone reading the watchlist travels
-to a stand that left minutes ago. `restoreBuffer()` carries the same staleness
-across a reload.
+`Merchant.js` never had that one: `scoutItemPrice` already derived from
+`calculate_item_value × secondhands_mult`.
 
-**Fix:** clear the CURRENT shard's stands at the start of each sweep.
-Accumulate within a sweep - that is what the settle passes are for, letting a
-streaming entity list finish arriving - and replace between sweeps. Only the
-current shard: a roamer holding an unsent sweep of somewhere else keeps it,
-since that is the last thing known about a shard it cannot see from here.
+### Still not ported: the town spot
 
-### The second bug, in the same place
-
-`settleScan`'s stopping test is "the count has stopped growing", measured with
-`bufferedCount()` - which sums **every** shard in the buffer.
-
-A roamer that failed to post 5 stands on one shard, then hops, starts the test
-at 5 on the new shard. Pass 1 reads 5, pass 2 reads 5, the test fires, and the
-sweep is declared settled having read **nothing at all** on the shard it is
-standing on. It then posts an empty current shard - the one result that
-destroys data.
-
-Only bites a roamer with a failed post behind it, which is why it has not been
-seen. `FamilyFleet.js` adds `currentShardCount()` and uses it.
-
-### Where
-
-- `Codex/MerchantScout.js` - `absorb`, `bufferedCount`, `settleScan`.
-- `Merchant.js` - the same functions under the `scout` prefix
-  (`scoutSettleScan`, and the shard buffer around `scoutSaveBuffer`).
-
-`Merchant.js` is the more urgent of the two: it is the roamer, so it is the
-one the `bufferedCount()` bug can actually reach.
-
+`MerchantScout.js` has it; `Merchant.js` does not, and neither does any of the
+three party scripts. That is task 2, and it is still deliberately unstarted.
 ---
 
 ## 4. Measure a real sweep time, and justify or drop the 30-second hop floor
