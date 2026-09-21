@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v33 (all five Mainland NPC errands now happen from one measured position, (-179, -72): Lucas for scrolls, Cue for upgrade and compound, Gabriel for basics and selling, Ernis for potions, Ponty for secondhands. It is the centre of the smallest circle enclosing the four that were measured live - Gabriel 129.4, Cue 150.6, Lucas 286.0, Ponty 286.1 - and Ernis turns out to sit inside it at 169.8, so adding him does not move the optimum. The gear loop walks there ONCE and then buys the scroll, compounds and upgrades without another step; before, each material had its own travelTo and the roll then happened wherever the last one left the character, which for a plain scroll was Lucas, from whom Cue is 285.4 - at the very edge of range and the only reason it worked. Ponty is no longer walked to from the spot, and potions go to the spot rather than to Ernis, who can do only the one thing. Garwyn (616 away) and Crun (on level2) are out of reach of anywhere in the cluster and still travel. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v32 (two scan-buffer bugs ported from FamilyFleet, both in live-gold paths. scoutSettleScan measured settling with scoutBufferedCount - every shard still being carried - so an unsent backlog made the two-passes-agree test pass on the second pass before the new shard had been looked at once, and the roamer posted whatever it happened to hold. It now counts THIS shard. And the buffer never cleared a shard between visits, so a stand that closed was merged forward and re-reported as live on every return; sweeps now replace rather than accumulate, which is what stops the bridge being fed ghosts it has no way to detect. scoutPostGap's wait is also clamped, since a backwards clock made it a number setTimeout cannot hold. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v34 (the town scan now matches FamilyFleet, and unsent scans are dropped rather than carried. The beat is 20s, and the gate is whether the whole standRegion is inside the vision box rather than whether we are within 60 of the first stand candidate - a stronger test, because an empty scan REPLACES a shard on the bridge, so a reading taken where the stands are not visible reports an empty market as fact. Vision is a box, [700, 500], not a radius: a radius would accept a point 600 north that the box rejects, and reject one at (600, 400) that it accepts. Buffered scans are now discarded once the immediate retries are spent. Measured, not assumed - the MerchantScout sweep with the bridge down took 1338s against 241s with it up, and the per-hop cost climbed about 14s each time, because every failed post leaves another bucket and every bucket costs the 7s post gap twice a hop. The data was worthless by the time it would have landed anyway. The same-pass retries are kept: that data is seconds old and the bridge answered. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v33 (all five Mainland NPC errands now happen from one measured position, (-179, -72): Lucas for scrolls, Cue for upgrade and compound, Gabriel for basics and selling, Ernis for potions, Ponty for secondhands. It is the centre of the smallest circle enclosing the four that were measured live - Gabriel 129.4, Cue 150.6, Lucas 286.0, Ponty 286.1 - and Ernis turns out to sit inside it at 169.8, so adding him does not move the optimum. The gear loop walks there ONCE and then buys the scroll, compounds and upgrades without another step; before, each material had its own travelTo and the roll then happened wherever the last one left the character, which for a plain scroll was Lucas, from whom Cue is 285.4 - at the very edge of range and the only reason it worked. Ponty is no longer walked to from the spot, and potions go to the spot rather than to Ernis, who can do only the one thing. Garwyn (616 away) and Crun (on level2) are out of reach of anywhere in the cluster and still travel. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v32 (two scan-buffer bugs ported from FamilyFleet, both in live-gold paths. scoutSettleScan measured settling with scoutBufferedCount - every shard still being carried - so an unsent backlog made the two-passes-agree test pass on the second pass before the new shard had been looked at once, and the roamer posted whatever it happened to hold. It now counts THIS shard. And the buffer never cleared a shard between visits, so a stand that closed was merged forward and re-reported as live on every return; sweeps now replace rather than accumulate, which is what stops the bridge being fed ghosts it has no way to detect. scoutPostGap's wait is also clamped, since a backwards clock made it a number setTimeout cannot hold. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.) - v31 (market rows from ALData and our bridge are now merged per merchant per shard, newer row wins, rather than ALData winning wholesale whenever it answered. Freshness is a property of a row, not a source: on a shard a parked scout holds, ours is seconds old; three shards away ALData's is better. A union, so a merchant only one source knows is kept - absence from a source is not evidence of departure. Pinning a source stays winner-takes-all, since that is what it is asked for.) - v30 (sellMaxAgeSec tightened from 15 minutes to 7 - about three sweeps at the measured 2.4-minute rate, where 15 allowed a buy order six sweeps stale to be travelled to. The flip finder now reports how many listings it dropped as stale and how fresh the freshest rejected one was, so a window that is too tight shows up as a number rather than as an unexplained absence of opportunities.) - v29 (skip the anniversary kiss while hop sick. G's explanation for the condition says it blocks kiss rewards - an effect absent from its modifier list - so a sick merchant walks the round, closes its stand and collects nothing. Also corrects the model behind it: serverhop_logic is declared twice in node/server_functions.js and the later declaration wins, so the hop-counted tapering tiers an earlier read reported are dead code. The live rule is flat, from G: off p.home at level 60+ gives luck/gold/xp -80 and output -20 for 12 minutes. Inert at level 30, but merchants gain xp from trading.) - v28 (parked scout: the merchant now holds CONFIG.homeServer and never hops for the sake of a scan. The family's MerchantScout fleet covers the rotation, and a hop reloads the page - a dedicated scout pays that for nothing else, the merchant pays it with deliveries, the stand and in-flight trades behind the load. It still scans wherever the script legitimately takes it, and now tells the bridge role:'parked' with pinned:true instead of claiming to be a roamer that never moves. Set CONFIG.scout.parked false to restore roaming. Also gains the game log filter the other three characters run - tab bar over #gamelog in rows of four, a Noise tab off by default for 'get closer', AP[...] achievement progress and the courage messages, and a MutationObserver so lines the client writes through add_log are filtered on arrival. Guarded on parent.$ so it no-ops where there is no game DOM. Not deployed to the live slot: Meltymerch stays on his older build until the arbitrage phase testing resumes.)
 // ============================================================================
 // ============================================================================
 // CONFIGURATION
@@ -212,6 +212,28 @@ const CONFIG = {
 		// rescanned and reposted this often. Without it the hold starves the
 		// bridge it is meant to be probing - see scoutHeldScan.
 		heldScanMs: 30000,
+		/* The standing beat while in town, matching FamilyFleet. Once we are
+		   here the walk is already paid for and a scan costs a synchronous
+		   read of parent.entities plus a post. */
+		townScanMs: 20 * 1000,
+		/* Where the stands are, as a box in world coordinates.
+		
+		   This is what the scan gate tests, and it is a stronger test than the
+		   one it replaces. "Within 60 of the first stand candidate" asked
+		   whether we were standing on one particular point; this asks whether
+		   the whole selling area is inside the vision box, which is the thing
+		   that actually decides whether a reading is complete.
+		
+		   It matters because an empty scan REPLACES a shard's listings on the
+		   bridge rather than merging into them. A read taken from somewhere
+		   that cannot see the stands reports "nothing trading here" as fact,
+		   and wipes a full market.
+		
+		   Numbers are FamilyFleet's: the observed cluster padded by about 100
+		   each way. One sample put six stands inside x -147..161, y -110..92.
+		   A snapshot rather than a stable distribution, so the padding is doing
+		   real work and this is a knob, not a constant. */
+		standRegion: { minX: -250, maxX: 260, minY: -210, maxY: 190 },
 		// Be home this long before an anniversary round starts. S.anniversary.next
 		// is the round's start time, on the hour, so this is a real deadline
 		// rather than a guess.
@@ -569,6 +591,44 @@ async function ensureStandClosed() {
 	} catch (e) {
 		console.error('close_stand failed:', e);
 	}
+}
+
+/* Where we are, in WORLD coordinates.
+
+   real_x/real_y where the client offers them, x/y otherwise. The top window
+   reports .x/.y in screen space - measured (1147, 416) while the character
+   stood at (-123, -52) - and NPC entities have .x === .real_x, so the
+   discrepancy is invisible until something cross-checks the two. It cost this
+   project a phantom 1,307-unit trade range once. */
+function mPos() {
+	const c = character || {};
+	return {
+		map: c.map,
+		x: c.real_x != null ? c.real_x : c.x,
+		y: c.real_y != null ? c.real_y : c.y,
+	};
+}
+
+/* VISION IS A BOX, NOT A RADIUS. character.vision is [700, 500], and the test
+   the game applies is |dx| <= 700 && |dy| <= 500. */
+function mInVision(x, y) {
+	const me = mPos();
+	const v = (character && character.vision) || [700, 500];
+	return Math.abs(x - me.x) <= v[0] && Math.abs(y - me.y) <= v[1];
+}
+
+/* Can we see the whole selling area from here?
+
+   All four corners, not the centre: a box is only fully visible when its
+   furthest corner is, and a centre test passes from places where half the
+   stands are off screen. This is the gate on every scan, because a scan that
+   cannot see the stands reports an empty market as fact. */
+function mInTown() {
+	const me = mPos();
+	if (me.map !== CONFIG.stand.map) return false;
+	const r = CONFIG.scout.standRegion;
+	return mInVision(r.minX, r.minY) && mInVision(r.maxX, r.maxY)
+		&& mInVision(r.minX, r.maxY) && mInVision(r.maxX, r.minY);
 }
 
 /* Standing where all five NPCs are in reach? A plain radius is the right test
@@ -2560,7 +2620,7 @@ async function scoutReport() {
 			scoutLog(`${stands.length} stands on ${key} - confirmed`);
 		} else {
 			allOk = false;
-			scoutLog(`${key}: not acknowledged, held for retry`, 'orange');
+			scoutLog(`${key}: not acknowledged`, 'orange');
 		}
 	}
 	return { reply: lastReply, confirmed: allOk, count: sent };
@@ -2569,16 +2629,43 @@ async function scoutReport() {
 /* Resend until acknowledged. Bounded: with the bridge down the findings are
    already back in the buffer and go out when it returns, so blocking the
    rotation forever would cost coverage and save nothing. */
+/* Everything still unsent, dropped, with a count of what went.
+
+   THE BUFFER IS NOT WORTH CARRYING ACROSS AN OUTAGE, and this is measured
+   rather than assumed. The MerchantScout sweep with the bridge down took
+   1338s against 241s with it up, and the per-hop cost CLIMBED by about 14s
+   each time: every failed post leaves another bucket, every bucket costs the
+   7s minimum post gap, and the report runs twice per hop. The character gets
+   slower the longer the outage lasts, which is the opposite of degrading
+   gracefully.
+
+   And the data it is paying for is worthless by the time it lands. A stand
+   list held through a ten-minute outage describes a market that has moved on;
+   re-posting it would overwrite a shard with observations older than the ones
+   already there. Better to go quiet and start fresh when the bridge returns.
+
+   The immediate retries above are a different thing and are kept: those
+   re-send data that is seconds old, to a bridge that answered. This only
+   discards once that has been spent. */
+function scoutDropBuffer(why) {
+	let rows = 0;
+	for (const e of scout.shards.values()) rows += e.stands.size;
+	scout.shards.clear();
+	scoutSave('buffer', []);
+	if (rows) scoutLog(`dropped ${rows} unsent stand(s) - ${why}`, 'orange');
+	return rows;
+}
+
 async function scoutReportConfirmed() {
 	for (let i = 0; i < CONFIG.scout.postConfirmRetries; i++) {
 		const r = await scoutReport();
 		if (r.confirmed) return r;
 		if (!r.reply) {
-			scoutLog('bridge unreachable - carrying the scan forward', 'orange');
+			scoutDropBuffer('bridge unreachable, and a held scan is stale by the time it lands');
 			return r;
 		}
 	}
-	scoutLog('scan not acknowledged - staying buffered', 'orange');
+	scoutDropBuffer('not acknowledged after every retry');
 	return { reply: null, confirmed: false, count: 0 };
 }
 
@@ -2734,10 +2821,12 @@ async function scoutGoToScanSpot() {
    lazy read here would not just be useless, it would destroy good data. */
 async function scoutHeldScan() {
 	if (!scoutCanRun()) return;
-	const spot = CONFIG.stand.candidates[0];
-	if (!spot) return;
-	if (character.map !== CONFIG.stand.map || distance(character, spot) > 60) return;
-	if (Date.now() - (scout.heldScanAt || 0) < CONFIG.scout.heldScanMs) return;
+	/* The gate is now "can I see the whole stand region", not "am I within 60
+	   of the first stand candidate". The old test tied scanning to one point;
+	   this ties it to whether the reading would be complete, which is the
+	   thing that actually matters when an empty scan replaces a shard. */
+	if (!mInTown()) return;
+	if (Date.now() - (scout.heldScanAt || 0) < CONFIG.scout.townScanMs) return;
 	scout.heldScanAt = Date.now();
 	state.busy = true;
 	try {
@@ -2801,7 +2890,9 @@ async function scoutVisitNextShard() {
 	state.busy = true;
 	try {
 		if (state.standOpen) await ensureStandClosed();
-		scoutSaveBuffer();            // anything unsent must survive the reload
+		// Nothing unsent survives a hop by design - see scoutDropBuffer. This
+		// only keeps the store in step with a buffer that is already empty.
+		scoutSaveBuffer();
 		scoutSave('rot', scout.rotIdx);
 		scoutSave('ponty_seen', scout.pontySeen);
 		await mHopTo(target);         // in a browser tab the script ends here
