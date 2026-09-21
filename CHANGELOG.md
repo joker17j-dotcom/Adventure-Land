@@ -12,6 +12,30 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v39
+
+the stand no longer stays open while the merchant walks. Stand safety was
+centralised in travelTo()/travelToBank() on the stated grounds that they were
+"the only functions that call smart_move/town/xmove" - true when written, false
+since the arbitrage executor arrived. arbApproach smart_moves straight to a
+counterparty and arbProbeStep does the same, so neither ever reached
+ensureStandClosed(); scoutPontyCheck has the same hole, dormant only because
+scouting is off. Caught live 2026-09-21: stand0 open, state.standOpen true,
+moving true, at (12,23) on main with a trade picked against AriaHarper on US
+III. attemptKiss looked like a fourth case and is not - its caller closes the
+stand first. The reopen was missing too, and that half is the subtler bug:
+shouldHoldStand() already refuses a stand while ARB.cur is set, but only
+openStandAtBestSpot() consulted it, so the rule governed opening and nothing
+else. Nothing closed the stand when a trade started, and nothing put it back
+when one finished - every existing reopen hangs off a delivery batch, the gear
+loop, the kiss, a hop home, or script load, none of which an arbitrage run
+touches. arbLoop now reopens when idle, guarded on ARB.cur, ARB.busy,
+state.busy and standOpen so it cannot fight another subsystem or re-issue
+open_stand every tick. Consequences of the old behaviour: listings stayed live
+while in transit, so a stand could be traded against at a position already
+left; state.standOpen drifted from the truth; and the best-spot placement was
+defeated, since the stand ended up wherever the arbitrage walk stopped.
+
 ## v38
 
 the market fetch no longer reads the browser cache. arbFetchJson called fetch with no cache option and no cache-buster, so /merchants was served from cache indefinitely - and because a cached response carries a cached lastSeen, ageSec was computed against a frozen timestamp and every row read as fresh forever. sellMaxAgeSec could not catch it: by its own measure the rows it was handed were seconds old. Measured live on 2026-09-21 - the executor spent hours re-picking Kazhag|trade1|EUI, opening a FRESH trade against him every ~18 seconds and abandoning it at slot_gone, while ALData polled directly showed no Kazhag at all and the bridge held zero merchant rows. 399 abandons against 45 closed trades; slot_gone (168) and not_loaded (189) are the same fact seen twice - counterparties that had left a market this copy never stopped describing. Near-zero gold cost, because verification fires before the buy, which is how it hid inside a profitable day; the cost was almost all of the throughput. Fix is cache: 'no-store' plus a _=Date.now() param, applied to scoutFetch and plFetch as well - the bridge half of the same path, and /msg?to=X&since=N repeats its URL exactly whenever the cursor plateaus. Selection logic is untouched. Worth re-testing on live data before acting on anything concluded from the frozen copy: the 90% abandon rate, the absent arb_used markers, and whether any listing genuinely recurs often enough to be worth pre-positioning for.
