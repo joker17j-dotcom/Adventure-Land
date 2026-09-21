@@ -309,6 +309,16 @@ const CONFIG = {
 		   second. 0.35 lets an ordinary item reach its tier-1 target and stops
 		   a high-grade one a level short of losing itself. */
 		minUpgradeChance: 0.35,
+		/* Require the rangers to have seen an item and left it before staking
+		   it. See "offered, and declined" further down - this is the rule that
+		   lets tier progression happen at all, since counting copies says no
+		   whenever the count is exactly right, which is the normal state. */
+		requireDeclineToStake: true,
+		/* How many merchant bank windows an item must survive untouched. 1 is
+		   one full pass of all three rangers. Raise to 2 if a ranger's bank run
+		   failing - full bag, no path - is producing false verdicts; that makes
+		   it take the same failure twice running. */
+		declineCycles: 1,
 		// Ponty is checked before each hop. A gear-plan item is worth buying
 		// only if we can pay for it AND carry it AND do not already hold
 		// enough - which is why the bank contents have to survive the hop.
@@ -1501,7 +1511,7 @@ async function doScan() {
 
 	if (pontyDue(shardKey(currentShard()))) await pontyCheck();
 	const r = await reportConfirmed();
-	if (r && r.reply) bridge.lastReply = r.reply;
+	noteReply(r && r.reply);
 	saveBuffer();
 	ranger.lastScanAt = Date.now();
 	return r;
@@ -1520,6 +1530,8 @@ async function townTrip(reason) {
 	if (reason === 'potions') await buyPotions();
 	// Compounding is a town job too - Cue is in reach from this spot, and three
 	// slots becoming one is worth more than the walk we have already paid for.
+	// A no-op on a ranger, which is deliberate and explained at compoundPass:
+	// the call stays here so that the merchant's own town trips run it.
 	await compoundPass();
 	// Force the beat: a trip made for a reason always produces a reading, even
 	// if the last one was 19 seconds ago. Through the scan lock, so it cannot
@@ -2031,8 +2043,15 @@ function upgradeRefusal(item) {
 	if (p < CONFIG.merchant.minUpgradeChance) {
 		return `${Math.round(p * 100)}% is below the ${Math.round(CONFIG.merchant.minUpgradeChance * 100)}% floor`;
 	}
-	if (satisfiesATier(item) && copiesHeldRemote(item.name) <= CONFIG.gear.copiesWanted) {
-		return 'it satisfies a tier and the account has no spare of it';
+	/* An item doing a job is only staked once the rangers have said they do
+	   not want it - or once the account holds more than it needs, which is the
+	   same conclusion reached by counting instead of by asking. Either is
+	   enough; the decline is the one that actually unblocks tier progression,
+	   because the count is exactly right most of the time. */
+	if (satisfiesATier(item)
+		&& !provenDeclined(item)
+		&& copiesHeldRemote(item.name) <= CONFIG.gear.copiesWanted) {
+		return 'it satisfies a tier, no ranger has declined it yet, and there is no spare';
 	}
 	return null;
 }
@@ -2134,6 +2153,36 @@ async function upgradePass(maxAttempts) {
    identical level. Compounding is what the "buy the item to do so and combine
    them to save space" rule is about - three slots become one, and the result
    is a level higher than any of them. */
+/* The highest level any tier asks of this item by COMPOUNDING. Null for an
+   item no tier compounds - dexearring runs 1, 4, 5 across the tiers, while
+   pants is an upgrade item at every tier and belongs to the other ceiling. */
+function compoundCeiling(name) {
+	const entry = PLAN_INDEX.get(name);
+	if (!entry) return null;
+	let best = null;
+	for (const use of entry.tiers) {
+		if (use.method !== 'compound') continue;
+		if (best === null || use.level > best) best = use.level;
+	}
+	return best;
+}
+
+/* Why this triple should not go under a scroll, or null.
+
+   A failed compound destroys ALL THREE, which makes this the most expensive
+   refusal in the file to get wrong in either direction. */
+function compoundRefusal(sample) {
+	const ceiling = compoundCeiling(sample.name);
+	if (ceiling === null) return 'no tier compounds this item';
+	if (itemLevel(sample) >= ceiling) return 'already at the highest level any tier asks';
+	if (satisfiesATier(sample)
+		&& !provenDeclined(sample)
+		&& copiesHeldRemote(sample.name) <= CONFIG.gear.copiesWanted) {
+		return 'it satisfies a tier, no ranger has declined it yet, and there is no spare';
+	}
+	return null;
+}
+
 function findCompoundTriples() {
 	const groups = new Map();
 	for (const it of inventoryItems()) {
@@ -2143,6 +2192,12 @@ function findCompoundTriples() {
 	}
 	const out = [];
 	for (const [key, list] of groups) {
+		/* Used to return every group of three identical items in the bag,
+		   which meant three identical drops got a scroll spent on them to
+		   produce one slightly better drop. Now it is only ever a step the
+		   plan actually asks for - and only on material the rangers have
+		   passed over, since three items is a lot to lose on a 20% roll. */
+		if (compoundRefusal(list[0])) continue;
 		for (let i = 0; i + 2 < list.length; i += 3) {
 			out.push({
 				name: list[i].name,
@@ -2196,6 +2251,19 @@ async function tryCompound(triple) {
 /* One pass of compounding. Bounded, and re-reads between attempts because a
    successful compound renumbers every slot after the ones it consumed. */
 async function compoundPass(maxAttempts) {
+	/* THE MERCHANT ONLY.
+
+	   Not a tidiness rule. A compound consumes three items to make one and
+	   destroys all three when it fails, and a ranger deciding that from its
+	   own bag is deciding it half-blind: it cannot see what the other two are
+	   holding, cannot see the bank between windows, and has no way to know
+	   whether the three in its bag are the account's only three. The merchant
+	   can see all of it - that is what bankCompoundGroup exists for - and is
+	   the only character the "offered and declined" test works on, since it is
+	   the one that banks last.
+
+	   So a ranger banks its spares and the merchant does the compounding. */
+	if (myRole() !== 'merchant') return 0;
 	const triples = findCompoundTriples();
 	if (!triples.length) return 0;
 	if (blocked(`compound ` + triples.map((t) => `3x ${t.name}+${t.level}`).join(', ')
@@ -2787,7 +2855,10 @@ function bankCompoundGroup() {
 		groups.get(key).push(it);
 	}
 	for (const [, list] of groups) {
-		if (list.length >= 3 && isPlanItem(list[0].name)) return list.slice(0, 3);
+		// Same refusal the compound itself would apply. Without this the
+		// merchant fills three bag slots with a group it will then decline to
+		// compound, every window, forever.
+		if (list.length >= 3 && !compoundRefusal(list[0])) return list.slice(0, 3);
 	}
 	return null;
 }
@@ -2869,6 +2940,9 @@ async function merchantBankRun() {
 	if (!character.bank) {
 		log('in the bank map but character.bank is not readable - nothing to do this window', 'orange');
 	} else {
+		// FIRST, and before anything is deposited: read the bank as the rangers
+		// left it. Anything put in during this window has not been offered yet.
+		noteBankOffers();
 		await merchantGold();
 		const given = await bankDepositSpares();   // finished work goes back
 		const taken = await merchantWithdrawWork();
@@ -2880,6 +2954,147 @@ async function merchantBankRun() {
 	await goTo(CONFIG.scout.townSpot);
 	await withScanLock(doScan);
 	await sellSurplus();
+}
+
+// ------------------------------------------------- offered, and declined ----
+/* THE MERCHANT BANKS LAST, AND THAT IS WHAT MAKES THIS POSSIBLE.
+
+   A failed upgrade destroys the item and a failed compound destroys three, so
+   the question "is this one safe to stake" decides real losses. The static
+   answer - does the account hold more copies than it needs - is weak: it stalls
+   tier progression whenever the count is exactly right, which is most of the
+   time, since three copies is what the plan aims for.
+
+   The operator's answer is better, and it falls out of the bank rota. The
+   windows are :00 :05 :10 for the rangers and :15 for the merchant, so between
+   any two merchant visits EVERY ranger has had a window and has looked at the
+   bank with bankWithdrawUpgrades - which takes anything that beats what it is
+   wearing. An item still sitting there on the merchant's next visit has been
+   offered to all three and declined by all three. They judged their own gear
+   equal or better. It is surplus, demonstrated rather than counted, and the
+   merchant may stake it on the next tier's target.
+
+   TWO THINGS HAVE TO HOLD for the inference to mean anything, and both are
+   checked rather than assumed:
+
+     1. the merchant really is last in the rota. It is a config, and a roster
+        edit that moves it breaks the inference silently. rotaSupportsDecline()
+        tests it and says so.
+     2. the rangers were actually ONLINE for their windows. A ranger that was
+        offline never declined anything; its silence would read as a verdict.
+        The bridge already answers this for free: its reply carries the live
+        parked scouts by name, so a cycle only counts when all of them appeared
+        in it.
+
+   What it cannot cover: a ranger that is online, scanning and posting, but
+   whose bank run failed - it could not path to the bank, or its window was
+   eaten by a full bag. That reads as a decline and is not one. declineCycles
+   is the answer to that: requiring two cycles makes it need the same failure
+   twice running. */
+
+/* Which roster rangers the bridge has confirmed alive since the last bank
+   arrival. Accumulated rather than sampled, because the merchant's own bank
+   window is a minute of an hour and a single reading at it would miss a ranger
+   that was plainly alive twenty minutes earlier. */
+function noteReply(reply) {
+	if (!reply) return;
+	bridge.lastReply = reply;
+	const parked = (reply && reply.parked) || {};
+	const names = Object.keys(parked).filter((n) => {
+		const e = CONFIG.characters[n];
+		return e && e.role === 'ranger';
+	});
+	if (!names.length) return;
+	const seen = SS.get('rangers_seen', {}) || {};
+	const now = Date.now();
+	for (const n of names) seen[n] = now;
+	SS.set('rangers_seen', seen);
+}
+
+function rosterRangers() {
+	return Object.keys(CONFIG.characters).filter((n) => CONFIG.characters[n].role === 'ranger');
+}
+
+/* Every ranger seen since `since`? The bridge only lists bots it has heard
+   from inside its own timeout, so presence in a reply is already a liveness
+   statement; this only has to check that each one appeared after the last
+   bank arrival. */
+function rangersSeenSince(since) {
+	const seen = SS.get('rangers_seen', {}) || {};
+	// >= rather than >, because the two stamps are both Date.now() and can
+	// land in the same millisecond - live that is an hour apart and cannot
+	// happen, which is exactly why a strict comparison would only ever fail
+	// somewhere it is hard to look.
+	const missing = rosterRangers().filter((n) => !(seen[n] >= since));
+	return { ok: missing.length === 0, missing };
+}
+
+/* Is the merchant last in the rota? The whole inference rests on every ranger
+   having had a window between two merchant visits, which is true exactly when
+   the merchant's bank minute is the highest. */
+function rotaSupportsDecline() {
+	const mine = myBankMinute();
+	if (mine === null) return false;
+	return rosterRangers().every((n) => {
+		const i = Object.keys(CONFIG.characters).indexOf(n);
+		return (CONFIG.bank.firstWindowMinute + i * CONFIG.bank.staggerMinutes) % 60 < mine;
+	});
+}
+
+const offerKey = (it) => it.name + '@' + itemLevel(it);
+
+/* Read the bank as it was found, and age the ledger by one cycle.
+
+   Called on ARRIVAL, before anything is deposited - an item the merchant puts
+   in during this window has not been offered to anyone yet, and counting it
+   would credit it with a cycle it never served. That also means a freshly
+   deposited item needs to survive to the visit AFTER next, which is exactly
+   the operator's "still there on the second bank run". */
+function noteBankOffers() {
+	const prev = SS.get('offer_log', null);
+	const now = Date.now();
+	const counts = {};
+	for (const it of bankItems()) {
+		const k = offerKey(it);
+		counts[k] = (counts[k] || 0) + 1;
+	}
+
+	if (!prev) {
+		SS.set('offer_log', { at: now, counts, cycles: {} });
+		log('bank offer ledger started - nothing is provably surplus yet', '#8b98ab');
+		return { qualified: false, reason: 'first visit' };
+	}
+
+	const live = rangersSeenSince(prev.at);
+	if (!live.ok) {
+		// Do NOT advance the ledger. Carrying the previous reading forward is
+		// what makes an offline ranger cost a cycle rather than cast a vote.
+		log(`bank offer cycle not counted - no sign of ${live.missing.join(', ')} `
+			+ `since the last window`, '#E9C46A');
+		return { qualified: false, reason: 'ranger offline', missing: live.missing };
+	}
+
+	const cycles = {};
+	for (const k of Object.keys(counts)) {
+		const held = Math.min(counts[k], prev.counts[k] || 0);
+		// A count that dropped means a ranger took one - the rest were still
+		// declined, so the survivors keep their history.
+		cycles[k] = held > 0 ? ((prev.cycles && prev.cycles[k]) || 0) + 1 : 0;
+	}
+	SS.set('offer_log', { at: now, counts, cycles });
+
+	const proven = Object.keys(cycles).filter((k) => cycles[k] >= CONFIG.merchant.declineCycles);
+	if (proven.length) log(`offered and declined: ${proven.join(', ')}`, '#8b98ab');
+	return { qualified: true, proven };
+}
+
+/* Has this item been offered to every ranger and left behind? */
+function provenDeclined(item) {
+	if (!CONFIG.merchant.requireDeclineToStake) return true;
+	if (!rotaSupportsDecline()) return false;
+	const log_ = SS.get('offer_log', null);
+	if (!log_ || !log_.cycles) return false;
+	return (log_.cycles[offerKey(item)] || 0) >= CONFIG.merchant.declineCycles;
 }
 
 // ------------------------------------------------------------------ Ponty
@@ -2996,7 +3211,7 @@ async function merchantTick() {
 
 		if (hopDue()) {
 			const r = await report();
-			if (r && r.reply) bridge.lastReply = r.reply;
+			noteReply(r && r.reply);
 			const target = nextShard(bridge.lastReply);
 			if (target) await hopTo(target);
 		}
@@ -3037,6 +3252,12 @@ function startFleet() {
 	if (CONFIG.safety.dryRun) {
 		log('DRY RUN - nothing will be sold, spent, destroyed, moved between bank '
 			+ 'and bag, or hopped. Scanning and walking are real.', '#E9C46A');
+	}
+	if (role === 'merchant' && CONFIG.merchant.requireDeclineToStake && !rotaSupportsDecline()) {
+		log('the merchant does NOT hold the last bank window, so "offered and declined" '
+			+ 'cannot be inferred - upgrades and compounds will fall back to the copy count, '
+			+ 'which stalls tier progression. Reorder CONFIG.characters so the merchant is '
+			+ 'last, or set merchant.requireDeclineToStake false to say this is deliberate.', 'red');
 	}
 	log(`${character.name}: ${role}, bank window at :${String(myBankMinute()).padStart(2, '0')}, `
 		+ `on ${shardKey(currentShard())}${CONFIG.safety.dryRun ? ' [DRY RUN]' : ''}`, '#55BDF0');

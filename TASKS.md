@@ -320,7 +320,7 @@ hop an hour.
 
 ## 5. FamilyFleet: what it does not know yet
 
-**Status:** the script is complete and tested (424 assertions) but has never
+**Status:** the script is complete and tested (453 assertions) but has never
 been run against the live game. These are the questions the tests cannot
 answer, in the order they will bite.
 
@@ -363,13 +363,46 @@ costing single figures. **Tier 3 wants level 10 — several hundred items. That
 tier is a compound-and-drop project, not an upgrade one**, and the plan should
 probably say so.
 
-Two guards, because a level cap alone is not enough:
+Three guards, because a level cap alone is not enough:
 
 - `minUpgradeChance` (0.35) reads the odds for *this* item. A grade-2 item at
   +6 is a 32% roll where a grade-0 one is 40%; the same cap is reckless for the
   first and cautious for the second.
 - Nothing that currently satisfies a plan tier is staked unless the account
   holds more copies than it needs. An item doing a job is not raw material.
+- **...or unless the rangers have been offered it and left it.** See below.
+
+### 5a-ii. "Offered and declined", and why the rota is the evidence
+
+The copy count alone is a weak guard: it stalls tier progression whenever the
+count is *exactly* right, which is the normal state, since three copies is what
+the plan aims for.
+
+The operator's answer falls out of the bank rota. Windows are :00 :05 :10 for
+the rangers and **:15 for the merchant**, so between any two merchant visits
+every ranger has had a window and has run `bankWithdrawUpgrades`, which takes
+anything beating what it wears. An item still sitting there on the merchant's
+next visit has been **offered to all three and declined by all three** — they
+judged their own gear equal or better. Surplus demonstrated, not counted.
+
+Two things have to hold, and both are checked rather than assumed:
+
+1. **The merchant really is last.** `rotaSupportsDecline()` tests it; a roster
+   edit that moves it logs loudly at startup and falls back to the copy count.
+2. **The rangers were actually online.** A ranger that was offline never
+   declined anything, and its silence would read as a verdict. The bridge
+   already answers this for free — its reply lists live parked scouts by name —
+   so a cycle only counts when all three appeared in it.
+
+**What it cannot cover:** a ranger that is online and scanning but whose *bank
+run* failed — no path, or a window eaten by a full bag. That reads as a decline
+and is not one. `declineCycles` is the answer: set it to 2 and the same failure
+has to happen twice running.
+
+Compounding moved to the merchant outright, for the same reason. A compound
+destroys all three on failure, and a ranger deciding that from its own bag is
+deciding it half-blind: it cannot see the other two characters' holdings, the
+bank between windows, or whether its three are the account's only three.
 
 ### 5b. ~~Ponty's price field~~ — ANSWERED, and it was a live bug
 
