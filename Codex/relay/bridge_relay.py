@@ -195,7 +195,12 @@ def main():
         print(f"[relay]   Starting anyway - it will connect when the bridge does.")
 
     print(f"[relay] this machine is {guess_lan_ip()}")
-    print(f"[relay] leave the scout's CONFIG.bridge as http://127.0.0.1:8787")
+    # The PORT WE ACTUALLY BOUND, not the default. Printing 8787 while
+    # listening on something else sends the reader to an address nothing is
+    # serving, and the symptom - a scout that never connects - looks exactly
+    # like the bridge being down, which is the one thing this line exists to
+    # rule out.
+    print(f"[relay] leave the scout's CONFIG.bridge as http://127.0.0.1:{a.port}")
 
     Relay.upstream = upstream
     Relay.timeout = a.timeout
