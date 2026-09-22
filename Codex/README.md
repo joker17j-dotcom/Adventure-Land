@@ -11,6 +11,9 @@ arbitrage executor that trades across shards.
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
 | `relay/` | For running a scout on a second computer — see its own README |
 | `MerchantScout.js` | Standalone scout, for a fleet — see *Which file is the scout* |
+| `MerchantComments.md` | The long-form notes `Merchant.js` cross-references as `-> MerchantComments.md#anchor` |
+| `party_link.js` | Cross-shard party messaging — paste-in block for the four character scripts |
+| `FamilyFleet.js` | The family's separate fleet, on its own account. Nothing here reads it |
 | `_al_template.html`, `_tabs_*.js`, `build.py` | Sources for the two pages (see *Rebuilding*) |
 
 Both HTML files are fully self-contained. **You do not need any of this setup to
@@ -75,11 +78,22 @@ is meant to age out.
 Log lines to expect:
 
 ```
-[scout] bridge up - scouting enabled
-[scout] 7 stands on USII - confirmed
-[scout] Ponty: 23 items on USII
 [probe] v27 / arb.4 ... loaded (0 stored entries) - arbProbeHelp() for commands
 ```
+
+> **Scouting is currently OFF.** `CONFIG.scout.enabled` is `false` and
+> `parked` is `true`, both marked "deliberately and temporarily" in the file.
+> While that holds, the merchant never scans and never posts, so the bridge's
+> `/merchants` and `/ponty` answer empty on every shard and `/status` shows
+> `stands: 0, listings: 0` everywhere. **That is the configuration working, not
+> the bridge failing** - a distinction that has already cost one wrong
+> diagnosis. Turn scouting back on and these appear:
+>
+> ```
+> [scout] bridge up - scouting enabled
+> [scout] 7 stands on USII - confirmed
+> [scout] Ponty: 23 items on USII
+> ```
 
 ### 3. Point the page at it
 
@@ -126,9 +140,11 @@ Worth noting for consistency rather than as an argument against it:
 arbitrage. If the crash concern holds, that is the script more exposed to it.
 
 This matters because the sweep time is what the source preference below rests
-on, and it is also most of the `sellMaxAgeSec` budget. At 2.4 minutes a listing
-is a sixth of the 15-minute freshness window old when it is posted; at 5.5+ it
-is over a third, before anyone acts on it.
+on, and it is also most of the `sellMaxAgeSec` budget. That budget is **7
+minutes** (`sellMaxAgeSec: 7 * 60`), not the 15 this section claimed until
+2026-09-22 - which inverted the conclusion drawn from it. At 2.4 minutes a
+listing has already spent **a third** of its allowed life before it is posted;
+at 5.5+ it has spent **four fifths**, before anyone acts on it.
 
 **Neither source is preferred wholesale any more — they are merged per merchant
 per shard, and the newer row wins.**
@@ -173,9 +189,16 @@ address does not work: the scout runs inside `https://adventure.land`, and a
 secure page may not fetch `http://` except to `127.0.0.1` or `localhost`. The
 relay gives it a localhost address to talk to and forwards over the network.
 
-**You do not assign shards yourself.** `send_cm` is
-realm-local, so scouts on different shards physically cannot talk to each other
-and cannot agree who sits where. The bridge ranks shards by observed activity,
+**You do not assign shards yourself.** `send_cm`'s *server* delivery is
+realm-local, so scouts on different machines and different shards cannot talk to
+each other and cannot agree who sits where.
+
+> Measured 2026-09-22: `send_cm` also has a SECOND path. Characters "opened
+> locally" - tabs in the same browser - get a fast local delivery that ignores
+> shards entirely, and it resolves `{receivers, locals}` so you can see which
+> path carried a message. One tab to another took 2ms across different shards.
+> So the realm-local rule holds for a fleet spread over machines, which is the
+> case this section is about, and is FALSE for four tabs on one computer. The bridge ranks shards by observed activity,
 hands each parked scout a different one, and removes a shard from the pool the
 moment it is handed out, so two parked scouts can never collide.
 
@@ -220,9 +243,17 @@ scouts are given nothing rather than a shared shard.
 
 ## Arbitrage
 
-The merchant can buy on one shard and sell on another. **It is off by default in
-the sense that matters:** `CONFIG.arbitrage.dryRun` is `true`, which simulates
-the only two calls that move money while running every other step for real.
+The merchant can buy on one shard and sell on another.
+
+> **`dryRun` is `false`. This spends real gold, continuously.** Until
+> 2026-09-22 this section said it was `true` "by default in the sense that
+> matters", which was the most dangerous sentence in the file: by then the
+> ledger already held 894 live events, 280M deployed and 107M realised - along
+> with a single trade that lost 63,485,800. Do not trust a README for this;
+> read the flag.
+
+`dryRun: true` simulates the only two calls that move money while running every
+other step for real, which is what makes it a usable rehearsal.
 
 Check which mode is actually live from the game console:
 
@@ -276,7 +307,30 @@ clears the vendor's price by more than the tax, so the comparison is
 | `minProfit` | 500,000, per item, after tax |
 | `usedCooldownMs` | 20 min — a listing just traded against is not re-picked |
 | `maxConsecutiveStrandings` | 2 — the executor stops itself and says why in the ledger |
+| `fallbackMinRecovery` | 1.0 — a RESERVE PRICE on the fallback exit. Added 2026-09-22 |
+| arbitrage-stock registry | Goods arbitrage has paid for are hidden from both NPC sell paths |
+| `NO_TRADE_ITEM_NAMES` | Items never bought or sold at all, filtered at flip ingestion |
 | verification | Both legs re-checked against the live client before trading |
+
+The last three are all from 2026-09-22, and the first two exist because of the
+same afternoon.
+
+`arbFindBuyerFor` runs when the planned buyer has failed, and it used to take
+the best bid on the board with no reference to what the goods cost - its own
+comment reasoned that the question had become "is there any exit at all". It
+bought feather0 x331 for 82,750,000 and sold the lot into a 60,000 bid twenty-
+eight minutes later, for a net of **-63,485,800**. Every other trade that day
+was positive. `fallbackMinRecovery` is the floor under that exit; below it the
+goods are banked instead, which was always a supported outcome.
+
+The registry exists because neither NPC sell path knew arbitrage existed.
+`sellTrash` vendors anything on its whitelist on sight and the aggressive seller
+vendors nearly anything once free slots reach 5 — both priced by NPC value, and
+the slices arbitrage trades in millions vendor for **six gold**. It would also
+have been invisible: NPC sales are recorded nowhere, not in this ledger and not
+in the server's own `trade_history`, which logs player-to-player trades only.
+`slice_blueberry` came off the `sellTrash` whitelist the same day, having been
+on a list of things to vendor on sight while arbitrage paid 2,000,000 for one.
 
 The cooldown exists because the two sides are not symmetric. A stale *buy*
 listing costs nothing — verification fires before gold moves. A stale *sell*
@@ -345,8 +399,12 @@ down entirely, which starved the bridge the probe was meant to be reading.
 **Page shows `ALData only (bridge unreachable)`** — expected when the bridge is
 not running. ALData is the floor; the bridge is a bonus.
 
-**Bridge reachable but `stands: 0`** — nothing is posting. Usually a probe hold
-with the merchant away from the scan spot, or the merchant stopped.
+**Bridge reachable but `stands: 0`** — nothing is posting. Check
+`CONFIG.scout.enabled` FIRST: it is currently `false`, and while it is, empty is
+the correct answer on every shard and says nothing about the bridge's health.
+Otherwise it is usually a probe hold with the merchant away from the scan spot,
+or the merchant stopped. `/trades` and the party relay keep working throughout —
+an empty `/merchants` is not evidence of a dead bridge.
 
 **Finders return `SOURCE: in-view scan only`** — neither ALData nor the bridge
 answered, and you are seeing one plaza rather than the market.
