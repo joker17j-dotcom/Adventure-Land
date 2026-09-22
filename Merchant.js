@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v46
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v47
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -273,6 +273,13 @@ const CONFIG = {
 		// HARD reserve. gold - (everything this trade or batch will spend) must
 		// still clear this, so a large purchase cannot leave the merchant broke.
 		goldFloor: 10000000,
+		/* Reserve price for the FALLBACK exit. arbFindBuyerFor used to take the
+		   best bid on the board with no reference to what the goods cost. On
+		   2026-09-22 that sold feather0 x331 - bought for 82,750,000 - into a
+		   60,000 bid, for a net of -63,485,800. 1.0 means never realise a loss:
+		   below it the goods are banked instead, which is already a supported
+		   outcome with its own stranding breaker. */
+		fallbackMinRecovery: 1.0,
 		// Half of the NET profit is banked after each sale - not half the sale
 		// value, so the capital spent on the item stays with the merchant and
 		// only the gain is split. Never banked on a loss, and losses are not
@@ -371,7 +378,10 @@ const CONFIG = {
 	// actually accumulates from the other three's muling.
 	selling: {
 		enabled: true,
-		whitelist: ['gslime', 'seashell', 'reefglass', 'crabclaw', 'slice_blueberry', 'gem0'],
+		// slice_blueberry was on this list until 2026-09-22. Arbitrage pays up to
+		// 2,000,000 for one and the NPC pays 6, so vendoring it on sight was a
+		// 300,000x loss waiting for the wrong moment.
+		whitelist: ['gslime', 'seashell', 'reefglass', 'crabclaw', 'gem0'],
 
 		// Nothing else in this script actively guards against Meltymerch's
 		// -> MerchantComments.md#aggressiveEnabled
@@ -1143,9 +1153,11 @@ potionLoop();
 function sellTrash() {
 	if (!CONFIG.selling.enabled) return;
 	const whitelist = new Set(CONFIG.selling.whitelist);
+	const held = arbHeldNames();
 	for (let i = 0; i < character.items.length; i++) {
 		const item = character.items[i];
 		if (item && whitelist.has(item.name) && item.p === undefined && item.l !== 'l') {
+			if (held[item.name]) continue;   // arbitrage paid real gold for this
 			sell(i);
 		}
 	}
@@ -1178,6 +1190,64 @@ const PROTECTED_ITEM_NAMES = new Set([
    buys/sells feed cannot reach any caller, hand-run probes included. */
 const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
 
+/* ARBITRAGE STOCK - goods the executor has paid for and not yet disposed of.
+
+   Neither NPC sell path knew arbitrage existed. sellTrash vendors anything on
+   its whitelist on sight, and the aggressive seller vendors nearly anything
+   once the bag is almost full. Both price by NPC value, and the slices
+   arbitrage moves in millions vendor for SIX GOLD - slice_nightberry alone
+   absorbed 124,200,000 in one day. One inventory squeeze at the wrong moment
+   could dump a nine-figure position for pocket change, and do it invisibly:
+   NPC sales are recorded nowhere, not in the bridge ledger and not in the
+   server's own trade_history, which logs player-to-player trades only.
+
+   Keyed by NAME, not slot, because stacks move and merge. That is deliberately
+   conservative - ordinary loot sharing a name with live arbitrage stock is
+   protected too, which costs a little vendor gold and risks nothing.
+
+   SELF-HEALING: a name the bag no longer carries is dropped on the next read,
+   whether it sold, was banked, or a hook was missed. A stale entry therefore
+   cannot protect an item forever, and the registry cannot drift far from what
+   is actually in the bag. */
+const ARB_HELD_KEY = 'arb_held';
+let arbHeldCache = null, arbHeldCacheAt = 0;
+
+function arbHeldNames() {
+	if (arbHeldCache && Date.now() - arbHeldCacheAt < 1000) return arbHeldCache;
+	let h;
+	try { h = get(ARB_HELD_KEY) || {}; } catch (e) { h = {}; }
+	const names = Object.keys(h);
+	if (names.length) {
+		const have = new Set();
+		const bag = (typeof character !== 'undefined' && character.items) || [];
+		for (const it of bag) if (it && it.name) have.add(it.name);
+		let changed = false;
+		for (const n of names) if (!have.has(n)) { delete h[n]; changed = true; }
+		if (changed) { try { set(ARB_HELD_KEY, h); } catch (e) { } }
+	}
+	arbHeldCache = h; arbHeldCacheAt = Date.now();
+	return h;
+}
+
+function arbHeldAdd(name, qty, cost) {
+	if (!name) return;
+	let h;
+	try { h = get(ARB_HELD_KEY) || {}; } catch (e) { h = {}; }
+	h[name] = { qty: qty || 1, cost: cost || 0, at: Date.now() };
+	try { set(ARB_HELD_KEY, h); } catch (e) { }
+	arbHeldCache = null;
+}
+
+function arbHeldDrop(name) {
+	let h;
+	try { h = get(ARB_HELD_KEY) || {}; } catch (e) { h = {}; }
+	if (h[name] !== undefined) {
+		delete h[name];
+		try { set(ARB_HELD_KEY, h); } catch (e) { }
+	}
+	arbHeldCache = null;
+}
+
 function isTier2OrTier3GearItem(itemName) {
 	for (const cls of PARTY_CLASSES) {
 		const tiers = GEAR_PROGRESSION[cls];
@@ -1203,6 +1273,7 @@ function sellAggressivelyIfLowOnSpace() {
 	if (!cfg.aggressiveEnabled) return;
 	if (freeInventorySlots() > cfg.aggressiveFreeSlotThreshold) return;
 
+	const held = arbHeldNames();
 	let sold = 0;
 	for (let i = 0; i < character.items.length; i++) {
 		const item = character.items[i];
@@ -1210,6 +1281,7 @@ function sellAggressivelyIfLowOnSpace() {
 		if (item.p !== undefined || item.l === 'l') continue; // already listed for sale, or locked - can't sell either way
 		if (PROTECTED_ITEM_NAMES.has(item.name)) continue;
 		if (isTier2OrTier3GearItem(item.name)) continue;
+		if (held[item.name]) continue;   // arbitrage stock - vendoring it realises the loss
 
 		try {
 			sell(i);
@@ -2942,6 +3014,7 @@ async function arbAdvance() {
 			qty: t.qty, buyPrice: t.buyPrice, buyFrom: t.buyFrom, buyShard: t.buyShard,
 			spend: t.actualSpend, taxRate: t.taxRate,
 		});
+		arbHeldAdd(t.item, t.qty, t.actualSpend);   // shield it from both NPC sell paths
 		arbLog('bought ' + t.item + ' x' + t.qty + ' for ' + t.actualSpend, '#7FD98A');
 		return;
 	}
@@ -3009,6 +3082,7 @@ async function arbAdvance() {
 			sellShard: t.sellShard, gross: t.gross, received: t.received,
 			tax: t.tax, net: t.net,
 		});
+		arbHeldDrop(t.item);   // sold - ordinary goods again
 		const share = arbBankShare(t.net);
 		if (share > 0) await arbBankShareNow(t, share);
 		return;
@@ -3017,6 +3091,7 @@ async function arbAdvance() {
 	// ---- stranded: bought, unsellable. Bank it and close the books ---------
 	if (t.phase === 'stranded') {
 		const ok = await arbBankItem(t);
+		if (ok) arbHeldDrop(t.item);   // in the bank, out of the seller's reach
 		arbFinish(t, 'abandoned', {
 			reason: 'no buyer found', disposition: ok ? 'banked_item' : 'held_in_inventory',
 			item: t.item, qty: t.qty, spend: t.actualSpend || t.spend,
@@ -3045,7 +3120,12 @@ async function arbFindBuyerFor(t) {
 	const rows = got.rows || [];
 	const maxAge = CONFIG.arbitrage.sellMaxAgeSec;
 	const key = t.item + '|' + (t.level || 0) + '|' + (t.special || '');
-	let best = null;
+	/* RESERVE PRICE - see CONFIG.arbitrage.fallbackMinRecovery. "Any exit at all"
+	   is not the same as "any price at all". */
+	const cost = t.actualSpend || t.spend || 0;
+	const tr = (typeof t.taxRate === 'number' ? t.taxRate : arbTaxRate()) || 0;
+	const need = cost * (CONFIG.arbitrage.fallbackMinRecovery || 0);
+	let best = null, refused = 0, bestRefused = null;
 	for (const r of rows) {
 		const age = pAgeSec(r.lastSeen);
 		if (age == null || age > maxAge) continue;
@@ -3056,9 +3136,22 @@ async function arbFindBuyerFor(t) {
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			const shard = String(r.serverRegion) + String(r.serverIdentifier);
 			if (arbIsUsed(shard, r.id, k)) continue;   // we already filled this one
+			if (sl.price * t.qty * (1 - tr) < need) {
+				refused++;
+				if (bestRefused == null || sl.price > bestRefused) bestRefused = sl.price;
+				continue;
+			}
 			const cand = { target: r.id, slot: k, price: sl.price, shard: shard, ageSec: age };
 			if (!best || cand.price > best.price) best = cand;
 		}
+	}
+	/* A refusal must say so, or "nobody was buying" and "everyone was buying too
+	   cheaply" stay indistinguishable in the log forever. */
+	if (!best && refused) {
+		const perUnit = (t.qty && (1 - tr)) ? Math.ceil(need / (t.qty * (1 - tr))) : null;
+		arbLog('refused ' + refused + ' bid(s) for ' + t.item + ' below the reserve - best was '
+			+ bestRefused + '/unit, need ' + perUnit + '/unit to recover ' + cost
+			+ '. Banking the goods instead.', 'orange');
 	}
 	return best;
 }
@@ -3218,6 +3311,7 @@ function ssVendorBound(item) {
 	if (item.p !== undefined) return false;
 	if (PROTECTED_ITEM_NAMES.has(item.name)) return false;
 	if (isTier2OrTier3GearItem(item.name)) return false;
+	if (arbHeldNames()[item.name]) return false;   // arbitrage owns this exit
 	return true;
 }
 
