@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v43
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v44
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2718,6 +2718,10 @@ function arbPlan(flip, gold) {
 		buySlot: flip.buySlot, buyIsNpc: !!flip.buyIsNpc,
 		sellTo: flip.sellTo, sellPrice: flip.sellPrice, sellShard: flip.sellShard,
 		sellSlot: flip.sellSlot,
+		// The last-known position of each side. Without these arbApproach has
+		// -> MerchantComments.md#planCoords
+		buyMap: flip.buyMap || null, buyX: flip.buyX, buyY: flip.buyY,
+		sellMap: flip.sellMap || null, sellX: flip.sellX, sellY: flip.sellY,
 		spend: flip.spend, expectProfit: flip.profit, taxRate: flip.taxRate,
 		goldAtStart: gold,
 		attempts: 0,
@@ -2757,10 +2761,46 @@ function arbFinish(t, event, extra) {
 
 // Close enough to trade. A stand's trade slots stay fully readable right to...
 // -> MerchantComments.md#arbApproach
-async function arbApproach(targetName) {
+async function arbApproach(targetName, hint) {
 	const want = CONFIG.arbitrage.approachUnits;
-	const e = pEntity(targetName);
-	if (!e) return { ok: false, reason: 'not_loaded' };
+	let e = pEntity(targetName);
+
+	/* NOT LOADED IS NOT THE SAME AS NOT THERE.
+
+	   character.vision is [700, 500] and it is a BOX, so pEntity only ever
+	   resolves someone already close. This function used to give up the instant
+	   the lookup came back empty - which meant it could never approach anyone it
+	   was not already standing next to. After a shard hop the character keeps its
+	   old position, so the seller is usually well outside that box, three ticks
+	   burn at 4s each, and the trade is abandoned in about twelve seconds without
+	   a single step being taken.
+
+	   That is the largest single failure in the ledger: 333 abandons on
+	   'could not reach the seller: not_loaded' against ONE on 'still N units
+	   away'. Almost nothing was failing to arrive; it was failing to set off.
+
+	   The position was known the whole time. The market row carries map/x/y, and
+	   it is now carried through the flip and the trade record, so an unloaded
+	   seller means "walk to where they were last seen and look again" rather
+	   than "give up". */
+	if (!e) {
+		const haveHint = hint && typeof hint.x === 'number' && typeof hint.y === 'number' && hint.map;
+		if (!haveHint) return { ok: false, reason: 'not_loaded' };
+		const me0 = pWhere(character);
+		if (hint.map === me0.map && pDist(me0.x, me0.y, hint.x, hint.y) <= want) {
+			// Standing on their last known spot and still nothing: really gone.
+			return { ok: false, reason: 'not_loaded_at_last_known' };
+		}
+		await ensureStandClosed();
+		try {
+			await smart_move({ map: hint.map, x: hint.x, y: hint.y });
+		} catch (err) {
+			return { ok: false, reason: 'smart_move to last known: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)) };
+		}
+		e = pEntity(targetName);
+		if (!e) return { ok: false, reason: 'not_loaded_on_arrival' };
+	}
+
 	const t = pWhere(e), me = pWhere(character);
 	if (t.map === me.map && pDist(me.x, me.y, t.x, t.y) <= want) return { ok: true, moved: false };
 	// Past the in-range return, so this only fires when we are actually going
@@ -2830,7 +2870,7 @@ async function arbAdvance() {
 
 	// ---- at_buy: verify, afford, buy ---------------------------------------
 	if (t.phase === 'at_buy') {
-		const near = await arbApproach(t.buyFrom);
+		const near = await arbApproach(t.buyFrom, { map: t.buyMap, x: t.buyX, y: t.buyY });
 		if (!near.ok) {
 			t.attempts = (t.attempts || 0) + 1;
 			if (t.attempts >= 3) {
@@ -2889,7 +2929,7 @@ async function arbAdvance() {
 
 	// ---- at_sell: verify, sell, or find another buyer ----------------------
 	if (t.phase === 'at_sell') {
-		const near = await arbApproach(t.sellTo);
+		const near = await arbApproach(t.sellTo, { map: t.sellMap, x: t.sellX, y: t.sellY });
 		const v = near.ok ? arbStillThere(t, 'sell') : { ok: false, reason: near.reason };
 		if (!v.ok) {
 			// The buyer is gone or has repriced. Re-ask the market rather than
@@ -3804,6 +3844,10 @@ async function arbProbeFindFlips(opts) {
 			buyAgeSec: buy.ageSec, buyIsNpc: !!buy.npc, buySlot: buy.slot,
 			sellTo: sell.target, sellPrice: sell.price, sellShard: sell.shard,
 			sellAgeSec: sell.ageSec, sellSlot: sell.slot,
+			// WHERE they were standing, carried from the market row.
+			// -> MerchantComments.md#flipCoords
+			buyMap: buy.map || null, buyX: buy.x, buyY: buy.y,
+			sellMap: sell.map || null, sellX: sell.x, sellY: sell.y,
 			sameShard: buy.shard === sell.shard,
 			hops: (buy.shard === sell.shard ? (buy.shard === here ? 0 : 1) : (buy.shard === here ? 1 : 2)),
 			affordable: (character.gold - spend) >= CONFIG.arbitrage.goldFloor,
