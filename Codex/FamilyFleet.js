@@ -242,6 +242,26 @@ const CONFIG = {
 		// Full bag and not our bank window: park in town and scan instead of
 		// dropping anything.
 		freeSlotsFloor: 2,
+		/* Picking up what we killed.
+
+		   There was no loot call in this file at all until now, and the omission
+		   was invisible because everything downstream of it was already written:
+		   bagFull, parkFull, stuckFull and the whole bank run exist to manage a
+		   full bag that nothing could ever fill. Measured before the fix: 626
+		   chests on the ground around one ranger, all inside 400 units, with two
+		   items in his bag.
+
+		   range: chests drop where the monster died, which is inside attack range,
+		   so this only has to cover our own kills - deliberately not a reach for
+		   other people's drops. perTick caps the burst so a backlog is worked off
+		   over several ticks instead of stalling one. everyMs keeps it off the
+		   4s tick, since there is nothing to collect most of the time. */
+		loot: {
+			range: 300,
+			perTick: 5,
+			everyMs: 1000,
+			warnEveryMs: 60 * 1000,
+		},
 	},
 
 	// ---------------------------------------------------------- the merchant
@@ -1780,10 +1800,72 @@ async function parkFull() {
 }
 
 /* Move to the farm spot and fight what is there. */
+const LOOT = { at: 0, lastWarnAt: 0 };
+
+/* Collect our own drops. Returns how many chests were opened.
+
+   typeof, not truthiness. `get_chests ? ... : ...` would throw a
+   ReferenceError if the helper were absent rather than falling back - that is
+   exactly the bug that kept attackWithRotation from ever reaching attack(),
+   and it is not worth repeating two functions later. parent.chests is the
+   same data the helper reads.
+
+   A refused loot breaks the batch rather than continuing: the usual reasons
+   are rate limiting or a full bag, and both mean the rest of this batch will
+   be refused too. The warning is throttled for the same reason the attack one
+   is - a contested field refuses plenty, and a log line per refusal would bury
+   everything else. */
+async function lootTick() {
+	if (bagFull()) return 0;
+	if (Date.now() - LOOT.at < CONFIG.ranger.loot.everyMs) return 0;
+	LOOT.at = Date.now();
+
+	let chests = {};
+	try {
+		if (typeof get_chests === 'function') chests = get_chests() || {};
+		else chests = (parent && parent.chests) || {};
+	} catch (e) { return 0; }
+
+	const here = myPos();
+	const range = CONFIG.ranger.loot.range;
+	const near = [];
+	for (const id in chests) {
+		const ch = chests[id];
+		if (!ch) continue;
+		const dx = (ch.x || 0) - here.x, dy = (ch.y || 0) - here.y;
+		if (dx * dx + dy * dy <= range * range) near.push(id);
+	}
+	if (!near.length) return 0;
+
+	let got = 0;
+	for (const id of near) {
+		if (got >= CONFIG.ranger.loot.perTick) break;
+		if (bagFull()) break;
+		try {
+			await loot(id);
+			got++;
+		} catch (e) {
+			const now = Date.now();
+			if (now - LOOT.lastWarnAt > CONFIG.ranger.loot.warnEveryMs) {
+				LOOT.lastWarnAt = now;
+				log('loot refused: ' + (e && e.reason ? e.reason : JSON.stringify(e))
+					+ ' (throttled - logged at most once a minute)', 'orange');
+			}
+			break;
+		}
+	}
+	return got;
+}
+
 async function farmTick() {
 	const spotName = chooseSpot();
 	const spot = CONFIG.ranger.spots[spotName];
 	if (!spot) return;
+
+	/* Before anything else, including the walk below. A character that is about
+	   to travel to a new pack should leave with the floor cleared, not abandon
+	   its own drops - and chests expire. */
+	await lootTick();
 
 	const target = get_nearest_monster({ type: spot.monster });
 	if (!target) {
