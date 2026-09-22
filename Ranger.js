@@ -1,4 +1,7 @@
 // ============================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
+// ============================================================================
+// ============================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
 // ============================================================================
 // ============================================================================
@@ -602,6 +605,54 @@ const findHealTarget = () => {
 	return minPct < threshold ? target : null;
 };
 
+// ============================================================================
+// AWAIT HANG GUARD
+// ============================================================================
+// Every loop below is an async function that schedules its own next tick only
+// after its body resolves. A THROW is already handled - each loop reschedules
+// from its catch, or after it. A HANG is not: if an awaited call never
+// settles, execution never reaches the reschedule and the chain simply ends,
+// silently and permanently. setInterval work (buffs, loot, party keepalives)
+// keeps running, so the character still looks alive on /hub while doing
+// nothing at all.
+//
+// Measured 2026-09-22 on Dexon: actionLoop ran 0 iterations in 20s where ~1300
+// were due, and mainLoop was dead in the same window - is_disabled(), which it
+// calls every 250ms, was not called once. He stood in range of crabs casting
+// nothing until the page was reloaded, and the party earned 0 xp. use_skill()
+// and smart_move() both return promises the game can leave unsettled, so this
+// is a live failure mode, not a theoretical one.
+//
+// noHang() bounds an awaited call. On timeout it REJECTS, which lands in the
+// loop's own catch and lets that loop reschedule normally: the tick is lost,
+// the chain is not. Same intent as travelWatchdog, applied to the loops.
+// Wrapping only the awaits that appear DIRECTLY in a loop body is enough - a
+// hang deeper in a helper propagates up to that await and is bounded there.
+const HANG_GUARD = {
+	defaultMs: 10000,
+	logEveryMs: 30000,   // the guard must log, or "hung" and "idle" look identical
+};
+let lastHangLogAt = 0;
+
+function noHang(p, label, ms) {
+	if (!p || typeof p.then !== 'function') return Promise.resolve(p);
+	const limit = ms || HANG_GUARD.defaultMs;
+	let timer = null;
+	return Promise.race([
+		Promise.resolve(p).finally(() => clearTimeout(timer)),
+		new Promise((_, reject) => {
+			timer = setTimeout(() => {
+				const now = Date.now();
+				if (now - lastHangLogAt >= HANG_GUARD.logEveryMs) {
+					lastHangLogAt = now;
+					game_log(`"${label}" did not settle in ${Math.round(limit / 1000)}s - dropping this tick`, 'orange');
+				}
+				reject(new Error(`hang guard: ${label}`));
+			}, limit);
+		}),
+	]);
+}
+
 async function mainLoop() {
 	try {
 		if (is_disabled(character)) return setTimeout(mainLoop, 250);
@@ -616,7 +667,7 @@ async function mainLoop() {
 				return setTimeout(mainLoop, 250);
 			}
 		}
-		if (await checkPotionEmergency()) {
+		if (await noHang(checkPotionEmergency(), 'checkPotionEmergency')) {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (!home || !mobMap || !destination) {
@@ -636,7 +687,7 @@ async function mainLoop() {
 			}
 		}
 
-		if (await dragold.tick() === 'block') {
+		if (await noHang(dragold.tick(), 'dragold.tick') === 'block') {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (character.map === "jail" && !smart.moving) {
@@ -653,7 +704,7 @@ async function mainLoop() {
 			if (!get_nearest_monster({ type: home })) {
 				handleReturnHome();
 			} else if (CONFIG.movement.rangedKiting.enabled) {
-				await rangedKite();
+				await noHang(rangedKite(), 'rangedKite');
 			} else if (CONFIG.movement.circleWalk) {
 				walkInCircle();
 			}
@@ -673,8 +724,8 @@ const actionLoop = async () => {
 		updateCache();
 		const ms = ms_to_next_skill('attack') - 1.5;
 		if (ms < 3) {
-			if (cache.healTarget) { equipSet('heal'); await use_skill('attack', cache.healTarget); }
-			else await handleAttack();
+			if (cache.healTarget) { equipSet('heal'); await noHang(use_skill('attack', cache.healTarget), 'use_skill heal'); }
+			else await noHang(handleAttack(), 'handleAttack');
 			return setTimeout(actionLoop, ACTION_MIN_DELAY);
 		}
 		return setTimeout(actionLoop, ms > 8 ? ms - 6 : ACTION_MIN_DELAY);
@@ -682,15 +733,26 @@ const actionLoop = async () => {
 };
 
 const handleAttack = async () => {
-	const { sortedByHP, clumped } = cache.targets;
-	if (!sortedByHP.length) return;
+	// FIRE ONLY AT WHAT IS ACTUALLY IN RANGE.
+	// `sortedByHP` is every monster on screen, sorted by HP descending and NOT
+	// filtered by range. top5/top3 used to slice from it, and of the six branches
+	// below only the last one ever checked range - so the aoe branches routinely
+	// fired at the three or five HEALTHIEST mobs on screen, which are the ones
+	// still at full HP precisely because nobody can reach them. The `clumped`
+	// guard did not help: it proves SOME mob is close, then the shot goes to
+	// top3 anyway. Measured 2026-09-22: 33 consecutive 3shot casts at crabs
+	// 683-715 units away with a range of 158, and 0 xp from all 33.
+	// `inRange` is the same list in the same HP order, minus that mistake, so
+	// every branch below inherits the range check for free.
+	const { inRange, clumped } = cache.targets;
+	if (!inRange.length) return;
 
 	const min5 = CONFIG.combat.minTargetsFor5Shot;
 	const min3 = CONFIG.combat.minTargetsFor3Shot;
 	const can5 = character.level >= (G.skills['5shot']?.level || 0) && character.mp >= (G.skills['5shot']?.mp || 0);
 	const can3 = character.level >= (G.skills['3shot']?.level || 0) && character.mp >= (G.skills['3shot']?.mp || 0);
-	const top5 = can5 && sortedByHP.length >= min5 ? sortedByHP.slice(0, 5) : null;
-	const top3 = can3 && sortedByHP.length >= min3 ? sortedByHP.slice(0, 3) : null;
+	const top5 = can5 && inRange.length >= min5 ? inRange.slice(0, 5) : null;
+	const top3 = can3 && inRange.length >= min3 ? inRange.slice(0, 3) : null;
 
 	if (can5 && clumped.length >= min5) {
 		const slice = clumped.slice(0, 5);
@@ -713,8 +775,11 @@ const handleAttack = async () => {
 		equipSet('dead'); await use_skill('5shot', top5.map(e => e.id));
 	} else if (top3) {
 		equipSet('dead'); await use_skill('3shot', top3.map(e => e.id));
-	} else if (is_in_range(sortedByHP[0])) {
-		equipSet('single'); await use_skill('attack', sortedByHP[0]);
+	} else {
+		// inRange[0] is in range by construction. The old form tested
+		// sortedByHP[0], so when the healthiest mob on screen was out of reach
+		// this fell through and attacked nothing at all, even with mobs at melee.
+		equipSet('single'); await noHang(use_skill('attack', inRange[0]), 'use_skill single');
 	}
 };
 
@@ -740,11 +805,11 @@ const skillLoop = async () => {
 			change_target(target);
 
 			if (CONFIG.combat.useHuntersMark && msHunter === 0 && !target.s?.marked && target.hp >= target.max_hp * 0.01 && character.mp >= (G.skills.huntersmark?.mp || 0)) {
-				await use_skill('huntersmark', target);
+				await noHang(use_skill('huntersmark', target), 'use_skill huntersmark');
 			}
 
 			if (CONFIG.combat.useSupershot && msSuper === 0 && character.mp >= (G.skills.supershot?.mp || 0)) {
-				await use_skill('supershot', target);
+				await noHang(use_skill('supershot', target), 'use_skill supershot');
 			}
 		} else {
 			delay = minMs > 200 ? 100 : minMs > 50 ? 20 : 15;
