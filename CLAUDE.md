@@ -134,8 +134,8 @@ conversation may not.
 - **Trusting the recorded line cost a wrong diagnosis.** `actionLoop`'s
   `ms_to_next_skill('attack')` was named as the reason the party would not
   attack, on the strength of this file saying it was undefined. It was
-  innocent; the real cause was a hung await (next section). One `typeof` check
-  would have skipped the detour.
+  innocent; the real cause was background-tab throttling (see below). One
+  `typeof` check would have skipped the detour.
 
 ## Diagnose by instrumenting, not by reading
 
@@ -149,39 +149,61 @@ conversation may not.
   placeholder roster, and caching as the cause of the repeated-listing loop.
   Every correct diagnosis came from instrumentation.
 
-## Self-chained async loops die on a HANG, not on a throw
+## Chrome throttles background tabs - it looks exactly like dead code
+
+- **THIS IS THE FIRST THING TO CHECK when a character looks idle.** A hidden
+  tab's timers are clamped to roughly 1s, then to about 1/minute after a few
+  minutes hidden. Measured 2026-09-22: `setInterval(fn, 100)` fired every
+  ~800ms in a hidden tab, and a 400ms sampler degraded to one tick per 17s.
+- **Only ONE tab per window is `visible`.** Every other tab in that window is
+  hidden regardless of where the window sits or whether it has focus. Creating
+  a tab does not make it active, and a fresh tab starts hidden and throttled.
+- **The character scripts are setTimeout chains, so a background character runs
+  in slow motion.** Dexon landed 4 attacks/minute where 60-120 were due, while
+  /hub showed him online with `code_running: true`.
+- **This produced a WRONG diagnosis and a shipped fix that addressed nothing.**
+  Loop-iteration counts of "0 in 20s" were read as a hung promise; they were
+  throttling. Before concluding any loop is dead, check `document.hidden` AND
+  measure a plain `setInterval(fn, 100)` in that same tab. If it is not firing
+  ~10x/second, the tab is throttled and every rate measured there is
+  meaningless.
+- **Fix: start Chrome with throttling disabled.**
+  `--disable-background-timer-throttling --disable-backgrounding-occluded-windows
+  --disable-renderer-backgrounding`. There is a desktop shortcut on the user's
+  machine, `Adventure Land (no throttle).cmd`. Verified 2026-09-22: the same
+  hidden tab went from ~800ms gaps to a flat 100ms - 40 ticks in 4.0s.
+- **The flags apply ONLY to a brand-new Chrome process.** If Chrome is already
+  running, launching with flags hands the URL to the existing process and every
+  flag is silently ignored, with no error and nothing visibly wrong. Chrome must
+  be fully closed first, tray icon included. The shortcut refuses to launch when
+  it detects a running chrome.exe, for exactly this reason.
+- **Claude cannot fix this from inside the browser.** There is no tool to focus
+  a Chrome tab (create and close only), and computer use grants Chrome tier
+  `read`, so it cannot click one either. Only the user can change which tab is
+  active - or launch with the flags, which makes focus irrelevant.
+
+## Self-chained async loops: a real hazard, but NOT what was wrong
 
 - **Every loop in Ranger/Priest/Mage is `async` and schedules its own next tick
   only after its body resolves.** A THROW is handled everywhere already - each
-  loop reschedules from its catch, or after it. A HANG is not: if an awaited
-  call never settles, execution never reaches the reschedule and the chain
-  ends, permanently and silently.
-- **It looks exactly like a live, idle character - the fourth time a silently
-  swallowed failure in this repo has looked like "idle".** setInterval work
-  (buffs, loot, party keepalives, the farm-spot tick) keeps running, so /hub
-  shows the character online and busy. `browser_code_status` reports
-  `code_running: true` and is telling the truth: the script is loaded, the
-  loops are just gone.
-- **`use_skill()` and `smart_move()` both return promises the game can leave
-  unsettled.** Same root cause as the travel deadlock (`travelState.inFlight`
-  stuck true with `failures: 0`), which already had `travelWatchdog` for it.
-  The loops had no equivalent.
-- **Measure it by counting loop iterations.** Wrap a global the loop calls on
-  every pass and count: `is_disabled` for mainLoop (every 250ms),
-  `ms_to_next_skill` for actionLoop (every ~15ms). Zero calls in 20s is a dead
-  chain. Measured on Dexon: actionLoop 0 iterations in 20s where ~1300 were
-  due, and mainLoop dead in the same window.
-- **Fixed in Ranger v51 / Priest v26 / Mage v50 by `noHang(promise, label, ms)`**
-  - bounds an awaited call and rejects on timeout into the loop's own catch, so
-  the tick is lost and the chain is not. It wraps only awaits appearing
-  DIRECTLY in a loop body; a hang deeper in a helper propagates up to that
-  await and is bounded there. It logs on a throttle, because a silent guard
-  puts "hung" and "idle" back to being indistinguishable.
+  loop reschedules from its catch, or after it. A HANG is not: an awaited call
+  that never settles ends the chain, permanently and silently.
+- **The hazard is real** - `use_skill()` and `smart_move()` can both leave a
+  promise unsettled. The proven case is the travel deadlock
+  (`travelState.inFlight` stuck true with `failures: 0`), which already had
+  `travelWatchdog` for it.
+- **But it was NOT why the party stood idle.** That was background-tab
+  throttling (section above). `noHang()` shipped in Ranger v51 / Priest v26 /
+  Mage v50 on evidence that did not support it. It is harmless defensive code
+  and it stays, but do not cite it as the cure for an idle party, and do not
+  repeat the reasoning that produced it.
+- **`noHang(promise, label, ms)`** bounds an awaited call and rejects on timeout
+  into the loop's own catch, so the tick is lost and the chain is not. It wraps
+  only awaits appearing DIRECTLY in a loop body; a hang deeper in a helper
+  propagates up to that await and is bounded there. It logs on a throttle.
 - **A left-behind instrumentation wrapper is itself a confound.**
   `orig.apply(this, arguments)` from a bare call site passes a different `this`
-  than the game does. One post-fix measurement showed zero loop ticks that a
-  clean reload did not reproduce, and the extra wrapper on that character is
-  the likeliest reason. Reload the tab to strip wrappers before any measurement
+  than the game does. Reload the tab to strip wrappers before any measurement
   you intend to report.
 
 ## Reading a running script's state
