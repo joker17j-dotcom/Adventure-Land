@@ -1822,7 +1822,36 @@ async function attackWithRotation(target) {
 	   entity type ('monster'), while get_nearest_monster's `type` is the mtype
 	   ('goo'). Same key, different field - the game's design, and easy to get
 	   backwards. mtype is filtered separately below. */
-	const nearby = (get_entities ? get_entities({ type: 'monster', no_target: true }) : []) || [];
+	/* get_entities does not exist in this CODE context, and the old guard
+	   `(get_entities ? ... : [])` did not protect against that: referencing an
+	   UNDECLARED identifier throws a ReferenceError rather than evaluating to
+	   undefined. Only typeof is safe. So this line threw on every single call,
+	   attackWithRotation died before the rotation loop, the plain attack() below
+	   was never reached, and rangerTick's catch turned it into a console.error
+	   nobody was reading. Measured live on LorienSwifty: farmTick 37 calls,
+	   attackWithRotation 37 calls, 37 throws, in 30 seconds - standing on the
+	   goo spawn at (-32, 787) with a goo 9 units away, can_attack true and
+	   in_attack_range true, at 0 xp gained.
+
+	   This is what "the characters are not attacking" actually was. It was never
+	   the scan/goTo race fixed in a7d415f - that race was real and the
+	   `interrupted` log lines were real, but it was never the reason.
+
+	   The fallback walks parent.entities directly, which is all the helper does.
+	   no_target means "not currently attacking anyone", so !e.target is the
+	   equivalent filter. */
+	let nearby = [];
+	try {
+		if (typeof get_entities === 'function') {
+			nearby = get_entities({ type: 'monster', no_target: true }) || [];
+		} else {
+			const ents = (parent && parent.entities) || {};
+			for (const id in ents) {
+				const e = ents[id];
+				if (e && e.type === 'monster' && !e.dead && !e.target) nearby.push(e);
+			}
+		}
+	} catch (e) { nearby = []; }
 	/* The target goes in FIRST and unconditionally.
 
 	   The pool was built from no_target entities only, and the monster we are
@@ -1840,7 +1869,14 @@ async function attackWithRotation(target) {
 		if (pool && pool.length < step.minTargets) continue;
 		try {
 			await use_skill(step.skill, pool ? pool.map((e) => e.id) : target);
-			return;
+			/* A buff is a prelude to the swing, not a substitute for it.
+			   `buff: true` has been on supershot and huntersmark since the rotation
+			   was written and was read NOWHERE - so any ready buff ended the tick
+			   and the attack below was skipped. That was masked by the ReferenceError
+			   above (nothing ever got this far); fixing that alone would have
+			   exposed it, because huntersmark costs 240mp against this ranger's 260
+			   and so is "ready" on every full-mp tick. */
+			if (!step.buff) return;
 		} catch (e) {
 			// A refused skill is information, not a crash. The gate let it
 			// through, so something it cannot see said no - log once and fall
