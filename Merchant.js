@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v45
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v46
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1161,7 +1161,22 @@ const PROTECTED_ITEM_NAMES = new Set([
 	'cscroll0', 'cscroll1', 'cscroll2', 'cscroll3', 'cscroll4',
 	'offeringp', 'offering', 'offeringx',
 	'stand0',
+	// Event boxes. Opening one yields ~8,232 (marketparcel) or ~21,907
+	// (anniversarygift) in vendor gold against an unopened NPC value of 60 -
+	// vendoring them unopened throws away 137x and 365x respectively.
+	'anniversarygift', 'marketparcel',
 ]);
+
+/* Items the merchant may not BUY or SELL at all - not to an NPC, not to a
+   player, not through arbitrage.
+
+   PROTECTED_ITEM_NAMES is consulted in exactly two places, the aggressive
+   NPC dump and ssVendorBound. Arbitrage never looks at it, which is why
+   offeringp - protected since forever - was still bought and flipped for
+   5,980,935 net. So a second set is needed, and it is applied at flip
+   INGESTION rather than at the point of sale: a name filtered out of the
+   buys/sells feed cannot reach any caller, hand-run probes included. */
+const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
 
 function isTier2OrTier3GearItem(itemName) {
 	for (const cls of PARTY_CLASSES) {
@@ -4017,6 +4032,7 @@ async function arbProbeFindFlips(opts) {
 		for (const k in (r.slots || {})) {
 			const sl = r.slots[k];
 			if (!sl || !sl.name) continue;
+			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;   // never buy, never sell
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			const rec = {
 				key: sl.name + '|' + (sl.level || 0) + '|' + (sl.p || ''),
@@ -4030,6 +4046,7 @@ async function arbProbeFindFlips(opts) {
 	}
 	const pon = await arbProbePontyRows();
 	for (const r of pon.rows) {
+		if (NO_TRADE_ITEM_NAMES.has(r.name)) continue;   // never buy, never sell
 		if (!(typeof r.price === 'number' && isFinite(r.price))) continue;
 		buys.push(Object.assign({ key: r.name + '|' + r.level + '|' + (r.p || ''), map: 'main', x: null, y: null }, r));
 	}
