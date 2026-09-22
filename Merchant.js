@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v42
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v43
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -217,6 +217,12 @@ const CONFIG = {
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// -> MerchantComments.md#aldata
 		aldata: 'https://aldata.earthiverse.ca',
+		// The game's own merchant feed. A CONFIRMER, never a denier - a stand
+		// -> MerchantComments.md#gameFeed
+		gameFeed: 'https://adventure.land/api/pull_merchants',
+		// Nominal age stamped on every game-feed row, measured not chosen.
+		// -> MerchantComments.md#gameFeedAgeSec
+		gameFeedAgeSec: 128,
 		tickMs: 5000,
 		timeoutMs: 1500,
 		reprobeMs: 60000,
@@ -3258,6 +3264,57 @@ async function arbFetchJson(url, ms) {
 	} finally { if (stop) clearTimeout(stop); }
 }
 
+// The game's own merchant feed, mapped into aldata's row shape.
+// -> MerchantComments.md#arbFetchGameMerchants
+async function arbFetchGameMerchants(ms) {
+	if (typeof fetch !== 'function') throw new Error('no fetch');
+	// POST, empty body. It rejects the usual method=/arguments= fields.
+	// -> MerchantComments.md#emptyBody
+	const o = { method: 'POST', cache: 'no-store', credentials: 'same-origin', body: '' };
+	let stop = null;
+	if (typeof AbortController === 'function') {
+		const ac = new AbortController();
+		o.signal = ac.signal;
+		stop = setTimeout(function () { try { ac.abort(); } catch (e) { } }, ms);
+	}
+	let payload = null;
+	try {
+		const r = await fetch(CONFIG.scout.gameFeed, o);
+		if (!r.ok) throw new Error('HTTP ' + r.status);
+		payload = await r.json();
+	} finally { if (stop) clearTimeout(stop); }
+
+	const infs = (payload && Array.isArray(payload.infs)) ? payload.infs : [];
+	let chars = null;
+	for (const inf of infs) {
+		if (inf && inf.type === 'merchants' && Array.isArray(inf.chars)) { chars = inf.chars; break; }
+	}
+	if (!chars) throw new Error('no merchants block');
+
+	// One stamp per fetch, so every row of this batch sorts identically.
+	// -> MerchantComments.md#oneStampPerFetch
+	const stamp = Date.now() - (CONFIG.scout.gameFeedAgeSec * 1000);
+	const rows = [];
+	let unparsed = 0;
+	for (const c of chars) {
+		if (!c || !c.name || !c.server) continue;
+		const m = /^SR_(US|EU|ASIA)(.+)$/.exec(String(c.server));
+		if (!m) { unparsed++; continue; }
+		rows.push({
+			id: c.name,
+			lastSeen: stamp,
+			map: c.map,
+			x: c.x,
+			y: c.y,
+			serverRegion: m[1],
+			serverIdentifier: m[2],
+			slots: c.slots || {}
+		});
+	}
+	if (unparsed) pLog(unparsed + ' game-feed row(s) had an unrecognised server tag', 'orange');
+	return rows;
+}
+
 /* 'aldata' | 'bridge' | 'auto'. Stored, so it survives the reload a shard hop
    causes. */
 function arbProbeSource(which) {
@@ -3270,9 +3327,9 @@ function arbProbeSource(which) {
 
 // One row per merchant per shard, taking whichever source saw it more
 // -> MerchantComments.md#arbMergeMarketRows
-function arbMergeMarketRows(aldataRows, bridgeRows) {
+function arbMergeMarketRows(aldataRows, bridgeRows, gameRows) {
 	const by = new Map();
-	let fromBridge = 0, fromAldata = 0, bridgeWins = 0;
+	let fromBridge = 0, fromAldata = 0, fromGame = 0, bridgeWins = 0, gameWins = 0;
 
 	const take = function (row, src) {
 		if (!row || !row.id) return;
@@ -3285,17 +3342,25 @@ function arbMergeMarketRows(aldataRows, bridgeRows) {
 				|| (age != null && cur.age != null && age < cur.age);
 			if (!better) return;
 			if (cur.src === 'bridge') bridgeWins--;
+			if (cur.src === 'game') gameWins--;
 		}
 		by.set(key, { row: row, age: age, src: src });
 		if (src === 'bridge') bridgeWins++;
+		if (src === 'game') gameWins++;
 	};
 
+	// Order is cosmetic - age decides, and a tie keeps whoever landed first.
+	// -> MerchantComments.md#mergeOrder
 	for (const r of (aldataRows || [])) { fromAldata++; take(r, 'aldata'); }
+	for (const r of (gameRows || [])) { fromGame++; take(r, 'game'); }
 	for (const r of (bridgeRows || [])) { fromBridge++; take(r, 'bridge'); }
 
 	const rows = [];
 	for (const e of by.values()) rows.push(e.row);
-	return { rows: rows, fromAldata: fromAldata, fromBridge: fromBridge, bridgeWins: bridgeWins };
+	return {
+		rows: rows, fromAldata: fromAldata, fromBridge: fromBridge, fromGame: fromGame,
+		bridgeWins: bridgeWins, gameWins: gameWins
+	};
 }
 
 async function arbProbeMarketRows() {
@@ -3306,7 +3371,9 @@ async function arbProbeMarketRows() {
 		try {
 			const rows = (src === 'aldata')
 				? await arbFetchJson(CONFIG.scout.aldata + '/merchants', 8000)
-				: await scoutFetch('/merchants');
+				: (src === 'game')
+					? await arbFetchGameMerchants(8000)
+					: await scoutFetch('/merchants');
 			if (Array.isArray(rows) && rows.length) return rows;
 			errors[src] = Array.isArray(rows) ? 'empty' : 'not an array';
 		} catch (e) {
@@ -3318,7 +3385,7 @@ async function arbProbeMarketRows() {
 	// Pinning a source stays available and stays winner-takes-all - it exists to
 	// answer "is the bridge feeding anything at all", and a merge would hide
 	// exactly the answer it is asked for.
-	if (want === 'bridge' || want === 'aldata') {
+	if (want === 'bridge' || want === 'aldata' || want === 'game') {
 		const rows = await fetchOne(want);
 		if (rows) return { rows: rows, source: want };
 		pLog('no market rows from pinned source ' + want + ' (' + errors[want]
@@ -3326,21 +3393,32 @@ async function arbProbeMarketRows() {
 		return { rows: null, source: 'in-view', errors: errors };
 	}
 
-	const both = await Promise.all([fetchOne('aldata'), fetchOne('bridge')]);
-	const aldataRows = both[0], bridgeRows = both[1];
+	const all = await Promise.all([fetchOne('aldata'), fetchOne('bridge'), fetchOne('game')]);
+	const aldataRows = all[0], bridgeRows = all[1], gameRows = all[2];
 
-	if (!aldataRows && !bridgeRows) {
-		pLog('no market rows from aldata or bridge (aldata: ' + errors.aldata
-			+ '; bridge: ' + errors.bridge + ') - falling back to what is in view', 'orange');
+	const live = [];
+	if (aldataRows) live.push('aldata');
+	if (bridgeRows) live.push('bridge');
+	if (gameRows) live.push('game');
+
+	if (!live.length) {
+		pLog('no market rows from aldata, bridge or game (aldata: ' + errors.aldata
+			+ '; bridge: ' + errors.bridge + '; game: ' + errors.game
+			+ ') - falling back to what is in view', 'orange');
 		return { rows: null, source: 'in-view', errors: errors };
 	}
-	if (!bridgeRows) return { rows: aldataRows, source: 'aldata', errors: errors };
-	if (!aldataRows) return { rows: bridgeRows, source: 'bridge', errors: errors };
+	// One source standing means no merge to report, and the label stays the
+	// -> MerchantComments.md#singleSourceLabel
+	if (live.length === 1) {
+		const only = (aldataRows || bridgeRows || gameRows);
+		return { rows: only, source: live[0], errors: errors };
+	}
 
-	const m = arbMergeMarketRows(aldataRows, bridgeRows);
+	const m = arbMergeMarketRows(aldataRows, bridgeRows, gameRows);
 	pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
-		+ m.fromBridge + ' bridge; ours was fresher on ' + m.bridgeWins + ')');
-	return { rows: m.rows, source: 'merged', merge: m };
+		+ m.fromBridge + ' bridge, ' + m.fromGame + ' game; bridge fresher on '
+		+ m.bridgeWins + ', game fresher on ' + m.gameWins + ')');
+	return { rows: m.rows, source: 'merged', merge: m, errors: errors };
 }
 
 /* Accepts an ISO string or an epoch number - aldata and the bridge need not
@@ -4404,7 +4482,7 @@ function arbProbeHelp() {
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
 		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
-		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | auto',
+		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | game | auto',
 		'arbProbeBridge()           which feed answers, and how much is in it',
 		'arbProbeFindBuy(10000)     BUY candidates from every shard the scouts saw',
 		'arbProbeFindFlips()        THE MONEY QUERY: profitable buy->sell pairs now',
