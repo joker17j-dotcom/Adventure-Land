@@ -63,6 +63,51 @@ the merchant still stops OUR scouting, and then our own bridge is the
 worst market view available rather than the best. Serves the same row
 shape as /merchants, so it is a peer source, not a special case.
 
+## gameFeed
+
+The game's own merchant feed - the call behind the Communicator's "All
+Merchants" panel. POST, empty body, every shard in one ~300ms response.
+
+Use it as a CONFIRMER and never as a denier. Absence from it does NOT mean a
+stand closed. Measured on US IV on 2026-09-21 against in-game vision, sampled
+every 15s for 226s: Tricksy and Gn. Spence stood with open stands for the whole
+window and never appeared in it once, and its US IV count fell from 10 to 7
+while the stands actually visible held at 11-13. So it sheds merchants who
+never moved. It is not the appearance lag and it is not map, position or afk
+state - all ten were on main, PhatTrader at -150,-70 sits inside the coordinate
+cluster of merchants that ARE listed, and AceShop and CrownMerch are afk=true
+and still excluded. Sampling or rotation fits what was seen. The mechanism is
+unknown and was not established.
+
+What it IS good for: every merchant it does list matched ground truth exactly -
+position to six decimals, afk state, slot contents and prices. So a row from it
+is trustworthy about what a stand currently holds. That is the case ALData
+cannot cover: merchant still standing, but the item sold or the price moved.
+
+If you are tempted to add an absence-veto here, re-run that comparison first.
+It would have pruned two live stands on the one shard it was tested on.
+
+## gameFeedAgeSec
+
+Nominal age stamped on every game-feed row, measured not chosen.
+
+The feed carries no timestamp, so the merge needs one. 128 is its measured
+appearance latency: a listing placed at t0 on 2026-09-21 was confirmed
+server-side instantly, still absent from the feed at t+114s, and present at
+t+128s, with the flip between polls at t+126s and t+128s. Disappearance was
+faster - a closed stand was still listed at t1+48s and gone by t1+75s, flip
+between t1+73s and t1+75s.
+
+Stamping the slower of the two is deliberate. It makes game rows lose to
+anything genuinely fresher - the bridge always, ALData while it is under ~2
+minutes old - and win only against ALData rows that have aged past it, which is
+exactly the band where ALData starts advertising stands that have gone. Stamp
+it lower and the feed would start overriding rows that are actually better.
+
+Both numbers are n=1, one event on one shard. The 128/75 asymmetry may be
+cache-cycle phase rather than two different latencies; that was not separated.
+Re-measure before trusting either to more precision than "about two minutes".
+
 ## standRegion
 
 Where the stands are, as a box in world coordinates.
@@ -1445,3 +1490,61 @@ Not every line in #gamelog comes through addLogEntry. The socket hook
 
 	   Watching for added nodes covers both paths, so the filter bar now
 	   governs the whole log rather than only the half this code writes.
+
+## arbFetchGameMerchants
+
+The game's own merchant feed, mapped into aldata's row shape.
+
+The mapping exists so the feed is a peer source rather than a special case.
+arbMergeMarketRows keys on serverRegion + serverIdentifier + '|' + id, so the
+mapped rows must produce byte-identical keys to ALData's or the same merchant
+would appear twice and never merge. ALData splits the shard into region 'US'
+and identifier 'IV'; the feed packs it as 'SR_USIV'. Hence the regex, which
+lists the regions explicitly rather than splitting on a guess - an unrecognised
+tag is counted and dropped, not coerced, because a wrong key is worse than a
+missing row.
+
+Slot objects pass straight through. The two feeds were compared field by field
+on 2026-09-21 and carry the same slot schema - name, level, p, price, q, b,
+stat_type, acc, ach, gift, data, l, ps, ld - so item level, shiny prefix and
+quantity all survive the mapping. ALData additionally had 'm' (6 occurrences)
+and 'giveaway' (1) across 2289 slots; nothing reads them.
+
+## emptyBody
+
+POST, empty body. It rejects the usual method=/arguments= fields.
+
+Not a guess - both were tried. 'method=pull_merchants&arguments={}' returns
+{"failed":true,"reason":"invalid_field","field":"method"} and dropping to
+'arguments={}' returns the same for 'arguments'. An empty body succeeds. The
+call name lives in the path only.
+
+## oneStampPerFetch
+
+One stamp per fetch, so every row of this batch sorts identically.
+
+Computed once rather than per row so a slow map cannot give the last row a
+different age from the first. The rows all came out of one response and all
+have the same provenance; letting them drift apart would make the merge's
+ordering depend on iteration speed.
+
+## mergeOrder
+
+Order is cosmetic - age decides, and a tie keeps whoever landed first.
+
+Worth stating because the order reads like a priority list and is not one. take
+only replaces an entry when the new age is strictly smaller, so on an exact tie
+the first source in wins. With a constant nominal age on game rows an exact tie
+against ALData is possible but unlikely, and either way both rows describe the
+same merchant. Do not reorder these three expecting it to change which source
+wins - change the ages.
+
+## singleSourceLabel
+
+One source standing means no merge to report, and the label stays the source's
+own name.
+
+got.source feeds the SOURCE lines in the probe output and the reachable check
+(source !== 'in-view'), so collapsing everything to 'merged' would make a
+single-source run look like a three-way agreement. With one source there is
+also nothing to merge, so the merge log line would be noise.
