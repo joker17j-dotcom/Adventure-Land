@@ -1310,8 +1310,29 @@ function classAllows(def) {
 	return want.indexOf(character.ctype) !== -1;
 }
 
+/* Is this skill on cooldown right now?
+
+   ms_to_next_skill DOES NOT EXIST in this CODE context - measured, typeof is
+   'undefined'. The old body called it bare inside a try, so every call threw a
+   ReferenceError and the catch returned true. That made this, and therefore
+   every cooldown gate in this file, a no-op that always answered "ready".
+   Same shape as the get_entities bug: a helper that is not there, wrapped in a
+   guard that turns its absence into a confident wrong answer.
+
+   is_on_cooldown IS present and works - verified live. The fallbacks stay in
+   order of preference and the default stays "ready", because a farming script
+   that wrongly waits does nothing at all, while one that wrongly fires gets a
+   refusal it already handles. */
+function isOnCooldown(name) {
+	try {
+		if (typeof is_on_cooldown === 'function') return !!is_on_cooldown(name);
+		if (typeof ms_to_next_skill === 'function') return ms_to_next_skill(name) > 0;
+	} catch (e) { }
+	return false;
+}
+
 function skillOffCooldown(name) {
-	try { return ms_to_next_skill(name) <= 0; } catch (e) { return true; }
+	return !isOnCooldown(name);
 }
 
 /* The single gate. Everything that wants a skill asks this and nothing else,
@@ -1610,11 +1631,28 @@ function potionCount(name) {
 function useRangerPotions() {
 	const cfg = CONFIG.ranger.potions;
 	try {
-		if (character.hp / character.max_hp <= cfg.hpAt && potionCount(cfg.hp) > 0) {
+		/* NO STOCK CHECK, deliberately.
+
+		   use_hp and use_mp fall back to the regen abilities when the bag is
+		   empty. The game says so itself - G.skills.use_mp.explanation reads
+		   "Shares a cooldown with HP potions and HP/MP regeneration ... Without a
+		   potion, restore 100 MP and wait 4 seconds instead" - and all four of
+		   use_hp, use_mp, regen_hp and regen_mp carry cooldown_group "potion",
+		   verified live rather than read off the server source.
+
+		   So calling with nothing to drink is not a wasted call, it IS the free
+		   regeneration. The old `potionCount(...) > 0` guard meant a character
+		   with no potions never called at all and got NO sustain whatsoever,
+		   which is exactly the state a new level-1 ranger with no gold is in -
+		   "could not afford any potions - farming without them". The guard was
+		   backwards: the empty bag is when the call is most worth making.
+
+		   Only one of the four can fire per cycle, so HP goes first. */
+		if (character.hp / character.max_hp <= cfg.hpAt && !isOnCooldown('use_hp')) {
 			use_skill('use_hp');
 			return;
 		}
-		if (character.mp / character.max_mp <= cfg.mpAt && potionCount(cfg.mp) > 0) {
+		if (character.mp / character.max_mp <= cfg.mpAt && !isOnCooldown('use_mp')) {
 			use_skill('use_mp');
 		}
 	} catch (e) { }
