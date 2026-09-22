@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v44
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v45
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -407,7 +407,22 @@ const CONFIG = {
 		// Uses scroll0 (currently well-stocked, unrelated to delivery potions)
 		// rather than competing with the hp/mp reserve. Adjust price to actual
 		// market rate - this is a placeholder.
-		listing: { itemName: 'scroll0', tradeSlot: 0, price: 500, keepReserve: 100, maxListQuantity: 50 },
+		// tradeSlot is 1-INDEXED. It was 0, which is an equipment slot: every
+		// ensureListing() call returned "cant_equip" and was swallowed by its
+		// own catch, so this listing has never actually been placed.
+		listing: { itemName: 'scroll0', tradeSlot: 16, price: 500, keepReserve: 100, maxListQuantity: 50 },
+	},
+
+	// Vendor-bound goods shown on the stand instead of sold to an NPC.
+	// -> see the STAND SALES block for the measured facts behind these.
+	standSales: {
+		enabled: true,
+		slots: [1, 2, 3, 4, 5],      // trade slots this feature owns (1-indexed)
+		revalueEveryMs: 5 * 60 * 1000,
+		undercutBy: 1,               // be the cheapest listing, by exactly this
+		marketTimeoutMs: 6000,
+		minFreeSlotsToUnlist: 2,     // unlisting CONSUMES an inventory slot
+		maxOpsPerPass: 3,
 	},
 
 	// GEAR PROGRESSION - see the "GEAR PROGRESSION SYSTEM" section below for
@@ -1042,6 +1057,7 @@ async function openStandAtBestSpot() {
 			state.standOpen = true;
 			game_log(`Stand opened at (${spot.x}, ${spot.y})`, '#00FF00');
 			await ensureListing();
+			await ssTick('stand-open');
 			return;
 		} catch (e) {
 			game_log(`Stand placement at (${spot.x}, ${spot.y}) failed: ${e.reason || e} - trying next spot`, 'red');
@@ -3148,6 +3164,214 @@ async function arbLookForWork() {
 		+ ') for ~' + t.expectProfit + ' net', '#FFD700');
 }
 
+// ============================================================================
+// STAND SALES - vendor-bound goods listed on the stand instead of sold to NPC
+// ============================================================================
+// Some of what sellTrash() and the aggressive seller hand to an NPC is worth
+// more sold to a player. This owns the first N trade slots, keeps the best
+// candidates in them, and rotates as better ones appear.
+//
+// MEASURED 2026-09-22 - none of this was guessable from the code:
+//   - trade(invSlot, tradeSlot, price, qty) takes a 1-INDEXED trade slot.
+//     Slot 0 is an equipment slot and answers "cant_equip". CONFIG.stand
+//     .listing.tradeSlot was 0, so ensureListing() has never once worked.
+//   - Listing MOVES goods out of character.items into character.slots.tradeN.
+//     They are therefore invisible to both NPC sell paths already, so no
+//     "protect these" flag is needed - the exclusion is automatic.
+//   - There is no unlist API. The verified removal is
+//     parent.socket.emit('unequip', { slot: 'tradeN' }); the goods return to
+//     inventory and restack. trade(..., 0) answers "slot_occuppied".
+//   - Listing FREES an inventory slot; unlisting CONSUMES one. So this
+//     relieves inventory pressure. The guard belongs on unlisting when nearly
+//     full, not on listing.
+//   - change_server RELOADS THE PAGE, so nothing may live in memory between
+//     evaluations - the cadence runs off a timestamp in CODE storage.
+const SS_KEY = 'stand_sales';
+
+function ssLoad() { try { return get(SS_KEY) || {}; } catch (e) { return {}; } }
+function ssSave(s) { try { set(SS_KEY, s); } catch (e) { } }
+function ssLog(msg, color) { game_log('[stand] ' + msg, color || '#8b98ab'); }
+
+/* "Would this be vendored right now?" - deliberately mirrors the predicate the
+   two sell paths actually use, quirks included, because the premise of the
+   feature is "instead of vendoring THIS". Note item.p is the special/prefix
+   field, not a listing marker; the sell paths treat p !== undefined as a skip
+   and this matches them rather than quietly widening the pool. */
+function ssVendorBound(item) {
+	if (!item || !item.name) return false;
+	if (item.l === 'l') return false;
+	if (item.p !== undefined) return false;
+	if (PROTECTED_ITEM_NAMES.has(item.name)) return false;
+	if (isTier2OrTier3GearItem(item.name)) return false;
+	return true;
+}
+
+function ssNpcValue(item) {
+	try {
+		const v = parent.calculate_item_value(item);
+		return (typeof v === 'number' && isFinite(v) && v > 0) ? v : null;
+	} catch (e) { return null; }
+}
+
+/* The price at which a player sale nets exactly what the NPC would pay. Listing
+   below this loses gold, which is the one thing the feature must never do. */
+function ssFloor(npcValue) {
+	const t = arbTaxRate();
+	if (t == null || npcValue == null) return null;
+	return Math.ceil(npcValue / (1 - t));
+}
+
+/* Bridge first, game feed when it is down or has nothing. The bridge shape is
+   validated rather than trusted: it reported zero listings on every shard while
+   the game feed returned 659, and a silently empty source would park the whole
+   feature. */
+async function ssMarketRows() {
+	try {
+		const r = await scoutFetch('/merchants');
+		const rows = Array.isArray(r) ? r : (r && (r.rows || r.merchants));
+		if (Array.isArray(rows) && rows.some(function (x) {
+			const sl = (x && x.slots) || {};
+			for (const k in sl) if (sl[k] && sl[k].price != null) return true;
+			return false;
+		})) return rows;
+	} catch (e) { }
+	try { return await arbFetchGameMerchants(CONFIG.standSales.marketTimeoutMs); }
+	catch (e) { ssLog('no market data (bridge and game feed both failed)', 'orange'); return null; }
+}
+
+/* Cheapest live SALE listing of this exact item, ignoring our own stand and
+   ignoring buy orders - a buy order at a low price is not a competing seller. */
+function ssCheapest(rows, name, level) {
+	let best = null;
+	const me = character.name;
+	for (const row of (rows || [])) {
+		if (!row) continue;
+		if (row.id === me || row.name === me) continue;
+		const slots = row.slots || {};
+		for (const k in slots) {
+			const s = slots[k];
+			if (!s || s.b || s.price == null || !s.name) continue;
+			if (s.name !== name) continue;
+			if ((s.level || 0) !== (level || 0)) continue;
+			if (best == null || s.price < best) best = s.price;
+		}
+	}
+	return best;
+}
+
+/* One priced candidate, or null with the reason it did not qualify. */
+function ssPrice(rows, name, level, npcValue) {
+	const cheapest = ssCheapest(rows, name, level);
+	if (cheapest == null) return { ok: false, why: 'no competing listing' };
+	const price = cheapest - CONFIG.standSales.undercutBy;
+	const floor = ssFloor(npcValue);
+	if (floor == null) return { ok: false, why: 'tax rate unknown' };
+	if (price < floor) return { ok: false, why: 'undercut ' + price + ' below NPC floor ' + floor };
+	const t = arbTaxRate();
+	return { ok: true, price: price, cheapest: cheapest, gain: price * (1 - t) - npcValue };
+}
+
+function ssCandidates(rows) {
+	const out = [];
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (!ssVendorBound(it)) continue;
+		const npc = ssNpcValue(it);
+		if (npc == null) continue;
+		const p = ssPrice(rows, it.name, it.level || 0, npc);
+		if (!p.ok) continue;
+		out.push({ idx: i, name: it.name, level: it.level || 0, q: it.q || 1,
+			price: p.price, npc: npc, gain: p.gain });
+	}
+	out.sort(function (a, b) { return b.gain - a.gain; });
+	return out;
+}
+
+async function ssUnlist(slotNum) {
+	try {
+		parent.socket.emit('unequip', { slot: 'trade' + slotNum });
+		await sleep(600);
+		return !character.slots['trade' + slotNum];
+	} catch (e) { ssLog('unlist trade' + slotNum + ' failed: ' + e, 'orange'); return false; }
+}
+
+/* One evaluation pass. `reason` is only for the log - the cadence gate is the
+   caller's job, so a stand-open can force a pass the timer would have skipped. */
+async function ssEvaluate(reason) {
+	const cfg = CONFIG.standSales;
+	const rows = await ssMarketRows();
+	if (!rows) return;
+
+	const st = ssLoad();
+	const notes = st.notes || {};
+	let ops = 0;
+
+	// Pass 1 - re-price or evict what we are already showing. Unlisting returns
+	// goods to inventory, so a re-price is an unlist here and a re-list below.
+	for (const n of cfg.slots) {
+		if (ops >= cfg.maxOpsPerPass) break;
+		const s = character.slots['trade' + n];
+		if (!s) continue;
+		const npc = (notes['trade' + n] && notes['trade' + n].npc) != null
+			? notes['trade' + n].npc
+			: ssNpcValue({ name: s.name, level: s.level || 0 });
+		if (npc == null) continue;
+		const p = ssPrice(rows, s.name, s.level || 0, npc);
+		const stale = !p.ok || p.price !== s.price;
+		if (!stale) continue;
+		if (character.esize <= cfg.minFreeSlotsToUnlist) {
+			ssLog('want to re-price ' + s.name + ' but only ' + character.esize + ' free slots - leaving it', 'orange');
+			continue;
+		}
+		if (await ssUnlist(n)) {
+			ops++;
+			delete notes['trade' + n];
+			ssLog((p.ok ? 're-pricing ' : 'pulling ') + s.name + ' from trade' + n
+				+ (p.ok ? ' (' + s.price + ' -> ' + p.price + ')' : ' (' + p.why + ')'));
+		}
+	}
+
+	// Pass 2 - fill our empty slots with the best remaining candidates.
+	const cands = ssCandidates(rows);
+	let ci = 0;
+	for (const n of cfg.slots) {
+		if (ops >= cfg.maxOpsPerPass) break;
+		if (character.slots['trade' + n]) continue;
+		const c = cands[ci++];
+		if (!c) break;
+		const it = character.items[c.idx];
+		if (!it || it.name !== c.name) continue;   // inventory moved under us
+		try {
+			await trade(c.idx, n, c.price, c.q);
+			ops++;
+			notes['trade' + n] = { npc: c.npc, at: Date.now() };
+			ssLog('listed ' + c.name + (c.level ? ' +' + c.level : '') + ' x' + c.q
+				+ ' @' + c.price + ' (NPC ' + Math.round(c.npc)
+				+ ', +' + Math.round(c.gain) + ' net) in trade' + n, '#00FF00');
+		} catch (e) {
+			ssLog('list ' + c.name + ' failed: ' + ((e && (e.reason || e.message)) || e), 'orange');
+		}
+	}
+
+	st.notes = notes;
+	st.lastEvalAt = Date.now();
+	st.lastReason = reason;
+	ssSave(st);
+}
+
+/* Cadence gate. Home shard only, stand open only, and driven off a persisted
+   timestamp because a shard hop reloads the page and would reset any timer. */
+async function ssTick(reason) {
+	const cfg = CONFIG.standSales;
+	if (!cfg || !cfg.enabled) return;
+	if (!character.stand) return;
+	if (mShardKey() !== mHomeShard()) return;
+	const st = ssLoad();
+	const due = (Date.now() - (st.lastEvalAt || 0)) >= cfg.revalueEveryMs;
+	if (!due && reason !== 'stand-open') return;
+	await ssEvaluate(reason);
+}
+
 async function arbLoop() {
 	try {
 		await arbFlushLedger();
@@ -3166,6 +3390,7 @@ async function arbLoop() {
 		// Put the stand back once the trade is done.
 		// -> MerchantComments.md#put-the-stand-back-once
 		if (!ARB.cur && !ARB.busy && !state.busy && !state.standOpen) await openStandAtBestSpot();
+		if (!ARB.cur && !ARB.busy && !state.busy) await ssTick('tick');
 	} catch (e) {
 		console.error('arbLoop error:', e);
 		ARB.busy = false;
