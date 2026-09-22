@@ -192,5 +192,24 @@ conversation may not.
   the running session untouched - tested, with the original still
   `online: true, code_running: true` throughout.
 - To move a character into a tab Claude controls it must be disconnected
-  first: /hub, TOGGLE, select the character, COMMAND (hidden until one is
-  selected; `onclick="show_commander()"`, textarea `#dcode`), `disconnect();`.
+  first - send `disconnect();` with the commander below. The TOGGLE / `#dcode`
+  recipe this bullet used to give was wrong; see the next section.
+
+## Commanding a running character from /hub
+
+- **Skip the UI - the dispatch is one line.** Click the character's card, then
+  `socket.emit("o:command", "<raw JS string>")`. Verified round trip ~1.0-1.2s.
+- **The COMMAND button and `#dcode` are both dead ends.** `.click()` on the
+  COMMAND gamebutton does not fire its inline `onclick`. `show_commander()`
+  opens a CodeMirror modal, and `#dcode` is only the hidden template textarea
+  it `.replaceWith()`s - writing `#dcode.value` reaches nothing, because
+  `command_snippet()` reads `codemirror_render3.getValue()`.
+- **TOGGLE is not needed.** All character cards are already visible on load:
+  `div.gamebutton`, 204x80, innerText starting with the character name.
+- **The target is the last card clicked, not anything in the payload.**
+  `o:command` carries only the code string; the server resolves the recipient
+  from the observe session. Check `window.observing.name` immediately before
+  every emit - a stale selection sends to the wrong character with no error.
+- **Code runs in the character's CODE context** (`character.*` resolves, so
+  `disconnect()` is reachable) and the emit returns nothing. Round-trip results
+  through `parent.localStorage` and remove the key afterwards.
