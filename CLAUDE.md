@@ -115,3 +115,82 @@ conversation may not.
   reassigned on reconnect - "Browser 1" and "Browser 2" swapped within one day.
   `544a5d47-8c01-4b89-86ca-0fa269019ebd` is the user's ("Mychrome");
   `50c019a9-c170-4bb8-a6b8-045119627487` is the family's ("famchrome").
+
+## Helpers that may not exist - use typeof, never truthiness
+
+- **Referencing an undeclared identifier THROWS.** It does not evaluate to
+  `undefined`. `typeof x === 'function'` is the only safe test, and a ternary
+  written as a guard is itself what explodes.
+- **Form A - the throw escapes and kills the caller.**
+  `const nearby = (get_entities ? get_entities({...}) : []) || [];` was the
+  first line of `attackWithRotation`. The rotation loop and the plain
+  `attack()` below it never ran; `rangerTick`'s catch turned it into a
+  console.error nobody read. Three rangers stood next to monsters for hours.
+  Measured: 37 calls, 37 throws, 30 seconds.
+- **Form B - a catch swallows it and returns a plausible lie.**
+  `try { return ms_to_next_skill(name) <= 0; } catch (e) { return true; }`
+  made every cooldown gate in FamilyFleet a no-op that always answered
+  "ready". Worse than Form A: nothing looks broken.
+- **A catch that returns a default must log,** or "the helper is missing" and
+  "the default is correct" stay indistinguishable forever.
+- **Which helpers exist is not guessable.** Measured in the live CODE context:
+  UNDEFINED - `get_entities`, `ms_to_next_skill`.
+  FUNCTION - `is_on_cooldown`, `get_chests`, `loot`, `get_nearest_monster`.
+
+## Diagnose by instrumenting, not by reading
+
+- **Wrap the live function and count.** Wrapping `farmTick` /
+  `attackWithRotation` gave 37 calls and 37 throws in 30 seconds and found the
+  bug immediately. Wrapping `smart_move` gave ZERO calls in two minutes, which
+  is what disproved "he is firing movement commands too often" - he was never
+  setting off.
+- **Reading produces confident wrong theories.** Killed by measurement this
+  way: requestAnimationFrame suspension, a 240 KiB CODE size cap, the
+  placeholder roster, and caching as the cause of the repeated-listing loop.
+  Every correct diagnosis came from instrumentation.
+
+## Reading a running script's state
+
+- **Script functions live in the `maincode` iframe, not the top window.**
+  At top level `window === parent`, so checking there returns `undefined` for
+  everything and looks exactly like a silent load failure. v43 was wrongly
+  called dead on that basis.
+- **`const state`, `CONFIG`, `fleetState` are block-scoped and not on
+  `window`.** Reach them with `frame.contentWindow.eval('...')`.
+
+## javascript_tool mechanics
+
+- **Async work returns `{}`.** Stash the result on `window.__X` inside the
+  snippet and read it back with a follow-up synchronous call.
+
+## Editing files in the GitHub web editor
+
+- **Set content with `view.dispatch`, not selectAll+paste.** The paste route
+  silently APPENDED once - 27,816 chars where 16,181 was expected. Use
+  `document.querySelector('.cm-content').cmTile.view.dispatch({changes:{from:0,
+  to:doc.length,insert:...}})`, then hash the doc and compare before
+  committing.
+- **For large files transfer an edit script, not the file.** Fetch the base in
+  the browser, verify its hash against the expected old hash, apply
+  `[start, end, text]` offsets back-to-front, verify the new hash, then
+  dispatch. This is what made ~190 KB pushes possible without moving the file
+  through the conversation.
+- **Do not gzip the payload.** A gzip+base64 transfer arrived corrupted
+  ("invalid literal/lengths set"), and `DecompressionStream` via Blob/Response
+  is CSP-blocked on GitHub. Plain base64 of the JSON works.
+
+## Testing
+
+- **There is no test harness in this repo.** Both missing-helper bugs above
+  were invisible to reading and obvious the instant anything executed. Any
+  harness that merely runs the file would have caught them.
+
+## Claiming a character in a manageable tab
+
+- **Adventure Land refuses a second-tab takeover.** Navigating a new tab to
+  `/character/<Name>/in/<REGION>/<ID>/` loads the character picker and leaves
+  the running session untouched - tested, with the original still
+  `online: true, code_running: true` throughout.
+- To move a character into a tab Claude controls it must be disconnected
+  first: /hub, TOGGLE, select the character, COMMAND (hidden until one is
+  selected; `onclick="show_commander()"`, textarea `#dcode`), `disconnect();`.
