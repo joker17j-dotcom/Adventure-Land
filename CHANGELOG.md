@@ -12,6 +12,48 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v45
+
+stand sales: the best vendor-bound goods are listed on the stand instead of
+being sold to an NPC.
+
+Five trade slots (1-5) are owned by the feature. Every five minutes, and on
+each stand open, it ranks everything that the NPC sell paths would otherwise
+vendor by what it would actually net sold to a player, and keeps the best five
+listed. Price is the cheapest live competing listing minus 1g, floored at
+ceil(npcValue / (1 - tax)) so a listing can never net less than the vendor
+would have paid; below that floor the item is simply left for the NPC.
+
+FOUR THINGS MEASURED FIRST, none of them guessable from the code:
+
+trade(invSlot, tradeSlot, price, qty) takes a 1-INDEXED trade slot. Slot 0 is
+an equipment slot and answers "cant_equip". CONFIG.stand.listing.tradeSlot was
+0, so ensureListing() has never once succeeded - every call threw and was
+swallowed by its own catch under the message "Likely already listed from a
+previous run - not critical". That listing is now on slot 16, clear of the
+five this feature owns.
+
+Listing MOVES goods out of character.items and into character.slots.tradeN.
+They are therefore already invisible to both NPC sell paths, so the "reserve
+five slots from the aggressive seller" this feature was asked for needs no
+code at all - the exclusion is automatic.
+
+There is no unlist API. The verified removal is
+parent.socket.emit('unequip', { slot: 'tradeN' }), after which the goods
+return to inventory and restack. trade(..., 0) answers "slot_occuppied".
+
+Because listing frees an inventory slot and unlisting consumes one, this
+RELIEVES inventory pressure rather than adding to it. The guard is therefore
+on unlisting while nearly full, not on listing.
+
+Market data comes from the bridge when it has any and the game feed otherwise,
+and the bridge's answer is validated rather than trusted: it was reporting
+zero listings on every shard while pull_merchants returned 659, and an
+unvalidated read would have parked the feature silently.
+
+The cadence runs off a timestamp in CODE storage, not a setInterval, because
+change_server reloads the page and would reset any in-memory timer.
+
 ## v44
 
 the merchant could not approach anyone he was not already standing next to.
