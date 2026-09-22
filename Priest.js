@@ -1,4 +1,7 @@
 // ============================================================================
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// ============================================================================
+// ============================================================================
 // FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
 // ============================================================================
 // ============================================================================
@@ -763,6 +766,54 @@ function findNearestBoss() {
 // ============================================================================
 // MAIN TICK LOOP - Handles state updates, caching, movement
 // ============================================================================
+// ============================================================================
+// AWAIT HANG GUARD
+// ============================================================================
+// Every loop below is an async function that schedules its own next tick only
+// after its body resolves. A THROW is already handled - each loop reschedules
+// from its catch, or after it. A HANG is not: if an awaited call never
+// settles, execution never reaches the reschedule and the chain simply ends,
+// silently and permanently. setInterval work (buffs, loot, party keepalives)
+// keeps running, so the character still looks alive on /hub while doing
+// nothing at all.
+//
+// Measured 2026-09-22 on Dexon: actionLoop ran 0 iterations in 20s where ~1300
+// were due, and mainLoop was dead in the same window - is_disabled(), which it
+// calls every 250ms, was not called once. He stood in range of crabs casting
+// nothing until the page was reloaded, and the party earned 0 xp. use_skill()
+// and smart_move() both return promises the game can leave unsettled, so this
+// is a live failure mode, not a theoretical one.
+//
+// noHang() bounds an awaited call. On timeout it REJECTS, which lands in the
+// loop's own catch and lets that loop reschedule normally: the tick is lost,
+// the chain is not. Same intent as travelWatchdog, applied to the loops.
+// Wrapping only the awaits that appear DIRECTLY in a loop body is enough - a
+// hang deeper in a helper propagates up to that await and is bounded there.
+const HANG_GUARD = {
+	defaultMs: 10000,
+	logEveryMs: 30000,   // the guard must log, or "hung" and "idle" look identical
+};
+let lastHangLogAt = 0;
+
+function noHang(p, label, ms) {
+	if (!p || typeof p.then !== 'function') return Promise.resolve(p);
+	const limit = ms || HANG_GUARD.defaultMs;
+	let timer = null;
+	return Promise.race([
+		Promise.resolve(p).finally(() => clearTimeout(timer)),
+		new Promise((_, reject) => {
+			timer = setTimeout(() => {
+				const now = Date.now();
+				if (now - lastHangLogAt >= HANG_GUARD.logEveryMs) {
+					lastHangLogAt = now;
+					game_log(`"${label}" did not settle in ${Math.round(limit / 1000)}s - dropping this tick`, 'orange');
+				}
+				reject(new Error(`hang guard: ${label}`));
+			}, limit);
+		}),
+	]);
+}
+
 async function mainLoop() {
 	try {
 		if (is_disabled(character)) {
@@ -776,7 +827,7 @@ async function mainLoop() {
 				return setTimeout(mainLoop, 250);
 			}
 		}
-		if (await checkPotionEmergency()) {
+		if (await noHang(checkPotionEmergency(), 'checkPotionEmergency')) {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (!home || !mobMap || !destination) {
@@ -786,7 +837,7 @@ async function mainLoop() {
 		updateCache();
 
 		if (shouldLoot()) {
-			await handleLooting();
+			await noHang(handleLooting(), 'handleLooting');
 		}
 		if (shouldHandleEvents()) {
 			handleEvents();
@@ -795,7 +846,7 @@ async function mainLoop() {
 			if (!get_nearest_monster({ type: home })) {
 				handleReturnHome();
 			} else if (CONFIG.movement.kiting.enabled) {
-				await kiter();
+				await noHang(kiter(), 'kiter');
 			} else if (CONFIG.movement.circleWalk) {
 				walkInCircle();
 			}
@@ -826,10 +877,10 @@ async function actionLoop() {
 		updateCache();
 		const ms = ms_to_next_skill('attack') - 1.5;
 		if (ms < 3) {
-			const healed = await tryHeal();
+			const healed = await noHang(tryHeal(), 'tryHeal');
 			if (!healed) {
 				const target = cache.target;
-				if (target && is_in_range(target) && !smart.moving) await use_skill('attack', target);
+				if (target && is_in_range(target) && !smart.moving) await noHang(use_skill('attack', target), 'use_skill attack');
 			}
 			return setTimeout(actionLoop, TICK_RATE.action);
 		}
@@ -853,7 +904,7 @@ async function skillLoop() {
 		const penalty = character.s?.penalty_cd?.ms || 0;
 
 		if (CONFIG.combat.curse) {
-			await handleCurse();
+			await noHang(handleCurse(), 'handleCurse');
 		}
 
 		// Level-gated, and wrapped: absorb (lvl 55) and darkblessing (lvl 70)
@@ -864,29 +915,29 @@ async function skillLoop() {
 		// was throwing on essentially every tick.
 		if (CONFIG.healing.absorb && penalty < 500 && character.level >= (G.skills.absorb?.level || 0)) {
 			try {
-				await handleAbsorb();
+				await noHang(handleAbsorb(), 'handleAbsorb');
 			} catch (e) {
 				console.error('handleAbsorb error:', e);
 			}
 		}
 
 		if (character.party) {
-			await handlePartyHeal();
+			await noHang(handlePartyHeal(), 'handlePartyHeal');
 		}
 
 		if (CONFIG.healing.darkBlessing && character.level >= (G.skills.darkblessing?.level || 0) && character.mp >= (G.skills.darkblessing?.mp || 0) && !is_on_cooldown('darkblessing')) {
 			try {
-				await use_skill('darkblessing');
+				await noHang(use_skill('darkblessing'), 'use_skill darkblessing');
 			} catch (e) {
 				console.error('darkblessing error:', e);
 			}
 		}
 
 		if (CONFIG.combat.zapper && state.current === 'idle') {
-			await handleZapper();
+			await noHang(handleZapper(), 'handleZapper');
 		}
 		if (CONFIG.combat.zapSpam?.enabled && state.current === 'idle') {
-			await handleZapSpam();
+			await noHang(handleZapSpam(), 'handleZapSpam');
 		}
 
 	} catch (e) {
