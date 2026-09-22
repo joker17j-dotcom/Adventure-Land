@@ -12,6 +12,52 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v43
+
+the game's own merchant feed joins the merge as a third source. POST to
+https://adventure.land/api/pull_merchants with an empty body returns every
+listed merchant on every shard in one ~300ms call - the data behind the
+Communicator's "All Merchants" panel. arbFetchGameMerchants maps it into
+aldata's row shape and arbMergeMarketRows now takes three arrays instead of
+two. Nothing else changed: age still decides, so the bridge wins whenever it
+has a row and aldata wins while it is fresher.
+
+It is a CONFIRMER and never a denier, and that distinction is the whole
+design. The obvious use - drop an aldata row when the merchant is absent from
+the game feed - was tested and rejected. Sampled against in-game vision on US
+IV every 15s for 226s: Tricksy and Gn. Spence stood with open stands for the
+entire window and never appeared in the feed once, while its US IV count fell
+from 10 to 7 as the stands actually visible held at 11-13. It sheds merchants
+who never moved. Not the appearance lag, not map, position or afk state - all
+ten were on main, PhatTrader at -150,-70 sits inside the cluster of merchants
+that ARE listed, and AceShop and CrownMerch are afk=true and excluded anyway.
+Sampling or rotation fits; the mechanism is unknown. An absence-veto would have
+pruned two live stands on the one shard it was tested on.
+
+The positive signal is sound. Every merchant the feed listed matched ground
+truth exactly - position to six decimals, afk state, slot contents and prices.
+So the gain is the case aldata cannot cover: merchant still standing, item sold
+or price moved. Mapping verified live before deploy - 55 rows, 0 unrecognised
+server tags, 51 of 55 keys colliding with aldata's so the merge dedupes rather
+than double-counts, the remaining 4 being merchants aldata had not recorded.
+
+gameFeedAgeSec is 128, measured not chosen. A listing placed at t0 was
+confirmed server-side instantly, still absent from the feed at t+114s, present
+at t+128s. A closed stand was still listed at t1+48s and gone by t1+75s.
+Stamping the slower of the two is deliberate: game rows then lose to anything
+genuinely fresher and win only against aldata rows aged past ~2 minutes, which
+is exactly where aldata starts advertising stands that have gone.
+
+Both latencies are n=1 on one shard, and the 128/75 asymmetry may be
+cache-cycle phase rather than two different latencies - that was not separated.
+Treat them as "about two minutes", not as precise figures.
+
+This also corrects two claims made while investigating and before the tests
+were run. The feed is not live - it was called live on the strength of nothing
+more than a count drifting between calls. And a phantom rate of 39% was
+computed against it as if it were ground truth; that number inherits the feed's
+own ~2 minute lag and should not be quoted.
+
 ## v42
 
 the long comments move to Codex/MerchantComments.md. They were 43.7% of the
