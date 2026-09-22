@@ -133,9 +133,20 @@ conversation may not.
   "ready". Worse than Form A: nothing looks broken.
 - **A catch that returns a default must log,** or "the helper is missing" and
   "the default is correct" stay indistinguishable forever.
-- **Which helpers exist is not guessable.** Measured in the live CODE context:
-  UNDEFINED - `get_entities`, `ms_to_next_skill`.
-  FUNCTION - `is_on_cooldown`, `get_chests`, `loot`, `get_nearest_monster`.
+- **Which helpers exist is not guessable, AND IT VARIES BY CONTEXT.** There is
+  no single "the live CODE context" - treat any recorded list as a lead, not a
+  fact, and re-measure `typeof` in the context you are actually in.
+  Measured in FamilyFleet's context: UNDEFINED - `get_entities`,
+  `ms_to_next_skill`.
+  Measured 2026-09-22 in Dexon's browser CODE context: `ms_to_next_skill` is a
+  FUNCTION returning 0, while `get_entities` is still undefined.
+  FUNCTION in both: `is_on_cooldown`, `get_chests`, `loot`,
+  `get_nearest_monster`.
+- **Trusting the recorded line cost a wrong diagnosis.** `actionLoop`'s
+  `ms_to_next_skill('attack')` was named as the reason the party would not
+  attack, on the strength of this file saying it was undefined. It was
+  innocent; the real cause was a hung await (next section). One `typeof` check
+  would have skipped the detour.
 
 ## Diagnose by instrumenting, not by reading
 
@@ -148,6 +159,41 @@ conversation may not.
   way: requestAnimationFrame suspension, a 240 KiB CODE size cap, the
   placeholder roster, and caching as the cause of the repeated-listing loop.
   Every correct diagnosis came from instrumentation.
+
+## Self-chained async loops die on a HANG, not on a throw
+
+- **Every loop in Ranger/Priest/Mage is `async` and schedules its own next tick
+  only after its body resolves.** A THROW is handled everywhere already - each
+  loop reschedules from its catch, or after it. A HANG is not: if an awaited
+  call never settles, execution never reaches the reschedule and the chain
+  ends, permanently and silently.
+- **It looks exactly like a live, idle character - the fourth time a silently
+  swallowed failure in this repo has looked like "idle".** setInterval work
+  (buffs, loot, party keepalives, the farm-spot tick) keeps running, so /hub
+  shows the character online and busy. `browser_code_status` reports
+  `code_running: true` and is telling the truth: the script is loaded, the
+  loops are just gone.
+- **`use_skill()` and `smart_move()` both return promises the game can leave
+  unsettled.** Same root cause as the travel deadlock (`travelState.inFlight`
+  stuck true with `failures: 0`), which already had `travelWatchdog` for it.
+  The loops had no equivalent.
+- **Measure it by counting loop iterations.** Wrap a global the loop calls on
+  every pass and count: `is_disabled` for mainLoop (every 250ms),
+  `ms_to_next_skill` for actionLoop (every ~15ms). Zero calls in 20s is a dead
+  chain. Measured on Dexon: actionLoop 0 iterations in 20s where ~1300 were
+  due, and mainLoop dead in the same window.
+- **Fixed in Ranger v51 / Priest v26 / Mage v50 by `noHang(promise, label, ms)`**
+  - bounds an awaited call and rejects on timeout into the loop's own catch, so
+  the tick is lost and the chain is not. It wraps only awaits appearing
+  DIRECTLY in a loop body; a hang deeper in a helper propagates up to that
+  await and is bounded there. It logs on a throttle, because a silent guard
+  puts "hung" and "idle" back to being indistinguishable.
+- **A left-behind instrumentation wrapper is itself a confound.**
+  `orig.apply(this, arguments)` from a bare call site passes a different `this`
+  than the game does. One post-fix measurement showed zero loop ticks that a
+  clean reload did not reproduce, and the extra wrapper on that character is
+  the likeliest reason. Reload the tab to strip wrappers before any measurement
+  you intend to report.
 
 ## Reading a running script's state
 
