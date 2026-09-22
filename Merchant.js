@@ -416,7 +416,7 @@ const CONFIG = {
 	// Vendor-bound goods shown on the stand instead of sold to an NPC.
 	// -> see the STAND SALES block for the measured facts behind these.
 	standSales: {
-		enabled: true,
+		enabled: false,   // DISABLED 2026-09-22: listed goods vanish on a shard hop, see CHANGELOG
 		slots: [1, 2, 3, 4, 5],      // trade slots this feature owns (1-indexed)
 		revalueEveryMs: 5 * 60 * 1000,
 		undercutBy: 1,               // be the cheapest listing, by exactly this
