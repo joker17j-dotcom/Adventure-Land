@@ -12,6 +12,33 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v44
+
+the merchant could not approach anyone he was not already standing next to.
+
+arbApproach opened with pEntity(targetName) and gave up the instant it came
+back empty. character.vision is [700, 500] and it is a BOX, so pEntity only
+ever resolves someone already close - and a shard hop keeps the old position,
+which puts the seller well outside it. Three ticks at 4s each, abandoned in
+twelve seconds, never a step taken.
+
+The ledger had been saying this all along and nobody read it that way: 333
+abandons on "could not reach the seller: not_loaded" against exactly ONE on
+"still N units away". Almost nothing was failing to arrive. It was failing to
+set off. That is 43% of 774 recorded trades.
+
+The position was known the whole time and thrown away two steps before it was
+needed. The market row carries map/x/y, the flip assembly dropped them, so
+arbPlan had nothing to copy - despite its own comment promising "everything the
+later phases need is copied in now". Flip and trade record now carry
+buyMap/buyX/buyY and sellMap/sellX/sellY, and an unloaded seller means "walk to
+where they were last seen and look again" rather than "give up".
+
+Two new reasons separate the cases the old one collapsed: not_loaded_at_last_known
+(standing on their spot, still nothing - really gone) and not_loaded_on_arrival
+(walked there, still nothing). Plain not_loaded now only means no position was
+recorded at all, which for a Ponty row is legitimate - those carry x/y null.
+
 ## v43
 
 the game's own merchant feed joins the merge as a third source. POST to
