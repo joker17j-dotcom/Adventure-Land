@@ -1,4 +1,7 @@
 // ============================================================================
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v50 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// ============================================================================
+// ============================================================================
 // MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v49 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
 // ============================================================================
 // ============================================================================
@@ -571,6 +574,54 @@ function get_nearest_monster_v2(args = {}) {
 // ============================================================================
 // MAIN TICK LOOP
 // ============================================================================
+// ============================================================================
+// AWAIT HANG GUARD
+// ============================================================================
+// Every loop below is an async function that schedules its own next tick only
+// after its body resolves. A THROW is already handled - each loop reschedules
+// from its catch, or after it. A HANG is not: if an awaited call never
+// settles, execution never reaches the reschedule and the chain simply ends,
+// silently and permanently. setInterval work (buffs, loot, party keepalives)
+// keeps running, so the character still looks alive on /hub while doing
+// nothing at all.
+//
+// Measured 2026-09-22 on Dexon: actionLoop ran 0 iterations in 20s where ~1300
+// were due, and mainLoop was dead in the same window - is_disabled(), which it
+// calls every 250ms, was not called once. He stood in range of crabs casting
+// nothing until the page was reloaded, and the party earned 0 xp. use_skill()
+// and smart_move() both return promises the game can leave unsettled, so this
+// is a live failure mode, not a theoretical one.
+//
+// noHang() bounds an awaited call. On timeout it REJECTS, which lands in the
+// loop's own catch and lets that loop reschedule normally: the tick is lost,
+// the chain is not. Same intent as travelWatchdog, applied to the loops.
+// Wrapping only the awaits that appear DIRECTLY in a loop body is enough - a
+// hang deeper in a helper propagates up to that await and is bounded there.
+const HANG_GUARD = {
+	defaultMs: 10000,
+	logEveryMs: 30000,   // the guard must log, or "hung" and "idle" look identical
+};
+let lastHangLogAt = 0;
+
+function noHang(p, label, ms) {
+	if (!p || typeof p.then !== 'function') return Promise.resolve(p);
+	const limit = ms || HANG_GUARD.defaultMs;
+	let timer = null;
+	return Promise.race([
+		Promise.resolve(p).finally(() => clearTimeout(timer)),
+		new Promise((_, reject) => {
+			timer = setTimeout(() => {
+				const now = Date.now();
+				if (now - lastHangLogAt >= HANG_GUARD.logEveryMs) {
+					lastHangLogAt = now;
+					game_log(`"${label}" did not settle in ${Math.round(limit / 1000)}s - dropping this tick`, 'orange');
+				}
+				reject(new Error(`hang guard: ${label}`));
+			}, limit);
+		}),
+	]);
+}
+
 async function mainLoop() {
 	try {
 		if (is_disabled(character)) return setTimeout(mainLoop, 250);
@@ -582,7 +633,7 @@ async function mainLoop() {
 				return setTimeout(mainLoop, 250);
 			}
 		}
-		if (await checkPotionEmergency()) {
+		if (await noHang(checkPotionEmergency(), 'checkPotionEmergency')) {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (!home || !mobMap || !destination) {
@@ -591,7 +642,7 @@ async function mainLoop() {
 
 		updateCache();
 
-		if (CONFIG.looting.enabled) await handleLooting();
+		if (CONFIG.looting.enabled) await noHang(handleLooting(), 'handleLooting');
 
 		if (shouldHandleEvents()) {
 			handleEvents();
@@ -634,9 +685,9 @@ async function actionLoop() {
 			&& (burstCfg.targets.includes(target.mtype) || target.mtype === home);
 
 		if (canBurst) {
-			await use_skill('burst', target);
+			await noHang(use_skill('burst', target), 'use_skill burst');
 		} else if (!is_on_cooldown('attack')) {
-			await use_skill('attack', target);
+			await noHang(use_skill('attack', target), 'use_skill attack');
 		}
 
 	} catch (e) {
@@ -660,8 +711,8 @@ async function skillLoop() {
 		if (is_disabled(character)) return setTimeout(skillLoop, 250);
 		updateCache();
 
-		await handleEnergize();
-		await handleMagiport();
+		await noHang(handleEnergize(), 'handleEnergize');
+		await noHang(handleMagiport(), 'handleMagiport');
 		handleBlinkEscape();
 
 	} catch (e) {
