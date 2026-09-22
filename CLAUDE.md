@@ -83,10 +83,6 @@ conversation may not.
 - **Never navigate the keeper.** `navigate` without an explicit `tabId` takes
   the group's FIRST tab - that is how a live Meltymerch tab was sent to GitHub
   mid-session and disconnected him.
-- **Claude cannot move an existing tab into the group.** The toolset is only
-  create-group / create-new-tab / close-tab, and computer use cannot substitute:
-  Chrome resolves at tier `read`, so it can screenshot but not click or drag.
-  Only the user can drag a tab in.
 - **Why that origin.** `adventure.land` is the only origin that can call
   `pull_merchants` (same-origin AND credentialed; cross-origin is blocked with
   no CORS headers, and `credentials: 'omit'` fails even same-origin), read
@@ -108,13 +104,6 @@ conversation may not.
 - **`load_code` serves a cached copy.** After `save_code` the character keeps
   running the old build until the page is FULLY reloaded. Verify by feature-
   detecting something only the new build has, not by the slot version number.
-
-## Browsers
-
-- **Identify browsers by deviceId, never display name.** The names are
-  reassigned on reconnect - "Browser 1" and "Browser 2" swapped within one day.
-  `544a5d47-8c01-4b89-86ca-0fa269019ebd` is the user's ("Mychrome");
-  `50c019a9-c170-4bb8-a6b8-045119627487` is the family's ("famchrome").
 
 ## Helpers that may not exist - use typeof, never truthiness
 
