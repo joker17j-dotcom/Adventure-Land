@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v47
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v48
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1057,7 +1057,21 @@ async function openStandAtBestSpot() {
 		return;
 	}
 
-	for (const spot of CONFIG.stand.candidates) {
+	/* Open where we already stand, if that is a valid spot.
+
+	   The list is tried in order and the candidates are deliberately spread out
+	   "in case one spot is blocked" - so being parked on candidate 3 is a normal
+	   outcome, not a fault. Walking back to candidate 1 on every call is pure
+	   cost: travelTo() closes the stand to do it, then it reopens at the far end,
+	   for no gain over the spot already under his feet. */
+	const atSpot = CONFIG.stand.candidates.filter(function (s) {
+		return character.map === CONFIG.stand.map && distance(character, s) <= 20;
+	});
+	const order = atSpot.concat(CONFIG.stand.candidates.filter(function (s) {
+		return atSpot.indexOf(s) < 0;
+	}));
+
+	for (const spot of order) {
 		try {
 			if (character.map !== CONFIG.stand.map || distance(character, spot) > 20) {
 				const arrived = await travelTo(CONFIG.stand.map, spot.x, spot.y);
@@ -1981,6 +1995,15 @@ async function attemptKiss(name) {
 					return false;
 				}
 			} else if (!smart.moving) {
+				/* A DEPLOYED STAND CLAMPS SPEED TO 10, server-side:
+				   `if (player.p.stand || player.s.hardshell) player.speed = 10;`
+				   Every other mover in this file is covered - travelTo() closes the
+				   stand itself, and the raw smart_move sites each close first. These
+				   two were the only exceptions, and this is the worst place to have
+				   one: the featured player can be anywhere, the chase reruns for a
+				   whole 30-minute round, and it was observed crawling out to the
+				   party's farm spot at a quarter speed with the stand still up. */
+				await ensureStandClosed();
 				try { await smart_move(target); } catch (e) { /* keep trying next tick */ }
 			}
 		} else if (!smart.moving) {
@@ -1989,6 +2012,7 @@ async function attemptKiss(name) {
 			// state instead of waiting for visibility to happen on its own.
 			const loc = getFeaturedLocation();
 			if (loc) {
+				await ensureStandClosed();   // same speed clamp as above
 				try { await smart_move(loc); } catch (e) { /* keep trying next tick */ }
 			}
 		}
