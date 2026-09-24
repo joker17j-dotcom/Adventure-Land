@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v48
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v49
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -315,6 +315,27 @@ const CONFIG = {
 		// gold into stock, and a run of them means the market being traded
 		// against is not the market on the board. Cleared by any completed sale.
 		maxConsecutiveStrandings: 2,
+		/* How long the self-stop lasts.
+
+		   The breaker used to only set CONFIG.arbitrage.enabled = false, which is
+		   in-memory - and change_server RELOADS THE PAGE, so the next shard hop
+		   rebuilt CONFIG from the saved build and undid it. It tripped 18 times
+		   across two days and never once stopped a trade. 71,981,480 went into
+		   unsold stock behind it on 2026-09-23 alone.
+
+		   The halt is now persisted, and bounded three ways so a stored stop can
+		   never outlive its usefulness - which is what the "no runtime toggle for
+		   enabled" rule was protecting against: it expires after this long, it is
+		   ignored when MERCHANT_BUILD has changed since (a redeploy clears it),
+		   and arbProbeHalt(false) clears it by hand. */
+		haltMs: 60 * 60 * 1000,
+		/* Ceiling on what ONE trade may spend, per item. 0 or absent = uncapped.
+
+		   slice_nightberry earned 5,560,000 on closed trades while stranding
+		   62,100,000 on the same day, including a single 46,800,000 lot of 52 that
+		   found no buyer at all. It is not a bad spread - it is a thin spread
+		   bought in sizes this market cannot absorb. */
+		itemCapitalCap: { slice_nightberry: 10000000 },
 		// Tax applies ONLY to gold received from another ACCOUNT, and the
 		// -> MerchantComments.md#taxBands
 		taxBands: [
@@ -2671,6 +2692,37 @@ const ARB_BUF_KEY = 'arb_ledger_buffer';
 const ARB_USED_KEY = 'arb_used';
 const ARB_FAIL_KEY = 'arb_fails';
 const ARB_STRAND_KEY = 'arb_strandings';
+const ARB_HALT_KEY = 'arb_halt';
+
+/* A stop that survives the reload a shard hop causes, without outliving a
+   redeploy. -> CONFIG.arbitrage.haltMs for why a plain flag could not work. */
+function arbHalted() {
+	let h = null;
+	try { h = get(ARB_HALT_KEY); } catch (e) { return null; }
+	if (!h || !h.at) return null;
+	if (h.build !== MERCHANT_BUILD) return null;   // redeployed since - stale stop
+	if (Date.now() - h.at > CONFIG.arbitrage.haltMs) return null;
+	return h;
+}
+
+function arbHalt(reason) {
+	try { set(ARB_HALT_KEY, { at: Date.now(), reason: reason, build: MERCHANT_BUILD }); } catch (e) { }
+}
+
+/* Console helper: arbProbeHalt() reports, arbProbeHalt(false) clears. */
+function arbProbeHalt(on) {
+	if (on === false) {
+		try { set(ARB_HALT_KEY, null); } catch (e) { }
+		arbStrandings(0);
+		arbLog('halt cleared by hand - trading may resume', '#FFD700');
+		return null;
+	}
+	const h = arbHalted();
+	arbLog(h ? ('HALTED ' + Math.round((Date.now() - h.at) / 60000) + ' min ago: ' + h.reason
+		+ ' (expires in ' + Math.round((CONFIG.arbitrage.haltMs - (Date.now() - h.at)) / 60000) + ' min)')
+		: 'not halted', '#FFD700');
+	return h;
+}
 
 // Listings this merchant has already traded against, and when they stop being
 // -> MerchantComments.md#arbUsedKey
@@ -2810,6 +2862,8 @@ async function arbFlushLedger() {
 function arbCanStart(ctx) {
 	const c = CONFIG.arbitrage;
 	if (!c.enabled) return { ok: false, reason: 'disabled' };
+	const halt = arbHalted();
+	if (halt) return { ok: false, reason: 'halted: ' + halt.reason };
 	if (ctx.probeHold) return { ok: false, reason: 'probe hold' };
 	if (ctx.trade) return { ok: false, reason: 'a trade is already in flight' };
 	if (ctx.busy) return { ok: false, reason: 'merchant busy' };
@@ -3125,10 +3179,11 @@ async function arbAdvance() {
 		// continuing would keep paying to find that out.
 		const n = arbStrandings(1);
 		if (n >= CONFIG.arbitrage.maxConsecutiveStrandings) {
-			CONFIG.arbitrage.enabled = false;
+			CONFIG.arbitrage.enabled = false;        // this run
+			arbHalt(n + ' consecutive strandings');   // and every run until it expires
 			arbLog('STOPPED: ' + n + ' trades in a row ended with the goods banked rather than sold. '
-				+ 'Gold is being converted to stock. Set CONFIG.arbitrage.enabled back to true '
-				+ 'once you know why.', 'red');
+				+ 'Gold is being converted to stock. Halted for '
+				+ Math.round(CONFIG.arbitrage.haltMs / 60000) + ' min - arbProbeHalt(false) clears it.', 'red');
 			arbLedger({ id: t.id, event: 'note',
 				text: 'executor stopped itself after ' + n + ' consecutive strandings' });
 		}
@@ -3268,9 +3323,12 @@ async function arbLookForWork() {
 	if (!flips || !flips.length) return;
 	const used = arbLoadUsed();
 	const fails = arbLoadFails();
-	let suppressed = 0;
+	let suppressed = 0, capped = 0;
 	const pick = flips.find(function (f) {
 		if (!f.affordable || !arbAffordable(f.spend, character.gold)) return false;
+		// Per-item size limit - see CONFIG.arbitrage.itemCapitalCap.
+		const cap = (CONFIG.arbitrage.itemCapitalCap || {})[f.item];
+		if (cap && f.spend > cap) { capped++; return false; }
 		// Either side having been traded recently disqualifies the route. The
 		// sell side matters more - a buy order we filled is the one that costs
 		// gold to rediscover - but a stand we emptied is equally not there.
@@ -3285,6 +3343,7 @@ async function arbLookForWork() {
 	});
 	if (!pick) {
 		if (suppressed) arbLog(suppressed + ' flip(s) skipped - traded against recently', '#8b98ab');
+		if (capped) arbLog(capped + ' flip(s) skipped - over the per-item capital cap', '#8b98ab');
 		return;
 	}
 
