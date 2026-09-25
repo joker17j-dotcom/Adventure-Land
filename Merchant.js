@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v49
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v50
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -442,6 +442,11 @@ const CONFIG = {
 		// ensureListing() call returned "cant_equip" and was swallowed by its
 		// own catch, so this listing has never actually been placed.
 		listing: { itemName: 'scroll0', tradeSlot: 16, price: 500, keepReserve: 100, maxListQuantity: 50 },
+		// Minimum time a freshly opened stand is left alone. A teardown costs a
+		// close, a slow clamped walk, and a reopen; below this threshold the
+		// stand spends more time moving than standing.
+		// -> MerchantComments.md#minDwellMs
+		minDwellMs: 3 * 60 * 1000,
 	},
 
 	// Vendor-bound goods shown on the stand instead of sold to an NPC.
@@ -460,7 +465,10 @@ const CONFIG = {
 	// the full table and logic. This just toggles/paces the loop.
 	gearProgression: {
 		enabled: true,
-		intervalMs: 8000,
+		// 8000 was far too tight for a loop that walks to the town spot and back.
+		// -> MerchantComments.md#gearPacing
+		intervalMs: 30000,
+		maxStepsPerVisit: 12,
 	},
 
 	// ANNIVERSARY KISS HUNTER - works on Mainframe (primary source is
@@ -489,6 +497,7 @@ const state = {
 	queue: [],
 	busy: false,
 	standOpen: false,
+	standOpenedAt: 0,       // when the current stand went up - drives standDwellHeld()
 	lastHealRequest: 0,
 	kissAttemptedFor: null, // name of the featured player already attempted this round - avoids retrying the same one
 	kissSkippedFor: null,   // ...and the one we declined while hop sick, so that logs once rather than every tick
@@ -1066,6 +1075,24 @@ function shouldHoldStand() {
 	return mShardKey() === mHomeShard();
 }
 
+/* Is the current stand too young to tear down?
+
+   MEASURED 2026-09-24: gearProgressionLoop ran every 8s, found one eligible
+   firebow upgrade (40,000 gold, target level 9), and to make that ONE attempt
+   it closed the stand, walked to (-179,-72), upgraded, and walked back to
+   (100,0) to reopen. Twelve unbroken minutes of alternating
+   `smart_move: main 100 0` / `smart_move: main -179 -72` in the console, which
+   is what "the merchant is moving with his stand out" actually was.
+
+   This is a floor, not a lock: callers still decide whether they want the
+   stand. Arbitrage is deliberately NOT gated on it - a trade in flight has gold
+   committed to a destination and must travel regardless. */
+function standDwellHeld() {
+	if (!state.standOpen && !character.stand) return false;  // nothing to protect
+	if (!state.standOpenedAt) return false;                  // opened before this build; do not stall forever
+	return (Date.now() - state.standOpenedAt) < (CONFIG.stand.minDwellMs || 0);
+}
+
 async function openStandAtBestSpot() {
 	if (!shouldHoldStand()) {
 		// Not an error: mid-rotation is the normal case for this path now.
@@ -1100,6 +1127,7 @@ async function openStandAtBestSpot() {
 			}
 			await open_stand(slot);
 			state.standOpen = true;
+			state.standOpenedAt = Date.now();
 			game_log(`Stand opened at (${spot.x}, ${spot.y})`, '#00FF00');
 			await ensureListing();
 			await ssTick('stand-open');
@@ -1890,7 +1918,7 @@ async function gearProgressionLoop() {
 			const hasDuplicateGroup = canSpend && !!findBaseDuplicateGroup();
 			const hasPlanCandidate = canSpend && gatherPlanCandidates().length > 0;
 
-			if (hasBankable || hasDuplicateGroup || hasPlanCandidate) {
+			if ((hasBankable || hasDuplicateGroup || hasPlanCandidate) && !standDwellHeld()) {
 				state.busy = true;
 				const wasStandOpen = state.standOpen;
 				if (wasStandOpen) {
@@ -1903,8 +1931,19 @@ async function gearProgressionLoop() {
 				// -> MerchantComments.md#combined
 				if (hasDuplicateGroup || hasPlanCandidate) await goToTownSpot();
 
-				const combined = await autoCombineOneBaseDuplicateGroup(character.gold);
-				if (!combined) await attemptBestPlanStep(character.gold);
+				/* BATCHED. One walk, many steps - this used to do exactly one
+				   attempt per cycle, so the walk cost was paid per attempt. Both
+				   calls re-read character.gold each pass, and both return false
+				   when nothing is affordable or available, which ends the visit. */
+				let steps = 0;
+				const cap = CONFIG.gearProgression.maxStepsPerVisit || 12;
+				while (steps < cap) {
+					const combined = await autoCombineOneBaseDuplicateGroup(character.gold);
+					const advanced = combined || await attemptBestPlanStep(character.gold);
+					if (!advanced) break;
+					steps++;
+				}
+				if (steps) game_log(`Gear progression: ${steps} step(s) in one visit`, '#00FF00');
 
 				if (wasStandOpen) await openStandAtBestSpot();
 				state.busy = false;
