@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v51
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v52
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -465,6 +465,22 @@ const CONFIG = {
 
 	// GEAR PROGRESSION - see the "GEAR PROGRESSION SYSTEM" section below for
 	// the full table and logic. This just toggles/paces the loop.
+	/* GEAR TRIPWIRE - refuses gear steps that are not worth doing.
+	   -> MerchantComments.md#gearTripwire
+
+	   mode: 'off'      nothing happens; gear behaves exactly as before (DEFAULT)
+	         'observe'  every step is judged and logged, but nothing is blocked
+	         'enforce'  blocked steps are skipped
+	   Start in 'observe', read gearProbeTripwire(), then move to 'enforce'. */
+	gearTripwire: {
+		mode: 'off',
+		partyInfoMaxAgeSec: 600,   // newparty_info older than this cannot judge "no improvement"
+		marketMaxAgeSec: 1800,     // a price older than this is not used to block anything
+		marketCacheMs: 120000,     // how long one market read is reused across candidates
+		breakEvenGold: 10500000,   // measured 2026-09-25 for the offeringp route; see CHANGELOG v52
+		logSize: 80,
+	},
+
 	gearProgression: {
 		enabled: true,
 		// 8000 was far too tight for a loop that walks to the town spot and back.
@@ -1943,6 +1959,220 @@ async function autoCombineOneBaseDuplicateGroup(currentGold) {
 	}
 }
 
+/* ============================================================================
+   GEAR TRIPWIRE - four reasons not to attempt a gear step.
+   -> MerchantComments.md#gearTripwire
+
+   The gear system optimises cost-per-success and nothing else, so it will
+   happily grind something worth less than the scrolls, duplicate gear the
+   party already wears, or chase a compound whose missing copies are not for
+   sale at any price. Measured 2026-09-25, all three were live:
+
+     - firebow +5 costs 15,054,400 to buy and 39,722,105 to build from a +5
+       base (38% success, 2.63 bases consumed). Building was 1.7x WORSE, and
+       nothing in the chooser could see that.
+     - Dexon already had firebow +7 equipped while the plan ground a spare
+       toward +5.
+     - ZERO dexearrings were for sale on any shard, in either feed, while all
+       three plan candidates were dexearring compounds needing 3 copies each.
+       That plan could never complete and was re-evaluated every cycle anyway.
+
+   DEFAULT IS 'off'. In 'observe' every step is judged and logged and nothing
+   is blocked, which is the intended way to watch it before trusting it.
+
+   Every predicate FAILS OPEN. Missing market data, stale party info or a
+   thrown lookup must never block a step - a tripwire that silently stops all
+   gear work because a fetch failed is worse than the behaviour it replaces.
+   ============================================================================ */
+const GT_LOG_KEY = 'gear_tripwire_log';
+const GT = { rows: null, at: 0, inflight: null };
+
+function gtMode() {
+	const m = (CONFIG.gearTripwire && CONFIG.gearTripwire.mode) || 'off';
+	return (m === 'observe' || m === 'enforce') ? m : 'off';
+}
+
+// One market read shared by every candidate in a visit.
+async function gtMarket() {
+	const ttl = (CONFIG.gearTripwire && CONFIG.gearTripwire.marketCacheMs) || 120000;
+	if (GT.rows && (Date.now() - GT.at) < ttl) return GT.rows;
+	if (GT.inflight) return await GT.inflight;
+	GT.inflight = (async function () {
+		try {
+			const got = await arbProbeMarketRows();
+			GT.rows = (got && got.rows) || [];
+			GT.at = Date.now();
+		} catch (e) {
+			gtLog('market read failed: ' + (e && e.message ? e.message : e));
+			GT.rows = null;          // fail open - no data means no blocking
+		} finally {
+			GT.inflight = null;
+		}
+		return GT.rows;
+	})();
+	return await GT.inflight;
+}
+
+/* Cheapest ask and best bid for one item at one level, honouring the age
+   bound. Returns nulls rather than guesses when nothing qualifies. */
+function gtQuote(rows, name, level) {
+	const maxAge = (CONFIG.gearTripwire && CONFIG.gearTripwire.marketMaxAgeSec) || 1800;
+	let ask = null, bid = null, askN = 0, bidN = 0;
+	for (const r of (rows || [])) {
+		const age = pAgeSec(r.lastSeen);
+		if (age != null && age > maxAge) continue;
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || sl.name !== name) continue;
+			if ((sl.level || 0) !== level) continue;
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			if (sl.b) { bidN++; if (bid == null || sl.price > bid) bid = sl.price; }
+			else { askN++; if (ask == null || sl.price < ask) ask = sl.price; }
+		}
+	}
+	return { ask: ask, bid: bid, askCount: askN, bidCount: bidN };
+}
+
+// What the item is worth to us: what someone will pay, else what one costs.
+function gtValue(q) {
+	if (!q) return null;
+	if (q.bid != null) return q.bid;
+	if (q.ask != null) return q.ask;
+	return null;
+}
+
+/* What the recipient already wears in this slot, from the party_link cache.
+   parent.party carries no slots and parent.entities is proximity-bound, so
+   cstore_<name>_newparty_info is the only source that works while the party
+   is off farming - verified 2026-09-25 against Dexon's own tab. */
+function gtEquipped(who, slotName) {
+	try {
+		const raw = parent.localStorage.getItem('cstore_' + who + '_newparty_info');
+		if (!raw) return null;
+		const d = JSON.parse(raw);
+		if (!d) return null;
+		const ls = d.lastSeen != null ? (typeof d.lastSeen === 'number' ? d.lastSeen : Date.parse(d.lastSeen)) : null;
+		const maxAge = (CONFIG.gearTripwire && CONFIG.gearTripwire.partyInfoMaxAgeSec) || 600;
+		if (ls == null || (Date.now() - ls) / 1000 > maxAge) return null;   // too stale to judge
+		const sl = (d.slots || {})[slotName];
+		if (!sl || !sl.name) return null;
+		return { name: sl.name, level: sl.level || 0 };
+	} catch (e) { return null; }
+}
+
+/* Which party member wears this class's gear. parent.party carries a `type`
+   field per member (verified live), so the mapping is read rather than
+   hardcoded and survives a roster change. */
+function gtRecipientFor(cls) {
+	try {
+		const p = parent.party || {};
+		for (const n in p) {
+			if (n === character.name) continue;
+			if (p[n] && p[n].type === cls) return n;
+		}
+	} catch (e) { }
+	return null;
+}
+
+function gtLog(text, extra) {
+	try {
+		const a = get(GT_LOG_KEY) || [];
+		a.push(Object.assign({ at: new Date().toISOString(), text: text }, extra || {}));
+		const cap = (CONFIG.gearTripwire && CONFIG.gearTripwire.logSize) || 80;
+		while (a.length > cap) a.shift();
+		set(GT_LOG_KEY, a);
+	} catch (e) { }
+}
+
+function gtHoldsOffering() {
+	try {
+		return character.items.filter(Boolean).some(function (i) { return /^offering/.test(i.name); });
+	} catch (e) { return false; }
+}
+
+/* THE VERDICT. Returns { allow, blocks:[...], detail }. Never throws. */
+async function gtJudge(candidate, step) {
+	const out = { allow: true, blocks: [], detail: {} };
+	if (gtMode() === 'off') return out;
+	try {
+		const name = candidate.item.name;
+		const level = candidate.item.level || 0;
+		const rows = await gtMarket();
+		out.detail.item = name + ' +' + level;
+		out.detail.method = candidate.method;
+
+		// --- 4. valuable, and no offering to protect it
+		const selfQ = rows ? gtQuote(rows, name, level) : null;
+		const selfVal = gtValue(selfQ);
+		out.detail.itemValue = selfVal;
+		const breakEven = (CONFIG.gearTripwire && CONFIG.gearTripwire.breakEvenGold) || 10500000;
+		if (selfVal != null && selfVal >= breakEven && !gtHoldsOffering()) {
+			out.blocks.push('valuable_no_offering');
+			out.detail.breakEven = breakEven;
+		}
+
+		// --- 1. buying the finished item beats building it (upgrades only)
+		if (candidate.method !== 'compound' && rows && step && step.chance > 0) {
+			const nextQ = gtQuote(rows, name, level + 1);
+			const p = step.chance;
+			const basePrice = selfQ ? selfQ.ask : null;
+			if (nextQ && nextQ.ask != null && basePrice != null) {
+				const build = step.cost / p + ((1 - p) / p) * basePrice;
+				out.detail.buildCost = Math.round(build);
+				out.detail.finishedAsk = nextQ.ask;
+				if (nextQ.ask < build) out.blocks.push('buy_beats_build');
+			}
+		}
+
+		// --- 2. the recipient already has as good or better
+		const who = gtRecipientFor(candidate.class);
+		const slotName = candidate.slot || null;
+		if (who && slotName) {
+			const eq = gtEquipped(who, slotName);
+			out.detail.recipient = who;
+			out.detail.equipped = eq ? (eq.name + ' +' + eq.level) : null;
+			if (eq && eq.name === name && eq.level >= (level + 1)) out.blocks.push('no_improvement');
+		}
+
+		// --- 3. a compound whose missing copies cannot be bought
+		if (candidate.method === 'compound') {
+			let owned = 0;
+			try {
+				owned = character.items.filter(Boolean).filter(function (i) {
+					return i.name === name && (i.level || 0) === level;
+				}).length;
+			} catch (e) { owned = 0; }
+			out.detail.copiesOwned = owned;
+			if (owned < 3 && rows) {
+				const forSale = gtQuote(rows, name, level).askCount;
+				out.detail.copiesForSale = forSale;
+				if (forSale === 0) out.blocks.push('inputs_unobtainable');
+			}
+		}
+
+		out.allow = out.blocks.length === 0;
+	} catch (e) {
+		// Fail open, loudly. -> MerchantComments.md#gtFailOpen
+		gtLog('judge threw, allowing step: ' + (e && e.message ? e.message : e));
+		return { allow: true, blocks: [], detail: { threw: true } };
+	}
+	return out;
+}
+
+function gearProbeTripwire(n) {
+	let a = [];
+	try { a = get(GT_LOG_KEY) || []; } catch (e) { }
+	const tally = {};
+	a.forEach(function (r) { (r.blocks || []).forEach(function (b) { tally[b] = (tally[b] || 0) + 1; }); });
+	return pShow({
+		mode: gtMode(),
+		config: JSON.parse(JSON.stringify(CONFIG.gearTripwire || {})),
+		entries: a.length,
+		blockTally: tally,
+		recent: a.slice(-(n || 20)),
+	});
+}
+
 function gatherPlanCandidates() {
 	const candidates = [];
 	character.items.forEach((item, idx) => {
@@ -1962,15 +2192,36 @@ async function attemptBestPlanStep(currentGold) {
 
 	let best = null;
 	for (const c of candidates) {
+		let step = null, group = null;
 		if (c.method === 'compound') {
-			const group = findCompoundGroup(character.items, c.item.name, c.item.level || 0);
-			if (!group) continue; // don't have 3 copies yet
-			const step = pickBestCompoundStep(c.item);
-			if (!step || !canAffordStep(currentGold, step.cost)) continue;
+			group = findCompoundGroup(character.items, c.item.name, c.item.level || 0);
+			step = pickBestCompoundStep(c.item);
+		} else {
+			step = pickBestUpgradeStep(c.item);
+		}
+		if (!step || !canAffordStep(currentGold, step.cost)) {
+			// Still judge an unbuildable compound: "no 3 copies AND none for
+			// sale" is exactly the permanently-stalled case worth reporting.
+			if (c.method === 'compound' && !group) {
+				const v0 = await gtJudge(c, step);
+				if (v0.blocks.length) gtLog('would block: ' + v0.blocks.join(', '), { blocks: v0.blocks, detail: v0.detail, acted: false });
+			}
+			continue;
+		}
+		if (c.method === 'compound' && !group) continue; // don't have 3 copies yet
+
+		const v = await gtJudge(c, step);
+		if (v.blocks.length) {
+			const enforcing = gtMode() === 'enforce';
+			gtLog((enforcing ? 'BLOCKED: ' : 'would block: ') + v.blocks.join(', '),
+				{ blocks: v.blocks, detail: v.detail, acted: enforcing });
+			game_log(`Gear tripwire ${enforcing ? 'blocked' : 'flagged'} ${c.item.name} +${c.item.level || 0}: ${v.blocks.join(', ')}`, enforcing ? 'orange' : '#8b98ab');
+			if (enforcing) continue;
+		}
+
+		if (c.method === 'compound') {
 			if (!best || step.expectedCost < best.step.expectedCost) best = { candidate: c, step, group };
 		} else {
-			const step = pickBestUpgradeStep(c.item);
-			if (!step || !canAffordStep(currentGold, step.cost)) continue;
 			if (!best || step.expectedCost < best.step.expectedCost) best = { candidate: c, step };
 		}
 	}
@@ -5061,6 +5312,7 @@ function arbProbeHelp() {
 		'arbProbeHold(true|false)   freeze/unfreeze the merchant for a probe',
 		'arbProbeFns()              scan both scopes for trade/bank functions',
 		'arbProbeNamed()            direct check of the names we expect',
+		'gearProbeTripwire(n)      what the gear tripwire judged, and why',
 		'arbProbeSrc("trade_buy")   dump a function\'s source (the socket payload)',
 		'arbProbeSource("aldata")   pin the market feed: aldata | bridge | game | auto',
 		'arbProbeBridge()           which feed answers, and how much is in it',
