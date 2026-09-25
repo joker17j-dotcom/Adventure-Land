@@ -12,6 +12,70 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v55
+
+replayed potion requests are refused.
+
+A delivery watermark now lives in CODE storage, one entry per recipient per
+potion type, and a low_potions request whose send time predates the watermark is
+dropped at intake instead of becoming a job.
+
+THE CAUSE. plCursor (line 78) and plSeen (line 80) are both in-memory, and
+change_server reloads the page on every hop, so both reset. The bridge keeps
+messages for MESSAGE_TTL - ten minutes - and serves everything with seq > since.
+So after each hop the merchant asked for everything since zero and got up to ten
+minutes of already-satisfied low_potions requests handed back, every 2s
+(pollMs), each one becoming a fresh delivery job the moment processBatch had
+spliced the queue empty.
+
+MEASURED 2026-09-25. MageofOz was brought under threshold deliberately: 400
+mpot1 moved off him, leaving 278. One genuine request produced three deliveries -
++999 at t+424s while low, then +1000 at t+556s and +1000 at t+601s with him
+already at 1183 and 2151 and not asking. Left alone he reached 10,563. The priest
+reached 11,059 the same way. The merchant log showed enqueue delivery:MageofOz
+firing every two seconds with dupSup=true - the replay storm, suppressed only
+while a job already sat in the queue.
+
+The fighters were innocent. requestCooldownMs (30s) worked correctly throughout;
+every duplicate came from the merchant re-reading stored messages, not from a
+fighter re-sending. Nothing in Ranger/Priest/Mage needed changing.
+
+WHY A WATERMARK RATHER THAN PERSISTING plCursor. The bridge does not persist its
+seq counter: __init__ sets self.seq = 0 and save() writes only merchants, ponty
+and activity. A restart therefore rewinds seq to zero, and a persisted cursor of
+several thousand would make `seq > since` permanently false - the merchant would
+go silently deaf to every relayed request until the bridge climbed back past it.
+The watermark cannot fail that way. Its worst case is one redundant delivery, not
+total deafness.
+
+WHY NO BLANKET STALENESS GATE. A "drop anything older than 60s" rule was
+considered and rejected. It would drop real requests, because reprobeMs is five
+minutes - after a bridge blip the first successful poll legitimately carries
+messages minutes old - and because a hidden Chrome tab throttles setInterval
+toward one tick per minute, which is this repo's oldest measured trap. Worse, a
+dropped request never becomes a job, so it can never age into
+arbOldestJobAgeMs > jobPreemptMs. The blunt gate would have blinded the exact
+safeguard that exists to notice a fighter waiting too long.
+
+THE UNIT TRAP, for whoever touches this next. The bridge stamps ts with
+time.time() - epoch SECONDS - while every clock in Merchant.js is Date.now()
+milliseconds. plPoll converts once, at the point the message enters the handler.
+Comparing a raw seconds value against a millisecond watermark reads as 1970 and
+would refuse EVERY request rather than only replayed ones, which looks like a
+merchant that has stopped delivering for no reason.
+
+Keyed per potion deliberately: an mp delivery must not suppress an hp request
+made a second earlier. Stamped before send_item deliberately: a reload landing
+between the send and the write is the gap the mark exists to close, and the cost
+is bounded - an in-batch retry reads from memory, which the watermark does not
+filter, and a wholly failed batch is re-requested 30s later with a fresh stamp.
+The suppression logs every time; a silent guard would make "refused a replay"
+and "nobody asked" indistinguishable.
+
+Pickups are untouched. A replayed inventory_almost_full costs a wasted trip
+rather than a wrong outcome, and "still full" is not the same predicate as
+"already served".
+
 ## v54
 
 tier-0 potions are no longer protected.
