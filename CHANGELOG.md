@@ -12,6 +12,244 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v50
+
+stand thrash: stop paying a cross-town round trip per gear step.
+
+MEASURED, not read. A stand spy wrapping open_stand/close_stand recorded 3 opens
+and 3 closes in 33 seconds, and the console carried twelve unbroken minutes of
+`smart_move: main 100 0` alternating with `smart_move: main -179 -72`.
+
+Two wrong diagnoses died on the way, both recorded here because the reasoning is
+the reusable part:
+
+- "Two loops fighting over the stand with no lock." Wrong. gearProgressionLoop
+  and anniversaryKissLoop both guard on state.busy and they alternate correctly.
+  The stack traces showed both loops touching the stand, which is not the same
+  as showing them racing.
+- "The loop spins doing nothing." Also wrong. attemptBestPlanStep returns false
+  when no candidate has an affordable available step, and the gate above it only
+  checks that candidates EXIST - so a uselessly spinning loop was plausible. It
+  is not what was happening: firebow at level 4 toward target 9 was a genuinely
+  eligible upgrade at 40,000 gold, affordable, every single tick.
+
+The real fault is granularity. gearProgressionLoop ran every 8s and performed
+exactly ONE step per cycle, with a stand teardown and rebuild wrapped around it.
+So one 40,000-gold upgrade attempt cost a close, a speed-clamped walk to
+(-179,-72), and a walk back to (100,0) to reopen. Firebow needs five more
+levels, so this was set to continue indefinitely.
+
+Three changes:
+
+- CONFIG.stand.minDwellMs (3 min) and state.standOpenedAt, with standDwellHeld()
+  gating gearProgressionLoop. A floor, not a lock - callers still decide whether
+  they want the stand. Arbitrage is deliberately exempt: a trade in flight has
+  gold committed to a destination and has to travel.
+- gearProgressionLoop batches up to CONFIG.gearProgression.maxStepsPerVisit (12)
+  steps per visit instead of one. Both inner calls re-read character.gold and
+  both return false when nothing is affordable, which ends the visit.
+- gearProgression.intervalMs 8000 -> 30000. 8s was never sensible for a loop
+  that crosses town.
+
+NOT fixed here, because it was not measured: anniversaryKissLoop sets
+state.kissAttemptedFor only on SUCCESS, so a kiss that keeps failing retries
+every 5s forever, tearing the stand down each time. The kiss path was dormant
+(findFeaturedPlayerName() returned null) when the driver was identified, so
+there is no evidence it is currently misbehaving and no fix is being shipped on
+a guess. The minDwellMs floor would blunt it; wiring the kiss to respect the
+floor needs thought, since an event round is only 5 minutes long.
+
+Throughput note: worst case is now 12 steps per 3 minutes (4/min) against the
+old 1 step per 8s (7.5/min), in exchange for roughly one walk instead of
+twenty-two. Raise maxStepsPerVisit if the ceiling ever binds.
+
+## v49
+
+Backfilled 2026-09-25 from commit 0a59254; shipped without an entry.
+
+make the stranding breaker actually stop, and cap nightberry.
+
+The breaker had never once stopped a trade. It fired 18 times across two days -
+"executor stopped itself after 2 ... 3 ... 4 ... 5 ... 6 ... 7 consecutive
+strandings" - and trading continued straight through every time.
+
+Cause: it only set CONFIG.arbitrage.enabled = false, which is in-memory, and
+change_server RELOADS THE PAGE. The next shard hop rebuilt CONFIG from the saved
+build and undid it. The stranding COUNTER is persisted, which is why it climbed
+2 -> 7 instead of resetting: it re-tripped one higher on each hop. Same root
+cause as three other bugs found that week - state that does not survive the
+reload.
+
+71,981,480 of gold went into unsold stock behind it on 2026-09-23 alone, against
+24,275,984 of profit over the same window. Every closed trade was profitable;
+the losses were all in capital that stopped being liquid.
+
+The halt is now persisted in CODE storage and bounded three ways, so a stored
+stop can never outlive its usefulness - which is what the existing "no runtime
+toggle for enabled" rule was protecting against, and why this is not simply a
+persisted flag:
+
+  - it expires after haltMs (1 hour)
+  - it is ignored when MERCHANT_BUILD has changed, so a redeploy clears it and a
+    build can never ship silently halted
+  - arbProbeHalt(false) clears it by hand and resets the counter
+
+SECOND CHANGE: CONFIG.arbitrage.itemCapitalCap, a per-item ceiling on what one
+trade may spend. slice_nightberry set to 10,000,000. It earned 5,560,000 on
+closes while stranding 62,100,000 - including a single lot of 52 units for
+46,800,000 that found no buyer at all. Three days of data said the same thing:
+7.8%, then 8.5%, on more deployed capital than every other item combined. Not a
+bad spread - a thin spread bought in sizes this market cannot absorb. The cap
+would have blocked that 46.8M lot outright.
+
+KNOWN DEFECT, found 2026-09-24 while diagnosing something else: MERCHANT_BUILD
+was never bumped across v45-v49 and still reads "v27 / arb.4 / 2026-09-19". The
+build-changed test above therefore never fires, so a halt DOES survive a
+redeploy. The escape hatch is inert until that string is maintained.
+
+## v48
+
+Backfilled 2026-09-25 from commit d4ccc80; shipped without an entry.
+
+close the stand before the anniversary kiss chase.
+
+Caught in the act: Meltymerch walking out to the party's farm spot with his
+stand still deployed. The server clamps speed hard for that, in node/server.js:
+
+    if (player.p.stand || player.s.hardshell) player.speed = 10;
+
+A quarter of his normal pace, for the whole trip.
+
+Audited every mover in the file rather than patching what was in front of me.
+travelTo() already closes the stand itself, so all eight of its callers were
+covered, and the six raw smart_move sites each had an explicit close - except
+two, both inside attemptKiss(). The first read of this blamed
+openStandAtBestSpot(); that was wrong, it goes through travelTo and is fine.
+
+attemptKiss is the worst possible place for the gap. It chases
+parent.S.anniversary.target, who can be anywhere on the map - including standing
+next to the party at crabs - and the chase loop reruns for a full 30-minute
+featured round, re-issuing smart_move every couple of seconds.
+
+Second change, same function family. The stand candidate list is tried strictly
+in order and the spots are deliberately spread out "in case one spot is
+blocked", so ending up on candidate 3 is a normal outcome.
+openStandAtBestSpot() would then march him back to candidate 1 on every call -
+closing the stand to travel, reopening at the far end, for no gain over the
+perfectly valid spot already under his feet. It now tries whichever candidate he
+is already standing on first.
+
+NOTE, 2026-09-24: this did not cure "the merchant is moving with his stand out".
+It closed two real gaps, but the dominant cause was gearProgressionLoop's
+teardown/rebuild cycle - see v50.
+
+## v47
+
+Backfilled 2026-09-25 from commit bf89752; shipped without an entry.
+
+stop the merchant selling arbitrage stock at a loss. Two ends of the same hole,
+both found by tracing where 63.5M went.
+
+1. RESERVE PRICE on the fallback exit. arbFindBuyerFor runs after the planned
+buyer fails, and it took the best bid on the board with no reference to what the
+goods cost - its own comment said the question had become "is there any exit at
+all". On 2026-09-22 it bought feather0 x331 from Zintaro for 82,750,000 and sold
+the lot into MuaBan's 60,000 bid 28 minutes later: received 19,264,200, net
+-63,485,800. Every other trade that day was positive; without this one the day
+was +75.6M rather than +12.1M.
+
+CONFIG.arbitrage.fallbackMinRecovery (1.0) now floors that exit. Checked against
+the real numbers: 60,000 x 331 x 0.97 = 19,264,200 against a need of 82,750,000,
+so the bid is refused and the goods are banked instead - already a supported
+outcome with its own stranding breaker. The refusal logs, because otherwise
+"nobody was buying" and "everyone was buying too cheaply" stay indistinguishable
+forever.
+
+2. ARBITRAGE STOCK hidden from both NPC sell paths. Neither sell path knew
+arbitrage existed. sellTrash vendors anything on its whitelist on sight; the
+aggressive seller vendors nearly anything once free slots drop to 5. Both price
+by NPC value, and the slices arbitrage trades in millions vendor for SIX GOLD.
+slice_nightberry absorbed 124,200,000 in one day and vendors at 6/unit. Free
+slots were 9 when this was found.
+
+Worse, it would have been invisible: NPC sales are recorded nowhere - not in the
+bridge ledger, not in the server's trade_history, which logs player trades only.
+
+ARB_HELD_KEY registry, keyed by NAME because stacks move and merge, consulted by
+sellTrash, sellAggressivelyIfLowOnSpace and ssVendorBound. Conservative on
+purpose: ordinary loot sharing a name with live stock is protected too, which
+costs a little vendor gold and risks nothing. Self-healing - a name the bag no
+longer carries is dropped on the next read, so a stale entry cannot protect an
+item forever.
+
+3. slice_blueberry off the sellTrash whitelist. Arbitrage has paid 2,000,000 for
+one; the NPC pays 6. It was on a list of things to vendor on sight.
+
+## v46
+
+Backfilled 2026-09-25 from commit 0574e5a; shipped without an entry.
+
+never buy or sell the two event boxes. marketparcel and anniversarygift are
+protected end to end: not vendored, not listed on the stand, not traded by
+arbitrage.
+
+Two changes were needed, because PROTECTED_ITEM_NAMES does not do what its name
+suggests. It is consulted in exactly two places - the aggressive NPC dump and
+ssVendorBound - and arbitrage never looks at it. Not a guess: offeringp had been
+on that list since forever and was still bought and flipped for 5,980,935 net.
+
+So NO_TRADE_ITEM_NAMES is a second set, applied at flip INGESTION in
+arbProbeFindFlips rather than at the point of sale. A name filtered out of the
+buys/sells feed cannot reach any caller, hand-run probes included. The Ponty row
+loop gets the same filter.
+
+WHY THESE TWO - measured from the live drop tables and the server's own
+chest_exchange (one weighted pick per box, nested "open" recurses, no _bonus
+tables for either):
+
+  marketparcel     contents EV  8,232 vendor gold vs unopened NPC value 60 (137x)
+  anniversarygift  contents EV 21,907 vendor gold vs unopened NPC value 60 (365x)
+
+Vendoring either unopened throws away almost all of its value, which is the
+failure this prevents. The player market pays more again - 23 marketparcels sold
+to CrownMerch for 45,999,997, roughly 240x the vendor value of the contents -
+but these are being kept rather than sold, so that price is declined knowingly.
+
+Buy thresholds if ever wanted: 8,232 and 21,907. Market is 120-240x that, so no
+price near trading justifies buying them to vendor the contents. Chasing the
+five 0.0222% rares in a marketparcel is worse - about 900 boxes per rare, 900M
+at market, for items whose vendor value is 192k-744k.
+
+## (unversioned) stand sales disabled
+
+Backfilled 2026-09-25 from commit 784cff3; shipped without an entry. Sits
+between v45 and v46 and carries no version bump of its own.
+
+Observed in production within ten minutes of deploying v45.
+
+The first pass worked exactly as designed: five vendor-bound stacks listed on
+the home shard, each priced at the cheapest competing listing minus 1g and each
+above its NPC floor (marketparcel x3 @1999999, anniversarygift x80 @999999, cake
+@119, confetti x7 @39, beewings x10 @29). Verified against a fresh market read:
+every ourPrice was exactly cheapestOther - 1, and ssCheapest correctly excluded
+our own stand.
+
+Then the arbitrage loop hopped Meltymerch to EU III. change_server reloads the
+page, and after the reload character.slots had no trade keys at all and none of
+the five stacks were in inventory either.
+
+Disabled rather than deleted, because everything except lifetime is measured and
+working.
+
+CORRECTED 2026-09-24: the goods were NOT lost, and this rollback was not needed.
+The client receives player.cslots, not player.slots (node/server.js:867), and
+reslot_player() deletes every trade slot from cslots and repopulates only from
+get_trade_slots(player), which returns [] when the stand is closed. So a closed
+stand makes trade slots invisible CLIENT-SIDE while the goods remain server-side.
+Confirmed live: anniversarygift x39 and marketparcel x2 were still held. The
+feature can be re-enabled; v47's ARB_HELD_KEY registry independently fixes the
+NPC-dump risk this entry worried about.
+
 ## v45
 
 stand sales: the best vendor-bound goods are listed on the stand instead of
