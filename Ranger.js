@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
 // ============================================================================
 // ============================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
@@ -2218,7 +2218,7 @@ state.skinReady = true;
 
 const FARM_SEARCH = {
 	reevaluateIntervalMs: 15 * 60 * 1000,
-	mitigationConstant: 900,
+	mitigationConstant: 900,        // fallback only; defenseMultiplier() prefers the game's damage_multiplier
 	avgDeathDowntimeSec: 45,
 	minUptimeFraction: 0.5,
 	maxConcurrentAttackers: 4,
@@ -2394,8 +2394,40 @@ function getPartyDps() {
 	return { physical, magical };
 }
 
+/* Damage mitigation, taken from the game rather than approximated.
+
+   The old model here was 1 - x/(x+900). Measured 2026-09-25 against the
+   client's own parent.damage_multiplier: the two agree closely at low defense
+   (armor 116 -> x0.884 vs x0.886) and diverge badly above 400 (armor 900 ->
+   game x0.313, model x0.500, a 60% overestimate of our damage). 13 of the 86
+   monsters scoreAllFarmSpots() ranks carry defense above 400, so the model
+   systematically over-ranked exactly the mobs we kill slowest.
+
+   damage_multiplier is typeof-guarded, never assumed: which helpers exist
+   varies by context, and it returns null when handed undefined. A non-finite
+   result falls through to the old curve. Negative defense is passed straight
+   through because the game amplifies damage there (x1.05 at -50) and clamping
+   would silently discard that.
+
+   The fallback logs once. A default that stays quiet makes "the helper is
+   missing" and "the estimate is right" indistinguishable. */
+let mitigationFallbackLogged = false;
+function defenseMultiplier(defenseStat) {
+	const d = Number.isFinite(defenseStat) ? defenseStat : 0;
+	if (typeof parent !== 'undefined' && typeof parent.damage_multiplier === 'function') {
+		const m = parent.damage_multiplier(d);
+		if (typeof m === 'number' && isFinite(m)) return m;
+	}
+	if (!mitigationFallbackLogged) {
+		mitigationFallbackLogged = true;
+		console.error('farm scoring: parent.damage_multiplier unavailable, using the /(x+'
+			+ FARM_SEARCH.mitigationConstant + ') approximation, which overestimates our damage against defense above ~400');
+	}
+	return 1 - (d / (d + FARM_SEARCH.mitigationConstant));
+}
+
 function mitigated(dps, defenseStat) {
-	return dps * (1 - (defenseStat / (defenseStat + FARM_SEARCH.mitigationConstant)));
+	return dps * defenseMultiplier(defenseStat);
 }
 
 function isMapSafeForFarming(mapData) {
