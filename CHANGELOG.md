@@ -12,6 +12,83 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v51
+
+one closer, one opener.
+
+v50 fixed the rate of stand churn. This fixes the RACE, which v50 did not
+touch: measured 2026-09-25, travelToBank closed the stand correctly - the spy
+caught the close - and something reopened it 1.2 seconds later, mid-walk. He
+finished the trip to the bank at speed 10 with state.busy false, no trade in
+flight, and nothing claiming to be doing anything.
+
+WHAT THE INVENTORY SHOWED, and it was not what was expected. All 14 movement
+call sites live in 7 functions, and every one of those 7 ALREADY closed the
+stand. There was no mover that forgot. The only close-side gap in the whole
+file was mHopTo, which changes shard without closing. So consolidating the
+closers - which is the obvious fix and the one asked for - would have fixed
+almost nothing on its own.
+
+The gap was on the open side: six reopen sites, none of which checked whether
+the character was walking, two of them firing on timers.
+
+CLOSER. travelBegin/travelEnd plus moveTo / moveTown / moveNudge. Every mover
+routes through them. The load-bearing part is not the close - that was already
+universal - it is that state.travelling is held for the WHOLE duration of the
+move rather than only its first instant. A close-before-move wrapper closes at
+t=0 of an await that runs for minutes and has nothing to say about second 1.2.
+
+state.travelling is a COUNTER, not a boolean, because travel nests: travelTo
+falls back to town() and then moves again, and a boolean would clear on the
+inner unwind while the outer move was still running.
+
+moveNudge deliberately does NOT close the stand. The two nudge sites
+(travelToRecipient's xmove, arbProbeStep's move fallback) are a few units of
+in-map repositioning, and closing for those would reintroduce the exact
+teardown-per-unit-of-work granularity v50 removed. It still takes the lock.
+
+mHopTo now closes before change_server.
+
+OPENER. Six sites become one. processBatch, gearProgressionLoop,
+anniversaryKissLoop, scoutGoHome and resumeInterruptedTrip lose their reopens;
+arbLoop's moves into standLoop(). Five were imperative restores ("I closed it,
+so I put it back") and arbLoop's was already a reconciler - so the reconciler
+is what survives, and it is declarative: if nothing is happening, we are home,
+and there is no stand, raise one. Every former caller is covered because they
+all end by clearing the flag they took. Cost is up to reconcileMs (4s) of
+latency before the stand returns.
+
+resumeInterruptedTrip's call was not even awaited. Deleting it fixes that for
+free.
+
+WHY standLoop IS ITS OWN LOOP rather than a line inside arbLoop: arbLoop is a
+self-chained async loop and Merchant.js never got noHang() - that shipped in
+Ranger v51 / Priest v26 / Mage v50 only. If any await in arbLoop never settles
+the chain ends silently, and leaving the sole stand-opener inside it would make
+the stand's existence inherit arbLoop's liveness. The redundancy that would
+currently mask such a hang is exactly what collapsing six openers into one
+removes, so the two changes must not be combined.
+
+PROBE.hold is now honoured. The old arbLoop line sat outside that guard, so a
+probe hold stopped everything except stand churn. As the sole owner that
+inconsistency would have become the only behaviour.
+
+state.standSuppressed added: the reconciler opens whenever idle-and-home-and-
+down, which loses the wasStandOpen intent the old restores carried. Without an
+explicit flag there would be no way to keep the stand down while idle at home.
+
+No harness in this repo, so the lock and the guard were extracted and run
+standalone: 22 cases, including nesting, release-after-throw, nudge-does-not-
+close, and a direct reproduction of the bug (a reconciler check during an
+in-flight move must not fire). All pass.
+
+NOT FIXED HERE, observed live while writing this: the stand was found open at
+(-179,-72), which is CONFIG.townSpot and 106.9 units from the nearest candidate
+spot against a 20-unit threshold. That is travelTo's tail returning true after
+the town() fallback without verifying arrival, so openStandAtBestSpot believes
+it reached a candidate and opens where it stands. Known since 2026-09-24, still
+unfixed, and unrelated to the stand race.
+
 ## v50
 
 stand thrash: stop paying a cross-town round trip per gear step.
