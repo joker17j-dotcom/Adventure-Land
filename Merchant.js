@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v54
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v55
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -181,7 +181,17 @@ async function plPoll() {
 			// Straight into the script's existing handler, so relayed and in-game
 			// messages take exactly the same path. plFirstTime drops whichever
 			// copy arrives second.
-			try { on_cm(m.frm, m.payload); } catch (e) { plLog('handler error: ' + e, 'orange'); }
+			// Carry the relay's own timestamp through. The bridge stamps every
+			// message with `ts` from time.time() - epoch SECONDS - while every
+			// clock in this file is Date.now() milliseconds. Convert here, once:
+			// a raw seconds value compared against a ms watermark reads as 1970
+			// and would refuse EVERY request instead of only replayed ones.
+			// Messages that arrived in-game via send_cm have no _plts and need
+			// none - send_cm is live and cannot be replayed. Only the bridge
+			// stores messages, so only the bridge can hand one back twice.
+			const relayed = Object.assign({}, m.payload || {});
+			if (m.ts && !relayed._plts) relayed._plts = Math.round(m.ts * 1000);
+			try { on_cm(m.frm, relayed); } catch (e) { plLog('handler error: ' + e, 'orange'); }
 		}
 	} catch (e) {
 		plUp = false;
@@ -192,6 +202,36 @@ async function plPoll() {
 
 function plStatus() {
 	return { bridge: plUp ? 'up' : 'off', cursor: plCursor, deduped: plSeen.size };
+}
+
+/* Per recipient+potion "already served" watermark.
+
+   plCursor and plSeen both live in memory, and change_server reloads the page
+   on every hop, so both reset. The bridge keeps messages for MESSAGE_TTL (10
+   minutes) and serves everything with seq > since, so after a hop the merchant
+   re-reads up to ten minutes of already-satisfied low_potions requests and
+   delivers against each one. Measured 2026-09-25: MageofOz went from 278 to
+   10,563 mpot1 on a single genuine request, and FatherToken reached 11,059.
+
+   This is the durable half of the fix: it lives in CODE storage, so it is the
+   one piece of state that a hop cannot erase. A request is refused only when
+   THAT character has already been served THAT potion since the request was
+   made - which is, by definition, a request that is already satisfied. It
+   never discards an unmet need, so it cannot hide one from arbOldestJobAgeMs
+   and the jobPreemptMs safeguard the way a blanket staleness gate would.
+
+   Keyed per potion on purpose: an mp delivery must not suppress an hp request
+   that happened to be made a second earlier. */
+function plDeliveredKey(recipient, potion) {
+	return 'pl_delivered_' + recipient + '_' + (potion === 'mp' ? 'mp' : 'hp');
+}
+function plDeliveredAt(recipient, potion) {
+	try { return Number(get(plDeliveredKey(recipient, potion))) || 0; }
+	catch (e) { return 0; }
+}
+function plMarkDelivered(recipient, potion, when) {
+	try { set(plDeliveredKey(recipient, potion), when || Date.now()); }
+	catch (e) { plLog('could not persist delivery watermark for ' + recipient, 'orange'); }
 }
 
 plProbe();
@@ -789,7 +829,19 @@ function on_cm(name, data) {
 		: mShardKey();
 
 	if (data.message === 'low_potions') {
-		enqueueJob({ type: 'delivery', recipient: name, potion: data.potion, x: data.x, y: data.y, map: data.map, shard });
+		// A relayed message carries the bridge's send time; an in-game one is
+		// live, so "now" is the honest stamp for it.
+		const reqAt = Number(data._plts) || Date.now();
+		const servedAt = plDeliveredAt(name, data.potion);
+		if (servedAt && reqAt <= servedAt) {
+			// Logged, never silent: "suppressed a replay" and "nobody asked" have
+			// to stay distinguishable, or this guard becomes the thing that hides
+			// a starving fighter.
+			plLog('ignoring replayed ' + (data.potion || 'hp') + ' request from ' + name
+				+ ' (sent ' + Math.round((servedAt - reqAt) / 1000) + 's before it was served)', '#8b98ab');
+			return;
+		}
+		enqueueJob({ type: 'delivery', recipient: name, potion: data.potion, requestAt: reqAt, x: data.x, y: data.y, map: data.map, shard });
 	}
 	if (data.message === 'inventory_almost_full') {
 		enqueueJob({ type: 'pickup', recipient: name, emptySlots: data.emptySlots, x: data.x, y: data.y, map: data.map, shard });
@@ -1009,6 +1061,14 @@ async function attemptActions(recipientName, remaining) {
 		}
 
 		try {
+			// Stamped BEFORE the send, deliberately. If a hop or reload lands
+			// between send_item and this write, the mark is the only thing that
+			// stops the replayed request coming straight back. The cost of that
+			// ordering is narrow: if send_item throws, the job is retried inside
+			// this same batch from memory, which the watermark does not filter,
+			// and if the whole batch fails the fighter re-asks 30s later with a
+			// fresh timestamp that clears the mark.
+			plMarkDelivered(recipientName, dj.potion, Date.now());
 			await send_item(recipientName, slot, CONFIG.deliveryAmount);
 			game_log(`Delivered ${CONFIG.deliveryAmount} ${itemName} to ${recipientName}`, '#00FF00');
 		} catch (e) {
@@ -4002,7 +4062,7 @@ function arbRestore() {
 // the game log named the wrong build for 25 versions. It no longer gates
 // anything: arbHalted() used to ignore a halt whose build differed, and that
 // clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-const MERCHANT_BUILD = 'v54 / arb.4 / 2026-09-25 / tier-0 potions unprotected';
+const MERCHANT_BUILD = 'v55 / arb.4 / 2026-09-25 / replayed potion requests refused';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
