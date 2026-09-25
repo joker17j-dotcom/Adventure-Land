@@ -3,6 +3,29 @@
 Standing instructions from the user. These survive context compaction; the
 conversation may not.
 
+## Which session are you
+
+Two Claude sessions share this repo and this file. Almost everything here
+applies to both, but a few things are true of only one, and getting that wrong
+has cost real time. Every section below that is session-specific says so on the
+line under its heading; an untagged section applies to both.
+
+- **The Claude Code session** runs in a container, reaches GitHub through a
+  connector, and pushes with `git`. It has no browser tabs, no `javascript_tool`
+  and no live DOM.
+- **The browser-driven session** runs in Chrome. It drives live character tabs,
+  evaluates JS in the game, and commits through the GitHub web editor because
+  its git proxy will not push this repo.
+
+**Determine which you are by measuring, never by assuming.** Run
+`git push --dry-run origin main` and believe the result. A 403 reading "not in
+this session's authorized repository set" means you are the browser-driven
+session and the web-editor route applies. Anything else, you can push.
+Measured 2026-09-25 from the browser-driven container: refused, HTTP 403.
+
+Do not restate either session's limits as a fact about the repo. "Claude pushes
+through Chrome" would stop a session that *can* push from ever trying.
+
 ## Communication
 
 - **Anything intended for the other chat goes in a paste block.** The user
@@ -42,6 +65,12 @@ conversation may not.
   exactly what someone needs before deploying, and exactly what a careless
   header resolution destroys. Lost once, in ba067df, restored after the other
   session caught it.
+- **`Merchant.js` is the exception.** Its history was moved to `CHANGELOG.md`
+  on 2026-09-21 to stay under the CODE slot size cap, so line 2 there carries
+  only the current version and the entry goes in `CHANGELOG.md` instead. Do not
+  prepend to a header that deliberately does not accumulate. Verified
+  2026-09-25: `Merchant.js` line 2 ends at `v52`, and `CHANGELOG.md` holds the
+  rest.
 
 ## Handing code to the other chat
 
@@ -65,11 +94,25 @@ conversation may not.
 
 ## The loaded copy vs this one
 
+**Both sessions.**
+
 - **This file is canonical; `/home/claude/CLAUDE.md` in the container is what
-  actually loads.** They are different files and they drifted badly: the loaded
-  copy was a 438-byte subset that stated flatly "git push from the container
-  fails", which is the unqualified phrasing the Git section above warns against.
-  The loaded copy now points here and carries a drift check.
+  actually loads.** They are different files. The loaded copy began as a
+  438-byte subset that stated flatly "git push from the container fails" - the
+  unqualified phrasing the Git section above warns against. It now carries the
+  full conventions, points here, and runs a drift check before the first repo
+  write of a session.
+- **Expect cosmetic drift; it is not worth a stop on its own.** Measured
+  2026-09-25: 14 shared sections differed, 13 of them only in punctuation and
+  emphasis - em-dashes flattened to hyphens, `FULLY` lowercased, lines reflowed,
+  one sentence dropped from Testing. This file holds the better prose. Sync
+  substance in both directions; do not degrade this copy to match the other's
+  formatting.
+- **The loaded copy is allowed to be ahead.** That same check found the
+  `Merchant.js` version-header exception present in the loaded copy and missing
+  here, which would have walked the other session into prepending to a header
+  that does not accumulate. It was carried into this file on 2026-09-25. Drift
+  is a two-way diff, not a one-way correction.
 - **The loaded copy must never be auto-synced from this one.** A session that
   finds a difference reports it and stops, because this file is edited by both
   chat sessions and a difference may be something the user has not reviewed.
@@ -79,6 +122,8 @@ conversation may not.
   the contents API works fine.
 
 ## Browser tabs - the keeper
+
+**Browser-driven session only.** The Claude Code session has no tabs.
 
 - **Keep one tab parked on `https://adventure.land/` and never close it.** This
   is a deliberate exception to the habit of closing every tab you open. The MCP
@@ -94,6 +139,10 @@ conversation may not.
   `127.0.0.1:8787`, ALData and the GitHub API are all reachable from it.
 
 ## Diagnosing a running character
+
+**Both sessions.** The `adventureland` MCP server needs no tab; the
+`parent.localStorage` round-trip at the end of this section does, so the
+Claude Code session stops after `browser_code_eval`.
 
 - **Use the `adventureland` MCP server, not a browser tab.** `browser_code_eval`
   runs JS in a character's CODE context with no tab access at all, which makes
@@ -155,6 +204,10 @@ conversation may not.
 
 ## Chrome throttles background tabs - it looks exactly like dead code
 
+**Both sessions must know this; only the browser-driven one can observe it.**
+If you cannot check `document.hidden` yourself, do not conclude a loop is dead -
+ask the other session to measure first.
+
 - **THIS IS THE FIRST THING TO CHECK when a character looks idle.** A hidden
   tab's timers are clamped to roughly 1s, then to about 1/minute after a few
   minutes hidden. Measured 2026-09-22: `setInterval(fn, 100)` fired every
@@ -212,6 +265,8 @@ conversation may not.
 
 ## Reading a running script's state
 
+**Browser-driven session only.** Needs a live tab.
+
 - **Script functions live in the `maincode` iframe, not the top window.**
   At top level `window === parent`, so checking there returns `undefined` for
   everything and looks exactly like a silent load failure. v43 was wrongly
@@ -221,10 +276,15 @@ conversation may not.
 
 ## javascript_tool mechanics
 
+**Browser-driven session only.**
+
 - **Async work returns `{}`.** Stash the result on `window.__X` inside the
   snippet and read it back with a follow-up synchronous call.
 
 ## Editing files in the GitHub web editor
+
+**Browser-driven session only** - it is the one that cannot `git push`.
+The Claude Code session commits with git and should never use this route.
 
 - **Set content with `view.dispatch`, not selectAll+paste.** The paste route
   silently APPENDED once - 27,816 chars where 16,181 was expected. Use
@@ -248,6 +308,8 @@ conversation may not.
 
 ## Claiming a character in a manageable tab
 
+**Browser-driven session only.**
+
 - **Adventure Land refuses a second-tab takeover.** Navigating a new tab to
   `/character/<Name>/in/<REGION>/<ID>/` loads the character picker and leaves
   the running session untouched - tested, with the original still
@@ -257,6 +319,8 @@ conversation may not.
   recipe this bullet used to give was wrong; see the next section.
 
 ## Commanding a running character from /hub
+
+**Browser-driven session only.** Needs a live `/hub` tab.
 
 - **Skip the UI - the dispatch is one line.** Click the character's card, then
   `socket.emit("o:command", "<raw JS string>")`. Verified round trip ~1.0-1.2s.
