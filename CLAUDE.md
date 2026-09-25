@@ -53,11 +53,15 @@ conversation may not.
 
 ## Claims about the live game client
 
-- **`kaansoral/adventureland` is a stale snapshot.** It has been wrong twice
-  about the live DOM (missing `DIV.game-controls` entirely; describing
-  `#newparty` styling that our own code supplies). Measure the running client
-  before asserting anything about its markup, and never write an inferred
-  claim into a code comment — in the file, it reads as documentation.
+- **The creator's server source moved.** The current repository is
+  `https://github.com/kaansoral/adventureland_mongodb`. The older
+  `kaansoral/adventureland` is a stale snapshot and has been wrong twice about
+  the live DOM (missing `DIV.game-controls` entirely; describing `#newparty`
+  styling that our own code supplies).
+- **Measure the running client before asserting anything about its markup**, and
+  never write an inferred claim into a code comment — in the file, it reads as
+  documentation. This holds for `adventureland_mongodb` as well: it is the
+  server source, not a mirror of the deployed client.
 
 ## The loaded copy vs this one
 
