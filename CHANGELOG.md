@@ -12,6 +12,41 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v53
+
+a stored arbitrage halt is no longer cleared by a redeploy.
+
+arbHalted() gated a persisted halt on `h.build !== MERCHANT_BUILD`, treating a
+build change as "you have redeployed, so you presumably fixed the cause". That
+clause is gone.
+
+It had never once run. MERCHANT_BUILD was frozen at 'v27 / arb.4 / 2026-09-19'
+from 2026-09-19 while the file reached v52, so the comparison was always false.
+Fixing that string earlier on 2026-09-25 armed a path that had never executed,
+and its first effect would have been to clear this breaker on EVERY deploy.
+
+The theory behind it does not hold here. Deploys mostly touch unrelated
+subsystems - the three before this one were farm scoring, a mirror document and
+a build string, none of them related to stranding. Under the armed clause, a
+stand or gear commit would have silently resumed an executor that stopped
+because the market being traded against was not the market on the board. That
+is the exact failure the breaker exists to stop, and the cost is on record:
+71,981,480 gold into unsold stock on 2026-09-23 alone, behind an in-memory
+breaker that tripped 18 times across two days and never stopped a trade.
+
+Two bounds remain, neither resting on an inference: haltMs expiry (60 min), and
+arbProbeHalt(false) by hand. The manual clear already says "I fixed it, resume
+now" as a deliberate act rather than a side effect of an unrelated commit. The
+cost of removal is at most a 60-minute wait or one console call after a real
+fix.
+
+`build` is still stamped into the stored halt, now purely diagnostic, and
+arbProbeHalt() prints it ("tripped on build ...") so the field is read rather
+than write-only.
+
+The CONFIG.arbitrage.haltMs comment promised three bounds and now describes
+two, with the removed one and its reasoning recorded there.
+
 ## v52
 
 gear tripwire - four reasons not to attempt a gear step. DEFAULT OFF.
