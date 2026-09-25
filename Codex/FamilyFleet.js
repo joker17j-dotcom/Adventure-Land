@@ -1488,10 +1488,30 @@ function myDps() {
 }
 
 /* Mitigated damage, the same shape the party's farm scorer uses so the two
-   agree about what a spot costs. */
+   agree about what a spot costs. Both were changed together on 2026-09-25:
+   the shared 1-x/(x+900) curve was an approximation that overestimates our
+   damage by up to 60% against defense above 400, so both now prefer the
+   game's own damage_multiplier and keep the old curve only as a fallback.
+
+   The guard is not decoration here. This script runs in a context where
+   get_entities and ms_to_next_skill are both undefined, so damage_multiplier
+   cannot be assumed either; it is typeof-tested, its null return for an
+   undefined argument is rejected, and the fallback logs once rather than
+   quietly substituting a number that looks fine. */
+let mitigationFallbackLogged = false;
 function mitigated(dps, defense) {
 	const K = 900;
-	return dps * (1 - (defense / (defense + K)));
+	const d = Number.isFinite(defense) ? defense : 0;
+	if (typeof parent !== 'undefined' && typeof parent.damage_multiplier === 'function') {
+		const m = parent.damage_multiplier(d);
+		if (typeof m === 'number' && isFinite(m)) return dps * m;
+	}
+	if (!mitigationFallbackLogged) {
+		mitigationFallbackLogged = true;
+		console.error('crabxReady: parent.damage_multiplier unavailable, using the /(x+'
+			+ K + ') approximation, which overestimates our damage against defense above ~400');
+	}
+	return dps * (1 - (d / (d + K)));
 }
 
 /* Is this character comfortably able to farm crabx?
