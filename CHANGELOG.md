@@ -12,6 +12,41 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v54
+
+tier-0 potions are no longer protected.
+
+PROTECTED_ITEM_NAMES dropped 'hpot0' and 'mpot0'. The fighters dropped them from
+muling.excludeItems, the ranger also from inventoryRelief.neverSell, and
+Cleanout.js from CONFIG.protect.
+
+There is nothing left to protect. Measured 2026-09-25 across Dexon, FatherToken,
+MageofOz, Meltymerch and all three bank packs: zero hpot0 and zero mpot0. Every
+buy path is tier 1 already - ensureStock('hpot1'), ensureStock('mpot1'), and the
+delivery picks `dj.potion === 'mp' ? 'mpot1' : 'hpot1'` - so nothing re-acquires
+tier 0. The 3,354 hpot0 that had accumulated on FatherToken were cleared by hand.
+
+Worth recording why removing the protection was NOT what drew that pile down,
+because the obvious reading is wrong. Protection governs muling and selling, not
+drinking. use_skill('use_hp') resolves to use('hp'), which in
+adventureland_mongodb js/functions.js:4593 scans character.items from the LAST
+slot BACKWARDS and consumes the first item whose `gives` matches the resource:
+
+    for (var i = character.items.length - 1; i >= 0; i--)
+
+Tier is never consulted - slot position alone decides. FatherToken's hpot0 sat
+at slot 0, beneath hpot1 at slot 2, so the scan reached tier 1 first every time
+and those 3,354 potions were unreachable no matter how long he farmed. The
+ranger never had the problem because inventorySorter pins hpot1/mpot1 to low
+slots; the priest and mage have no sorter, which is how the pile stranded.
+Unprotecting it would have muled and vendored the stock (~40k gold), not drunk
+it (~168k gold of tier 1 displaced).
+
+The stock counts still read quantity('hpot0') + quantity('hpot1') and the mpot
+equivalent on purpose. They are counters, not protection: leaving tier 0 in the
+sum means a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a
+restock.
+
 ## v53
 
 a stored arbitrage halt is no longer cleared by a redeploy.
