@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v52
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v53
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -323,11 +323,23 @@ const CONFIG = {
 		   across two days and never once stopped a trade. 71,981,480 went into
 		   unsold stock behind it on 2026-09-23 alone.
 
-		   The halt is now persisted, and bounded three ways so a stored stop can
+		   The halt is now persisted, and bounded two ways so a stored stop can
 		   never outlive its usefulness - which is what the "no runtime toggle for
-		   enabled" rule was protecting against: it expires after this long, it is
-		   ignored when MERCHANT_BUILD has changed since (a redeploy clears it),
-		   and arbProbeHalt(false) clears it by hand. */
+		   enabled" rule was protecting against: it expires after this long, and
+		   arbProbeHalt(false) clears it by hand.
+
+		   A third bound used to sit here: the halt was ignored once MERCHANT_BUILD
+		   changed, on the theory that a redeploy means the cause was fixed. It was
+		   removed on 2026-09-25. It had never once run - MERCHANT_BUILD was frozen
+		   at v27 from 2026-09-19 while the file reached v52, so the comparison was
+		   always false - and the moment that string was corrected the clause would
+		   have started clearing this breaker on EVERY deploy. The theory does not
+		   hold either: deploys here mostly touch unrelated subsystems, so a stand
+		   or gear change would have resumed an executor that stopped because the
+		   market being traded against was not the market on the board. That is the
+		   failure this breaker exists to stop, and it costs real gold - see the
+		   71,981,480 above. arbProbeHalt(false) already expresses "I fixed it,
+		   resume now" as a deliberate act rather than a side effect. */
 		haltMs: 60 * 60 * 1000,
 		/* Ceiling on what ONE trade may spend, per item. 0 or absent = uncapped.
 
@@ -3073,11 +3085,12 @@ function arbHalted() {
 	let h = null;
 	try { h = get(ARB_HALT_KEY); } catch (e) { return null; }
 	if (!h || !h.at) return null;
-	if (h.build !== MERCHANT_BUILD) return null;   // redeployed since - stale stop
 	if (Date.now() - h.at > CONFIG.arbitrage.haltMs) return null;
 	return h;
 }
 
+/* build is recorded for diagnosis - which build was running when the breaker
+   tripped - and is deliberately NOT a clearing condition. See haltMs. */
 function arbHalt(reason) {
 	try { set(ARB_HALT_KEY, { at: Date.now(), reason: reason, build: MERCHANT_BUILD }); } catch (e) { }
 }
@@ -3092,7 +3105,8 @@ function arbProbeHalt(on) {
 	}
 	const h = arbHalted();
 	arbLog(h ? ('HALTED ' + Math.round((Date.now() - h.at) / 60000) + ' min ago: ' + h.reason
-		+ ' (expires in ' + Math.round((CONFIG.arbitrage.haltMs - (Date.now() - h.at)) / 60000) + ' min)')
+		+ ' (expires in ' + Math.round((CONFIG.arbitrage.haltMs - (Date.now() - h.at)) / 60000) + ' min'
+		+ ', tripped on build ' + (h.build || 'unknown') + ')')
 		: 'not halted', '#FFD700');
 	return h;
 }
@@ -3981,15 +3995,14 @@ function arbRestore() {
 
 // WHICH BUILD IS ACTUALLY RUNNING.
 // -> MerchantComments.md#MERCHANT_BUILD
-// BUMP THIS EVERY DEPLOY, together with line 2. It is not decoration:
-//   - it is the only version a human sees in-game, via the [probe] game_log
-//     on load, and
-//   - arbHalted() compares a stored halt's build against it, so a halt is
-//     only cleared by a redeploy if this string actually changed.
-// It sat at v27 from 2026-09-19 to 2026-09-25 while the file reached v52:
-// the game log named the wrong build for 25 versions and the
-// redeploy-clears-the-halt valve could never fire.
-const MERCHANT_BUILD = 'v52 / arb.4 / 2026-09-25 / gear tripwire (default off) + one stand opener + stand dwell';
+// BUMP THIS EVERY DEPLOY, together with line 2. It is the version a human
+// sees in-game, via the [probe] game_log on load, and it is stamped into a
+// stored arbitrage halt so you can tell which build tripped the breaker.
+// It sat at v27 from 2026-09-19 to 2026-09-25 while the file reached v52, so
+// the game log named the wrong build for 25 versions. It no longer gates
+// anything: arbHalted() used to ignore a halt whose build differed, and that
+// clause was removed in v53 - see CONFIG.arbitrage.haltMs.
+const MERCHANT_BUILD = 'v53 / arb.4 / 2026-09-25 / halt no longer cleared by redeploy';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
