@@ -12,6 +12,77 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v52
+
+gear tripwire - four reasons not to attempt a gear step. DEFAULT OFF.
+
+CONFIG.gearTripwire.mode is 'off' (default), 'observe' or 'enforce'. In
+'observe' every step is judged and logged and NOTHING is blocked, which is the
+intended way to watch it before trusting it. gearProbeTripwire(n) dumps the
+verdicts and a tally of which predicate fired.
+
+WHY. The gear chooser optimises cost-per-success and nothing else. It cannot
+see what the finished item costs, what the party already wears, or whether the
+inputs it needs exist. All three were live on 2026-09-25:
+
+BUY BEATS BUILD. Measured from the real market that day:
+
+    step        success   bases/success   build      buy finished   verdict
+    +3 -> +4      68%         1.47       1,529,412     2,500,000    BUILD 1.6x
+    +4 -> +5      58%         1.72       4,379,310    15,054,400    BUILD 3.4x
+    +5 -> +6      38%         2.63      39,722,105    22,905,600    BUY   1.7x
+    +6 -> +7      24%         4.17      95,606,667    66,521,280    BUY   1.4x
+
+The crossover is at +5: below it building is several times cheaper, at and
+above it success rates collapse faster than prices rise and buying wins. The
+market is near-efficient at the top (1.1-1.7x), so this avoids losses rather
+than finding free money.
+
+NO IMPROVEMENT. Dexon already had firebow +7 equipped while the plan ground a
+spare toward +5. parent.party carries no slots and parent.entities is
+proximity-bound, so the only source that works while the party is off farming
+is the party_link cache at cstore_<name>_newparty_info, which does carry slots
+and lastSeen. Verified against Dexon's own tab: firebow +7, 14 slots, age 0s.
+The recipient is resolved from parent.party[name].type rather than hardcoded,
+so a roster change does not silently misroute gear.
+
+INPUTS UNOBTAINABLE. Zero dexearrings were for sale on any shard in either
+feed, while all three plan candidates were dexearring compounds needing three
+copies each. That plan could never complete, and the loop re-evaluated it every
+cycle regardless. A compound with fewer than three copies and no asks anywhere
+is now reported - including the case where it never reaches the affordability
+check, which is how it stayed invisible.
+
+VALUABLE WITHOUT AN OFFERING. Break-even is 10,500,000, measured: at that item
+value the safe route (scroll2 + offeringp, 94%, 7,021,277 per success) and the
+cheap route (scroll1 alone, 58%, 68,966 per success but 0.724 items destroyed
+per success) cost the same. Above it, grinding unprotected destroys more value
+than it saves.
+
+NOTE ON THE FIREBOW LOST ON 2026-09-24: a +3 asks 1,000,000, so the +4 was
+worth 2-4M, well under break-even. The 58% gamble was CORRECT and simply lost.
+This tripwire would not have saved it and is not meant to. It exists for the
+range above the crossover, where dexbelt +2 bids 2,500,000 and dexbelt +5 bids
+1,000,000,000 - 400x for three levels.
+
+EVERY PREDICATE FAILS OPEN. A missing market read, stale party info or a thrown
+lookup allows the step. A tripwire that silently halts all gear work because a
+fetch failed would be worse than the behaviour it replaces. gtJudge catches
+everything, logs, and returns allow.
+
+No harness in this repo, so the predicates were extracted and run standalone
+against the real 2026-09-25 prices: 15 cases covering the full buy-vs-build
+ladder, the equipped-gear comparison, stale party info, obtainable and
+unobtainable compounds, above and below break-even with and without an offering
+held, and three fail-open paths. All pass.
+
+NOT BUILT, deliberately: offering stock-keeping (buy up to a quantity, bank,
+retrieve). Nothing currently owned comes near break-even - the entire gear
+inventory is three dexearrings worth about 50,000 each - so locking 50-100M
+into offerings would idle capital that arbitrage returns 52.3% on. The tripwire
+is the cheap half; the stock is worth building when something actually crosses
+10,500,000.
+
 ## v51
 
 one closer, one opener.
