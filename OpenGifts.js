@@ -77,7 +77,7 @@ const CONFIG = {
 
 	   confetti is g20 - it sells for 12 gold. It is on this list to free the
 	   slot, not to earn anything. */
-	autoSell: { partyhat: 0, confetti: 0, poker: 3 },
+	autoSell: { partyhat: 0, confetti: 0, poker: 3, pants:0, shoes:0, gloves:0, coat:0},
 
 	// Sell every this many opens, so slots come back during a long run rather
 	// than only at the end.
