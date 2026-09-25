@@ -50,7 +50,7 @@ the way.
 | bank gold and contents | `POST /api/load_bank`, empty body, `credentials:'same-origin'` |
 | pocket gold, position, stand | `character.*` in the CODE context |
 | in-flight trade | `arbLoadTrade()` |
-| halt state | `arbHalted()` - returns null when expired or stale-build |
+| halt state | `arbHalted()` - returns null once the halt has expired |
 | blocked vendors | `arbLoadFails()` |
 | pipeline health | `arbProbeFindFlips({quiet:true})`, and again with `maxAgeSec` relaxed |
 
@@ -72,17 +72,39 @@ Trade records carry: `status`, `item`, `qty`, `buyPrice`, `buyFrom`, `buyShard`,
 ### Traps
 
 - **`status` splits `closed` from `abandoned`.** Only `closed` trades have a
-  meaningful `net`. Abandons vastly outnumber closes historically (928 to 106);
-  quoting the raw ratio without noting the trend is misleading.
+  meaningful `net`. Abandons vastly outnumber closes all-time - 950 to 119 as of
+  2026-09-25 - but quoting that raw ratio without the trend is misleading: it is
+  88.9% all-time against 69% over the trailing 24h. Re-count both, and report the
+  window beside the all-time figure.
 - **Timestamps are `closedAt`/`openedAt`, ISO strings.** A generic `at`/`ts`
   probe finds nothing and silently yields an empty window.
 - **NPC sales are recorded nowhere** - not in the bridge, not in the server's
   `trade_history`, which logs player trades only. Gold can move without any
   record explaining it.
 - **A dry spell is usually data, not code.** Check `arbProbeFindFlips` with the
-  age limit relaxed before blaming a build. `sellMaxAgeSec` is 420s and routinely
-  removes most candidates.
+  age limit relaxed before blaming a build. `sellMaxAgeSec` is 420s. An earlier
+  revision said it "routinely removes most candidates"; measured 2026-09-25 it
+  removed 2 of 6 (4 strict, 6 relaxed to 24h). It is worth relaxing, but do not
+  assume it is the cause - measure the two counts and say both. Restore the
+  config value afterwards; the probe does not.
+- **A dry spell can also be the executor being busy.** Only one trade runs at a
+  time: `arbCanStart` returns "a trade is already in flight" and every other
+  candidate waits. On 2026-09-25 a 85,540,000 trade at 3.2% blocked a 500,000
+  one offering higher ABSOLUTE profit, for 4.7 hours with no closes. Check the
+  in-flight trade before concluding the pipeline is dry.
 - **`arbProbeHalt(true)` does not reliably write a halt.** `arbHalt(reason)` does.
+- **Flip candidates and trade records name profit differently.** A closed trade
+  record carries `net`. A candidate from `arbProbeFindFlips` carries `profit` and
+  `unitNet` and has NO `net` field, so reading `.net` off a candidate yields
+  `undefined` and prints as 0. That produced a first draft of the 2026-09-25
+  report showing every live flip at "net 0" - a dead pipeline that was in fact
+  four profitable candidates. Candidate fields: item, level, special, qty, spend,
+  profit, unitNet, taxRate, buyFrom, buyPrice, buyShard, buyAgeSec, buyIsNpc,
+  buySlot, sellTo, sellPrice, sellShard, sellAgeSec, sellSlot, buyMap, buyX,
+  buyY, sellMap, sellX, sellY, sameShard, hops, affordable.
+- **A CODE reload resets an in-flight trade's `startedAt`.** After redeploying,
+  that timestamp measures the reload, not the trade, so trade age is unknowable
+  for anything already running. Read it before reloading if it matters.
 
 ---
 
