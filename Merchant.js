@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v50
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v51
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -447,6 +447,8 @@ const CONFIG = {
 		// stand spends more time moving than standing.
 		// -> MerchantComments.md#minDwellMs
 		minDwellMs: 3 * 60 * 1000,
+		// How often standLoop reconciles "idle and home and no stand" -> open one.
+		reconcileMs: 4000,
 	},
 
 	// Vendor-bound goods shown on the stand instead of sold to an NPC.
@@ -498,6 +500,8 @@ const state = {
 	busy: false,
 	standOpen: false,
 	standOpenedAt: 0,       // when the current stand went up - drives standDwellHeld()
+	travelling: 0,          // >0 while a move is in flight - a COUNTER, travel nests
+	standSuppressed: false, // set by hand to keep the stand down while idle at home
 	lastHealRequest: 0,
 	kissAttemptedFor: null, // name of the featured player already attempted this round - avoids retrying the same one
 	kissSkippedFor: null,   // ...and the one we declined while hop sick, so that logs once rather than every tick
@@ -569,18 +573,63 @@ async function goToTownSpot() {
 	return await travelTo(CONFIG.townSpot.map, CONFIG.townSpot.x, CONFIG.townSpot.y);
 }
 
-async function travelTo(map, x, y) {
-	await ensureStandClosed();
+/* ============================================================================
+   MOVEMENT - the only place this script moves the character.
 
+   Every mover routes through here so two invariants hold:
+
+     1. The stand is closed before real travel. The server clamps speed to 10 -
+        a quarter pace - while player.p.stand is set, so travelling with it up
+        is pure loss.
+     2. state.travelling is held for the WHOLE duration of the move, not just
+        its first instant. That is the half a close-before-move wrapper cannot
+        give you, and it is what was actually broken. MEASURED 2026-09-25:
+        travelToBank closed the stand correctly (spy caught the close) and
+        something reopened it 1.2 seconds later, mid-walk, leaving him clamped
+        at speed 10 for the whole trip to the bank.
+
+   A COUNTER, not a boolean: travel nests - travelTo falls back to town() and
+   then moves again - and a boolean would clear on the inner unwind while the
+   outer move was still running.
+   ============================================================================ */
+function travelBegin() { state.travelling++; }
+function travelEnd() { state.travelling = Math.max(0, state.travelling - 1); }
+
+// A real move. Closes the stand, holds the lock, propagates failure unchanged
+// so every existing catch keeps working.
+async function moveTo(spec) {
+	travelBegin();
+	try { await ensureStandClosed(); return await smart_move(spec); }
+	finally { travelEnd(); }
+}
+
+// town() recall, same contract.
+async function moveTown() {
+	travelBegin();
+	try { await ensureStandClosed(); return await town(); }
+	finally { travelEnd(); }
+}
+
+/* A short in-map reposition. Deliberately does NOT close the stand: these are a
+   few units, and tearing the stand down for them would reintroduce exactly the
+   teardown-per-unit-of-work granularity that v50 removed. It still takes the
+   lock so the reconciler cannot race it. */
+async function moveNudge(fn) {
+	travelBegin();
+	try { return await fn(); }
+	finally { travelEnd(); }
+}
+
+async function travelTo(map, x, y) {
 	try {
-		await smart_move({ map, x, y });
+		await moveTo({ map, x, y });
 		return true;
 	} catch (e) {
 		game_log(`smart_move to ${map} (${x}, ${y}) failed: ${e.reason || e} - trying town() fallback`, 'red');
 	}
 
 	try {
-		await town();
+		await moveTown();
 	} catch (e) {
 		game_log(`town() fallback also failed: ${e.reason || e} - Meltymerch may be stuck on ${character.map}`, 'red');
 		return false;
@@ -591,7 +640,7 @@ async function travelTo(map, x, y) {
 	// again now that we're hopefully out of a dead-end area.
 	if (character.map !== map) {
 		try {
-			await smart_move({ map, x, y });
+			await moveTo({ map, x, y });
 			return true;
 		} catch (e) {
 			game_log(`Still can't reach ${map} after town() - Meltymerch is stuck on ${character.map}`, 'red');
@@ -685,6 +734,10 @@ async function mHopTo(key) {
 		return false;
 	}
 	game_log(`Hopping to ${key}`, '#FFD700');
+	// A shard hop reloads the page. Close the stand first: the speed clamp
+	// follows him to the new shard otherwise, and shouldHoldStand() means no
+	// stand belongs off the home shard anyway.
+	try { await ensureStandClosed(); } catch (e) { }
 	try { change_server(t.region, t.name); }
 	catch (e) { game_log(`change_server failed: ${e}`, 'red'); return false; }
 
@@ -864,7 +917,6 @@ async function processBatch() {
 			game_log(`Still off-home on ${mShardKey()}; will keep trying to reach ${home}`, 'red');
 		}
 	}
-	await openStandAtBestSpot();
 }
 
 // ============================================================================
@@ -1053,8 +1105,7 @@ async function travelToRecipient(job) {
 	target = get_player(job.recipient);
 	if (target && !is_in_range(target, 'attack')) {
 		try {
-			await ensureStandClosed();
-			await xmove(target.x, target.y);
+			await moveNudge(function () { return xmove(target.x, target.y); });
 		} catch (e) {
 			// Best effort - proceed to the delivery attempt regardless.
 		}
@@ -1091,6 +1142,44 @@ function standDwellHeld() {
 	if (!state.standOpen && !character.stand) return false;  // nothing to protect
 	if (!state.standOpenedAt) return false;                  // opened before this build; do not stall forever
 	return (Date.now() - state.standOpenedAt) < (CONFIG.stand.minDwellMs || 0);
+}
+
+/* ============================================================================
+   THE ONLY PLACE A STAND IS RAISED.
+
+   Six call sites used to reopen the stand: processBatch, gearProgressionLoop,
+   anniversaryKissLoop, scoutGoHome, arbLoop and resumeInterruptedTrip. Five
+   were imperative restores ("I closed it, so I put it back") and one - arbLoop's
+   - was already a reconciler. None of them checked whether the character was
+   mid-walk, which is how a stand came back up underneath a trip that had
+   correctly closed it.
+
+   This is the reconciler, and it is declarative: if nothing is happening, we
+   are home, and there is no stand, raise one. Every former caller is covered
+   because they all end by clearing the flag they took.
+
+   WHY ITS OWN LOOP, not a line inside arbLoop: arbLoop is a self-chained async
+   loop and Merchant.js never got noHang() - that shipped in Ranger v51 /
+   Priest v26 / Mage v50 only. If any await in arbLoop never settles, the chain
+   ends silently. Leaving the sole stand-opener in there would make the stand's
+   existence inherit arbLoop's liveness, and the redundancy that currently
+   masks such a hang is exactly what this change removes.
+
+   PROBE.hold IS honoured here. The old arbLoop line sat outside that guard, so
+   a probe hold stopped everything except stand churn. As the sole owner that
+   inconsistency would become the only behaviour.
+   ============================================================================ */
+async function standLoop() {
+	try {
+		if (!state.travelling && !character.moving && !character.stand
+			&& !state.standOpen && !state.standSuppressed && !PROBE.hold
+			&& !state.busy && !ARB.cur && !ARB.busy) {
+			await openStandAtBestSpot();
+		}
+	} catch (e) {
+		console.error('standLoop error:', e);
+	}
+	setTimeout(standLoop, (CONFIG.stand && CONFIG.stand.reconcileMs) || 4000);
 }
 
 async function openStandAtBestSpot() {
@@ -1736,16 +1825,15 @@ async function ensureUpgradeMaterials(scrollName, offeringName) {
 
 async function travelToBank() {
 	if (character.map === CONFIG.bank.map) return true;
-	await ensureStandClosed();
 	try {
-		await smart_move({ to: 'bank' });
+		await moveTo({ to: 'bank' });
 		return true;
 	} catch (e) {
 		game_log(`smart_move to bank failed: ${e.reason || e} - trying town() fallback first`, 'red');
 	}
 	try {
-		await town();
-		await smart_move({ to: 'bank' });
+		await moveTown();
+		await moveTo({ to: 'bank' });
 		return character.map === CONFIG.bank.map;
 	} catch (e) {
 		game_log(`Still can't reach the bank: ${e.reason || e}`, 'red');
@@ -1945,7 +2033,6 @@ async function gearProgressionLoop() {
 				}
 				if (steps) game_log(`Gear progression: ${steps} step(s) in one visit`, '#00FF00');
 
-				if (wasStandOpen) await openStandAtBestSpot();
 				state.busy = false;
 			}
 		}
@@ -2063,8 +2150,7 @@ async function attemptKiss(name) {
 				   one: the featured player can be anywhere, the chase reruns for a
 				   whole 30-minute round, and it was observed crawling out to the
 				   party's farm spot at a quarter speed with the stand still up. */
-				await ensureStandClosed();
-				try { await smart_move(target); } catch (e) { /* keep trying next tick */ }
+				try { await moveTo(target); } catch (e) { /* keep trying next tick */ }
 			}
 		} else if (!smart.moving) {
 			// Not visible yet (get_player only resolves nearby/visible
@@ -2072,8 +2158,7 @@ async function attemptKiss(name) {
 			// state instead of waiting for visibility to happen on its own.
 			const loc = getFeaturedLocation();
 			if (loc) {
-				await ensureStandClosed();   // same speed clamp as above
-				try { await smart_move(loc); } catch (e) { /* keep trying next tick */ }
+				try { await moveTo(loc); } catch (e) { /* keep trying next tick */ }
 			}
 		}
 
@@ -2130,7 +2215,6 @@ async function anniversaryKissLoop() {
 				const success = await attemptKiss(name);
 				if (success) state.kissAttemptedFor = name; // one rewarded visit per round, per the event's own rule
 
-				if (wasStandOpen) await openStandAtBestSpot();
 				state.busy = false;
 			}
 		}
@@ -2380,8 +2464,7 @@ async function scoutPontyCheck() {
 	// Do not walk to him from the town spot. He is 286.1 away from it and has
 	// -> MerchantComments.md#do-not-walk-to-him
 	if (!atTownSpot()) {
-		await ensureStandClosed();   // same bypass as arbApproach
-		try { await smart_move({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
+		try { await moveTo({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
 		catch (e) { return; }
 	}
 	const items = await scoutPontyQuery();
@@ -2542,7 +2625,7 @@ async function scoutGoHome(reason) {
 	try {
 		await scoutReportConfirmed();       // never carry findings across a hop
 		scoutLog(`standing down (${reason}) - returning to ${home}`, '#FFD700');
-		if (await mHopTo(home)) await openStandAtBestSpot();
+		await mHopTo(home);
 	} finally { state.busy = false; }
 }
 
@@ -3011,9 +3094,8 @@ async function arbApproach(targetName, hint) {
 			// Standing on their last known spot and still nothing: really gone.
 			return { ok: false, reason: 'not_loaded_at_last_known' };
 		}
-		await ensureStandClosed();
 		try {
-			await smart_move({ map: hint.map, x: hint.x, y: hint.y });
+			await moveTo({ map: hint.map, x: hint.x, y: hint.y });
 		} catch (err) {
 			return { ok: false, reason: 'smart_move to last known: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)) };
 		}
@@ -3025,9 +3107,8 @@ async function arbApproach(targetName, hint) {
 	if (t.map === me.map && pDist(me.x, me.y, t.x, t.y) <= want) return { ok: true, moved: false };
 	// Past the in-range return, so this only fires when we are actually going
 	// -> MerchantComments.md#past-the-in-range-return
-	await ensureStandClosed();
 	try {
-		await smart_move({ map: t.map, x: t.x, y: t.y });
+		await moveTo({ map: t.map, x: t.x, y: t.y });
 	} catch (err) {
 		return { ok: false, reason: 'smart_move: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)) };
 	}
@@ -3618,9 +3699,7 @@ async function arbLoop() {
 				}
 			}
 		}
-		// Put the stand back once the trade is done.
-		// -> MerchantComments.md#put-the-stand-back-once
-		if (!ARB.cur && !ARB.busy && !state.busy && !state.standOpen) await openStandAtBestSpot();
+		// The stand is standLoop's business now, not this loop's.
 		if (!ARB.cur && !ARB.busy && !state.busy) await ssTick('tick');
 	} catch (e) {
 		console.error('arbLoop error:', e);
@@ -4726,11 +4805,10 @@ async function arbProbeStep(targetName, dist) {
 	const px = t.x + (dx / len) * want, py = t.y + (dy / len) * want;
 
 	const errors = [];
-	await ensureStandClosed();   // same bypass as arbApproach
-	try { await smart_move({ map: t.map, x: px, y: py }); }
+	try { await moveTo({ map: t.map, x: px, y: py }); }
 	catch (err) {
 		errors.push('smart_move: ' + (err && (err.reason || err.message) ? (err.reason || err.message) : String(err)));
-		try { await move(px, py); }
+		try { await moveNudge(function () { return move(px, py); }); }
 		catch (err2) { errors.push('move: ' + (err2 && (err2.reason || err2.message) ? (err2.reason || err2.message) : String(err2))); }
 	}
 
@@ -5271,9 +5349,11 @@ resumeInterruptedTrip();
 scoutRestoreBuffer();
 scout.rotIdx = scoutLoad('rot', 0);
 scout.pontySeen = scoutLoad('ponty_seen', {}) || {};
-// Guarded inside openStandAtBestSpot: a reload on a remote shard is mid-
-// rotation, and no stand goes up there.
-openStandAtBestSpot();
+/* The stand is raised by standLoop and nowhere else. After a reload it goes up
+   on the next tick, guarded by shouldHoldStand() - a reload on a remote shard
+   is mid-rotation and no stand belongs there. The old bare call here was not
+   even awaited. */
+standLoop();
 scoutLoop();
 gearProgressionLoop();
 maintenanceLoop();
