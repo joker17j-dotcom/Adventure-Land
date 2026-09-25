@@ -3981,7 +3981,15 @@ function arbRestore() {
 
 // WHICH BUILD IS ACTUALLY RUNNING.
 // -> MerchantComments.md#MERCHANT_BUILD
-const MERCHANT_BUILD = 'v27 / arb.4 / 2026-09-19 / used-listing cooldown + stranding breaker';
+// BUMP THIS EVERY DEPLOY, together with line 2. It is not decoration:
+//   - it is the only version a human sees in-game, via the [probe] game_log
+//     on load, and
+//   - arbHalted() compares a stored halt's build against it, so a halt is
+//     only cleared by a redeploy if this string actually changed.
+// It sat at v27 from 2026-09-19 to 2026-09-25 while the file reached v52:
+// the game log named the wrong build for 25 versions and the
+// redeploy-clears-the-halt valve could never fire.
+const MERCHANT_BUILD = 'v52 / arb.4 / 2026-09-25 / gear tripwire (default off) + one stand opener + stand dwell';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
