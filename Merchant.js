@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v53
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v54
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1348,7 +1348,7 @@ function sellTrash() {
 // -> MerchantComments.md#PROTECTED_ITEM_NAMES
 // ============================================================================
 const PROTECTED_ITEM_NAMES = new Set([
-	'hpot0', 'hpot1', 'mpot0', 'mpot1',
+	'hpot1', 'mpot1',
 	'scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4',
 	'cscroll0', 'cscroll1', 'cscroll2', 'cscroll3', 'cscroll4',
 	'offeringp', 'offering', 'offeringx',
@@ -4002,7 +4002,7 @@ function arbRestore() {
 // the game log named the wrong build for 25 versions. It no longer gates
 // anything: arbHalted() used to ignore a halt whose build differed, and that
 // clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-const MERCHANT_BUILD = 'v53 / arb.4 / 2026-09-25 / halt no longer cleared by redeploy';
+const MERCHANT_BUILD = 'v54 / arb.4 / 2026-09-25 / tier-0 potions unprotected';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
