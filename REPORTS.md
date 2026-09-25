@@ -100,7 +100,7 @@ the right thing to aim at.
 | who wears which class | `parent.party[name].type` |
 | market | `arbFetchGameMerchants(ms)` plus ALData, merged |
 | item definitions | `parent.G.items[name]` - `type`, `set`, `level`, `class` |
-| level-scaled stats | `parent.calculate_item_properties(item, { level })` |
+| level-scaled stats | `parent.calculate_item_properties({ ...G.items[name], name, level })` - the level must be ON the item, see traps |
 | upgrade odds and costs | `pickBestUpgradeStep(item)`, `pickBestCompoundStep(item)`, `COSTS`, `OFFERING_NAMES` |
 
 `parent.party` carries NO slots and `parent.entities` is proximity-bound, so the
@@ -126,11 +126,26 @@ and feed freshness.
 
 - **An item's name can lie about its slot.** `mcape` ("Dracul's Attire") is
   `type: "chest"`, not a cape. Print `type` from `G.items` on every line.
+- **Item `class` does not gate weapons.** `G.items.bow.class` is `undefined`.
+  Usability comes from `G.classes[cls].mainhand` / `.doublehand`, keyed on the
+  item's `wtype`: ranger bow/crossbow/fist/dagger, mage staff/wblade/wand/
+  great_staff, priest pmace/staff/wand. Filtering on `class` alone recommended a
+  bow to the mage AND the priest on 2026-09-25.
+- **Sanity-check a synthetic score's weights against real values.** Weighting
+  `frequency` at 400 - calibrated for values near 0.05 - turned
+  `wingedboots+0`'s `frequency 3` into a "gain" of 1203 and floated a
+  20,000,000 item to the top of the ranking. Rank on measured stat deltas; if a
+  score does the sorting, print the stats beside it so a blown weight shows.
 - **Level deltas lie; stat deltas do not.** `coat+7` and `coat+8` are BOTH armor
   12 - the level went up and the armor did not.
-- **`calculate_item_properties` does not scale unless you pass the level.** The
-  bare definition returns base stats, so `+0` and `+9` look identical. That looks
-  exactly like the item not scaling at all.
+- **`calculate_item_properties` IGNORES `level` in its options argument.** It
+  scales only when `level` is a property ON the item object. Measured
+  2026-09-25: `CIP({...coat}, {level:7})` returns armor 8 - identical to base -
+  while `CIP({...coat, level:7})` returns armor 12. The options form is a silent
+  no-op, and it does not look broken, because it degrades BOTH sides of a
+  comparison to base stats. It looks instead like cheap `+0` items beating the
+  party's upgraded gear: it floated a 19,200-gold `xmassweater` over `coat+7`.
+  An earlier revision of this file documented the options form. That was wrong.
 - **Empty slots are categorically different** from marginal upgrades. All three
   party members had `cape: null` on 2026-09-25. Sort those first.
 - **Buy-vs-build flips with level.** Measured 2026-09-25 on firebow: BUILD wins
@@ -143,9 +158,23 @@ and feed freshness.
 - **The offering decision is per-step, not one global crossover**, because the
   item's value changes at every level. Break-even was 10,500,000 on 2026-09-25
   with `offeringp` at 5,000,000 - but `offeringp` is NOT in
-  `BUYABLE_OFFERING_INDICES` because it has no NPC source. It has to be bought on
-  the player market, and the script's `COSTS.offering` assumes 480,000, which is
-  ten times off.
+  `BUYABLE_OFFERING_INDICES` because it has no NPC source, so the script never
+  buys it.
+- **RETRACTED 2026-09-25: `COSTS.offering` is not wrong.** An earlier revision
+  of this file said it "assumes 480,000, which is ten times off". That conflated
+  two things. 480,000 is `offeringp`'s game value `g` at array index 1, not the
+  price of `offering` at index 2; and `COSTS` is rebuilt from live `G` by
+  `buildCosts()`, so `KNOWN_COSTS_SNAPSHOT` is only a fallback. Measured: the
+  snapshot matches live `G` exactly (480000 / 27420000 / 242064000), and
+  `offering` is NPC-buyable from the `premium` NPC at 27,420,000 while players
+  ask 35,000,000. The cost model is correct - do not "fix" it.
+- **`g` is the NPC BUY price; `markup` measures resale loss, not a surcharge.**
+  Only `scroll3` (markup 10) and `cscroll3` (markup 20) carry one.
+  `calculate_item_value` returns 60% of `g`, except on those two where it
+  returns `g/markup*0.6`. So `COSTS.scroll[3] = g = 480,000,000` is the correct
+  NPC price, and the player market undercutting it at 297,000,000 is consistent.
+  Reading `markup` as a multiplier on the buy price is the trap - it produces a
+  confident "ten times too low" that is backwards.
 - **The plan is not authoritative.** Tier 2's ranger chest goal is `coat+9` =
   armor 13 / resistance 11, while `mcape+6` sat on the market at 15,000,000 with
   armor 39 / resistance 31 / hp 340. Always price the alternatives.
