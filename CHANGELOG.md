@@ -12,6 +12,53 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v57
+
+A permanent counterparty blacklist.
+
+Every vendor-level exclusion up to now was temporary by design: `arb_fail` holds
+for `min(2min * 2^(n-1), 60min)`, forgets the count `failForgetMs` later, and is
+wiped entirely by a single success, so "occasional failures never compound into a
+permanent ban". Correct for a seller who stepped away; useless against one whose
+listing is never really there, because failure 13 and failure 6 produce the same
+60-minute hold and the route is retried forever.
+
+`NEVER_TRADE_NAMES` is permanent and keyed by name rather than `shard|name`.
+Seeded with Kazhag (EUI, 13 consecutive failures, and the buy side of every
+strict flip candidate in the 2026-09-26 report) and Balitr (USI - advertised
+offeringp at 6,000,000 x12 with an ALData age of 2 minutes, but the rendered
+entity had `buySlots: 0`; six samples over 20s had him stationary at 336,-985,
+`moving: false`, 140 units away, and a trade sat at `at_sell` for 19 minutes
+against a phantom order).
+
+Two automatic promotions feed the same list, both writing to CODE storage so
+they survive the `change_server` reload - and a DEPLOY DOES NOT CLEAR THEM,
+which is what makes them permanent and why promotion logs in red:
+
+- `neverTradeAfter: 8` consecutive failures. The backoff ceiling is reached at
+  failure 6, so past that another retry is not new information.
+- `mapChurnLimit: 3` map changes inside `mapChurnWindowMs` (30 min). MAP
+  transitions only, so local shuffling is ignored. Measured 2026-09-26 over 7
+  ALData observations spanning two minutes: earthMer 4 changes across USII
+  `bank_b`/`main`/`arena`, Manillo 1, and MuaBan, Ellume, Gobbo, Kazhag and
+  Balitr all 0. The default separates the one that never settles from the one
+  that relocated once.
+
+Filtered at feed ingestion like `NO_TRADE_ITEM_NAMES`, and again in
+`arbProbeFindBuy`, `arbFindBuyerFor` and the candidate filter, so no path
+reaches a refused name by another route. `arbNeverList()` reads the lists,
+`arbNeverForget(name)` undoes an automatic entry and clears its churn record.
+
+Exercised before shipping against the measured sequences rather than by reading:
+18 assertions covering earthMer's real map order (bans), Manillo's (does not),
+a stationary merchant (one write then silence), a lapsed window (resets rather
+than accumulates), the hard-coded names, forget-and-clear, and `mapChurnLimit: 0`
+disabling promotion.
+
+Size: 239,870 chars, 5,890 under the 245,760 ceiling. The long rationale went to
+MerchantComments.md under `NEVER_TRADE_NAMES` and `mapChurnLimit` rather than
+into the slot, for exactly that reason.
+
 ## v56
 
 Tracktrix is protected from both sell paths.
