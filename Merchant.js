@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v55
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v56
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1409,6 +1409,9 @@ function sellTrash() {
 // ============================================================================
 const PROTECTED_ITEM_NAMES = new Set([
 	'hpot1', 'mpot1',
+	// Records achievements for bonus stats. Vendors for 7 gold, so every
+	// value-based guard in here would have waved it straight through.
+	'tracker',
 	'scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4',
 	'cscroll0', 'cscroll1', 'cscroll2', 'cscroll3', 'cscroll4',
 	'offeringp', 'offering', 'offeringx',
