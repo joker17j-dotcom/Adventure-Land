@@ -1548,3 +1548,75 @@ got.source feeds the SOURCE lines in the probe output and the reachable check
 (source !== 'in-view'), so collapsing everything to 'merged' would make a
 single-source run look like a three-way agreement. With one source there is
 also nothing to merge, so the merge log line would be noise.
+
+## NEVER_TRADE_NAMES
+
+Counterparties never traded with. Permanent, which every other exclusion in
+here deliberately is not.
+
+`arb_fail` caps its hold at one hour and forgets the count two hours after that,
+so "occasional failures never compound into a permanent ban". That is right for
+a seller who stepped away from the keyboard. It is wrong for one whose listing
+is never really there: the hold lapses, the route is retried, the trip is paid
+for again, and nothing ever escalates - failure 13 and failure 6 produce the
+identical 60-minute hold.
+
+Keyed by NAME, not `shard|name`. The temporary map keys on both because a seller
+genuinely can be present on one shard and gone from another. A name here is one
+we have decided not to deal with at all, and merchants hop shards like everyone
+else, so the shard would only let the same name back in through another door.
+
+Filtered at feed INGESTION, the same place and for the same reason as
+NO_TRADE_ITEM_NAMES - a name filtered out of the buys/sells feed cannot reach
+any caller, hand-run probes included. Also checked in `arbProbeFindBuy`, in
+`arbFindBuyerFor` (so not even a last-resort exit for stranded goods goes
+through a refused name) and in the candidate filter, because a flip list built
+before a name was added is still in memory.
+
+Seeded 2026-09-26 from measurement, not annoyance:
+
+- **Balitr** (USI). Advertised `offeringp` at 6,000,000 x12, ALData age 2 min.
+  On arrival the RENDERED entity had `buySlots: 0` and no `trade14` at all. Six
+  position samples over 20s: stationary at 336,-985, `moving: false`, 140 units
+  away, well inside `approachUnits`. The order was a phantom - `lastSeen` tracks
+  the MERCHANT being seen, never that the slot still holds anything. One trade
+  sat at phase `at_sell` for 19 minutes against it while 60,000,000 of stock
+  waited. Note this is a judgement call: Balitr was also the only 6,000,000
+  offeringp bid on the board, and blacklisting him forgoes that price if the
+  order was real and simply filled ahead of us.
+- **Kazhag** (EUI). 13 consecutive failures. Every strict flip candidate in the
+  2026-09-26 arbitrage report bought from this one name, so one unreachable
+  vendor was presenting as a dry pipeline.
+
+`arbNeverList()` prints both halves plus the churn table. `arbNeverForget(name)`
+undoes an automatic entry and clears its churn record so it does not re-ban on
+the next observation; a hard-coded name has to be removed from Merchant.js and
+redeployed.
+
+## mapChurnLimit
+
+The merchant that will not hold still long enough to trade.
+
+Counted on MAP transitions only, never on x/y, so local movement is ignored by
+construction - `approachUnits` is 350 and `smart_move` closes that, so a stand
+shuffling a few hundred units around one map is perfectly tradeable. One that is
+on `main`, then `bank_b`, then `arena` is not: by the time we arrive the listing
+has left, and the feed row still looks fresh, so nothing says so.
+
+Measured 2026-09-26 across 7 ALData observations spanning about two minutes:
+
+| merchant | map changes | maps seen |
+|---|---|---|
+| earthMer | 4 | USII `bank_b` -> `main` -> `arena` |
+| Manillo | 1 | EUIV `cave` -> `main` |
+| MuaBan, Ellume, Gobbo, Kazhag, Balitr | 0 | stationary |
+
+So the default 3 separates the one that never settles from the one that
+relocated once, with room either side. The window exists because a merchant on
+main today and winterland tomorrow has relocated, not churned: if the record is
+older than `mapChurnWindowMs` the count restarts rather than accumulating over
+days.
+
+`arbChurnNote` mutates the map its caller loaded and returns whether anything
+changed, so a whole ingestion pass costs ONE write rather than one per merchant
+- the O(n^2) trap v54 removed from the chest map.
