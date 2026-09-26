@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v55 (Giga Crab is now joined, and his contribution is logged for later review. Three parts. (1) getDynamicEvents() injects crabxx when parent.S.crabxx.live, with join: true - G.events.crabxx carries join: true and duration 2400 as a daily, so arrival is an event join rather than a walk, and handleEvents() already emits the join for any entry with that flag. There is no static monster pack for crabxx, so the smart_move G.monsters fallback would have found nothing and silently done nothing. (2) shouldAttackMob ignores crabx while crabxx is live. Measured 2026-09-25: a crabx hits for 189 after mitigation against a 4,621 HP pool - 24 hits - and the boss spawns 1,000 of them, so volume is what kills a ranger here. The boss itself hits for 12,572, 2.7x the whole pool, so there is no posture in which he trades with it; he stands outside its 45 range with his 160 and contributes damage, which is what cooperative credit pays on. ignoreAddsDuringCrabxx turns this off. (3) A contribution log in CODE storage, so it survives the change_server reload exactly as the chest map now does. Damage comes from the game's own hit events filtered to our own id against a crabxx target, not inferred from attack calls, so only landed hits count. Writes are batched to one per 10s rather than one per hit. Query it any day with crabxxReport(). Left deliberately unanswered for now: whether to generalise the dragold cross-shard hunter to this boss. At ~491 effective DPS into 960,000 HP behind armor 320 and phresistance 30, and with other players finishing it well inside the 40-minute window, the value of hopping depends on damage actually landed - which is the number this log exists to produce.) v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
 // ============================================================================
 // ============================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
@@ -184,6 +184,9 @@ const CONFIG = {
 		enabled: true,
 		targetPriority: ['FatherToken'],
 		alwaysAttack: ['crabx', 'wabbit'],
+		// See shouldAttackMob: while crabxx is live the 1,000 crabx adds are
+		// ignored so the shots land on the boss instead of the swarm.
+		ignoreAddsDuringCrabxx: true,
 		attackIfTargeted: [...allBosses, 'phoenix'],
 		neverAttack: ['nerfedmummy', 'target_ar500red', 'target_ar900', 'target', 'target_a500', 'target_a750', 'target_r500', 'target_r750'],
 		useHuntersMark: true,
@@ -376,8 +379,16 @@ const EVENT_LOCATIONS = [
 ];
 
 const getDynamicEvents = () => {
+	const out = [...EVENT_LOCATIONS];
 	const w = parent.S?.wabbit;
-	return w?.live ? [...EVENT_LOCATIONS, { name: 'wabbit', map: w.map, x: w.x, y: w.y }] : EVENT_LOCATIONS;
+	if (w?.live) out.push({ name: 'wabbit', map: w.map, x: w.x, y: w.y });
+	// Giga Crab is a daily with G.events.crabxx.join === true, so arrival is an
+	// event join rather than a walk - no map or coordinates needed, and there is
+	// no static monster pack to walk to anyway. handleEvents() already emits the
+	// join for any entry carrying join: true.
+	const c = parent.S?.crabxx;
+	if (c?.live) out.push({ name: 'crabxx', join: true, map: c.map, x: c.x, y: c.y });
+	return out;
 };
 
 const REGIONS = ['US', 'EU', 'ASIA'];
@@ -501,6 +512,15 @@ const equipmentSets = {
 const shouldAttackMob = (mob) => {
 	if (!mob || mob.dead) return false;
 	if (COMBAT_SETS.neverAttack.has(mob.mtype)) return false;
+	/* Giga Crab spawns 1,000 crabx, and alwaysAttack would commit us to every
+	   one of them. Measured 2026-09-25: a crabx hits for 189 after mitigation
+	   against a 4,621 HP pool - 24 hits - so the swarm is what kills a ranger
+	   here, not the boss. The boss itself hits for 12,572, which is 2.7x the
+	   whole pool, so trading with it is never an option either; the plan is to
+	   stand outside its 45 range with our 160 and contribute damage. Ignoring
+	   the adds keeps the shots on the boss, which is what earns cooperative
+	   credit. Flip ignoreAddsDuringCrabxx to false to go back to the swarm. */
+	if (mob.mtype === 'crabx' && CONFIG.combat.ignoreAddsDuringCrabxx && parent?.S?.crabxx?.live) return false;
 	if (mob.mtype === home) return true;
 	if (COMBAT_SETS.alwaysAttack.has(mob.mtype)) return true;
 	if (COMBAT_SETS.attackIfTargeted.has(mob.mtype)) {
@@ -1046,6 +1066,121 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
 	if (!is_in_range(monster, 'attack') && !smart.moving) {
 		await xmove(halfway_x, halfway_y);
 	}
+}
+
+/* ============================================================================
+   GIGA CRAB CONTRIBUTION LOG
+
+   Persisted with set()/get(), so it lives in CODE storage and survives the page
+   reload that change_server performs on every shard hop - the same property the
+   chest map needed and did not have until v54. Nothing here is in memory only.
+
+   Query it any day with crabxxReport() in the console, or the GigaCrab top
+   button while the event is live. The point is to answer, from real data rather
+   than estimate, whether it is worth generalising the dragold cross-shard
+   hunter to this boss: at ~491 effective DPS into 960,000 HP behind armor 320
+   and phresistance 30, the open question is how much damage he actually lands
+   before other players finish it.
+   ============================================================================ */
+const CRABXX_KEY = 'crabxx_contrib';
+
+function crabxxLoad() {
+	try { const d = get(CRABXX_KEY); return (d && typeof d === 'object' && Array.isArray(d.runs)) ? d : { runs: [] }; }
+	catch (e) { return { runs: [] }; }
+}
+function crabxxSave(v) {
+	try { set(CRABXX_KEY, v); } catch (e) { console.error('crabxx log save failed:', e); }
+}
+function crabxxShard() {
+	try { return String(parent.server_region || '?') + String(parent.server_identifier || '?'); }
+	catch (e) { return '?'; }
+}
+/* One run per shard per day: a daily event, and a hop to another shard is a
+   genuinely separate contribution worth accounting separately. */
+function crabxxRunId() {
+	return crabxxShard() + ':' + new Date().toISOString().slice(0, 10);
+}
+
+let crabxxPendingDmg = 0, crabxxPendingHits = 0, crabxxLastFlush = 0, crabxxHooked = false, crabxxWasRip = false;
+
+/* Damage is read from the game's own hit events rather than inferred from our
+   attack calls - only hits that actually landed count, and only ours. */
+function crabxxHook() {
+	if (crabxxHooked || !parent?.socket) return;
+	crabxxHooked = true;
+	parent.socket.on('hit', (d) => {
+		try {
+			if (!d || d.hid !== character.id || !d.damage) return;
+			const t = parent.entities?.[d.id];
+			if (!t || t.mtype !== 'crabxx') return;
+			crabxxPendingDmg += d.damage;
+			crabxxPendingHits++;
+		} catch (e) { }
+	});
+}
+
+function crabxxFlush(force) {
+	const now = Date.now();
+	// Batched: one write per 10s, never one per hit. A per-hit write would
+	// rewrite the whole log every time, which is the O(n^2) trap v54 removed
+	// from the chest map.
+	if (!force && (now - crabxxLastFlush < 10000 || !crabxxPendingDmg)) return;
+	crabxxLastFlush = now;
+	if (!crabxxPendingDmg && !crabxxPendingHits && !force) return;
+	const s = parent?.S?.crabxx;
+	const log = crabxxLoad();
+	const id = crabxxRunId();
+	let run = log.runs.find(r => r.id === id);
+	if (!run) {
+		run = { id, shard: crabxxShard(), startedAt: new Date(now).toISOString(),
+			damage: 0, hits: 0, deaths: 0, hpAtJoin: s?.hp ?? null, maxHp: s?.max_hp ?? null };
+		log.runs.push(run);
+		while (log.runs.length > 60) log.runs.shift();
+	}
+	run.damage += crabxxPendingDmg;
+	run.hits += crabxxPendingHits;
+	run.endedAt = new Date(now).toISOString();
+	if (s) { run.hpLast = s.hp; run.maxHp = s.max_hp; run.liveLast = !!s.live; }
+	crabxxPendingDmg = 0; crabxxPendingHits = 0;
+	crabxxSave(log);
+}
+
+function crabxxTick() {
+	try {
+		crabxxHook();
+		const live = parent?.S?.crabxx?.live === true;
+		// Deaths are worth knowing: they are the cost side of showing up.
+		if (live) {
+			if (character.rip && !crabxxWasRip) {
+				crabxxWasRip = true;
+				const log = crabxxLoad();
+				const run = log.runs.find(r => r.id === crabxxRunId());
+				if (run) { run.deaths = (run.deaths || 0) + 1; crabxxSave(log); }
+			} else if (!character.rip) {
+				crabxxWasRip = false;
+			}
+		}
+		crabxxFlush(!live && (crabxxPendingDmg > 0 || crabxxPendingHits > 0));
+	} catch (e) { }
+}
+setInterval(crabxxTick, 5000);
+
+/* Console-friendly summary. Safe to call any day - it reads the persisted log,
+   not live state, so a hop or a reload loses nothing. */
+function crabxxReport() {
+	const log = crabxxLoad();
+	if (!log.runs.length) { game_log('crabxx: no runs recorded yet', '#8b98ab'); return { runs: [] }; }
+	let dmg = 0, hits = 0, deaths = 0;
+	for (const r of log.runs) { dmg += r.damage || 0; hits += r.hits || 0; deaths += r.deaths || 0; }
+	const out = {
+		runs: log.runs.length, totalDamage: dmg, totalHits: hits, totalDeaths: deaths,
+		avgDamagePerRun: Math.round(dmg / log.runs.length),
+		shareOfOneBoss: Math.round((dmg / 960000) * 1000) / 10 + '% of a 960,000 HP Giga Crab',
+		detail: log.runs.slice(-10)
+	};
+	console.log('crabxx contribution', out);
+	game_log(`crabxx: ${log.runs.length} run(s), ${dmg.toLocaleString()} damage, ${deaths} death(s)`, '#FFD700');
+	return out;
 }
 
 const dragold = {
