@@ -519,3 +519,131 @@ is never applied at all.
 So the machinery would run and change nothing. Left as config with no reader,
 which is visible, rather than as code that looks like a feature.
 
+---
+
+## 6. rat@mansion: circle walk is not a spot-holder, and the credit model is still wrong
+
+**Status:** the spot works and is running at 7,950 credit/hour. Three open items:
+what killed Dexon under circle walk, why credit-per-hit exceeds 1.0, and whether
+anchoring at the dense point is worth anything.
+
+Measured 2026-09-26 on Dexon (level 73, 880 attack, 160 range) farming `rat` on
+`mansion` for the tracker achievements.
+
+### What was set
+
+    manualOverride = { home: 'rat', mobMap: 'mansion', x: -290, y: -378, expPerSecond: 0, uptimeFraction: 1 };
+    PERMANENT_WHITELIST.add(spotKey(manualOverride.home, manualOverride.mobMap));
+    runFarmSearch();
+
+Run in the `maincode` iframe via `contentWindow.eval` - `manualOverride`,
+`PERMANENT_WHITELIST`, `spotKey` and `runFarmSearch` are block-scoped inside it
+and do not resolve from the top window.
+
+(-290,-378) came from grid-searching the whole map at 10-unit resolution,
+modelling each of the seven rat spawn boxes as uniform density weighted by its
+`count` (24 rats total) and scoring expected rats inside the 160 attack range. It
+is the only point reaching three boxes at once - group 1 at 129u, groups 4+5
+containing it, group 7 at 55u - scoring **5.18** in range against **3.42** at the
+midpoint `find()` returns for the first spawn group. 3.42 is below
+`minTargetsFor5Shot: 4` and 5.18 is above it, so the choice of point decides
+whether 5shot can fire at all. Wall clearance 34u vertical, 194u horizontal, and
+the point sits inside a spawn box so it is open floor.
+
+### Measured throughput (server tracker, two 340s windows)
+
+|                      | solo Dexon | full party |
+|----------------------|-----------:|-----------:|
+| credit/sec           |      1.556 |  **2.208** |
+| credit/hour          |      5,601 |  **7,950** |
+| avg attackers on Dexon |     1.35 |       0.31 |
+| deaths               |          0 |          0 |
+| xp/sec               |      3,059 |      3,114 |
+
+The party is worth **+42% on achievement credit and essentially nothing on xp**,
+and it pulls aggro off Dexon (1.35 to 0.31 average attackers). Worth knowing
+before deciding whether a solo character should go achievement-hunting alone.
+
+Earned the same day: cgoo 10,000 -> hp+100 (max_hp 5,328 -> 5,428, verified by
+reading max_hp either side), rat 1,000 -> armor+2.
+
+### `manualOverride.x/y` is a region hint, NOT an anchor
+
+With it set to (-290,-378) and `circleWalk` already on, Dexon sat a **median
+668-751 units away** for two entire windows, camping the group 3 pocket instead.
+The density optimisation delivered nothing at all. `CONFIG.movement.anchors` is
+the separate mechanism that actually pins a spot - it is what held the party at
+cgoo in v60 - and it now carries a `rat@mansion` entry alongside `cgoo@level2s`.
+Setting a farm target does not place a character; do not assume it does.
+
+### Circle walk killed him - UNRESOLVED, and the first thing to fix
+
+`walkInCircle` is 447 characters. It references `circleRadius` and `xmove` and
+mentions `anchor`, `home` and `target` **zero times**, so it orbits the
+character's *current* position and cannot hold a spot - whatever corner he has
+drifted into is what he circles.
+
+`CONFIG.movement.circleWalk` was ALREADY `true` with `circleRadius: 75`
+throughout both measured windows above, in which Dexon took **zero deaths**. The
+operator then ran a deliberate circle-walk test at rat@mansion and it killed him.
+
+What is NOT known: which setting changed for that test, and why an 80-attack
+monster killed a 5,428 HP ranger. Rats cannot do that by damage at the observed
+rate, so the likely shape is **positional** - circling into a pocket, into a
+wall, or out of the priest's 197 heal range - rather than damage. That is a
+hypothesis, not a finding.
+
+**Do not enable circle walk at a new spot without sampling position and priest
+distance for the duration.** This file's history is full of confident wrong
+readings that one instrument would have skipped.
+
+### 5shot still never fires - but the reason is now ambiguous
+
+Zero four-target volleys in either window. A clean 83-second probe gave 71
+single-target volleys, 25 two-target, 8 three-target, 0 four-plus.
+
+Rats-in-range measured 1.27-1.68 average, but **that is partly an artifact of
+killing fast**: at 2.2 kills/sec a rat inside 160 units lives well under a
+second, so a 1 Hz sampler catches the trough rather than the working density.
+So the earlier reasoning - that sparse local density is the binding constraint,
+and that anchoring at the three-box junction would unlock 5shot and roughly
+double throughput - is **not established**. Untested and weaker than it looked.
+
+Separately: `character.frequency` read 1.978 during one probe and 1.178 thirty
+seconds later. The priest cycles a haste buff, so a single frequency sample is
+not a standing value. Dexon's 880 attack one-shots an 820 HP rat with no armor,
+which means plain attacking wastes the overkill and caps him near his attack
+frequency; 5shot at 0.5 multiplier needs 2 volleys per rat but covers 5, so it is
+the only mode that beats that cap.
+
+### The credit model is wrong twice over - OPEN
+
+Effective count is `monsters.<type> + monsters_diff.<type>`, and the award uses
+`max(own + diff, accountMax)`. Note the account max can be held by another
+character: rat sat at 115.2 held by FatherToken while Dexon's own total was 82.2.
+
+Two measurements the damage-share model cannot explain:
+
+1. At cgoo the tracker paid **1.35 credit/sec** against a respawn-ceiling model
+   of 0.167 - wrong by 9x. That ceiling model was the original justification for
+   hardcoding `preferSingleTarget: true`.
+2. At rats, **2.208 credit/sec from 1.76 hits/sec** is more than 1.0 credit per
+   hit, which should be impossible if one hit yields at most one kill's credit.
+
+So `monsters_diff` is not a straight damage-share of kills. Do not use either
+model for spot comparison until someone measures a spawn count and the credit
+formula directly. Measure the tracker delta over a fixed window instead; that
+number is trustworthy and cheap.
+
+### Instrumentation trap, paid for on the day
+
+Two `hit` listeners from two successive measurement windows both wrote to the
+same stash name, so the second window's outgoing-hit count was **double-counted**
+- 1,416 reported against 704 distinct targets. It was caught only because the
+distinct-target sum failed to reconcile with the raw count.
+
+**Use a fresh stash name for every window.** A socket listener cannot be removed
+without a tab reload, and a reload restarts CODE and drops any in-memory
+`manualOverride` - so the listeners accumulate for the life of the tab. Rates
+derived from the server tracker are immune to this; anything derived from a
+socket listener is not.
