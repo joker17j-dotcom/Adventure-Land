@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v33 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Priest changes. (1) holdCohesion() closes on the party whenever the worst distance to another member exceeds leash 150, which leaves margin inside his 197 heal range. It moves toward the CENTROID of the others rather than at the leader, so he settles between the two he has to reach instead of hugging one and losing the other, and it runs ahead of kiting and farming in mainLoop because being in heal range outranks both. Leader-exempt, so Dexon still drives the spot. (2) findBestTarget now takes Dexon's target first via focusFireTarget(), refusing it when out of range or dead. (3) The whole-field weight in avoidMobs subtracts kitePathPenalty instead of the v59 veto. Note scare() is still inert - no jacko anywhere on the account, and it drops only from Halloween candy0 at weight 1 of ~6.5 - so cohesion and focus fire are carrying this round.) v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
 // ============================================================================
 // ============================================================================
 // FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
@@ -190,6 +190,11 @@ const CONFIG = {
 		   courageOffset 0 fires AT courage, pre-empting the attacker that would
 		   start fear and stop him healing. See scare(). */
 		scare: { enabled: true, courageOffset: 0, minHeldMs: 250 },
+		/* Adopt Dexon's target. Measured 2026-09-26: two distinct targets across
+		   three characters, and no focus-fire mechanism in any of the files -
+		   targetPriority below looks like one but means "prefer monsters already
+		   targeting the priest", which is a protect heuristic, not shared aim. */
+		focusFire: { enabled: true, requireInRange: true },
 		curse: true,
 		zapper: true,
 		zapSwap: false,
@@ -299,6 +304,11 @@ const CONFIG = {
 
 	party: {
 		autoManage: true,
+		/* heal has use_range: true, so it reaches character.range - 197 here.
+		   Measured mid-fight: Dexon (181,637), FatherToken (-6,280) = 403 units,
+		   2.05x out of range. He was not failing to heal because he was feared;
+		   he could not heal at all. 150 leaves margin inside 197. */
+		cohesion: { enabled: true, leash: 150, stepMax: 120, debug: false },
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken']
 	},
 
@@ -693,6 +703,10 @@ function updateCache() {
 function findBestTarget() {
 	if (!home) return null; // farm spot not received from Dexon yet
 
+	/* Focus fire first - everything below picks independently. */
+	const shared = focusFireTarget();
+	if (shared) return shared;
+
 	for (const bossType of BOSS_SET) {
 		const boss = get_nearest_monster_v2({
 			type: bossType,
@@ -868,7 +882,10 @@ async function mainLoop() {
 			handleEvents();
 		}
 		else if (CONFIG.movement.enabled) {
-			if (!get_nearest_monster({ type: home })) {
+			/* Closing on the party outranks everything else: out of heal range is
+			   how the 2026-09-26 cascades actually happened. */
+			if (await noHang(holdCohesion(), 'holdCohesion')) {
+			} else if (!get_nearest_monster({ type: home })) {
 				handleReturnHome();
 			} else if (CONFIG.movement.kiting.enabled) {
 				/* Chained, not exclusive - kiter() returns false when nothing kite-worthy
@@ -1762,6 +1779,102 @@ function kitePathBlocked(threats, px, py) {
 	return false;
 }
 
+/* ---------------------------------------------------------------------------
+   COHESION, FOCUS FIRE AND THE ROUTE PENALTY - v60/v33/v56.
+
+   The v59 measurement said the kiting work was treating a symptom. Two findings
+   from the same window settled it:
+
+   1. heal carries use_range: true, so it reaches character.range - 197 for
+      FatherToken. Measured mid-fight: Dexon at (181,637), FatherToken at
+      (-6,280). That is 403 units, 2.05x outside heal range. The priest was not
+      failing to heal because he was feared; for much of the window he could not
+      heal at all. No movement algorithm fixes a healer standing 400 units away.
+
+   2. The party was not focus firing - two distinct targets across three
+      characters, and no mechanism for it in any of the three files.
+      targetPriority looks like one but means "prefer monsters already targeting
+      the priest", a protect heuristic. Party.js had real focus fire, via
+      followers copying leader.target; these files lost it.
+
+   Aggro scales with how many DISTINCT monsters have been provoked, and a 2,400
+   hp cgoo dies about three times faster under concentrated fire, so it stops
+   swinging sooner. Both effects push the attacker count down, which is the
+   quantity that drives fear - and fear is what stops the healer.
+   --------------------------------------------------------------------------- */
+
+/* Route incursion as a PENALTY rather than a veto.
+
+   v59 vetoed any candidate whose path closed on a threat. Measured offline
+   against the real geometry: with 4 cgoo at 20 units, 180 of 180 candidates
+   passable and ZERO survived the veto; with 11 scattered at 25-70 units, again
+   zero. So in the only situation that actually kills - being inside the pack -
+   the whole-field scorer never ran, and every decision fell through to the
+   crude ladder. A penalty keeps the ranking intact so the scorer can still pick
+   the least-bad route when no clean one exists. */
+function kitePathPenalty(threats, px, py) {
+	const cx = character.real_x, cy = character.real_y;
+	let pen = 0;
+	for (const t of threats) {
+		const dmin = kiteSegDist(cx, cy, px, py, t.x, t.y);
+		const floor = Math.min(t.d, t.r) * 0.9;
+		if (dmin < floor) pen += (floor - dmin) * Math.max(1, t.r - t.d) * 3;
+	}
+	return pen;
+}
+
+/* The leader's current target, when we are a follower and it is worth sharing.
+   Returns null for the leader itself, so this is safe to call anywhere. */
+function focusFireTarget() {
+	const cfg = (CONFIG.combat && CONFIG.combat.focusFire) || {};
+	if (cfg.enabled === false) return null;
+	const group = (CONFIG.party && CONFIG.party.groupMembers) || [];
+	const leaderName = group[0];
+	if (!leaderName || leaderName === character.name) return null;
+	if (typeof parent === 'undefined' || !parent.entities) return null;
+	const leader = parent.entities[leaderName];
+	if (!leader || !leader.target) return null;
+	const t = parent.entities[leader.target];
+	if (!t || t.type !== 'monster' || t.dead) return null;
+	if (cfg.requireInRange !== false && !is_in_range(t)) return null;
+	return t;
+}
+
+/* Close on the party when we drift out of heal range.
+
+   Moves toward the CENTROID of the other members rather than at the leader, so
+   the priest settles between the two he has to reach instead of hugging one and
+   losing the other. Leader-exempt: Dexon drives the farm spot, and a leader that
+   chases his own followers never arrives anywhere. */
+async function holdCohesion() {
+	const cfg = (CONFIG.party && CONFIG.party.cohesion) || {};
+	if (!cfg.enabled) return false;
+	const group = (CONFIG.party.groupMembers || []);
+	if (group[0] === character.name) return false;
+	if (typeof parent === 'undefined' || !parent.entities) return false;
+
+	let fx = 0, fy = 0, n = 0, worst = 0;
+	for (const nm of group) {
+		if (nm === character.name) continue;
+		const e = parent.entities[nm];
+		if (!e || e.rip) continue;
+		const ex = (e.real_x != null ? e.real_x : e.x) || 0;
+		const ey = (e.real_y != null ? e.real_y : e.y) || 0;
+		const d = Math.hypot(ex - character.real_x, ey - character.real_y);
+		if (d > worst) worst = d;
+		fx += ex; fy += ey; n++;
+	}
+	if (!n || worst <= (cfg.leash || 150)) return false;
+
+	fx /= n; fy /= n;
+	const a = Math.atan2(fy - character.real_y, fx - character.real_x);
+	const gap = Math.hypot(fx - character.real_x, fy - character.real_y);
+	const step = Math.max(20, Math.min(cfg.stepMax || 120, gap - (cfg.leash || 150) * 0.5));
+	await xmove(character.real_x + Math.cos(a) * step, character.real_y + Math.sin(a) * step);
+	if (cfg.debug) game_log('Cohesion: closing ' + Math.round(worst) + 'u to party', '#7FD1FF');
+	return true;
+}
+
 function kiter() {
 	const cfg = CONFIG.movement.kiting;
 	if (!cfg?.enabled) return false;
@@ -1842,7 +1955,8 @@ function avoidMobs(cfg) {
 			/* Signed and urgency-weighted, replacing the gain-only sum that used to
 			   live here: escaping one monster into another now scores badly rather
 			   than merely scoring zero. */
-			const weight = kiteMultiWeight(threats, px, py);
+			/* Route cost, not a veto - see kitePathPenalty. */
+			const weight = kiteMultiWeight(threats, px, py) - kitePathPenalty(threats, px, py);
 			if (weight > bestW) { bestW = weight; bestX = px; bestY = py; found = true; }
 		}
 		if (found) break;
