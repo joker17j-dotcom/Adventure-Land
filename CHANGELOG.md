@@ -12,6 +12,26 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v56
+
+Tracktrix is protected from both sell paths.
+
+The item's name is `tracker`; `Tracktrix` is only its display label
+(`G.items.tracker.name`), and there is no `tracktrix` key in `G.items` at all -
+measured 2026-09-25. It was absent from `PROTECTED_ITEM_NAMES` in every
+spelling, which left it exposed in both places that set is consulted:
+`sellAggressivelyIfLowOnSpace()`, which vendors nearly anything once the bag is
+almost full, and `ssVendorBound()`, which would have listed it on the stand.
+
+It vendors for SEVEN GOLD, so neither path would have registered as a loss worth
+noticing, and no value-based guard could have caught it. The item is what records
+achievements for bonus stats - its worth is in holding it, not in any price.
+
+Arbitrage was deliberately left alone. It only sells what it bought, tracked in
+`arbHeldNames()`, so a tracker acquired for achievements is not arbitrage stock
+and is not at risk from it. Adding the name to `NO_TRADE_ITEM_NAMES` would have
+blocked BUYING one as well, which is the opposite of what is wanted.
+
 ## v55
 
 replayed potion requests are refused.
