@@ -4065,7 +4065,7 @@ function arbRestore() {
 // the game log named the wrong build for 25 versions. It no longer gates
 // anything: arbHalted() used to ignore a halt whose build differed, and that
 // clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-const MERCHANT_BUILD = 'v55 / arb.4 / 2026-09-25 / replayed potion requests refused';
+const MERCHANT_BUILD = 'v56 / arb.4 / 2026-09-25 / Tracktrix protected from both sell paths';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
