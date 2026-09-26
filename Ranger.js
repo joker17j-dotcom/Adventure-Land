@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v57 (The inventory sorter is gone. It pinned tracker/ancientcomputer/hpot1/mpot1/xptome/pumpkinspice/xpbooster to slots 0-6 from maintenanceLoop, which runs every TICK_RATE.maintenance = 2000ms, and swap() is an EXCHANGE - so it did not merely hold those items in place, it evicted whatever the operator dragged into one of those slots. Measured 2026-09-26: forcing the tracker from slot 0 to slot 8 landed at +500ms and was reverted by +1000ms, which is why manual dragging had become impossible rather than merely awkward. It only started biting today, because v56 fixed the dead 'tracktrix' spelling to 'tracker' AND a tracker was acquired the same hour, so slot 0 was defended for the first time ever. Nothing depends on the slots it was maintaining: there is not one numeric index into character.items anywhere in this file, every lookup is by name, and MageofOz has run without a sorter the whole time. The potion path is unaffected in practice - use_skill('use_hp') resolves to use('hp'), which scans items from the LAST slot BACKWARDS and drinks the first gives match, and measured the same day the only hp/mp-giving items in the bag are hpot1 and mpot1 themselves, so there is nothing to mis-pick. Note the pins were the WORSE arrangement for that scan: slots 2 and 3 are scanned last, so a second hp/mp consumable would have taken priority over the potions, not the other way round. The tracker is still safe without the pin - neverSell and muling.excludeItems protect it, which is what v56 was actually for. Slot order is now the operator's to arrange by hand.) v56 (Tracktrix is now actually protected, which it was not before. The item's NAME is tracker - Tracktrix is only its display label, G.items.tracker.name - and there is no tracktrix key in G.items at all. Measured 2026-09-25. So the 'tracktrix' string that had been sitting in inventoryRelief.neverSell could never match item.name and protected nothing, and the same typo in inventorySorter's slot map meant the item was never pinned to slot 0 either. Priest.js already spelled it correctly as tracker: 0, and that disagreement between the two files is what the typo was hiding behind. This was not theoretical: reliefSellable() sorts candidates by NPC value ASCENDING and sells the cheapest first, and a tracker vendors for SEVEN GOLD - it would have been the first thing off the pack the next time the bag filled with no mule in reach. It was also missing from muling.excludeItems in every spelling, so clearInventory() was handing it to Meltymerch on sight. Protected now on the same footing as tier-1 potions: not sold, not muled, pinned to slot 0. It is the item that records achievements for bonus stats, so its value is in holding it, never in what it fetches.) v55 (Giga Crab is now joined, and his contribution is logged for later review. Three parts. (1) getDynamicEvents() injects crabxx when parent.S.crabxx.live, with join: true - G.events.crabxx carries join: true and duration 2400 as a daily, so arrival is an event join rather than a walk, and handleEvents() already emits the join for any entry with that flag. There is no static monster pack for crabxx, so the smart_move G.monsters fallback would have found nothing and silently done nothing. (2) shouldAttackMob ignores crabx while crabxx is live. Measured 2026-09-25: a crabx hits for 189 after mitigation against a 4,621 HP pool - 24 hits - and the boss spawns 1,000 of them, so volume is what kills a ranger here. The boss itself hits for 12,572, 2.7x the whole pool, so there is no posture in which he trades with it; he stands outside its 45 range with his 160 and contributes damage, which is what cooperative credit pays on. ignoreAddsDuringCrabxx turns this off. (3) A contribution log in CODE storage, so it survives the change_server reload exactly as the chest map now does. Damage comes from the game's own hit events filtered to our own id against a crabxx target, not inferred from attack calls, so only landed hits count. Writes are batched to one per 10s rather than one per hit. Query it any day with crabxxReport(). Left deliberately unanswered for now: whether to generalise the dragold cross-shard hunter to this boss. At ~491 effective DPS into 960,000 HP behind armor 320 and phresistance 30, and with other players finishing it well inside the 40-minute window, the value of hopping depends on damage actually landed - which is the number this log exists to produce.) v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v58 (Kiting is enabled and no longer bscorpion-only, and scare counts attackers instead of detecting one. Four parts. (1) rangedKiting.enabled was false and targets was ['bscorpion'], so the engine - 90 sample angles, throttling, weighting - had never run against anything else. It is on, and kiteCandidateTypes() adds any monster we outrun by speedRatio 1.3 on top of the hand-tuned list, which stays authoritative. (2) The hold band is derived per target by kiteBand() from kiteThreatRadius() + rangeBuffer instead of the fixed 155/170, and that radius is max(range, widest aura) because bscorpion's danger is weakness_aura at radius 100, NOT its 32 attack range - deriving from range alone would have moved the hold from 155 to 52 and parked him inside the aura. bscorpion therefore keeps its measured numbers as an explicit override, optimalDistance 170 above his 160 range included, which is an avoid rather than a kite-and-shoot. (3) cfg.maxDistance was null, so `dist > cfg.maxDistance` coerced to `dist > 0`: reason 2 fired on every tick reason 1 did not, repositionThreshold was unreachable dead config, and the `nd > maxDistance` penalty scored every candidate -1000 alike. The per-target band makes all three behave as designed. (4) scare() fired when any ONE monster had held aggro for 250ms, so the 5s cooldown was routinely already spent when it mattered; it now counts attackers and fires at character.courage. Measured 2026-09-26 at cgoo: the party took 294 hits, FatherToken 190 of them, and all three died - a feared character stops acting, and for the healer that means it stops healing. Also: the kiting branch sat as an `else if` above walkInCircle(), so enabling it would have retired circle-walking entirely and left him standing still wherever nothing was kite-worthy; it is chained now. Verified with a stub harness over live G.monsters - every derived band starts outside the target's threat radius, and monsters we cannot outrun or outrange are refused.) v57 (The inventory sorter is gone. It pinned tracker/ancientcomputer/hpot1/mpot1/xptome/pumpkinspice/xpbooster to slots 0-6 from maintenanceLoop, which runs every TICK_RATE.maintenance = 2000ms, and swap() is an EXCHANGE - so it did not merely hold those items in place, it evicted whatever the operator dragged into one of those slots. Measured 2026-09-26: forcing the tracker from slot 0 to slot 8 landed at +500ms and was reverted by +1000ms, which is why manual dragging had become impossible rather than merely awkward. It only started biting today, because v56 fixed the dead 'tracktrix' spelling to 'tracker' AND a tracker was acquired the same hour, so slot 0 was defended for the first time ever. Nothing depends on the slots it was maintaining: there is not one numeric index into character.items anywhere in this file, every lookup is by name, and MageofOz has run without a sorter the whole time. The potion path is unaffected in practice - use_skill('use_hp') resolves to use('hp'), which scans items from the LAST slot BACKWARDS and drinks the first gives match, and measured the same day the only hp/mp-giving items in the bag are hpot1 and mpot1 themselves, so there is nothing to mis-pick. Note the pins were the WORSE arrangement for that scan: slots 2 and 3 are scanned last, so a second hp/mp consumable would have taken priority over the potions, not the other way round. The tracker is still safe without the pin - neverSell and muling.excludeItems protect it, which is what v56 was actually for. Slot order is now the operator's to arrange by hand.) v56 (Tracktrix is now actually protected, which it was not before. The item's NAME is tracker - Tracktrix is only its display label, G.items.tracker.name - and there is no tracktrix key in G.items at all. Measured 2026-09-25. So the 'tracktrix' string that had been sitting in inventoryRelief.neverSell could never match item.name and protected nothing, and the same typo in inventorySorter's slot map meant the item was never pinned to slot 0 either. Priest.js already spelled it correctly as tracker: 0, and that disagreement between the two files is what the typo was hiding behind. This was not theoretical: reliefSellable() sorts candidates by NPC value ASCENDING and sells the cheapest first, and a tracker vendors for SEVEN GOLD - it would have been the first thing off the pack the next time the bag filled with no mule in reach. It was also missing from muling.excludeItems in every spelling, so clearInventory() was handing it to Meltymerch on sight. Protected now on the same footing as tier-1 potions: not sold, not muled, pinned to slot 0. It is the item that records achievements for bonus stats, so its value is in holding it, never in what it fetches.) v55 (Giga Crab is now joined, and his contribution is logged for later review. Three parts. (1) getDynamicEvents() injects crabxx when parent.S.crabxx.live, with join: true - G.events.crabxx carries join: true and duration 2400 as a daily, so arrival is an event join rather than a walk, and handleEvents() already emits the join for any entry with that flag. There is no static monster pack for crabxx, so the smart_move G.monsters fallback would have found nothing and silently done nothing. (2) shouldAttackMob ignores crabx while crabxx is live. Measured 2026-09-25: a crabx hits for 189 after mitigation against a 4,621 HP pool - 24 hits - and the boss spawns 1,000 of them, so volume is what kills a ranger here. The boss itself hits for 12,572, 2.7x the whole pool, so there is no posture in which he trades with it; he stands outside its 45 range with his 160 and contributes damage, which is what cooperative credit pays on. ignoreAddsDuringCrabxx turns this off. (3) A contribution log in CODE storage, so it survives the change_server reload exactly as the chest map now does. Damage comes from the game's own hit events filtered to our own id against a crabxx target, not inferred from attack calls, so only landed hits count. Writes are batched to one per 10s rather than one per hit. Query it any day with crabxxReport(). Left deliberately unanswered for now: whether to generalise the dragold cross-shard hunter to this boss. At ~491 effective DPS into 960,000 HP behind armor 320 and phresistance 30, and with other players finishing it well inside the 40-minute window, the value of hopping depends on damage actually landed - which is the number this log exists to produce.) v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
 // ============================================================================
 // ============================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
@@ -182,6 +182,11 @@ const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'g
 const CONFIG = {
 	combat: {
 		enabled: true,
+		/* Scare clears everything currently targeting us. Needs a jacko in the bag
+		   (it equips, casts, then swaps the previous orb back): 50 mp, 5s cooldown.
+		   courageOffset shifts the trigger relative to character.courage - 0 fires
+		   at courage itself, +1 waits until fear has already begun. */
+		scare: { enabled: true, courageOffset: 0, minHeldMs: 250 },
 		targetPriority: ['FatherToken'],
 		alwaysAttack: ['crabx', 'wabbit'],
 		// See shouldAttackMob: while crabxx is live the 1,000 crabx adds are
@@ -202,8 +207,21 @@ const CONFIG = {
 		moveThreshold: 25,
 		clumpRadius: 85,
 		rangedKiting: {
-			enabled: false,
+			enabled: true,
+			/* Hand-tuned list - authoritative, never derived. See kiteThreatRadius(). */
 			targets: ['bscorpion'],
+			overrides: {
+				/* Measured tuning preserved verbatim. optimalDistance 170 deliberately
+				   EXCEEDS Dexon's 160 range: against bscorpion this is an avoid, not a
+				   kite-and-shoot, because the threat is weakness_aura (radius 100) and
+				   not the 32 attack range. maxDistance 400 preserves the old convergence
+				   toward 170 instead of letting the corrected band push him further out. */
+				bscorpion: { minDistance: 155, optimalDistance: 170, maxDistance: 400 }
+			},
+			autoBySpeed: true,
+			speedRatio: 1.3,
+			attackMargin: 15,
+			/* Fallbacks only - per-target values come from kiteBand(). */
 			minDistance: 155,
 			maxDistance: null,
 			rangeBuffer: 20,
@@ -727,7 +745,12 @@ async function mainLoop() {
 			if (!get_nearest_monster({ type: home })) {
 				handleReturnHome();
 			} else if (CONFIG.movement.rangedKiting.enabled) {
-				await noHang(rangedKite(), 'rangedKite');
+				/* Chained, not exclusive. rangedKite() returns false when nothing
+				   kite-worthy is in reach, and this was an `else if` - so merely
+				   enabling kiting would have retired walkInCircle() altogether and
+				   left him standing still at every ordinary farm spot. */
+				const kited = await noHang(rangedKite(), 'rangedKite');
+				if (!kited && CONFIG.movement.circleWalk) walkInCircle();
 			} else if (CONFIG.movement.circleWalk) {
 				walkInCircle();
 			}
@@ -1538,25 +1561,106 @@ async function walkInCircle() {
 	if (!character.moving) await xmove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
 }
 
+/* ---------------------------------------------------------------------------
+   KITE TARGET SELECTION - identical shape in Ranger.js / Priest.js / Mage.js.
+
+   Two independent paths into "should this be kited", deliberately separate:
+
+   (1) The hand-tuned list (targets / avoidTypes). Authoritative, never derived.
+       bscorpion is the reason this path has to exist: its attack range is 32,
+       but weakness_aura carries radius 100 on a 4s cooldown, so the danger
+       radius is the AURA, not the range, and the measured 155/170 hold was
+       tuned against the aura. Deriving that hold from monster.range alone gives
+       32 + buffer = 52 and parks the character INSIDE the aura - a silent
+       regression wearing the costume of a generalisation. Measured 2026-09-26.
+
+   (2) The speed predicate. Kiting only works when we open distance faster than
+       the monster closes it, so the speed ratio is the entire precondition. It
+       is evaluated against the live G.monsters def, not a recorded list,
+       because which monsters are present is not guessable and varies by map.
+
+   Path (2) also REFUSES a type when we cannot hold outside its threat radius
+   and still reach it (range - attackMargin). Safety bought by never attacking
+   is an exp/hr loss, not a gain, which is the standing rule for this party.
+   Path (1) is exempt from that test precisely BECAUSE bscorpion fails it:
+   holding at 170 with a 160 range means not attacking, and that is the
+   intended trade there.
+   --------------------------------------------------------------------------- */
+function kiteThreatRadius(mdef) {
+	if (!mdef) return 0;
+	let r = mdef.range || 0;
+	const ab = mdef.abilities;
+	if (ab) {
+		for (const k in ab) {
+			const a = ab[k];
+			if (a && a.aura && typeof a.radius === 'number' && a.radius > r) r = a.radius;
+		}
+	}
+	return r;
+}
+
+function kiteCandidateTypes(cfg) {
+	const out = new Set(cfg.targets || cfg.avoidTypes || []);
+	if (!cfg.autoBySpeed) return [...out];
+	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return [...out];
+	const mySpeed = character.speed || 0;
+	const reach = (character.range || 0) - (cfg.attackMargin || 0);
+	const ratio = cfg.speedRatio || 1.3;
+	const buffer = cfg.rangeBuffer || 0;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (out.has(e.mtype)) continue;
+		const mdef = G.monsters[e.mtype];
+		if (!mdef) continue;
+		if (mySpeed <= (mdef.speed || 0) * ratio) continue;
+		if (kiteThreatRadius(mdef) + buffer > reach) continue;
+		out.add(e.mtype);
+	}
+	return [...out];
+}
+
+function kiteBand(mtype, cfg) {
+	const reposition = cfg.repositionThreshold || 20;
+	const ov = (cfg.overrides || {})[mtype];
+	if (ov) {
+		const minD = ov.minDistance, optD = ov.optimalDistance;
+		return { minD, optD, maxD: ov.maxDistance != null ? ov.maxDistance : Math.max(optD + reposition, minD + 10) };
+	}
+	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const minD = kiteThreatRadius((G && G.monsters) ? G.monsters[mtype] : null) + (cfg.rangeBuffer || 0);
+	const maxD = Math.max(minD + 10, (character.range || 0) - 5);
+	return { minD, optD: Math.max(minD + 5, maxD - reposition), maxD };
+}
+
 async function rangedKite() {
 	const cfg = CONFIG.movement.rangedKiting;
 	if (!cfg.enabled || smart.moving) return false;
-	const target = get_nearest_monster_v2({ type: cfg.targets, max_distance: cfg.maxKiteRange });
+	const types = kiteCandidateTypes(cfg);
+	if (!types.length) return false;
+	const target = get_nearest_monster_v2({ type: types, max_distance: cfg.maxKiteRange });
 	if (!target) return false;
 
+	/* Band is per-target now. The old code read cfg.maxDistance, which was null,
+	   so `dist > cfg.maxDistance` coerced to `dist > 0` and reason 2 fired on
+	   every tick reason 1 did not - which made repositionThreshold unreachable
+	   dead config and made the `nd > maxDistance` penalty below a no-op that
+	   scored every candidate -1000 alike. Both work as designed now. */
+	const band = kiteBand(target.mtype, cfg);
 	const cx = character.real_x, cy = character.real_y;
 	const dist = Math.hypot(target.real_x - cx, target.real_y - cy);
 
 	let reason = 0, need = 0;
-	if (dist < cfg.minDistance) { reason = 1; need = cfg.optimalDistance - dist; }
-	else if (dist > cfg.maxDistance) { reason = 2; need = dist - cfg.optimalDistance; }
-	else if (Math.abs(dist - cfg.optimalDistance) > cfg.repositionThreshold) { reason = 3; need = Math.abs(dist - cfg.optimalDistance); }
+	if (dist < band.minD) { reason = 1; need = band.optD - dist; }
+	else if (dist > band.maxD) { reason = 2; need = dist - band.optD; }
+	else if (Math.abs(dist - band.optD) > cfg.repositionThreshold) { reason = 3; need = Math.abs(dist - band.optD); }
 	if (!reason) return true;
 
 	const now = performance.now();
 	if (now - rangedKite.lastMove <= cfg.moveThrottle) return true;
 
-	const mag = Math.min(cfg.moveDistance, need);
+	const mag = Math.min(cfg.moveDistance, Math.abs(need));
 	const step = Math.PI / cfg.sampleAngles, n = cfg.sampleAngles * 2;
 	let bestW = -Infinity, bestX = 0, bestY = 0, found = false;
 	for (let i = 0, a = 0; i < n; i++, a += step) {
@@ -1564,15 +1668,15 @@ async function rangedKite() {
 		if (!can_move_to(tx, ty)) continue;
 		const nd = Math.hypot(target.real_x - tx, target.real_y - ty);
 		let w = reason === 1 ? nd - dist : reason === 2 ? dist - nd
-			: Math.abs(dist - cfg.optimalDistance) - Math.abs(nd - cfg.optimalDistance);
-		if (nd < cfg.minDistance || nd > cfg.maxDistance) w -= 1000;
+			: Math.abs(dist - band.optD) - Math.abs(nd - band.optD);
+		if (nd < band.minD || nd > band.maxD) w -= 1000;
 		if (w > bestW) { bestW = w; bestX = tx; bestY = ty; found = true; }
 	}
 	if (!found) return true;
 
 	await xmove(bestX, bestY);
 	rangedKite.lastMove = now;
-	if (cfg.debug) game_log(`Kiting: ${reason} (${Math.round(dist)} → ${Math.round(Math.hypot(target.real_x - bestX, target.real_y - bestY))})`, '#FFA500');
+	if (cfg.debug) game_log(`Kiting ${target.mtype}: ${reason} (${Math.round(dist)} → ${Math.round(Math.hypot(target.real_x - bestX, target.real_y - bestY))})`, '#FFA500');
 	return true;
 }
 rangedKite.lastMove = 0;
@@ -1834,20 +1938,34 @@ function elixirUsage() {
 const targetStartTimes = new Map();
 
 const scare = () => {
+	const cfg = (CONFIG.combat && CONFIG.combat.scare) || {};
+	if (cfg.enabled === false) return;
 	const slot = character.items.findIndex(i => i?.name === 'jacko');
 	const now = performance.now();
-	let shouldScare = false;
+	const minHeld = cfg.minHeldMs != null ? cfg.minHeldMs : 250;
+	let held = 0;
 
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (e.type === 'monster' && e.target === character.name && e.mtype !== 'grinch') {
 			let t = targetStartTimes.get(id);
 			if (t === undefined) targetStartTimes.set(id, t = now);
-			if (now - t > 250) shouldScare = true;
+			if (now - t > minHeld) held++;
 		} else if (targetStartTimes.has(id)) {
 			targetStartTimes.delete(id);
 		}
 	}
+
+	/* Count attackers, do not merely detect one. Courage is how many attackers
+	   are tolerated before fear starts, and a feared character stops ACTING -
+	   for the priest that means it stops healing, which is the measured
+	   mechanism behind the 2026-09-26 cgoo wipe: FatherToken absorbed 190 of
+	   the party's 294 hits and sat over courage for 49 of 239 one-second
+	   samples, and all three characters died. Firing AT courage pre-empts the
+	   third attacker. The old gate fired on the FIRST monster to hold aggro for
+	   250ms, so the 5s cooldown was routinely already spent when it mattered. */
+	const threshold = Math.max(1, (character.courage || 2) + (cfg.courageOffset || 0));
+	const shouldScare = held >= threshold;
 
 	if (shouldScare && !is_on_cooldown('scare') && slot !== -1) {
 		equip(slot);

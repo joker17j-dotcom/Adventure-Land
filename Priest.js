@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
 // ============================================================================
 // ============================================================================
 // FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
@@ -186,6 +186,10 @@ const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'g
 
 const CONFIG = {
 	combat: {
+		/* Clears everything targeting us - jacko in the bag, 50 mp, 5s cooldown.
+		   courageOffset 0 fires AT courage, pre-empting the attacker that would
+		   start fear and stop him healing. See scare(). */
+		scare: { enabled: true, courageOffset: 0, minHeldMs: 250 },
 		curse: true,
 		zapper: true,
 		zapSwap: false,
@@ -207,10 +211,19 @@ const CONFIG = {
 		circleWalk: true,
 		circleRadius: 35,
 		kiting: {
-			enabled: false,
+			enabled: true,
+			/* Hand-tuned list - authoritative, never derived. See kiteThreatRadius(). */
 			avoidTypes: ['bscorpion'],
+			autoBySpeed: true,
+			speedRatio: 1.3,
+			attackMargin: 15,
 			avoidRadius: 300,
 			rangeBuffer: 65,
+			/* The bscorpion arena fence. It is applied ONLY while a hand-listed
+			   avoidTypes threat is the one in danger range - as a global filter it
+			   rejected every candidate position anywhere else on the map, so enabling
+			   kiting without that scoping would have silently done nothing outside
+			   this rectangle. Set to null to drop the fence entirely. */
 			boundaryBox: [-650, -1385, -220, -1165], // [x1, y1, x2, y2]
 
 			// Movement tuning
@@ -221,7 +234,9 @@ const CONFIG = {
 			// Weighting
 			goalWeight: 0.1, // how much to prefer moving toward goal
 			safetyWeight: 1.0, // how much to prefer moving away from danger
-			debug: true
+			/* debug draws the fence and every tangent line on screen each tick -
+			   fine while tuning one arena, far too noisy now kiting is general. */
+			debug: false
 		},
 	},
 
@@ -849,7 +864,11 @@ async function mainLoop() {
 			if (!get_nearest_monster({ type: home })) {
 				handleReturnHome();
 			} else if (CONFIG.movement.kiting.enabled) {
-				await noHang(kiter(), 'kiter');
+				/* Chained, not exclusive - kiter() returns false when nothing kite-worthy
+				   is in danger range, and this was an `else if`, so enabling kiting would
+				   have retired walkInCircle() everywhere. */
+				const kited = await noHang(kiter(), 'kiter');
+				if (!kited && CONFIG.movement.circleWalk) walkInCircle();
 			} else if (CONFIG.movement.circleWalk) {
 				walkInCircle();
 			}
@@ -1116,6 +1135,7 @@ async function maintenanceLoop() {
 		if (CONFIG.muling.enabled) clearInventory();
 		elixirUsage();
 		checkOwnXpEconomics();
+		scare();
 
 		if (character.rip) {
 			await respawn();
@@ -1472,10 +1492,128 @@ parent.socket.on('kill_credit', async (data) => {
 // ============================================================================
 let lastMove = 0;
 
+/* ---------------------------------------------------------------------------
+   KITE TARGET SELECTION - identical shape in Ranger.js / Priest.js / Mage.js.
+
+   Two independent paths into "should this be kited", deliberately separate:
+
+   (1) The hand-tuned list (targets / avoidTypes). Authoritative, never derived.
+       bscorpion is the reason this path has to exist: its attack range is 32,
+       but weakness_aura carries radius 100 on a 4s cooldown, so the danger
+       radius is the AURA, not the range, and the measured 155/170 hold was
+       tuned against the aura. Deriving that hold from monster.range alone gives
+       32 + buffer = 52 and parks the character INSIDE the aura - a silent
+       regression wearing the costume of a generalisation. Measured 2026-09-26.
+
+   (2) The speed predicate. Kiting only works when we open distance faster than
+       the monster closes it, so the speed ratio is the entire precondition. It
+       is evaluated against the live G.monsters def, not a recorded list,
+       because which monsters are present is not guessable and varies by map.
+
+   Path (2) also REFUSES a type when we cannot hold outside its threat radius
+   and still reach it (range - attackMargin). Safety bought by never attacking
+   is an exp/hr loss, not a gain, which is the standing rule for this party.
+   Path (1) is exempt from that test precisely BECAUSE bscorpion fails it:
+   holding at 170 with a 160 range means not attacking, and that is the
+   intended trade there.
+   --------------------------------------------------------------------------- */
+function kiteThreatRadius(mdef) {
+	if (!mdef) return 0;
+	let r = mdef.range || 0;
+	const ab = mdef.abilities;
+	if (ab) {
+		for (const k in ab) {
+			const a = ab[k];
+			if (a && a.aura && typeof a.radius === 'number' && a.radius > r) r = a.radius;
+		}
+	}
+	return r;
+}
+
+function kiteCandidateTypes(cfg) {
+	const out = new Set(cfg.targets || cfg.avoidTypes || []);
+	if (!cfg.autoBySpeed) return [...out];
+	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return [...out];
+	const mySpeed = character.speed || 0;
+	const reach = (character.range || 0) - (cfg.attackMargin || 0);
+	const ratio = cfg.speedRatio || 1.3;
+	const buffer = cfg.rangeBuffer || 0;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (out.has(e.mtype)) continue;
+		const mdef = G.monsters[e.mtype];
+		if (!mdef) continue;
+		if (mySpeed <= (mdef.speed || 0) * ratio) continue;
+		if (kiteThreatRadius(mdef) + buffer > reach) continue;
+		out.add(e.mtype);
+	}
+	return [...out];
+}
+
+function kiteBand(mtype, cfg) {
+	const reposition = cfg.repositionThreshold || 20;
+	const ov = (cfg.overrides || {})[mtype];
+	if (ov) {
+		const minD = ov.minDistance, optD = ov.optimalDistance;
+		return { minD, optD, maxD: ov.maxDistance != null ? ov.maxDistance : Math.max(optD + reposition, minD + 10) };
+	}
+	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const minD = kiteThreatRadius((G && G.monsters) ? G.monsters[mtype] : null) + (cfg.rangeBuffer || 0);
+	const maxD = Math.max(minD + 10, (character.range || 0) - 5);
+	return { minD, optD: Math.max(minD + 5, maxD - reposition), maxD };
+}
+
+/* ---------------------------------------------------------------------------
+   SCARE - new in v31. The jacko was already in two of the equipment loadouts
+   below (orb slot, level 5) and the skill was never once cast, so the priest
+   carried a 5-second aggro wipe through every fight without using it.
+
+   That mattered more for him than for anyone: measured 2026-09-26 at cgoo he
+   absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second
+   samples above courage 2, and a feared character stops acting - so the healer
+   stops HEALING, and all three characters died. Scare is the direct counter.
+
+   Polled from maintenanceLoop (TICK_RATE.maintenance), so worst-case reaction
+   is one tick rather than instant. Against the measured ~750 dps of a 3-cgoo
+   pile that is ~1,500 damage into a 5,111 pool - survivable, and it keeps this
+   change to one cheap call site. Move it to skillLoop if that proves too slow.
+   --------------------------------------------------------------------------- */
+const targetStartTimes = new Map();
+
+function scare() {
+	const cfg = (CONFIG.combat && CONFIG.combat.scare) || {};
+	if (cfg.enabled === false) return;
+	const slot = character.items.findIndex(i => i && i.name === 'jacko');
+	const now = performance.now();
+	const minHeld = cfg.minHeldMs != null ? cfg.minHeldMs : 250;
+	let held = 0;
+
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e && e.type === 'monster' && e.target === character.name && e.mtype !== 'grinch') {
+			let t = targetStartTimes.get(id);
+			if (t === undefined) targetStartTimes.set(id, t = now);
+			if (now - t > minHeld) held++;
+		} else if (targetStartTimes.has(id)) {
+			targetStartTimes.delete(id);
+		}
+	}
+
+	const threshold = Math.max(1, (character.courage || 2) + (cfg.courageOffset || 0));
+	if (held < threshold || is_on_cooldown('scare') || slot === -1) return;
+
+	/* equip / cast / equip: the first equip moves the jacko into the orb slot and
+	   displaces the previous orb into this inventory slot, the second puts it
+	   back. Same sequence Ranger.js uses. */
+	try { equip(slot); use_skill('scare'); equip(slot); } catch (e) {}
+}
+
 function kiter() {
 	const cfg = CONFIG.movement.kiting;
-	if (!cfg?.enabled) return;
-	if (cfg.debug) {
+	if (!cfg?.enabled) return false;
+	if (cfg.debug && Array.isArray(cfg.boundaryBox)) {
 		const [x1, y1, x2, y2] = cfg.boundaryBox;
 		clear_drawings();
 		draw_line(x1, y1, x1, y2, 2, 0xfc031c);
@@ -1483,14 +1621,16 @@ function kiter() {
 		draw_line(x1, y2, x2, y2, 2, 0xfc031c);
 		draw_line(x1, y1, x2, y1, 2, 0xfc031c);
 	}
-	avoidMobs(cfg);
+	return avoidMobs(cfg);
 }
 
 function avoidMobs(cfg) {
 	const cx = character.real_x, cy = character.real_y;
 	const R2 = cfg.avoidRadius * cfg.avoidRadius;
-	const types = cfg.avoidTypes;
+	const types = kiteCandidateTypes(cfg);
+	const listed = new Set(cfg.avoidTypes || []);
 	const box = cfg.boundaryBox;
+	const stepDist = cfg.moveDistance || 75;
 
 	let threats = null, inDanger = false;
 	for (const id in parent.entities) {
@@ -1500,12 +1640,18 @@ function avoidMobs(cfg) {
 		const dx = cx - mx, dy = cy - my;
 		const d2 = dx * dx + dy * dy;
 		if (d2 >= R2) continue;
-		const r = parent.G.monsters[e.mtype].range + cfg.rangeBuffer;
+		/* kiteThreatRadius, not .range: an aura is a danger radius too, and this
+		   also stops an unknown mtype throwing on .range of undefined. */
+		const r = kiteThreatRadius(parent.G.monsters[e.mtype]) + cfg.rangeBuffer;
 		const danger = d2 < r * r;
-		(threats ??= []).push({ mx, my, r, d2, danger });
+		(threats ??= []).push({ mx, my, r, d2, danger, mtype: e.mtype });
 		if (danger) inDanger = true;
 	}
-	if (!inDanger) return;
+	if (!inDanger) return false;
+
+	/* Fence only when the danger is hand-listed; a predicate-matched threat
+	   can be on any map, where the arena rectangle is meaningless. */
+	const useBox = Array.isArray(box) && threats.some(t => t.danger && listed.has(t.mtype));
 
 	const avoidRanges = [];
 	for (const t of threats) {
@@ -1524,8 +1670,8 @@ function avoidMobs(cfg) {
 	const n = cfg.sampleAngles * 2, step = Math.PI / cfg.sampleAngles;
 	let bestW = -Infinity, bestX = 0, bestY = 0, found = false;
 	for (let i = 0, a = 0; i < n; i++, a += step) {
-		const px = cx + 75 * Math.cos(a), py = cy + 75 * Math.sin(a);
-		if (px < box[0] || px > box[2] || py < box[1] || py > box[3]) continue;
+		const px = cx + stepDist * Math.cos(a), py = cy + stepDist * Math.sin(a);
+		if (useBox && (px < box[0] || px > box[2] || py < box[1] || py > box[3])) continue;
 		if (angleIntersectsMonsters(avoidRanges, a)) continue;
 		if (!can_move_to(px, py)) continue;
 
@@ -1538,7 +1684,7 @@ function avoidMobs(cfg) {
 		}
 		if (weight > bestW) { bestW = weight; bestX = px; bestY = py; found = true; }
 	}
-	if (!found) return;
+	if (!found) return false;
 
 	const now = performance.now();
 	if (now - lastMove > cfg.moveThrottle) {
@@ -1547,6 +1693,9 @@ function avoidMobs(cfg) {
 		move(moveX, moveY);
 		if (cfg.debug) draw_line(cx, cy, moveX, moveY, 2, 0xF20D0D);
 	}
+	/* true even when throttled - we are actively managing distance, and the
+	   caller must not fall through to walkInCircle() and fight this. */
+	return true;
 }
 
 function angleIntersectsMonsters(ranges, angle) {
