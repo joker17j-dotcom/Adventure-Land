@@ -1,0 +1,53 @@
+const TARGET_LEVEL = 5; // change this to whatever level you want
+const MIN_GOLD_TO_BUY = 1000000; // won't buy scrolls unless gold is above this
+
+let upgradeLoopBusy = false;
+
+async function upgradeSlot0Loop() {
+	if (upgradeLoopBusy) return; // don't overlap if a previous attempt is still in flight
+	upgradeLoopBusy = true;
+
+	try {
+		const item = character.items[0];
+
+		if (!item) {
+			// Empty - probably broke on a failed upgrade, or you're about to
+			// drop something in. Just wait for the next tick.
+			return;
+		}
+
+		if ((item.level || 0) >= TARGET_LEVEL) {
+			// Already done - leave it alone until you swap in something new.
+			return;
+		}
+
+		const grade = item_grade(item);
+		const scrollName = ['scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4'][grade];
+
+		if (quantity(scrollName) < 1) {
+			if (character.gold <= MIN_GOLD_TO_BUY) {
+				game_log(`Gold (${character.gold}) at or below ${MIN_GOLD_TO_BUY} - skipping scroll purchase`, 'orange');
+				return; // will retry next tick once gold climbs back above the threshold
+			}
+			try {
+				await buy(scrollName, 1);
+			} catch (e) {
+				game_log(`Can't buy ${scrollName} here: ${e.reason || e}`, 'red');
+				return; // will just retry next tick - if you move to a vendor it'll pick back up
+			}
+		}
+
+		try {
+			await upgrade(0, locate_item(scrollName));
+		} catch (e) {
+			game_log(`Upgrade failed: ${e.reason || e}`, 'red');
+			// No return needed - if the item broke, next tick sees it's
+			// empty and idles; if it just failed without breaking, next
+			// tick tries again automatically.
+		}
+	} finally {
+		upgradeLoopBusy = false;
+	}
+}
+
+setInterval(upgradeSlot0Loop, 1000);
