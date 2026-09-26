@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v56
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v57
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -350,6 +350,13 @@ const CONFIG = {
 		// How long after a hold expires the failure COUNT survives. Without it
 		// the count resets as the hold lapses and escalation never escalates.
 		failForgetMs: 2 * 60 * 60 * 1000,
+		// Failures against one counterparty before it moves to the PERMANENT list.
+		// The backoff ceiling is reached at 6, so 8 is two ceilings waited out.
+		// Map changes inside the window before the same. 0 disables either.
+		// -> MerchantComments.md#NEVER_TRADE_NAMES
+		neverTradeAfter: 8,
+		mapChurnLimit: 3,
+		mapChurnWindowMs: 30 * 60 * 1000,
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
 		// gold into stock, and a run of them means the market being traded
@@ -1432,6 +1439,94 @@ const PROTECTED_ITEM_NAMES = new Set([
    INGESTION rather than at the point of sale: a name filtered out of the
    buys/sells feed cannot reach any caller, hand-run probes included. */
 const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
+
+/* Counterparties never traded with. PERMANENT, unlike arb_fail, which caps at a
+   one-hour hold and forgets the count. By NAME, not shard|name. Filtered at feed
+   ingestion for the same reason as NO_TRADE_ITEM_NAMES, and again in the buy
+   finder, the stranded-goods buyer and the candidate filter.
+   -> MerchantComments.md#NEVER_TRADE_NAMES */
+const NEVER_TRADE_NAMES = new Set(['Kazhag', 'Balitr']);
+
+const ARB_NEVER_KEY = 'arb_never';
+const ARB_CHURN_KEY = 'arb_churn';
+
+// The automatic half. CODE storage, so it survives the change_server reload -
+// and a DEPLOY DOES NOT CLEAR IT, which is why promotion logs in red.
+function arbNeverAuto() {
+	try { const v = get(ARB_NEVER_KEY); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; }
+}
+
+function arbNeverBlocked(target) {
+	if (!target) return false;
+	if (NEVER_TRADE_NAMES.has(target)) return true;
+	return !!arbNeverAuto()[target];
+}
+
+function arbNeverPromote(target, why) {
+	if (!target || NEVER_TRADE_NAMES.has(target)) return false;
+	const m = arbNeverAuto();
+	if (m[target]) return false;
+	m[target] = { at: new Date().toISOString(), why: why || 'repeated failures' };
+	try { set(ARB_NEVER_KEY, m); } catch (e) { return false; }
+	arbLog('NEVER TRADING ' + target + ' AGAIN - ' + (why || '') + '. Permanent, survives a '
+		+ 'deploy. arbNeverForget("' + target + '") undoes it.', 'red');
+	return true;
+}
+
+// A permanent list nobody can read is a permanent list nobody trusts.
+function arbNeverList() {
+	const auto = arbNeverAuto();
+	const out = { manual: Array.from(NEVER_TRADE_NAMES), automatic: auto,
+		churn: arbChurnLoad(), count: NEVER_TRADE_NAMES.size + Object.keys(auto).length };
+	console.log('never traded with', out);
+	return out;
+}
+
+function arbNeverForget(target) {
+	if (NEVER_TRADE_NAMES.has(target)) {
+		arbLog(target + ' is hard-coded in Merchant.js - remove it there and redeploy', 'orange');
+		return false;
+	}
+	const m = arbNeverAuto();
+	if (!m[target]) { arbLog(target + ' is not on the automatic list', '#8b98ab'); return false; }
+	delete m[target];
+	try { set(ARB_NEVER_KEY, m); } catch (e) { return false; }
+	const c = arbChurnLoad();
+	if (c[target]) { delete c[target]; try { set(ARB_CHURN_KEY, c); } catch (e) { } }
+	arbLog('forgot ' + target + ' - it can be traded with again', '#7FD98A');
+	return true;
+}
+
+/* MAP CHURN - the merchant that will not hold still long enough to trade.
+   Counted on MAP transitions only, so shuffling around one map is ignored:
+   approachUnits is 350 and smart_move closes that. Measured 2026-09-26.
+   -> MerchantComments.md#mapChurnLimit */
+function arbChurnLoad() {
+	try { const v = get(ARB_CHURN_KEY); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; }
+}
+
+// Mutates the caller's map so one ingestion pass costs ONE write, not one per
+// merchant - the O(n^2) trap v54 removed from the chest map.
+function arbChurnNote(churn, name, map) {
+	if (!name || !map) return false;
+	const cfg = CONFIG.arbitrage;
+	if (!cfg.mapChurnLimit) return false;
+	const now = Date.now();
+	const e = churn[name];
+	// No record, or a stale window: that is a relocation, not churn. Restart.
+	if (!e || now - (e.since || 0) > (cfg.mapChurnWindowMs || 0)) {
+		churn[name] = { map: map, changes: 0, since: now };
+		return true;
+	}
+	if (e.map === map) return false;
+	e.map = map;
+	e.changes = (e.changes || 0) + 1;
+	if (e.changes >= cfg.mapChurnLimit) {
+		arbNeverPromote(name, 'changed map ' + e.changes + ' times in '
+			+ Math.round((now - e.since) / 60000) + ' min - never still long enough to trade');
+	}
+	return true;
+}
 
 /* ARBITRAGE STOCK - goods the executor has paid for and not yet disposed of.
 
@@ -3229,6 +3324,11 @@ function arbNoteFailure(shard, target) {
 	try { set(ARB_FAIL_KEY, m); } catch (e) { }
 	arbLog('shelving ' + target + ' on ' + shard + ' for '
 		+ Math.round(hold / 60000) + ' min (failure ' + n + ')', 'orange');
+	// The hold has been at its ceiling since failure 6, so another retry is not
+	// new information. -> NEVER_TRADE_NAMES
+	if (cfg.neverTradeAfter && n >= cfg.neverTradeAfter) {
+		arbNeverPromote(target, 'failed ' + n + ' consecutive times, last on ' + shard);
+	}
 }
 
 /* A success says the earlier failures were situational, so the count goes. */
@@ -3654,6 +3754,8 @@ async function arbFindBuyerFor(t) {
 	const need = cost * (CONFIG.arbitrage.fallbackMinRecovery || 0);
 	let best = null, refused = 0, bestRefused = null;
 	for (const r of rows) {
+		// Not even a last-resort exit. -> NEVER_TRADE_NAMES
+		if (arbNeverBlocked(r.id)) continue;
 		const age = pAgeSec(r.lastSeen);
 		if (age == null || age > maxAge) continue;
 		for (const k in (r.slots || {})) {
@@ -3787,6 +3889,9 @@ async function arbLookForWork() {
 		// different question: not "did we consume this" but "do we keep losing".
 		if (arbFailBlocked(f.buyShard, f.buyFrom, fails)
 			|| arbFailBlocked(f.sellShard, f.sellTo, fails)) { suppressed++; return false; }
+		// Ingestion drops these, but a flip list built before a name was added is
+		// still in memory. -> NEVER_TRADE_NAMES
+		if (arbNeverBlocked(f.buyFrom) || arbNeverBlocked(f.sellTo)) { suppressed++; return false; }
 		return true;
 	});
 	if (!pick) {
@@ -4065,7 +4170,7 @@ function arbRestore() {
 // the game log named the wrong build for 25 versions. It no longer gates
 // anything: arbHalted() used to ignore a halt whose build differed, and that
 // clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-const MERCHANT_BUILD = 'v56 / arb.4 / 2026-09-25 / Tracktrix protected from both sell paths';
+const MERCHANT_BUILD = 'v57 / arb.5 / 2026-09-26 / permanent counterparty blacklist';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -4443,6 +4548,7 @@ async function arbProbeFindBuy(maxPrice) {
 		pLog('SOURCE: in-view scan only - ' + out.length + ' stand candidate(s)', 'orange');
 	}
 	for (const r of rows) {
+		if (arbNeverBlocked(r.id)) continue;   // -> NEVER_TRADE_NAMES
 		const shard = String(r.serverRegion) + String(r.serverIdentifier);
 		const age = pAgeSec(r.lastSeen);
 		for (const k in (r.slots || {})) {
@@ -4656,7 +4762,11 @@ async function arbProbeFindFlips(opts) {
 
 	const buys = [];   // things we could acquire
 	const sells = [];  // people paying for things
+	const churn = arbChurnLoad();
+	let churnDirty = false;
 	for (const r of rows) {
+		if (arbNeverBlocked(r.id)) continue;   // -> NEVER_TRADE_NAMES
+		if (arbChurnNote(churn, r.id, r.map)) churnDirty = true;
 		const shard = String(r.serverRegion) + String(r.serverIdentifier);
 		const age = pAgeSec(r.lastSeen);
 		for (const k in (r.slots || {})) {
@@ -4674,6 +4784,7 @@ async function arbProbeFindFlips(opts) {
 			(sl.b ? sells : buys).push(rec);
 		}
 	}
+	if (churnDirty) { try { set(ARB_CHURN_KEY, churn); } catch (e) { } }
 	const pon = await arbProbePontyRows();
 	for (const r of pon.rows) {
 		if (NO_TRADE_ITEM_NAMES.has(r.name)) continue;   // never buy, never sell
