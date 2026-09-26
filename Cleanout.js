@@ -1,5 +1,5 @@
 // ============================================================================
-// Cleanout - sell an inventory down, to the best player bid or to an NPC - v2 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from CONFIG.protect.) v1
+// Cleanout - sell an inventory down, to the best player bid or to an NPC - v3 (Tracktrix is protected from the cleanout. The item's name is tracker, and its TYPE is tracker too, which is not in protectTypes - so neither the name list nor the type list covered it and a bank pack holding one would have offered it to the best player bid or vendored it for seven gold. It is the item that records achievements for bonus stats; its worth is in holding it, not in any price it fetches.) v2 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from CONFIG.protect.) v1
 // ============================================================================
 // Engaged BY HAND in its own CODE slot while doing a bank cleanout. Withdraw
 // what you want gone into the merchant's bag, switch to this slot, engage.
@@ -62,6 +62,9 @@ const CONFIG = {
 		'stoneofxp', 'stoneofgold', 'stoneofluck',
 		'luckbooster', 'xpbooster', 'goldbooster',
 		'hpot1', 'mpot1',
+		// Records achievements for bonus stats. Vendors for 7 gold, which is
+		// exactly why no value-based rule would ever have saved it.
+		'tracker',
 	],
 
 	// Never sold by item type.
