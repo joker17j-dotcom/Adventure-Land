@@ -99,14 +99,13 @@
 </header>
 
 <div id="boot">
-  <div id="bootmsg">Starting Pyodide…</div>
+  <div id="bootmsg">Loading game data…</div>
   <div id="bootbar"><div id="bootfill"></div></div>
   <div class="err" id="booterr"></div>
 </div>
 
 <main id="app" class="hidden"></main>
 
-<script src="https://cdn.jsdelivr.net/pyodide/v0.27.8/full/pyodide.js"></script>
 <script>
 /* ============================================================================
    AL MARKET · WATCHLIST
@@ -114,9 +113,18 @@
    it statically.
 
    DATA SOURCES
-   1. Game data  -> kaansoral/adventureland design/*.py, fetched raw from
-                    raw.githubusercontent.com and executed as real Python in
-                    the browser via Pyodide. 29 datasets.
+   1. Game data  -> joker17j-dotcom/adventureland_mongodb design/*.js,
+                    fetched raw from raw.githubusercontent.com and evaluated
+                    directly. 29 datasets.
+
+                    WAS kaansoral/adventureland design/*.py, run through a
+                    whole WASM Python runtime to read data files. That source
+                    is a stale snapshot - it carries 529 items against this
+                    one's 623, missing 100+ including every anniversary item -
+                    and its design data is Python, which is why Pyodide was
+                    here at all. The new source ships the same datasets as
+                    plain "var x = {...}" JavaScript, so they are evaluated
+                    directly and the runtime is gone.
    2. Gap fill   -> aldata.adventureland.community/data.json for the three
                     sections that do NOT exist in the repo: geometry, images,
                     docs. (CORS: access-control-allow-origin *)
@@ -130,7 +138,7 @@
 
 const CONFIG = {"mode": "watchlist"};
 
-const REPO = "https://raw.githubusercontent.com/kaansoral/adventureland/main";
+const REPO = "https://raw.githubusercontent.com/joker17j-dotcom/adventureland_mongodb/main";
 const ALDATA_SITE = "https://aldata.adventureland.community";
 const ALDATA_API = "https://aldata.earthiverse.ca";
 /* Local bridge fed by the in-game MerchantScout bots. Serves the same row shape
@@ -140,11 +148,18 @@ const BRIDGE = "http://127.0.0.1:8787";
 
 /* Modules in dependency order. Several import each other:
    games -> conditions -> skills, projectiles -> animations, items -> drops. */
+/* ORDER MATTERS, which it did not when these were Python modules imported by
+   name. They are now plain scripts sharing one scope, so a file that reads
+   another's variable has to run second - and items.js reads `multipliers` at
+   module scope. With multipliers last, items.js threw partway through and the
+   page came up with 618 items instead of 623, silently: every later key in the
+   file was simply absent. multipliers therefore goes first. */
 const MODULES = [
+  "multipliers",
   "games", "conditions", "projectiles", "animations", "items", "dimensions",
   "sprites", "monsters", "npcs", "recipes", "drops", "classes", "maps",
   "skills", "cosmetics", "achievements", "events", "levels", "titles",
-  "tokens", "multipliers", "upgrades",
+  "tokens", "upgrades",
 ];
 
 /* Top-level variable names each module defines (names differ from filenames). */
@@ -259,45 +274,43 @@ async function fetchText(url) {
 }
 
 async function loadGameData() {
-  boot("Loading Pyodide runtime…", 5);
-  const py = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.27.8/full/" });
-
   boot("Fetching " + MODULES.length + " design modules from GitHub…", 20);
   const sources = await Promise.all(
-    MODULES.map((m) => fetchText(`${REPO}/design/${m}.py`).then((t) => [m, t]))
+    MODULES.map((m) => fetchText(`${REPO}/design/${m}.js`).then((t) => [m, t]))
   );
 
-  boot("Writing module tree…", 45);
-  py.FS.mkdirTree("/al/design");
-  py.FS.writeFile("/al/design/__init__.py", "", { encoding: "utf8" });
-  for (const [m, src] of sources) {
-    py.FS.writeFile(`/al/design/${m}.py`, src, { encoding: "utf8" });
-  }
+  /* Evaluated in ONE shared scope, in order, because that is what they expect
+     of each other - see the note on MODULES. Each file is a plain
+     "var items = {...}" with no export of any kind, so the variables it
+     declares simply land in the scope and are read back by name afterwards.
 
-  boot("Executing game design source…", 60);
-  py.runPython(`
-import sys
-sys.path.insert(0, "/al")
-sys.path.insert(0, "/al/design")
-`);
-
+     Function, not eval: new Function gives the sources their own scope rather
+     than leaking 30 globals into the page, and returns the ones we asked for.
+     A module that throws is recorded and the rest still run - one bad file
+     should cost its own datasets, not the page. */
+  boot("Evaluating game design source…", 55);
   const failures = [];
-  for (const m of MODULES) {
-    try { py.runPython(`import design.${m}`); }
-    catch (e) { failures.push(m + ": " + String(e).split("\n").slice(-3).join(" ")); }
+  const scope = {};
+  for (const [m, src] of sources) {
+    try {
+      const wanted = EXPORTS[m] || [];
+      const fn = new Function(
+        "__prev",
+        "with (__prev) {\n" + src +
+        "\nreturn {" + wanted.map((v) => JSON.stringify(v) + ":(typeof " + v +
+        "!==\"undefined\"?" + v + ":undefined)").join(",") + "};\n}"
+      );
+      Object.assign(scope, fn(scope) || {});
+    } catch (e) {
+      failures.push(m + ": " + (e && e.message ? e.message : String(e)));
+    }
   }
 
   boot("Extracting datasets…", 78);
   for (const m of MODULES) {
     for (const v of (EXPORTS[m] || [])) {
-      try {
-        py.runPython(`import design.${m} as _m\n_x = getattr(_m, ${JSON.stringify(v)}, None)`);
-        const proxy = py.globals.get("_x");
-        if (proxy && proxy.toJs) {
-          G[v] = proxy.toJs({ dict_converter: Object.fromEntries });
-          proxy.destroy();
-        }
-      } catch (e) { failures.push(v + ": " + e.message); }
+      if (scope[v] === undefined) { failures.push(m + ": " + v + " not declared"); continue; }
+      G[v] = scope[v];
     }
   }
 
@@ -366,7 +379,7 @@ function pontyToggle(onChange) {
 /* What Ponty charges for an item.
 
    His socket payload carries no price - the client computes it - and the two
-   numbers needed are already in design/multipliers.py, which this page loads:
+   numbers needed are already in design/multipliers.js, which this page loads:
 
        buy_to_sell      0.6   what an NPC pays a player for an item
        secondhands_mult 2     Ponty's markup on what he paid
@@ -1528,7 +1541,7 @@ tab("ponty", "Ponty Stock", (host) => {
           }, (r.level || 0) > 0 ? "lv>0" : "—");
         } },
       /* Reference only, and deliberately NOT fed to the spread tables. This is
-         design/items.py's base gold value, which is what the item is nominally
+         design/items.js's base gold value, which is what the item is nominally
          worth - not what Ponty charges for it. He sells at a markup nobody here
          has measured yet, so quoting this as his price would overstate every
          Ponty-backed spread and lose real gold. It is shown because knowing an
@@ -1820,7 +1833,7 @@ tab("ledger", "Trade Ledger", (host) => {
   }
 
   const bits = [];
-  bits.push(`${META.repoVars} datasets from kaansoral/adventureland`);
+  bits.push(`${META.repoVars} datasets from adventureland_mongodb`);
   if (META.aldataSections && META.aldataSections.length) {
     bits.push(`${META.aldataSections.join("/")} from aldata`);
   }

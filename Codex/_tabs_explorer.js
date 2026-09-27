@@ -15,7 +15,7 @@ tab("items", "Items", (host) => {
   }
 
   ctl.append(el("div", { class: "src", style: "margin-bottom:8px" },
-    "From ", el("b", {}, "design/items.py"), " · executed in-browser via Pyodide"),
+    "From ", el("b", {}, "design/items.js"), " · evaluated in-browser"),
     el("div", { class: "row" }, q, type, tier));
   host.append(ctl, out);
 
@@ -54,7 +54,7 @@ tab("monsters", "Monsters", (host) => {
   const all = Object.entries(G.monsters || {}).map(([k, v]) => ({ key: k, gold: gold[k], ...v }));
 
   ctl.append(el("div", { class: "src", style: "margin-bottom:8px" },
-    "From ", el("b", {}, "design/monsters.py"), " (monsters + monster_gold)"),
+    "From ", el("b", {}, "design/monsters.js"), " (monsters + monster_gold)"),
     el("div", { class: "row" }, q));
   host.append(ctl, out);
 
@@ -83,7 +83,7 @@ tab("monsters", "Monsters", (host) => {
 
 /* ============================================================= CLASSES TAB */
 tab("classes", "Classes", (host) => {
-  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/classes.py"), " + ", el("b", {}, "design/skills.py")));
+  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/classes.js"), " + ", el("b", {}, "design/skills.js")));
   const grid = el("div", { class: "grid" });
   for (const [key, c] of Object.entries(G.classes || {})) {
     const card = el("div", { class: "card" });
@@ -109,7 +109,7 @@ tab("classes", "Classes", (host) => {
 
 /* =========================================================== COSMETICS TAB */
 tab("cosmetics", "Cosmetics", (host) => {
-  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/cosmetics.py")));
+  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/cosmetics.js")));
   const out = el("div", { class: "panel" });
   const rows = [];
   for (const [group, v] of Object.entries(G.cosmetics || {})) {
@@ -131,7 +131,7 @@ tab("drops", "Drops", (host) => {
   const q = el("input", { type: "search", placeholder: "filter by monster or item…", style: "min-width:260px" });
   const out = el("div", { class: "panel" });
   ctl.append(el("div", { class: "src", style: "margin-bottom:8px" },
-    "From ", el("b", {}, "design/drops.py"), " · monster drop tables and map-wide drops. ",
+    "From ", el("b", {}, "design/drops.js"), " · monster drop tables and map-wide drops. ",
     "Chance is per kill."),
     el("div", { class: "row" }, q));
   host.append(ctl, out);
@@ -180,8 +180,8 @@ tab("drops", "Drops", (host) => {
 
 /* =============================================================== WORLD TAB */
 tab("world", "World", (host) => {
-  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/maps.py"),
-    " · ", el("b", {}, "design/npcs.py"), " · geometry from aldata (absent from repo)"));
+  host.append(el("div", { class: "panel src" }, "From ", el("b", {}, "design/maps.js"),
+    " · ", el("b", {}, "design/npcs.js"), " · geometry from aldata (absent from repo)"));
   const out = el("div", { class: "panel" });
   const geo = G.geometry || {};
   const rows = Object.entries(G.maps || {}).map(([k, m]) => ({
@@ -289,7 +289,7 @@ tab("sources", "Sources", (host) => {
     el("th", {}, "Dataset"), el("th", {}, "Source"), el("th", { class: "num" }, "Records"))));
   const tb = el("tbody");
   const repoOf = {};
-  for (const [m, vars] of Object.entries(EXPORTS)) for (const v of vars) repoOf[v] = `design/${m}.py`;
+  for (const [m, vars] of Object.entries(EXPORTS)) for (const v of vars) repoOf[v] = `design/${m}.js`;
   const keys = Object.keys(G).filter((k) => !k.startsWith("__")).sort();
   for (const k of keys) {
     const src = repoOf[k]
@@ -313,7 +313,7 @@ tab("sources", "Sources", (host) => {
     [ALDATA_API + "/active-owners", "Opted-in bank owners", "none"],
     [ALDATA_API + "/bank/<owner>", "Bank contents + gold", "none for opted-in owners"],
     [ALDATA_SITE + "/data.json", "geometry, images, docs (absent from repo)", "none"],
-    [REPO + "/design/*.py", "29 game datasets, run through Pyodide", "none"],
+    [REPO + "/design/*.js", "29 game datasets, evaluated directly", "none"],
     [REPO + "/images/tiles/items/*.png", "Item icons, cropped on canvas", "none"],
   ]) ltb.append(el("tr", {}, el("td", { class: "dim" }, u), el("td", {}, why), el("td", {}, auth)));
   lt.append(ltb);

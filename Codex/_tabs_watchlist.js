@@ -353,7 +353,7 @@ tab("ponty", "Ponty Stock", (host) => {
           }, (r.level || 0) > 0 ? "lv>0" : "—");
         } },
       /* Reference only, and deliberately NOT fed to the spread tables. This is
-         design/items.py's base gold value, which is what the item is nominally
+         design/items.js's base gold value, which is what the item is nominally
          worth - not what Ponty charges for it. He sells at a markup nobody here
          has measured yet, so quoting this as his price would overstate every
          Ponty-backed spread and lose real gold. It is shown because knowing an
