@@ -800,6 +800,42 @@ mid-errand rather than parked" had it backwards - mid-errand is exactly when a
 stray move does damage. Out of range now SKIPS; `scoutPontyDue()` keeps the scan
 due and the caller repositions on main next cycle.
 
+## only-at-a-profit
+
+Stock recovery sells only when the sale clears what the goods cost, after tax.
+
+WHY THE VENDOR BAR WAS WRONG. `arbNetFromSale` answers "player or vendor?", and
+that is exactly the right question when deciding where to dispose of something.
+It is the wrong question when deciding WHETHER to dispose of it, and v61 used it
+for both. Live result: three of the first four recoveries closed at a loss.
+`offeringp` cost 5,000,000 a unit, the best buyer paid 5,100,000, and 2.5% tax
+makes that 4,972,500 - a realised -27,500 per unit that looked like +4,684,500
+next to a vendor's 288,000.
+
+The bias is structural, not bad luck. A trade gets abandoned because no buyer
+would take the goods at a price that worked, which usually means they were bought
+above the market that now exists. So the population this feature iterates over is
+selected FOR being underwater. A vendor-relative bar will therefore keep finding
+"profitable" sales that are losses, indefinitely.
+
+THE BASIS IS PER UNIT. `qty` is capped by `Math.min(s.qty, sl.q || 1)`, so a row
+of 100 sold 2 at a time must be charged 2 units of basis, not the row's whole
+spend. Charging the full spend against a partial sale would refuse good trades;
+`basisUnit = spend / qty` is what makes a partial unwind priceable at all.
+
+WHAT IS KEPT. `overVendor` is still computed and carried on the sale, but only so
+the log line can show both numbers. The vendor check still runs FIRST and still
+refuses a buyer paying less than a vendor - profit over basis is an additional
+condition, not a replacement. `minProfit` also still applies on top: clearing the
+basis by 10,200 is a profit and still not worth a shard hop.
+
+MEASURED 2026-09-27 over 48 banked rows with a live buyer inside
+`sellMaxAgeSec`: the vendor bar selected 29 rows whose realised total would have
+been -29,373,824; the profit bar selects 9 worth +15,109,489. The 20 rows now
+refused are held, not stranded - `slice_nightberry` at a 900,000 basis against a
+243,750 net, `slice_citrus` at 750,000 against 243,750. They become sellable if
+the market recovers, and until then holding them is the whole point.
+
 ## stock-recovery
 
 Unwinding goods the executor bought, failed to sell, and banked.
