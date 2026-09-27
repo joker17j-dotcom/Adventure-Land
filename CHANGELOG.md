@@ -12,6 +12,75 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v61
+
+The executor recovers its own abandoned stock. It used to buy, fail to sell,
+bank the goods and forget them: `arbBankItem()` banks an unsold item and the
+next line `arbHeldDrop()`s it, and `arbHeldNames()` prunes anything not in the
+bag, so a banked holding left every structure the executor consults. Measured
+2026-09-27: 21 bank items had a buyer within the last ten minutes paying more
+after tax than a vendor, worth **481,474,704** over vendor value, and three
+items - `scroll3`, `slice_blueberry`, `offeringp` - were 446M of that. None of
+it was visible to the script.
+
+**The bridge was already the registry.** `Ledger.state()` replays events per
+trade id and derives `abandoned = [r for r in rows if r["status"] ==
+"abandoned"]` plus `abandonedSpend`, and `GET /trades` returns it. Each row
+carries `item`, `level`, `qty` and the real `spend`. So there is no new local
+manifest: `arbStockLoad()` asks the bridge what it abandoned and caches the
+answer in CODE storage, which means a hop costs no round trip and a bridge
+outage degrades to the last known list rather than to nothing. The bank is the
+verification, never the source - `character.bank` only populates while standing
+in it.
+
+**Closing one out needed no new event type.** The bridge validates against
+`LEDGER_EVENTS = ("open","closed","abandoned","banked","adjust","note")` and
+refuses anything else, so a `stock_sold` event would have been rejected. It is
+not needed. `arbStockPlan()` KEEPS THE ORIGINAL TRADE ID, `arbFinish()` already
+emits `closed` against `t.id`, and the replay is a fold with last-write-wins on
+status - so the row that was abandoned becomes closed, carries received/net, and
+leaves `abandonedSpend` on its own. Reusing the id is also what makes the number
+honest: the basis is the gold really spent, so `net = received - spend` is the
+true P&L on the original decision rather than a windfall. A hand-written snippet
+using `spend: 0` would have made `arbBankShare` bank half the entire receipt.
+
+**New phase `fetch`, ahead of `holding`.** The goods are in the bank, not the
+bag, so `arbStockFetch()` walks to the bank, withdraws by name AND level, and
+`arbHeldAdd()`s the result to shield it from both NPC sell paths. Everything
+after that is the machine that already existed: hop, `arbApproach`, re-verify
+the slot and its `rid`, sell through `arbGoldDelta` so the gold is measured
+rather than assumed, reroute if the buyer repriced. A short count sells what is
+actually there; a missing item gets a `note` and is dropped from the list rather
+than walking to the bank for a ghost on every tick.
+
+**`arbLookForWork` unwinds stock before buying more.** It commits no gold and it
+is the only thing that turns dead stock back into liquid. Cheap when there is
+none: `arbStockLoad()` is cached and returns an empty list without touching the
+market, so the 30-second beat pays nothing extra for the feature.
+
+**A failed stock sale does not trip the stranding breaker.** `t.fromStock` makes
+the stranded phase read `arbStrandings()` rather than `arbStrandings(1)`. That
+breaker exists to stop gold being converted into stock; re-banking goods that
+were already banked converts nothing, and without the flag retries would have
+disabled arbitrage outright.
+
+`stockRecovery.minProfit` is 100,000, deliberately far below the buy-side
+500,000: the goods are already paid for, so the only question is whether the
+sale beats the cost of a shard hop. Against the measured board that floor skips
+9 of 24 items worth 1.9M combined while keeping three worth 446M.
+
+Covered by 25 assertions run against the extracted function bodies: the
+abandoned-only filter, the outage fallback, vendor-beats-player, minProfit,
+level mismatch, blacklisted buyer, stale row, a sell slot misread as a buyer,
+best-edge selection across buyers, and every field of the plan including the
+preserved id.
+
+SIZE: 253,248 chars, which is 7,488 OVER the 245,760 cap and 5,785 above the
+247,463 that v38 reached when `save_code` accepted it and the runner then never
+evaluated it. This entry is recorded as built; whether it can be deployed as-is
+is a separate question from whether it is correct. Comments are 32% of this file
+(77,557 chars), so the space exists - it has not been reclaimed here.
+
 ## v60
 
 He stops walking away from the town spot, which is what "when scouting and at
