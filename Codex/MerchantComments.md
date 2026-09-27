@@ -800,6 +800,38 @@ mid-errand rather than parked" had it backwards - mid-errand is exactly when a
 stray move does damage. Out of range now SKIPS; `scoutPontyDue()` keeps the scan
 due and the caller repositions on main next cycle.
 
+## town-spot-is-a-stand-spot
+
+The town spot hosts the stand from v60, and it is a better spot than the (100,0)
+candidate it displaces - not merely an acceptable one.
+
+The rule is Merrit's, not the stand's. `socket.on("merchant")` in server.js has
+NO position check: it sets `player.p.stand` and returns, so a stand opens
+anywhere. What "valid zone" means is whether the market patron will visit, and
+that lives in `node/logic/market_patron.js` against the config at
+`design/npcs.js` under `citizen22.market`:
+
+| rule | value | town spot (-179,-72) |
+| --- | --- | --- |
+| `areas` | `[[-240,-120,240,144],[-88,144,88,360]]` | inside the first box |
+| `npc_clearance` | 40 | nearest fixed NPC `basics` at 129.4 - clear by 89 |
+| `stand_clearance` | 10 | other players' stands; cannot be checked ahead |
+| front box | 10 wide x 15 deep | same |
+| `anchor_tolerance` | 4 | see below |
+
+Compare the spot it displaces: (100,0) has `bean` at 42.8 and `secondhands` at
+47.4, clearing the 40 threshold by 2.8 units. The town spot has 89 units of
+margin on the same rule. The five previous candidates remain as fallbacks
+because `stand_clearance` and the front box depend on where other players have
+parked, which is not knowable in advance.
+
+Two more lines from `qualify()` are why this matters more than a saved walk.
+`p.moving` is a BLOCKER - a merchant in motion does not qualify at all - and
+`anchor_tolerance` is 4, so a session anchored at a spot is invalidated by
+moving more than four units off it. The 288.1-unit round trip to the scan spot
+was therefore not costing time; it was resetting Merrit progress every scout
+cycle, twice.
+
 ## the-lock-is-now-real
 
 `travelBegin()` only ever incremented `state.travelling`, while its own comment
@@ -974,6 +1006,14 @@ The gate is now "can I see the whole stand region", not "am I within 60
    of the first stand candidate". The old test tied scanning to one point;
    this ties it to whether the reading would be complete, which is the
    thing that actually matters when an empty scan replaces a shard.
+
+v60 carried the same gate into `scoutGoToScanSpot`, which had been left on the
+proximity test and so walked him 288.1 units off the town spot on every cycle.
+Measured: `character.vision` is `[700, 500]` and the test is a BOX, `|dx| <= 700
+&& |dy| <= 500`; against `standRegion {-250, 260, -210, 190}` the town spot's
+worst corner is 439 in x and 262 in y, passing with 261 and 238 to spare. Every
+position in x -440..450, y -310..290 passes, so the scan is complete from far
+more places than one.
 
 ## home
 
