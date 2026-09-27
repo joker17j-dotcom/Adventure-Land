@@ -800,6 +800,65 @@ mid-errand rather than parked" had it backwards - mid-errand is exactly when a
 stray move does damage. Out of range now SKIPS; `scoutPontyDue()` keeps the scan
 due and the caller repositions on main next cycle.
 
+## stock-recovery
+
+Unwinding goods the executor bought, failed to sell, and banked.
+
+WHY THEY WERE INVISIBLE. `arbBankItem()` banks an unsold item; the very next line
+is `arbHeldDrop()`, and `arbHeldNames()` independently prunes any name not in the
+bag. So a banked holding is absent from the held ledger, absent from `ARB.cur`,
+and absent from anything `arbLookForWork` consults. It exists only in the bank
+and in one `abandoned` ledger event. Measured 2026-09-27: 21 such items had a
+buyer inside `sellMaxAgeSec` paying more after tax than a vendor would,
+481,474,704 over vendor value, with `scroll3`, `slice_blueberry` and `offeringp`
+accounting for 446M of it.
+
+THE BRIDGE IS THE REGISTRY, THE BANK IS THE TRUTH. `Ledger.state()` in
+market_bridge.py folds events per trade id and derives the abandoned rows and
+`abandonedSpend`; `GET /trades` returns them with `item`, `level`, `qty` and the
+real `spend`. A second local manifest would be a copy that can disagree, so
+there is none. `character.bank` only populates while standing in the bank, which
+is why the bridge list is a PLAN and the withdrawal is where it is checked: a row
+the ledger claims and the bank does not have gets a `note` and is forgotten.
+
+WHY THE ORIGINAL TRADE ID IS REUSED. The bridge refuses unknown event names:
+
+    LEDGER_EVENTS = ("open", "closed", "abandoned", "banked", "adjust", "note")
+    if ev not in LEDGER_EVENTS:
+        return {"ok": False, "error": f"event must be one of ..."}
+
+so `stock_sold` was never an option. It is also unnecessary. The replay is a fold
+with last-write-wins on `status`, and `closed` already sets
+`sellPrice/sellTo/sellShard/gross/received/tax/net`. Emitting `closed` against
+the ORIGINAL id therefore flips that row from abandoned to closed and drops it
+out of `abandonedSpend` with no bridge change at all - and `arbFinish()` already
+emits `closed` against `t.id`, so keeping the id is the entire mechanism.
+
+It is also the honest basis. `t.net = t.received - (t.actualSpend || t.spend)`,
+so carrying the original `spend` reports the true result of the original
+decision. Setting it to 0 would report the whole receipt as profit and hand half
+of it to `arbBankShare()`.
+
+WHY A SEPARATE minProfit. `CONFIG.arbitrage.minProfit` (500,000) guards a
+decision to SPEND gold, where the downside is capital converted to stock. Here
+the gold is already spent and the only cost is a shard hop, so the floor is
+100,000. Against the measured board that skips 9 of 24 items worth 1.9M combined
+and keeps three worth 446M - the floor is about not hopping for a 2,565-gold
+`spidersilk` sale, not about revenue.
+
+WHY fromStock EXISTS. `maxConsecutiveStrandings` disables arbitrage when trades
+keep ending with the goods banked, because that means liquid gold is being
+turned into stock. A stock sale that fails re-banks something that was already
+banked and converts nothing, so the stranded phase reads `arbStrandings()`
+without a delta for these. Without the flag, three failed recovery attempts
+would have switched arbitrage off.
+
+ORDER. `arbLookForWork` tries stock before flips: no gold is committed, and it is
+the only path that turns dead stock back into liquid. It costs nothing when there
+is none, because `arbStockLoad()` is cached and returns an empty list without
+touching the market. One at a time, best edge first - `ARB.cur` is single-slot
+and a hop ends anything in flight.
+
 ## town-spot-is-a-stand-spot
 
 The town spot hosts the stand from v60, and it is a better spot than the (100,0)
