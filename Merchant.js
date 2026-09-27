@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v61
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v62
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -361,9 +361,13 @@ const CONFIG = {
 
 		/* Unwinding ABANDONED stock. arbBankItem() banks goods no buyer would
 		   take and arbHeldDrop()s them, so the executor forgot they existed.
-		   minProfit is its own and far below the buy-side floor: the goods are
-		   already paid for, so the only question is whether the sale beats the
-		   cost of a shard hop. -> MerchantComments.md#stock-recovery */
+		   minProfit is PROFIT AFTER TAX against what the goods actually cost,
+		   not against vendor value. v61 compared to the vendor and closed three
+		   of its first four recoveries at a loss, because stock gets abandoned
+		   precisely when it was bought above the market that now exists.
+		   Measured 2026-09-27 over 48 banked rows with a live buyer: the vendor
+		   bar passed 29 of them for -29,373,824 realised, this one passes 9
+		   for +15,109,489. -> MerchantComments.md#only-at-a-profit */
 		stockRecovery: { enabled: true, minProfit: 100000, refreshMs: 10 * 60 * 1000 },
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
@@ -1753,10 +1757,20 @@ async function arbStockFindSale() {
 			const dec = arbNetFromSale(sl.price, npcv);
 			if (!dec || dec.to !== 'player') continue;         // a vendor pays more
 			const qty = Math.max(1, Math.min(s.qty, sl.q || 1));
-			const edge = Math.floor((dec.net - (npcv || 0)) * qty);
-			if (edge < cfg.minProfit) continue;
-			if (best && edge <= best.edge) continue;
-			best = { stock: s, item: sl.name, level: sl.level || 0, qty: qty, edge: edge,
+			/* PROFIT AFTER TAX, against what the goods cost - not against what a
+			   vendor would pay. offeringp cost 5,000,000 a unit and the best
+			   buyer's 5,100,000 is 4,972,500 after tax, so every unit realised
+			   -27,500 while showing +4.68M against a vendor. The basis is per
+			   UNIT because qty is capped by what the buyer wants, which is
+			   routinely less than the row holds.
+			   -> MerchantComments.md#only-at-a-profit */
+			const basisUnit = (s.qty > 0) ? (s.spend || 0) / s.qty : (s.spend || 0);
+			const profit = Math.floor((dec.net - basisUnit) * qty);
+			const overVendor = Math.floor((dec.net - (npcv || 0)) * qty);
+			if (profit < cfg.minProfit) continue;
+			if (best && profit <= best.profit) continue;
+			best = { stock: s, item: sl.name, level: sl.level || 0, qty: qty,
+				profit: profit, overVendor: overVendor, basisUnit: Math.round(basisUnit),
 				sellTo: r.id, sellPrice: sl.price, sellSlot: k,
 				sellShard: String(r.serverRegion) + String(r.serverIdentifier),
 				sellMap: r.map, sellX: r.x, sellY: r.y, ageSec: age, taxRate: tax };
@@ -1791,7 +1805,7 @@ function arbStockPlan(sale) {
 		sellSlot: sale.sellSlot, sellMap: sale.sellMap || null,
 		sellX: sale.sellX, sellY: sale.sellY,
 		spend: sale.stock.spend, actualSpend: sale.stock.spend,
-		expectProfit: sale.edge, taxRate: sale.taxRate,
+		expectProfit: sale.profit, taxRate: sale.taxRate,
 		goldAtStart: character.gold, attempts: 0,
 	};
 }
@@ -4170,7 +4184,8 @@ async function arbLookForWork() {
 		arbSaveTrade(st);
 		state.busy = true;
 		arbLog('stock: unwinding ' + st.item + ' x' + st.qty + ' -> ' + st.sellTo
-			+ ' on ' + st.sellShard + ' (+' + sale.edge + ' over vendor value)', '#FFD700');
+			+ ' on ' + st.sellShard + ' (+' + sale.profit + ' after tax on a '
+			+ sale.basisUnit + '/unit basis; +' + sale.overVendor + ' vs vendor)', '#FFD700');
 		return;
 	}
 	const flips = await arbProbeFindFlips({ quiet: true });
