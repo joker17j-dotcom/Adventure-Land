@@ -16,22 +16,44 @@ Newest first. Entries are verbatim from the header they replaced.
 
 Stock recovery sells only at a profit after tax. v61 chose on `arbNetFromSale` -
 beat what a vendor pays - which is the right test for deciding whether to VENDOR
-something and the wrong one for deciding whether to SELL it. Three of its first
-four live recoveries closed at a loss:
+something and the wrong one for deciding whether to SELL it. Every `offeringp`
+row it touched closed at a loss:
 
-| trade | item | qty | spend | received | net |
-| --- | --- | --- | --- | --- | --- |
-| `tmuhppkqw2xv8` | offeringp | 2 | 9,999,520 | 9,945,000 | **-54,520** |
-| `tmuhzgi7yi4sw` | offeringp | 13 | 65,000,000 | 63,375,000 | **-1,625,000** |
-| `tmuia1tkq1fqe` | offeringp | 12 | 60,000,000 | 59,670,000 | **-330,000** |
-| `tmujbszy28u02` | slice_blueberry | 3 | 12,000 | 2,047,500 | **+2,035,500** |
+| trade | item | qty | spend | received | net | v62 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `tmuhppkqw2xv8` | offeringp | 2 | 9,999,520 | 9,945,000 | **-54,520** | refused |
+| `tmuhzgi7yi4sw` | offeringp | 13 | 65,000,000 | 63,375,000 | **-1,625,000** | refused |
+| `tmuia1tkq1fqe` | offeringp | 12 | 60,000,000 | 59,670,000 | **-330,000** | refused |
+| `tmuhsyl26ur7h` | spidersilk | 8 | 2,399,340 | 3,120,000 | **+720,660** | taken |
+| `tmuhfjxmfe0l1` | spidersilk | 15 | 4,499,412 | 5,850,000 | **+1,350,588** | taken |
 
-`offeringp` cost 5,000,000 a unit; the best buyer's 5,100,000 is 4,972,500 after
-tax, so every unit realised -27,500 while showing +4,684,500 against a vendor's
-288,000. The vendor comparison is structurally wrong here because stock gets
-abandoned precisely WHEN it was bought above the market that now exists - so the
-population this feature walks over is biased towards exactly the rows that
-cannot be sold at a profit.
+CORRECTION to this entry as first committed: it listed a fourth row,
+`tmujbszy28u02` (slice_blueberry, +2,035,500), as a recovery. It was not one -
+its trail is `open` then `closed` 23 seconds later then `banked`, with NO
+`abandoned` event, so it was an ordinary same-shard flip credited to the wrong
+feature. The two spidersilk rows above are real recoveries that closed after
+that commit. So the honest v61 tally is FIVE recoveries netting **+61,728**, not
+three losses out of four - losses of -2,009,520 against gains of +2,071,248,
+roughly break-even rather than the clear loss the first draft claimed.
+
+The correction strengthens the case rather than weakening it, because the split
+is not random: the three losses are all `offeringp`, and both gains are all
+`spidersilk`, which is exactly the line v62 draws. `offeringp` cost 5,000,000 a
+unit and the best buyer's 5,100,000 is 4,972,500 after tax, so every unit
+realised -27,500 while showing +4,684,500 against a vendor's 288,000.
+`spidersilk` cost 299,961 a unit against a 390,000 net, so it clears its basis by
+90,039. The vendor bar cannot tell those two apart; profit over basis separates
+them perfectly.
+
+The formula also reproduces the realised numbers exactly, which is the strongest
+check available: 4,499,412 / 15 = 299,960.8 basis, 400,000 x 0.975 = 390,000 net,
+(390,000 - 299,960.8) x 15 = **1,350,588** - the gold actually received. Same for
+the 8-unit row at 720,660 and for all three refusals.
+
+The vendor comparison is structurally wrong here because stock gets abandoned
+precisely WHEN it was bought above the market that now exists - so the population
+this feature walks over is biased towards exactly the rows that cannot be sold at
+a profit.
 
 The gate is now profit after tax against what the goods actually cost:
 
