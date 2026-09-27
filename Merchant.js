@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v63
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v64
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -448,6 +448,29 @@ const CONFIG = {
 
 	deliveryAmount: 1000,
 	restockBuffer: 500, // buy a bit past the delivery amount so stock doesn't immediately dip low again
+
+	/* Top up while parked, rather than only when a request arrives.
+
+	   ensureStock is reached from exactly one place - step 1 of a delivery
+	   batch - so an empty job queue means no buying, however long he stands
+	   next to Ernis. Measured 2026-09-27: parked at the town spot holding 176
+	   hpot1 against a deliveryAmount of 1000, so the next hp request would
+	   have paid for a shopping trip before anyone got a potion, from whatever
+	   shard arbitrage had taken him to.
+
+	   Gated on atTownSpot() rather than the home shard on purpose: Ernis is on
+	   main on every shard and his gold travels with him, so an arbitrage stop
+	   tops up just as well as being home.
+
+	   target defaults to deliveryAmount + restockBuffer so it cannot drift
+	   away from what a delivery actually needs.
+	   -> MerchantComments.md#idleRestock */
+	idleRestock: {
+		enabled: true,
+		everyMs: 5 * 60 * 1000,
+		target: null,        // null = deliveryAmount + restockBuffer
+		reserve: 1000000,    // never spend down past this
+	},
 
 	// Ranger.js's own clearInventory() already auto-sends items to Meltymerch
 	// whenever he's within attack range of Dexon, every ~2s. So "picking up"
@@ -1217,6 +1240,60 @@ async function pickupItemsFrom(recipientName) {
 	// their end) to get a chance to fire while we're actually here.
 	game_log(`Waiting near ${recipientName} to receive overflow items...`, '#FFD700');
 	await sleep(CONFIG.pickup.settleMs);
+}
+
+const IDLE_RESTOCK_KEY = 'idle_restock_at';
+
+/* Keep hp/mp stocked while there is nothing else to do.
+
+   Calls ensureStock rather than buy_with_gold so the buy-and-verify path
+   stays in one place; atTownSpot() is already true here, so ensureStock's
+   travel branch is skipped and this never moves him.
+
+   The throttle timestamp lives in CODE storage because a shard hop reloads
+   the page, which would reset an in-memory timer and turn this into a
+   per-tick check. It is written even when nothing was bought, so a failing
+   buy - broke, or out of inventory slots - retries on the cadence rather
+   than on every tick. -> MerchantComments.md#idleRestock */
+async function idleRestock() {
+	const cfg = CONFIG.idleRestock;
+	if (!cfg || !cfg.enabled) return false;
+	if (!atTownSpot()) return false;
+
+	let at = 0;
+	try { at = Number(get(IDLE_RESTOCK_KEY)) || 0; } catch (e) { at = 0; }
+	if (at && Date.now() - at < cfg.everyMs) return false;
+
+	const target = cfg.target || (CONFIG.deliveryAmount + CONFIG.restockBuffer);
+	const reserve = cfg.reserve || 0;
+	let bought = false;
+
+	for (const name of ['hpot1', 'mpot1']) {
+		const have = quantity(name);
+		if (have >= target) continue;
+		/* Price the purchase before making it. G is the client's own item table,
+		   so a missing entry means we cannot price it - skip rather than guess,
+		   the same rule arbitrage applies to a missing tax rate. */
+		const g = parent.G && parent.G.items && parent.G.items[name];
+		if (!g || !g.g) { plLog('idle restock: no price for ' + name + ' - skipping', 'orange'); continue; }
+		const cost = (target - have) * g.g;
+		if (character.gold - cost < reserve) {
+			plLog('idle restock: ' + name + ' would cost ' + cost + ' and leave less than '
+				+ reserve + ' - skipping', 'orange');
+			continue;
+		}
+		const before = have;
+		await ensureStock(name, target);
+		const got = quantity(name) - before;
+		if (got > 0) {
+			bought = true;
+			plLog('idle restock: bought ' + got + ' ' + name + ' for ' + (got * g.g)
+				+ ' (now ' + quantity(name) + '/' + target + ')', '#7FD98A');
+		}
+	}
+
+	try { set(IDLE_RESTOCK_KEY, Date.now()); } catch (e) { }
+	return bought;
 }
 
 async function ensureStock(itemName, targetAmount) {
@@ -4519,7 +4596,13 @@ async function arbLoop() {
 			}
 		}
 		// The stand is standLoop's business now, not this loop's.
-		if (!ARB.cur && !ARB.busy && !state.busy) await ssTick('tick');
+		/* Idle only: no trade in flight and nothing else holding the character.
+		   Same gate ssTick already uses, and restocking goes first because it is
+		   cheap and someone may be about to ask for potions. */
+		if (!ARB.cur && !ARB.busy && !state.busy) {
+			await idleRestock();
+			await ssTick('tick');
+		}
 	} catch (e) {
 		console.error('arbLoop error:', e);
 		ARB.busy = false;
