@@ -12,6 +12,54 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v60
+
+He stops walking away from the town spot, which is what "when scouting and at
+the town spot the merchant should not be moving" asked for.
+
+**The scan gate was measuring the wrong thing.** `scoutGoToScanSpot` returned
+early only `if (character.map === CONFIG.stand.map && distance(character, spot)
+<= 60)` against `CONFIG.stand.candidates[0]` at (100,0). The town spot is 288.1
+units from there, so that test was false every single time and he walked off the
+town spot on every scout cycle, with `goToTownSpot` pulling him back for the NPCs
+- the oscillation that got reported.
+
+The file already had the right gate and was already using it one function away.
+`scoutHeldScan` asks `mInTown()`: can I see the whole `standRegion` from here.
+Vision is a BOX - `character.vision` is `[700, 500]`, tested `|dx| <= 700 &&
+|dy| <= 500` - and against `standRegion {minX:-250, maxX:260, minY:-210,
+maxY:190}` the town spot's worst corner is 439 in x and 262 in y. It PASSES,
+with 261 and 238 units to spare, so the reading taken there is complete and the
+walk bought nothing. Any position in x -440..450, y -310..290 passes. The note
+at MerchantComments.md#the-gate-is-now-can already said the gate should be "can
+I see the whole stand region, not am I within 60 of the first stand candidate";
+that was applied to `scoutHeldScan` and never carried across. It is carried
+across now.
+
+**Two server rules make standing still worth more than the walk.** From
+`node/logic/market_patron.js`, `qualify()` counts `p.moving` as a blocker - a
+moving merchant does not qualify for Merrit AT ALL - and `anchor_tolerance` is
+4, so moving more than 4 units from an anchored session invalidates it. Every
+288-unit round trip was resetting Merrit progress, not merely costing time.
+
+**The town spot is now stand candidate[0], and it is the better spot.** Measured
+against the real config in `design/npcs.js` (`citizen22.market`): its `areas` are
+`[[-240,-120,240,144],[-88,144,88,360]]` and the town spot (-179,-72) is inside
+the first one, so it qualifies. On `npc_clearance` (40) it is far safer than what
+it replaces - the nearest non-movable NPC to the town spot is `basics` at 129.4,
+where (100,0) has `bean` at 42.8 and `secondhands` at 47.4 and clears the
+threshold by only 2.8 units. The other five candidates stay as fallbacks, since
+`stand_clearance` (10) and the 10x15 front box depend on other players' stands
+and cannot be checked ahead of time.
+
+Note the stand handler itself has no position check at all - `socket.on("merchant")`
+just sets `player.p.stand` - so "valid zone" is entirely about whether Merrit
+visits, never about whether the stand opens.
+
+Slot size 244,495 chars - 1,265 under the cap, and 137 SMALLER than v59. Three
+comment blocks that were duplicated verbatim in MerchantComments.md were trimmed
+to pointers to pay for the two changes above; the prose is unchanged in the doc.
+
 ## v59
 
 Three movement fixes. The reported symptom was "the move to town spot fails
