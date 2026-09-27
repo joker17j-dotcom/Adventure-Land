@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v57
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v58
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -357,6 +357,7 @@ const CONFIG = {
 		neverTradeAfter: 8,
 		mapChurnLimit: 3,
 		mapChurnWindowMs: 30 * 60 * 1000,
+		mapChurnHoldMs: 60 * 60 * 1000,
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
 		// gold into stock, and a run of them means the market being traded
@@ -1459,13 +1460,34 @@ function arbNeverAuto() {
 function arbNeverBlocked(target) {
 	if (!target) return false;
 	if (NEVER_TRADE_NAMES.has(target)) return true;
-	return !!arbNeverAuto()[target];
+	const e = arbNeverAuto()[target];
+	if (!e) return false;
+	// A churn HOLD carries `until` and expires; a promotion has none and is permanent.
+	if (e.until && Date.now() >= e.until) return false;
+	return true;
+}
+
+/* The CHURN half: a merchant that will not stand still is unusable NOW, not
+   for ever. Holds for an hour, then it is tried again - merchants relocate and
+   then settle, and the permanent list was swallowing ~2.7 of them an hour with
+   no expiry until nothing tradeable was left. Repeated FAILURES still promote
+   permanently via arbNeverPromote. -> MerchantComments.md#NEVER_TRADE_NAMES */
+function arbNeverHold(target, why, ms) {
+	if (!target || NEVER_TRADE_NAMES.has(target)) return false;
+	const m = arbNeverAuto();
+	const cur = m[target];
+	if (cur && !cur.until) return false;                 // never downgrade a permanent entry
+	const until = Date.now() + (ms || 3600000);
+	if (cur && cur.until >= until) return false;
+	m[target] = { at: new Date().toISOString(), why: why || 'moving', until: until };
+	try { set(ARB_NEVER_KEY, m); } catch (e) { return false; }
+	return true;
 }
 
 function arbNeverPromote(target, why) {
 	if (!target || NEVER_TRADE_NAMES.has(target)) return false;
 	const m = arbNeverAuto();
-	if (m[target]) return false;
+	if (m[target] && !m[target].until) return false;   // already permanent
 	m[target] = { at: new Date().toISOString(), why: why || 'repeated failures' };
 	try { set(ARB_NEVER_KEY, m); } catch (e) { return false; }
 	arbLog('NEVER TRADING ' + target + ' AGAIN - ' + (why || '') + '. Permanent, survives a '
@@ -1522,8 +1544,9 @@ function arbChurnNote(churn, name, map) {
 	e.map = map;
 	e.changes = (e.changes || 0) + 1;
 	if (e.changes >= cfg.mapChurnLimit) {
-		arbNeverPromote(name, 'changed map ' + e.changes + ' times in '
-			+ Math.round((now - e.since) / 60000) + ' min - never still long enough to trade');
+		arbNeverHold(name, 'changed map ' + e.changes + ' times in '
+			+ Math.round((now - e.since) / 60000) + ' min - not standing still',
+			cfg.mapChurnHoldMs);
 	}
 	return true;
 }

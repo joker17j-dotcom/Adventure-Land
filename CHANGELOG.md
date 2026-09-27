@@ -12,6 +12,44 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v58
+
+The map-churn half of the permanent blacklist becomes a one-hour hold.
+
+v57 gave `NEVER_TRADE_NAMES` two automatic feeders. The failure one is sound:
+8 consecutive failures past a backoff ceiling really is not new information.
+The `mapChurnLimit` one was not, because a merchant that moved three times in
+30 minutes is unusable NOW, not for ever - relocating and then settling is
+ordinary behaviour, and nothing ever expired the verdict.
+
+Measured 2026-09-27, 29 hours after v57 shipped: 79 merchants permanently
+excluded, every one of them with a `changed map N times` reason, accumulating
+at roughly 2.7 per hour with no expiry, against a market of 272 merged merchant
+rows. That is 29% of the market gone and still climbing - the same ratchet
+shape as the farm-spot blacklist in TASKS.md item 1.
+
+It had already cost trades. `arbProbeFindFlips` drops a blacklisted row whole,
+both its sells and its buys (`if (arbNeverBlocked(r.id)) continue;`), so a
+watchlist showing slice_nightberry at a 1,000,000 spread produced zero
+candidates: the buy side, SalesShadow, was on the list. Ten hours passed with
+no attempted trade while `arbCanStart` returned `{ok:true}`, no halt, nothing
+in flight, and 85,147,025 gold against a 10,000,000 floor.
+
+- `mapChurnHoldMs` (1 hour) is the new knob, and `arbChurnNote` now calls
+  `arbNeverHold` instead of `arbNeverPromote`.
+- `arbNeverHold` writes `{at, why, until}`. `arbNeverBlocked` treats an entry
+  carrying `until` as expired once it passes; an entry without one stays
+  permanent, so the hardcoded pair and the failure promotions are unaffected.
+- `arbNeverPromote` will now overwrite a temporary hold, which it had to learn:
+  its `if (m[target]) return false;` guard would otherwise have let an hour-long
+  churn hold block a genuine 8-failure promotion from ever landing.
+
+Not a fix for the visibility theory that preceded it, because that theory was
+wrong. The merchant already merges all three feeds - `arbProbeMarketRows`
+returns `source: "merged"` over aldata 270, bridge 55 and game 60. Reading only
+`arbFetchGameMerchants` and calling its 60 rows the whole picture is the trap;
+it is one of three sources, and the flip finder does not use it alone.
+
 ## v57
 
 A permanent counterparty blacklist.
