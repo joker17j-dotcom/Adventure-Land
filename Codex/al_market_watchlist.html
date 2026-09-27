@@ -113,9 +113,16 @@
    it statically.
 
    DATA SOURCES
-   1. Game data  -> joker17j-dotcom/adventureland_mongodb design/*.js,
+   1. Game data  -> kaansoral/adventureland_mongodb design/*.js,
                     fetched raw from raw.githubusercontent.com and evaluated
                     directly. 29 datasets.
+
+                    THE CREATOR'S repo, deliberately - not a fork of it.
+                    Measured 2026-09-27: our own fork's design/items.js was
+                    byte-identical to this one, so pointing at the fork cost
+                    nothing that day and would have cost everything the first
+                    day it fell behind. A mirror is only as current as its
+                    last sync, and nothing syncs it.
 
                     WAS kaansoral/adventureland design/*.py, run through a
                     whole WASM Python runtime to read data files. That source
@@ -125,6 +132,12 @@
                     here at all. The new source ships the same datasets as
                     plain "var x = {...}" JavaScript, so they are evaluated
                     directly and the runtime is gone.
+
+                    NOTE the repo lags the LIVE GAME. Nine items added on
+                    2026-09-27 - frostfang, graveglass, watchersearring,
+                    heartwoodlocket, harpyecho, stonegaze, canopener,
+                    mimicgrin, mummyhex - were absent from it that same day.
+                    This is the server source, not the deployed build.
    2. Gap fill   -> aldata.adventureland.community/data.json for the three
                     sections that do NOT exist in the repo: geometry, images,
                     docs. (CORS: access-control-allow-origin *)
@@ -138,7 +151,7 @@
 
 const CONFIG = {"mode": "watchlist"};
 
-const REPO = "https://raw.githubusercontent.com/joker17j-dotcom/adventureland_mongodb/main";
+const REPO = "https://raw.githubusercontent.com/kaansoral/adventureland_mongodb/main";
 const ALDATA_SITE = "https://aldata.adventureland.community";
 const ALDATA_API = "https://aldata.earthiverse.ca";
 /* Local bridge fed by the in-game MerchantScout bots. Serves the same row shape
