@@ -12,6 +12,68 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v62
+
+Stock recovery sells only at a profit after tax. v61 chose on `arbNetFromSale` -
+beat what a vendor pays - which is the right test for deciding whether to VENDOR
+something and the wrong one for deciding whether to SELL it. Three of its first
+four live recoveries closed at a loss:
+
+| trade | item | qty | spend | received | net |
+| --- | --- | --- | --- | --- | --- |
+| `tmuhppkqw2xv8` | offeringp | 2 | 9,999,520 | 9,945,000 | **-54,520** |
+| `tmuhzgi7yi4sw` | offeringp | 13 | 65,000,000 | 63,375,000 | **-1,625,000** |
+| `tmuia1tkq1fqe` | offeringp | 12 | 60,000,000 | 59,670,000 | **-330,000** |
+| `tmujbszy28u02` | slice_blueberry | 3 | 12,000 | 2,047,500 | **+2,035,500** |
+
+`offeringp` cost 5,000,000 a unit; the best buyer's 5,100,000 is 4,972,500 after
+tax, so every unit realised -27,500 while showing +4,684,500 against a vendor's
+288,000. The vendor comparison is structurally wrong here because stock gets
+abandoned precisely WHEN it was bought above the market that now exists - so the
+population this feature walks over is biased towards exactly the rows that
+cannot be sold at a profit.
+
+The gate is now profit after tax against what the goods actually cost:
+
+    const basisUnit = (s.qty > 0) ? (s.spend || 0) / s.qty : (s.spend || 0);
+    const profit = Math.floor((dec.net - basisUnit) * qty);
+    if (profit < cfg.minProfit) continue;
+
+The basis is per UNIT because `qty` is capped by what the buyer wants, which is
+routinely less than the row holds - charging the whole row's spend against a
+partial sale would refuse good trades. `overVendor` is still computed and
+carried, but only for the log line, so the comparison that drove v61 stays
+visible without driving anything. `expectProfit` is now the profit rather than
+the vendor edge, and the vendor check survives ahead of it: a buyer paying less
+than a vendor is still refused outright.
+
+MEASURED before shipping, against 48 banked rows that had a live buyer:
+
+| gate | rows it would sell | realised outcome |
+| --- | --- | --- |
+| v61, beats vendor | 29 | **-29,373,824** |
+| v62, profit after tax | 9 | **+15,109,489** |
+
+So this is not a narrowing that strands the stock - it is the difference between
+liquidating the position at a 29M loss and taking 15M off it. The 20 rows it now
+refuses are held rather than dumped: `slice_nightberry` bought at 900,000 a unit
+against a 243,750 net, `slice_citrus` at 750,000 against 243,750. Those only
+become sellable if the market comes back, which is the correct reason to wait.
+
+`minProfit` (100,000) still applies ON TOP: a row can clear its basis and still
+be refused for not being worth a shard hop. Verified - at a 5,000 basis a 6,000
+buyer yields +10,200 and is refused, a 20,000 buyer yields +174,000 and is taken.
+
+Covered by 33 assertions (8 new): a below-basis sale refused even though it beats
+the vendor, a profit below the floor still refused, a real profit above the floor
+taken, per-unit basis honoured when the buyer wants fewer than the row holds, and
+`expectProfit` carrying the profit rather than the vendor edge.
+
+SIZE: 254,261 chars. v61 ran at 253,248 despite the recorded 245,760 cap, so the
+practical limit is higher than CHANGELOG has claimed since v38 - that entry
+should not be read as a hard 245,760 boundary. Still unreclaimed; comments remain
+about a third of this file.
+
 ## v61
 
 The executor recovers its own abandoned stock. It used to buy, fail to sell,
