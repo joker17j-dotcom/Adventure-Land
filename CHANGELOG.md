@@ -12,6 +12,55 @@ here now, and the header carries a pointer instead.
 
 Newest first. Entries are verbatim from the header they replaced.
 
+## v59
+
+Three movement fixes. The reported symptom was "the move to town spot fails
+while in motion to it and performs the backup".
+
+**The Ponty walk is gone, and it was never necessary.** The server answers
+`secondhands` for anyone within 500 of Ponty - `simple_distance(...) > 500` gives
+`game_response "distance"` and nothing else. Ponty stands at (106,-47). Every
+spot this merchant parks at was already inside that gate: stand candidates
+47.4-295.2, the town spot 286.1, the town spot plus its full 60 radius 346.1.
+The old guard walked on `!atTownSpot()`, and `scoutPontyCheck`'s ONLY caller made
+that true on every single cycle - `scoutVisitNextShard` runs `scoutGoToScanSpot`
+first, which lands on stand candidate[0] (100,0), 47.4 from Ponty rather than the
+town spot. So it walked 47 units to enter a range it was already 453 units
+inside, and that second `smart_move()` rejected whatever move was in flight.
+Dead code with a live side effect. Out of range it now SKIPS; `scoutPontyDue()`
+keeps the scan due and the caller repositions next cycle. The note this replaces
+claimed the walk was "kept for anywhere else, because anywhere else means the
+merchant is mid-errand" - mid-errand is precisely when it did the damage.
+
+**The move lock is real now.** `travelBegin()` only ever incremented a counter,
+while its own comment and `moveNudge`'s both already claimed it "holds the lock".
+Eighteen call sites reach `moveTo`/`moveTown`/`moveNudge` from independently
+self-chained loops, and a second `smart_move()` rejects the first - so two loops
+that both wanted to move turned a healthy trip into a spurious failure, and
+`travelTo` then ran its `town()` backup for a trip that was never broken. The
+loser now fails fast with a tagged `move_busy` error; `travelTo` recognises the
+tag and returns false silently instead of logging red and recalling to town.
+MEASURED 2026-09-27: `state.travelling` was already 1 when an unrelated
+town-spot move was issued.
+
+It is TIME-BOUNDED on purpose. Only `travelEnd()` ever cleared that counter and
+Merchant.js never got `noHang()`, so one await that never settled would have
+wedged every mover in the file for good - silently, which is strictly worse than
+the stand suppression a stuck counter used to cause. `moveLockHeld()` breaks a
+lock older than `CONFIG.moveLockMaxMs` (3 min) open and logs when it does, so
+"the lock is abandoned" and "the lock is working" cannot stay indistinguishable.
+
+**The stand's home-shard gate is re-checked after the walk.** `shouldHoldStand()`
+was evaluated once on entry to `openStandAtBestSpot`, which then awaited
+`travelTo` - and he hops shards constantly, so the `homeServer` gate could pass
+on information seconds out of date and raise a stand on a foreign shard. It is
+re-checked immediately before `open_stand`. The candidate loop also yields to the
+lock: without that, a lock held elsewhere made all five candidates fail fast and
+the loop ended on a misleading "could not open stand at any candidate location".
+
+Slot size 244,632 chars - 1,128 under the 245,760 cap. The next change to this
+file needs comment relocated to MerchantComments.md before anything is added.
+
 ## v58
 
 The map-churn half of the permanent blacklist becomes a one-hour hold.
