@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v62
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v63
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1681,6 +1681,42 @@ function arbHeldDrop(name) {
    -> MerchantComments.md#stock-recovery
    ============================================================================ */
 const ARB_STOCK_KEY = 'arb_stock';
+
+/* Rows the bridge still calls `abandoned` but which cannot be recovered,
+   because the goods are not in the bank. The bridge is RIGHT to keep saying
+   abandoned - that is what happened to the trade - and rewriting its status
+   would book a close that never occurred and a receipt that never arrived.
+   So the correction is local and the ledger stays honest.
+
+   Without this, arbStockForget only pruned arbStockCache. arbStockLoad
+   rebuilds `keep` from /trades on every successful read, so the drop was
+   undone on the next look: 68 identical notes in 59 minutes, a bank trip
+   each, and the flip finder never reached.
+   -> MerchantComments.md#stock-tombstones */
+const ARB_STOCK_SKIP_KEY = 'arb_stock_skip';
+
+function arbStockSkips() {
+	try { const v = get(ARB_STOCK_SKIP_KEY); return (v && typeof v === 'object') ? v : {}; }
+	catch (e) { return {}; }
+}
+
+// Console helpers, mirroring arbNeverList / arbNeverForget.
+function arbStockSkipList() {
+	const m = arbStockSkips();
+	console.log('stock rows skipped', m);
+	arbLog(Object.keys(m).length + ' stock row(s) skipped - see console', '#FFD700');
+	return m;
+}
+
+function arbStockUnskip(id) {
+	const m = arbStockSkips();
+	if (!m[id]) { arbLog('stock: ' + id + ' is not skipped', '#8b98ab'); return false; }
+	delete m[id];
+	try { set(ARB_STOCK_SKIP_KEY, m); } catch (e) { return false; }
+	arbStockCache = null;   // force the next load to rebuild from the bridge
+	arbLog('stock: ' + id + ' will be considered again', '#7FD98A');
+	return true;
+}
 let arbStockCache = null, arbStockAt = 0;
 
 /* Abandoned trades whose goods should still exist. Cached in CODE storage so a
@@ -1704,8 +1740,11 @@ async function arbStockLoad(force) {
 			keep.push({ id: r.id, item: r.item, level: r.level || 0, qty: r.qty || 1,
 				spend: r.spend || 0, where: r.disposition || null });
 		}
-		arbStockCache = keep;
-		try { set(ARB_STOCK_KEY, keep); } catch (e) { }
+		/* Applied AFTER the fetch, every time. The bridge is authoritative for
+		   what was abandoned; this is authoritative for what is worth trying. */
+		const skip = arbStockSkips();
+		arbStockCache = keep.filter(function (s) { return !skip[s.id]; });
+		try { set(ARB_STOCK_KEY, arbStockCache); } catch (e) { }
 	} else if (!arbStockCache) {
 		try { arbStockCache = get(ARB_STOCK_KEY) || []; } catch (e) { arbStockCache = []; }
 	}
@@ -1714,10 +1753,20 @@ async function arbStockLoad(force) {
 }
 
 // Sold, or the bank does not have it. Either way stop considering it.
-function arbStockForget(id) {
-	if (!arbStockCache) return;
-	arbStockCache = arbStockCache.filter(function (s) { return s.id !== id; });
-	try { set(ARB_STOCK_KEY, arbStockCache); } catch (e) { }
+function arbStockForget(id, why, item) {
+	let added = false;
+	if (why) {
+		const m = arbStockSkips();
+		if (!m[id]) {
+			m[id] = { at: new Date().toISOString(), why: why, item: item || null };
+			try { set(ARB_STOCK_SKIP_KEY, m); added = true; } catch (e) { }
+		}
+	}
+	if (arbStockCache) {
+		arbStockCache = arbStockCache.filter(function (s) { return s.id !== id; });
+		try { set(ARB_STOCK_KEY, arbStockCache); } catch (e) { }
+	}
+	return added;   // true only the FIRST time, so a caller can log once
 }
 
 /* A fresh buyer for something already owned, best edge first.
@@ -1844,9 +1893,14 @@ async function arbStockFetch(t) {
 	const got = held();
 	await scoutGoToScanSpot();
 	if (got < 1) {
-		arbLedger({ id: t.id, event: 'note', text: 'stock recovery: ' + t.item
-			+ ' is not in the bank - dropped from the stock list' });
-		arbStockForget(t.id);
+		/* Once per row, not once per look. The tombstone is what makes that
+		   possible - before it, this note was the loop's only visible symptom. */
+		if (arbStockForget(t.id, 'not in the bank', t.item)) {
+			arbLedger({ id: t.id, event: 'note', text: 'stock recovery: ' + t.item
+				+ ' is not in the bank - dropped from the stock list' });
+			arbLog('stock: ' + t.item + ' is not in the bank - dropped. '
+				+ 'arbStockUnskip("' + t.id + '") puts it back.', 'orange');
+		}
 		return false;
 	}
 	if (got < t.qty) {
@@ -4162,6 +4216,29 @@ function arbOldestJobAgeMs() {
 	return oldest == null ? null : (Date.now() - oldest);
 }
 
+/* Unwind one abandoned row. SECOND to flips, deliberately.
+
+   v61 ran this first, reasoning that it commits no gold. That is true and it
+   is not the deciding question: a flip is perishable - the spreads measured on
+   2026-09-27 had been seen 7 and 48 seconds before they were priced - while a
+   banked row keeps indefinitely. Running the backlog first put a 45-row queue
+   at roughly one row per 10-19 minutes in front of every flip, and because the
+   executor has a single trade slot that is a full stop rather than a delay.
+
+   Returns true if it started one, so the caller knows the slot is spoken for.
+   -> MerchantComments.md#flips-before-backlog */
+async function arbTryStock() {
+	const sale = await arbStockFindSale();
+	if (!sale) return false;
+	const st = arbStockPlan(sale);
+	arbSaveTrade(st);
+	state.busy = true;
+	arbLog('stock: unwinding ' + st.item + ' x' + st.qty + ' -> ' + st.sellTo
+		+ ' on ' + st.sellShard + ' (+' + sale.profit + ' after tax on a '
+		+ sale.basisUnit + '/unit basis; +' + sale.overVendor + ' vs vendor)', '#FFD700');
+	return true;
+}
+
 /* Look for work. Only ever reached with nothing in flight. */
 async function arbLookForWork() {
 	const gate = arbCanStart({
@@ -4174,22 +4251,11 @@ async function arbLookForWork() {
 
 	// Quiet: this is the 30-second beat, not a hand-run probe. See the
 	// quiet-mode note in arbProbeFindFlips for why that matters.
-	/* Unwind abandoned stock BEFORE buying more. It commits no gold, and it is
-	   the only thing that turns dead stock back into liquid. Cheap when there
-	   is none: arbStockLoad() is cached and returns an empty list without
-	   touching the market. -> MerchantComments.md#stock-recovery */
-	const sale = await arbStockFindSale();
-	if (sale) {
-		const st = arbStockPlan(sale);
-		arbSaveTrade(st);
-		state.busy = true;
-		arbLog('stock: unwinding ' + st.item + ' x' + st.qty + ' -> ' + st.sellTo
-			+ ' on ' + st.sellShard + ' (+' + sale.profit + ' after tax on a '
-			+ sale.basisUnit + '/unit basis; +' + sale.overVendor + ' vs vendor)', '#FFD700');
-		return;
-	}
+	/* FLIPS FIRST, backlog second. -> arbTryStock for why the v61 order
+	   (stock before flips, because it commits no gold) was the wrong way
+	   round. */
 	const flips = await arbProbeFindFlips({ quiet: true });
-	if (!flips || !flips.length) return;
+	if (!flips || !flips.length) { await arbTryStock(); return; }
 	const used = arbLoadUsed();
 	const fails = arbLoadFails();
 	let suppressed = 0, capped = 0;
@@ -4216,6 +4282,7 @@ async function arbLookForWork() {
 	if (!pick) {
 		if (suppressed) arbLog(suppressed + ' flip(s) skipped - traded against recently', '#8b98ab');
 		if (capped) arbLog(capped + ' flip(s) skipped - over the per-item capital cap', '#8b98ab');
+		await arbTryStock();
 		return;
 	}
 
