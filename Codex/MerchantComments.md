@@ -761,11 +761,97 @@ calculate_item_value() returns what Ponty PAID - buy_to_sell is already in
 
 ## do-not-walk-to-him
 
-Do not walk to him from the town spot. He is 286.1 away from it and has
-   answered a live query at exactly that distance with 225 items, so the
-   walk buys nothing and costs the position everything else is reachable
-   from. The walk is kept for anywhere else, because anywhere else means
-   the merchant is mid-errand rather than parked.
+NEVER walk to him, from anywhere. v59 removed the walk entirely; what follows
+is why the earlier "keep it for anywhere else" reasoning was wrong.
+
+The gate is the server's, not the client's: `secondhands` answers anyone within
+500 of Ponty, and `simple_distance(G.maps.main.ref.secondhands, player) > 500`
+returns `game_response "distance"` instead. Ponty is at (106,-47). Measured
+distances from every spot this merchant actually stands:
+
+| spot | distance |
+| --- | --- |
+| stand candidate[0] `(100, 0)` | 47.4 |
+| stand candidate[4] `(60, -60)` | 47.8 |
+| stand candidate[2] `(150, 100)` | 153.4 |
+| stand candidate[1] `(-100, 0)` | 211.3 |
+| town spot `(-179, -72)` | 286.1 |
+| stand candidate[3] `(-150, 100)` | 295.2 |
+| town spot + full 60 radius | 346.1 |
+
+154 units of margin at worst. The 286.1 figure is corroborated twice: it is what
+a live query answered with 225 items, and it is what the `npcs[]` position
+reproduces exactly. `ref.secondhands` is absent from the client's map data, so
+`npcs[]` is the position of record for `scoutPontyDistance()`; `simple_distance`
+ignores the map, but requiring `main` is the conservative reading and costs
+nothing, because the only caller is already there.
+
+The walk fired on `!atTownSpot()`, which read as "only walk when he is off
+station". It was true on EVERY cycle. `scoutPontyCheck`'s only caller is
+`scoutVisitNextShard`, which runs `scoutGoToScanSpot()` first - and that goes to
+stand candidate[0], 288 units from the town spot, so `atTownSpot()` is false by
+construction at the one moment this function runs. The merchant walked 47 units
+to enter a range he was 453 units inside, every single scan.
+
+That walk was the interrupter behind "the move to town spot fails while in motion
+to it and performs the backup": a second `smart_move()` rejects the one in
+flight. "Kept for anywhere else, because anywhere else means the merchant is
+mid-errand rather than parked" had it backwards - mid-errand is exactly when a
+stray move does damage. Out of range now SKIPS; `scoutPontyDue()` keeps the scan
+due and the caller repositions on main next cycle.
+
+## the-lock-is-now-real
+
+`travelBegin()` only ever incremented `state.travelling`, while its own comment
+and `moveNudge`'s both already said it "holds the lock". Nothing enforced one.
+`state.travelling` had exactly one consumer - `standLoop`, deciding whether to
+raise the stand - so 18 call sites could move concurrently from independently
+self-chained loops, and in Adventure Land a second `smart_move()` REJECTS the one
+in flight. The victim's `travelTo` then logged red and ran its `town()` backup
+for a trip that was never broken, which is the failure that got reported.
+
+MEASURED 2026-09-27: a controlled town-spot move succeeded in 11,092 ms, landing
+exactly on (-179,-72) with zero stand flips and no speed clamping - and its
+`pre` record showed `travelling: true`. The move worked because it was the
+interrupter. Same bug seen from the winning side.
+
+The loser FAILS FAST rather than queueing. A queued destination goes stale while
+it waits, and every caller here is a reconciler that will want the move again on
+its next tick anyway, so refusing is both simpler and more correct. The rejection
+carries `reason: 'move_busy'` and `moveBusy: true` so `travelTo` can tell "some
+other loop is walking" from "this walk failed" and skip the fallback silently.
+
+NESTING: none exists today, and the guard would deadlock against a nested move.
+`travelTo`'s `moveTo` -> `moveTown` -> `moveTo` chain is sequential, each
+`finally` running before the next call, so the counter is 0 between them; both
+`moveNudge` call sites pass a raw `xmove`/`move`, not `moveTo`. If a genuinely
+nested move is ever needed, thread an owner token through rather than deleting
+the guard.
+
+WHY IT IS TIME-BOUNDED. Only `travelEnd()` ever clears the counter, and
+Merchant.js never got `noHang()` - that shipped in Ranger v51 / Priest v26 /
+Mage v50 only. So one awaited call that never settles used to suppress the stand
+and nothing more; under a hard lock it would wedge every mover in the file
+permanently, and silently. `moveLockHeld()` treats a lock older than
+`CONFIG.moveLockMaxMs` (3 min, far above the 11 s a real town-spot trip takes)
+as abandoned, resets it, and LOGS - because a default returned without a log
+leaves "the lock is stuck" and "the lock is working" indistinguishable for ever.
+
+## re-check-after-the-walk
+
+`shouldHoldStand()` ends in `mShardKey() === mHomeShard()`, and
+`CONFIG.homeServer` is `'USIV'`, so the home-shard gate is real rather than the
+tautology it would be if `homeServer` were unset. But `openStandAtBestSpot`
+checked it once on entry and then awaited `travelTo` - and this merchant hops
+shards constantly, so the gate could pass on information seconds out of date and
+`open_stand` could land on a foreign shard. It is re-checked immediately before
+`open_stand`. `return`, not `continue`: if we are off home, no other candidate is
+on the home shard either.
+
+The candidate loop yields to the move lock for the same reason it exists. With a
+lock held elsewhere, all five candidates would fail fast in a few milliseconds
+and the loop would end on `Could not open stand at any candidate location` - a
+red line describing a race rather than a fault. `standLoop` retries in ~4 s.
 
 ## scoutReport
 
