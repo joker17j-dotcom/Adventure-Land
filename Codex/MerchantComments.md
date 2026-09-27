@@ -807,10 +807,32 @@ Stock recovery sells only when the sale clears what the goods cost, after tax.
 WHY THE VENDOR BAR WAS WRONG. `arbNetFromSale` answers "player or vendor?", and
 that is exactly the right question when deciding where to dispose of something.
 It is the wrong question when deciding WHETHER to dispose of it, and v61 used it
-for both. Live result: three of the first four recoveries closed at a loss.
-`offeringp` cost 5,000,000 a unit, the best buyer paid 5,100,000, and 2.5% tax
-makes that 4,972,500 - a realised -27,500 per unit that looked like +4,684,500
-next to a vendor's 288,000.
+for both. Live result over its five recoveries: every `offeringp` row closed at a
+loss. It cost 5,000,000 a unit, the best buyer paid 5,100,000, and 2.5% tax makes
+that 4,972,500 - a realised -27,500 per unit that looked like +4,684,500 next to
+a vendor's 288,000.
+
+The five net +61,728 in total, because the two `spidersilk` rows made back what
+the three `offeringp` rows lost. That is not a reason to keep the vendor bar: the
+split is exactly the line this gate draws. `spidersilk` cost 299,961 a unit
+against a 390,000 net and clears its basis by 90,039 a unit; `offeringp` misses
+by 27,500 a unit. A vendor-relative bar takes both. Profit over basis takes the
+first and refuses the second, and v62 would have kept all +2,071,248 of the gains
+while avoiding all -2,009,520 of the losses.
+
+BEWARE one measurement trap here. An earlier draft of this section counted
+`tmujbszy28u02` (slice_blueberry, +2,035,500) as a recovery. It was not: its
+trail is `open` -> `closed` 23 seconds later -> `banked`, with no `abandoned`
+event anywhere. A row is a recovery only if an `abandoned` event PRECEDES its
+close, and the fold in `Ledger.state()` does not expose that ordering - it has to
+come from `GET /trades?raw=1`. Reading `status == "closed"` and a positive net as
+"a recovery worked" is how a flip gets credited to this feature.
+
+Also beware the fold when a row was closed more than once. `tmuhzgi7yi4sw` was
+closed by hand at 10:32 (-1,950,000, tax assumed at 3.0%) and then again by the
+script at 20:41 (-1,625,000). The raw event list holds both; last-write-wins
+makes the script's close the current truth, so a scan that takes the FIRST close
+after the abandon reports the manual number instead.
 
 The bias is structural, not bad luck. A trade gets abandoned because no buyer
 would take the goods at a price that worked, which usually means they were bought
