@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v58
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v59
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -432,6 +432,9 @@ const CONFIG = {
 	// -> MerchantComments.md#townSpot
 	townSpot: { name: 'town spot', map: 'main', x: -179, y: -72, radius: 60 },
 
+	// A move lock older than this is abandoned, not busy - see moveLockHeld().
+	moveLockMaxMs: 3 * 60 * 1000,
+
 	deliveryAmount: 1000,
 	restockBuffer: 500, // buy a bit past the delivery amount so stock doesn't immediately dip low again
 
@@ -577,6 +580,7 @@ const state = {
 	standOpen: false,
 	standOpenedAt: 0,       // when the current stand went up - drives standDwellHeld()
 	travelling: 0,          // >0 while a move is in flight - a COUNTER, travel nests
+	travellingSince: 0,     // when it first went >0; 0 when idle. Abandonment clock.
 	standSuppressed: false, // set by hand to keep the stand down while idle at home
 	lastHealRequest: 0,
 	kissAttemptedFor: null, // name of the featured player already attempted this round - avoids retrying the same one
@@ -668,12 +672,50 @@ async function goToTownSpot() {
    then moves again - and a boolean would clear on the inner unwind while the
    outer move was still running.
    ============================================================================ */
-function travelBegin() { state.travelling++; }
-function travelEnd() { state.travelling = Math.max(0, state.travelling - 1); }
+function travelBegin() {
+	state.travelling++;
+	if (!state.travellingSince) state.travellingSince = Date.now();
+}
+function travelEnd() {
+	state.travelling = Math.max(0, state.travelling - 1);
+	if (!state.travelling) state.travellingSince = 0;
+}
+
+/* THE LOCK IS NOW REAL - travelBegin() only ever counted, while the comment
+   below and moveNudge's both already claimed a lock. A second smart_move()
+   REJECTS the one in flight, so travelTo() ran its town() backup for a trip
+   that was never broken. The loser fails fast with a TAGGED error.
+   -> MerchantComments.md#the-lock-is-now-real */
+function moveBusy() {
+	const e = new Error('another move is already in flight');
+	e.reason = 'move_busy';
+	e.moveBusy = true;
+	return e;
+}
+
+/* Held, or ABANDONED? Only travelEnd() ever clears the counter and Merchant.js
+   never got noHang(), so one await that never settles would wedge every mover
+   in the file for good - silently, which is strictly worse than the stand
+   suppression it used to cause. Past the ceiling the lock is broken open and
+   LOGGED: "missing" and "correct" must not stay indistinguishable.
+   -> MerchantComments.md#the-lock-is-now-real */
+function moveLockHeld() {
+	if (state.travelling <= 0) return false;
+	const since = state.travellingSince || 0;
+	const held = since ? Date.now() - since : 0;
+	if (since && held > (CONFIG.moveLockMaxMs || 180000)) {
+		game_log(`move lock held ${Math.round(held / 1000)}s with nothing to clear it - forcing through`, 'red');
+		state.travelling = 0;
+		state.travellingSince = 0;
+		return false;
+	}
+	return true;
+}
 
 // A real move. Closes the stand, holds the lock, propagates failure unchanged
 // so every existing catch keeps working.
 async function moveTo(spec) {
+	if (moveLockHeld()) throw moveBusy();
 	travelBegin();
 	try { await ensureStandClosed(); return await smart_move(spec); }
 	finally { travelEnd(); }
@@ -681,6 +723,7 @@ async function moveTo(spec) {
 
 // town() recall, same contract.
 async function moveTown() {
+	if (moveLockHeld()) throw moveBusy();
 	travelBegin();
 	try { await ensureStandClosed(); return await town(); }
 	finally { travelEnd(); }
@@ -691,6 +734,7 @@ async function moveTown() {
    teardown-per-unit-of-work granularity that v50 removed. It still takes the
    lock so the reconciler cannot race it. */
 async function moveNudge(fn) {
+	if (moveLockHeld()) throw moveBusy();
 	travelBegin();
 	try { return await fn(); }
 	finally { travelEnd(); }
@@ -701,6 +745,10 @@ async function travelTo(map, x, y) {
 		await moveTo({ map, x, y });
 		return true;
 	} catch (e) {
+		// Not a broken trip - another loop is walking, and the backup would
+		// interrupt it again. Silent: a race resolving, not the fault it was
+		// being reported as.
+		if (e && e.moveBusy) return false;
 		game_log(`smart_move to ${map} (${x}, ${y}) failed: ${e.reason || e} - trying town() fallback`, 'red');
 	}
 
@@ -1305,11 +1353,19 @@ async function openStandAtBestSpot() {
 	}));
 
 	for (const spot of order) {
+		// Another loop holds the lock: all five would fail fast and the loop
+		// would end on a misleading "could not open stand anywhere".
+		if (moveLockHeld()) return;
 		try {
 			if (character.map !== CONFIG.stand.map || distance(character, spot) > 20) {
 				const arrived = await travelTo(CONFIG.stand.map, spot.x, spot.y);
 				if (!arrived) continue; // try the next candidate rather than getting stuck on one
 			}
+			// Re-checked AFTER the walk: travelTo() can await through a shard hop
+			// and the gate would pass on stale data. Return, not continue - no
+			// candidate is on the home shard either.
+			// -> MerchantComments.md#re-check-after-the-walk
+			if (!shouldHoldStand()) return;
 			await open_stand(slot);
 			state.standOpen = true;
 			state.standOpenedAt = Date.now();
@@ -2901,15 +2957,34 @@ function scoutItemPrice(it) {
 	return null;
 }
 
-async function scoutPontyCheck() {
+/* Server gate: simple_distance(G.maps.main.ref.secondhands, player) > 500 ->
+   game_response "distance". ref.secondhands is absent from the client map data,
+   so npcs[] is the position of record - (106,-47), which reproduces the 286.1
+   measured from the town spot exactly. simple_distance ignores the map;
+   requiring main is the conservative reading and costs nothing.
+   -> MerchantComments.md#do-not-walk-to-him */
+function scoutPontyDistance() {
 	const m = parent && parent.G && parent.G.maps && parent.G.maps.main;
 	const npc = m && (m.npcs || []).find((n) => n && n.id === 'secondhands');
-	if (!npc || !Array.isArray(npc.position)) return;
-	// Do not walk to him from the town spot. He is 286.1 away from it and has
-	// -> MerchantComments.md#do-not-walk-to-him
-	if (!atTownSpot()) {
-		try { await moveTo({ map: 'main', x: npc.position[0], y: npc.position[1] }); }
-		catch (e) { return; }
+	const p = (npc && Array.isArray(npc.position)) ? npc.position
+		: (m && m.ref && m.ref.secondhands);
+	if (!p || p.length < 2 || character.map !== 'main') return null;
+	return Math.hypot(character.x - p[0], character.y - p[1]);
+}
+
+async function scoutPontyCheck() {
+	/* NEVER WALK TO HIM, from anywhere: every spot this merchant parks at is
+	   already inside the 500 gate - 47.4 at stand candidate[0], 346.1 worst
+	   case at the town spot's radius edge. The old `!atTownSpot()` guard was
+	   true on EVERY cycle, because the only caller runs scoutGoToScanSpot()
+	   first and that lands on candidate[0], not the town spot. So it walked 47
+	   units into a range it was 453 units inside, and that second smart_move()
+	   rejected whatever move was in flight. Out of range, SKIP - scoutPontyDue()
+	   keeps it due. -> MerchantComments.md#do-not-walk-to-him */
+	const pontyDist = scoutPontyDistance();
+	if (pontyDist === null || pontyDist > 500) {
+		scoutLog(`Ponty out of range (${pontyDist === null ? 'off main' : Math.round(pontyDist)}) - skipping, not walking`, '#B8B8B8');
+		return;
 	}
 	const items = await scoutPontyQuery();
 	if (items) {
