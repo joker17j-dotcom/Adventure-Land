@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v59
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v60
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -491,6 +491,10 @@ const CONFIG = {
 		// southern aisle: x -88..88, y 144..360), spread out in case one spot
 		// is blocked or too close to another player's stand. Tried in order.
 		candidates: [
+			// Town spot FIRST: inside Merrit's area, and 129.4 from the nearest fixed
+			// NPC against a 40 clearance where (100,0) clears by only 2.8. Standing
+			// here needs no walk at all. -> MerchantComments.md#town-spot-is-a-stand-spot
+			{ x: -179, y: -72 },
 			{ x: 100, y: 0 },
 			{ x: -100, y: 0 },
 			{ x: 150, y: 100 },
@@ -681,11 +685,9 @@ function travelEnd() {
 	if (!state.travelling) state.travellingSince = 0;
 }
 
-/* THE LOCK IS NOW REAL - travelBegin() only ever counted, while the comment
-   below and moveNudge's both already claimed a lock. A second smart_move()
-   REJECTS the one in flight, so travelTo() ran its town() backup for a trip
-   that was never broken. The loser fails fast with a TAGGED error.
-   -> MerchantComments.md#the-lock-is-now-real */
+/* THE LOCK IS NOW REAL - travelBegin() only counted; nothing enforced it, and
+   a second smart_move() REJECTS the one in flight. The loser fails fast with a
+   TAGGED error. -> MerchantComments.md#the-lock-is-now-real */
 function moveBusy() {
 	const e = new Error('another move is already in flight');
 	e.reason = 'move_busy';
@@ -693,11 +695,9 @@ function moveBusy() {
 	return e;
 }
 
-/* Held, or ABANDONED? Only travelEnd() ever clears the counter and Merchant.js
-   never got noHang(), so one await that never settles would wedge every mover
-   in the file for good - silently, which is strictly worse than the stand
-   suppression it used to cause. Past the ceiling the lock is broken open and
-   LOGGED: "missing" and "correct" must not stay indistinguishable.
+/* Held, or ABANDONED? Nothing but travelEnd() clears the counter and this file
+   has no noHang(), so a never-settling await would wedge every mover for good.
+   Past the ceiling: break it open and LOG, never silently.
    -> MerchantComments.md#the-lock-is-now-real */
 function moveLockHeld() {
 	if (state.travelling <= 0) return false;
@@ -2973,14 +2973,10 @@ function scoutPontyDistance() {
 }
 
 async function scoutPontyCheck() {
-	/* NEVER WALK TO HIM, from anywhere: every spot this merchant parks at is
-	   already inside the 500 gate - 47.4 at stand candidate[0], 346.1 worst
-	   case at the town spot's radius edge. The old `!atTownSpot()` guard was
-	   true on EVERY cycle, because the only caller runs scoutGoToScanSpot()
-	   first and that lands on candidate[0], not the town spot. So it walked 47
-	   units into a range it was 453 units inside, and that second smart_move()
-	   rejected whatever move was in flight. Out of range, SKIP - scoutPontyDue()
-	   keeps it due. -> MerchantComments.md#do-not-walk-to-him */
+	/* NEVER WALK TO HIM, from anywhere: every spot he parks at is already inside
+	   the 500 gate (47.4 at the stand spot, 346.1 worst case). The old
+	   `!atTownSpot()` guard was true on EVERY cycle. Out of range, SKIP.
+	   -> MerchantComments.md#do-not-walk-to-him */
 	const pontyDist = scoutPontyDistance();
 	if (pontyDist === null || pontyDist > 500) {
 		scoutLog(`Ponty out of range (${pontyDist === null ? 'off main' : Math.round(pontyDist)}) - skipping, not walking`, '#B8B8B8');
@@ -3191,7 +3187,11 @@ function scoutNextShard() {
 async function scoutGoToScanSpot() {
 	const spot = CONFIG.stand.candidates[0];
 	if (!spot) return false;
-	if (character.map === CONFIG.stand.map && distance(character, spot) <= 60) return true;
+	// Completeness, not proximity - the gate scoutHeldScan already trusts. The
+	// town spot passes it with 261/238 units of vision margin while sitting 288
+	// from candidate[0], and Merrit needs him STILL (anchor_tolerance 4).
+	// -> MerchantComments.md#the-gate-is-now-can
+	if (mInTown()) return true;
 	return await travelTo(CONFIG.stand.map, spot.x, spot.y);
 }
 
