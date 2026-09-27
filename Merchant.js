@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v60
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v61
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -358,6 +358,13 @@ const CONFIG = {
 		mapChurnLimit: 3,
 		mapChurnWindowMs: 30 * 60 * 1000,
 		mapChurnHoldMs: 60 * 60 * 1000,
+
+		/* Unwinding ABANDONED stock. arbBankItem() banks goods no buyer would
+		   take and arbHeldDrop()s them, so the executor forgot they existed.
+		   minProfit is its own and far below the buy-side floor: the goods are
+		   already paid for, so the only question is whether the sale beats the
+		   cost of a shard hop. -> MerchantComments.md#stock-recovery */
+		stockRecovery: { enabled: true, minProfit: 100000, refreshMs: 10 * 60 * 1000 },
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
 		// gold into stock, and a run of them means the market being traded
@@ -1663,6 +1670,177 @@ function arbHeldDrop(name) {
 		try { set(ARB_HELD_KEY, h); } catch (e) { }
 	}
 	arbHeldCache = null;
+}
+
+/* ============================================================================
+   ABANDONED STOCK - the bridge is the registry, the bank is the truth.
+   -> MerchantComments.md#stock-recovery
+   ============================================================================ */
+const ARB_STOCK_KEY = 'arb_stock';
+let arbStockCache = null, arbStockAt = 0;
+
+/* Abandoned trades whose goods should still exist. Cached in CODE storage so a
+   hop costs no round trip and a bridge outage degrades to the last known list
+   rather than to nothing. */
+async function arbStockLoad(force) {
+	const cfg = CONFIG.arbitrage.stockRecovery;
+	if (!force && arbStockCache && Date.now() - arbStockAt < cfg.refreshMs) return arbStockCache;
+	let rows = null;
+	try {
+		const st = await scoutFetch('/trades');
+		if (st && Array.isArray(st.trades)) rows = st.trades;
+	} catch (e) {
+		arbLog('stock: /trades unreachable (' + (e && e.message ? e.message : e)
+			+ ') - using the last known list', 'orange');
+	}
+	if (rows) {
+		const keep = [];
+		for (const r of rows) {
+			if (!r || r.dryRun || r.status !== 'abandoned' || !r.item) continue;
+			keep.push({ id: r.id, item: r.item, level: r.level || 0, qty: r.qty || 1,
+				spend: r.spend || 0, where: r.disposition || null });
+		}
+		arbStockCache = keep;
+		try { set(ARB_STOCK_KEY, keep); } catch (e) { }
+	} else if (!arbStockCache) {
+		try { arbStockCache = get(ARB_STOCK_KEY) || []; } catch (e) { arbStockCache = []; }
+	}
+	arbStockAt = Date.now();
+	return arbStockCache;
+}
+
+// Sold, or the bank does not have it. Either way stop considering it.
+function arbStockForget(id) {
+	if (!arbStockCache) return;
+	arbStockCache = arbStockCache.filter(function (s) { return s.id !== id; });
+	try { set(ARB_STOCK_KEY, arbStockCache); } catch (e) { }
+}
+
+/* A fresh buyer for something already owned, best edge first.
+
+   Sell-side only, so it cannot be arbProbeFindFlips - there is no buy leg to
+   price. The bar is arbNetFromSale's: after tax the player must beat what a
+   vendor pays, because anything less should be vendored rather than carried
+   across a shard. Returns null cheaply when nothing is banked, so the market
+   is not re-fetched on every look for no reason. */
+async function arbStockFindSale() {
+	const cfg = CONFIG.arbitrage.stockRecovery;
+	if (!cfg.enabled) return null;
+	const stock = await arbStockLoad();
+	if (!stock || !stock.length) return null;
+	const tax = arbTaxRate();
+	if (tax == null) return null;
+
+	const want = new Map();
+	for (const s of stock) want.set(s.item + '|' + s.level, s);
+
+	const got = await arbProbeMarketRows();
+	const maxAge = CONFIG.arbitrage.sellMaxAgeSec;
+	let best = null;
+	for (const r of (got.rows || [])) {
+		if (arbNeverBlocked(r.id)) continue;
+		const age = pAgeSec(r.lastSeen);
+		if (age == null || age > maxAge) continue;
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || !sl.name || !sl.b) continue;
+			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;
+			if (typeof sl.price !== 'number' || !isFinite(sl.price)) continue;
+			const s = want.get(sl.name + '|' + (sl.level || 0));
+			if (!s) continue;
+			let npcv = null;
+			try { npcv = parent.calculate_item_value({ name: sl.name, level: sl.level || 0 }); } catch (e) { }
+			const dec = arbNetFromSale(sl.price, npcv);
+			if (!dec || dec.to !== 'player') continue;         // a vendor pays more
+			const qty = Math.max(1, Math.min(s.qty, sl.q || 1));
+			const edge = Math.floor((dec.net - (npcv || 0)) * qty);
+			if (edge < cfg.minProfit) continue;
+			if (best && edge <= best.edge) continue;
+			best = { stock: s, item: sl.name, level: sl.level || 0, qty: qty, edge: edge,
+				sellTo: r.id, sellPrice: sl.price, sellSlot: k,
+				sellShard: String(r.serverRegion) + String(r.serverIdentifier),
+				sellMap: r.map, sellX: r.x, sellY: r.y, ageSec: age, taxRate: tax };
+		}
+	}
+	return best;
+}
+
+/* The trade record for unwinding one abandoned holding.
+
+   IT KEEPS THE ORIGINAL TRADE ID. arbFinish() emits `closed` against t.id, the
+   bridge replays events per id with last-write-wins on status, and `closed`
+   already carries received/net - so the row that was abandoned becomes closed
+   and leaves abandonedSpend on its own, with no new event type. That matters:
+   the bridge validates against LEDGER_EVENTS and refuses anything else.
+   Reusing the id is also what makes net honest - the basis is the gold really
+   spent, not zero, so the share banked is a share of real profit.
+
+   phase 'fetch' because the goods are in the BANK, not the bag. fromStock so a
+   failure cannot trip the stranding breaker: that exists to stop gold turning
+   into stock, and this direction converts nothing. */
+function arbStockPlan(sale) {
+	return {
+		id: sale.stock.id,
+		phase: 'fetch',
+		at: Date.now(),
+		fromStock: true,
+		item: sale.item, level: sale.level, special: null, qty: sale.qty,
+		buyFrom: null, buyPrice: 0, buyShard: null, buySlot: null, buyIsNpc: false,
+		buyMap: null, buyX: null, buyY: null,
+		sellTo: sale.sellTo, sellPrice: sale.sellPrice, sellShard: sale.sellShard,
+		sellSlot: sale.sellSlot, sellMap: sale.sellMap || null,
+		sellX: sale.sellX, sellY: sale.sellY,
+		spend: sale.stock.spend, actualSpend: sale.stock.spend,
+		expectProfit: sale.edge, taxRate: sale.taxRate,
+		goldAtStart: character.gold, attempts: 0,
+	};
+}
+
+/* Withdraw it. The bridge says what SHOULD be there; character.bank only
+   populates at the bank, so this is the first point the claim can be checked.
+   Missing means someone moved it - note it, forget it, and stop walking to the
+   bank for a ghost. A short count sells what is actually there. */
+async function arbStockFetch(t) {
+	const held = function () {
+		let n = 0;
+		for (const it of character.items) {
+			if (it && it.name === t.item && (it.level || 0) === (t.level || 0)) n += (it.q || 1);
+		}
+		return n;
+	};
+	if (held() >= t.qty) return true;
+	if (!(await travelToBank())) { arbLog('stock: could not reach the bank', 'red'); return false; }
+	if (!character.bank) { arbLog('stock: at the bank but character.bank is empty', 'red'); return false; }
+	for (const pack in character.bank) {
+		if (!/^items/.test(pack)) continue;
+		const arr = character.bank[pack] || [];
+		for (let i = 0; i < arr.length && held() < t.qty; i++) {
+			const it = arr[i];
+			if (!it || it.name !== t.item || (it.level || 0) !== (t.level || 0)) continue;
+			if (!character.items.some(function (x) { return x === null; })) break;
+			try {
+				await bank_retrieve(pack, i);
+				await new Promise(function (r) { setTimeout(r, 250); });
+			} catch (e) {
+				arbLog('stock: bank_retrieve failed - '
+					+ (e && (e.reason || e.message) ? (e.reason || e.message) : e), 'red');
+			}
+		}
+	}
+	const got = held();
+	await scoutGoToScanSpot();
+	if (got < 1) {
+		arbLedger({ id: t.id, event: 'note', text: 'stock recovery: ' + t.item
+			+ ' is not in the bank - dropped from the stock list' });
+		arbStockForget(t.id);
+		return false;
+	}
+	if (got < t.qty) {
+		t.qty = got;
+		arbLog('stock: only ' + got + ' of ' + t.item + ' in the bank - selling that', 'orange');
+	}
+	arbHeldAdd(t.item, t.qty, t.actualSpend);
+	return true;
 }
 
 function isTier2OrTier3GearItem(itemName) {
@@ -3743,6 +3921,19 @@ async function arbAdvance() {
 		return;
 	}
 
+	// ---- fetch: the goods are in the BANK. Collect them, then sell as usual -
+	if (t.phase === 'fetch') {
+		if (!(await arbStockFetch(t))) {
+			// arbStockFetch has already noted a missing item and forgotten it.
+			// Clearing rather than arbFinish(): there is no counterparty to blame
+			// for an empty bank, and the next look re-finds it if it reappears.
+			arbClearTrade();
+			return;
+		}
+		t.phase = 'holding'; arbSaveTrade(t);
+		return;
+	}
+
 	// ---- holding: an item we paid for, and a shard to reach ----------------
 	if (t.phase === 'holding') {
 		if (here !== t.sellShard) {
@@ -3823,7 +4014,9 @@ async function arbAdvance() {
 		// Each stranding has turned liquid gold into stock. A run of them means
 		// the market being traded against is not the market on the board, and
 		// continuing would keep paying to find that out.
-		const n = arbStrandings(1);
+		// A stock sale that fails re-banks goods that were already banked, so no
+		// gold became stock and the breaker must not count it. Read, do not write.
+		const n = t.fromStock ? arbStrandings() : arbStrandings(1);
 		if (n >= CONFIG.arbitrage.maxConsecutiveStrandings) {
 			CONFIG.arbitrage.enabled = false;        // this run
 			arbHalt(n + ' consecutive strandings');   // and every run until it expires
@@ -3967,6 +4160,19 @@ async function arbLookForWork() {
 
 	// Quiet: this is the 30-second beat, not a hand-run probe. See the
 	// quiet-mode note in arbProbeFindFlips for why that matters.
+	/* Unwind abandoned stock BEFORE buying more. It commits no gold, and it is
+	   the only thing that turns dead stock back into liquid. Cheap when there
+	   is none: arbStockLoad() is cached and returns an empty list without
+	   touching the market. -> MerchantComments.md#stock-recovery */
+	const sale = await arbStockFindSale();
+	if (sale) {
+		const st = arbStockPlan(sale);
+		arbSaveTrade(st);
+		state.busy = true;
+		arbLog('stock: unwinding ' + st.item + ' x' + st.qty + ' -> ' + st.sellTo
+			+ ' on ' + st.sellShard + ' (+' + sale.edge + ' over vendor value)', '#FFD700');
+		return;
+	}
 	const flips = await arbProbeFindFlips({ quiet: true });
 	if (!flips || !flips.length) return;
 	const used = arbLoadUsed();
