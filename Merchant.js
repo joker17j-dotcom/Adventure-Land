@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v66
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v67
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -937,8 +937,21 @@ function on_cm(name, data) {
 		enqueueJob({ type: 'pickup', recipient: name, emptySlots: data.emptySlots, x: data.x, y: data.y, map: data.map, shard });
 	}
 	if (data.message === 'location' && CONFIG.mluck.targets.includes(name)) {
-		if (character.level >= CONFIG.mluck.minLevel) {
-			enqueueJob({ type: 'mluck', recipient: name, x: data.x, y: data.y, map: data.map, shard });
+		// `location` means "buff me" OR "empty my pack"; needsMluck says which.
+		// undefined = a pre-v62 sender, and keeps the old assumption on purpose.
+		// -> MerchantComments.md#mluck-intent
+		if (data.needsMluck === false) {
+			// Drop a pending job too - enqueueJob dedupes, so a stale one would win.
+			const before = state.queue.length;
+			state.queue = state.queue.filter(j => !(j.type === 'mluck' && j.recipient === name));
+			if (state.queue.length !== before) {
+				game_log(`Dropped a stale mluck job for ${name} - their buff is live`, '#8b98ab');
+			}
+		} else if (character.level >= CONFIG.mluck.minLevel) {
+			enqueueJob({
+				type: 'mluck', recipient: name, needsMluck: data.needsMluck,
+				x: data.x, y: data.y, map: data.map, shard
+			});
 		}
 		// Below CONFIG.mluck.minLevel: silently ignored, nothing to do yet.
 	}
@@ -1093,10 +1106,23 @@ async function processBatch() {
 // VISIT LOGIC - handles delivery and/or pickup jobs for one recipient,
 // -> MerchantComments.md#visitOneStop
 // ============================================================================
+/* Need, not list membership - the old test was the latter, so every visit to an
+   mluck target carried a buff task whatever the buff said. Observation wins when
+   we can see them; the sender's hint is the fallback.
+   -> MerchantComments.md#mluck-intent */
+function mluckWanted(recipientName, hint) {
+	if (!CONFIG.mluck.targets.includes(recipientName)) return false;
+	if (character.level < CONFIG.mluck.minLevel) return false;
+	const t = get_player(recipientName);
+	if (!t) return hint !== false;
+	// Visible: observation beats any hint, however stale the hint has become.
+	return !t.s || !t.s.mluck || t.s.mluck.f !== character.name;
+}
+
 async function visitOneStop(recipientName, jobs) {
 	const deliveryJobs = jobs.filter(j => j.type === 'delivery');
 	const wantsPickup = jobs.some(j => j.type === 'pickup');
-	const wantsMluck = CONFIG.mluck.targets.includes(recipientName);
+	const mluckJob = jobs.find(j => j.type === 'mluck');
 	const locJob = jobs[jobs.length - 1]; // most recent location data across all bundled jobs
 
 	game_log(`Visiting ${recipientName}: ${jobs.map(j => j.type).join(' + ')}`, '#FFD700');
@@ -1104,10 +1130,18 @@ async function visitOneStop(recipientName, jobs) {
 	// Travel to the recipient's best-known location.
 	await travelToRecipient(locJob);
 
+	/* Decided AFTER the trip. Before it we are almost always on another shard,
+	   so get_player() is null and the hint would decide by default every time;
+	   here the buff can actually be seen. -> MerchantComments.md#mluck-intent */
+	const wantsMluck = mluckWanted(recipientName, mluckJob ? mluckJob.needsMluck : undefined);
+
 	let remaining = { deliveries: deliveryJobs, pickup: wantsPickup, mluck: wantsMluck };
 	remaining = await attemptActions(recipientName, remaining);
 
-	const stillNeeded = remaining.deliveries.length > 0 || remaining.pickup || remaining.mluck;
+	/* mluck deliberately absent: a summon costs the recipient up to 60s off their
+	   spot, which is worth it for cargo and never for a buff that reaches 320
+	   units. -> MerchantComments.md#mluck-intent */
+	const stillNeeded = remaining.deliveries.length > 0 || remaining.pickup;
 	if (!stillNeeded) return;
 
 	// Couldn't complete everything from here - summon them instead of
@@ -1115,7 +1149,8 @@ async function visitOneStop(recipientName, jobs) {
 	const arrived = await summonAndWait(recipientName);
 	if (arrived) {
 		remaining = await attemptActions(recipientName, remaining);
-		const stillMissing = remaining.deliveries.length > 0 || remaining.pickup || remaining.mluck;
+		// mluck excluded as above - a skipped buff is not an incomplete visit.
+		const stillMissing = remaining.deliveries.length > 0 || remaining.pickup;
 		if (stillMissing) {
 			game_log(`${recipientName} arrived but some actions still couldn't complete`, 'red');
 		}
@@ -1176,8 +1211,13 @@ async function attemptActions(recipientName, remaining) {
 
 	let stillMluck = remaining.mluck;
 	if (remaining.mluck) {
+		const alreadyOurs = !!(target.s && target.s.mluck && target.s.mluck.f === character.name);
 		if (character.level < CONFIG.mluck.minLevel) {
 			stillMluck = false; // not eligible regardless of range - summoning won't help
+		} else if (alreadyOurs) {
+			// Cleared regardless of range: tryCastMluck would no-op anyway, and the
+			// flag left set is what made a live buff read as unfinished work.
+			stillMluck = false;
 		} else if (is_in_range(target, 'mluck')) {
 			await tryCastMluck(recipientName);
 			stillMluck = false;
