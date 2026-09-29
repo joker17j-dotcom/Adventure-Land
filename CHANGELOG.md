@@ -2,15 +2,182 @@
 
 Meltymerch (Merchant) - CODE slot `CH_aLtHealaSgKdmOsDWpNl8scE9NhXk`
 
-Moved out of the Merchant.js header on 2026-09-21. Adventure Land will not run a
-CODE slot past roughly 240 KiB (245,760 chars): v37 at 244,398 ran, v38 at
-247,463 was accepted by save_code and then silently never evaluated - the runner
-came up with `character` defined and every script function undefined, with
-nothing in the console. The changelog had reached 9,255 chars of that budget, so
-the file was one ordinary commit from failing whatever the commit did. It lives
-here now, and the header carries a pointer instead.
+Moved out of the Merchant.js header on 2026-09-21, because a slot that grows
+without limit eventually stops evaluating and says nothing about it: v37 at
+244,398 chars ran, v38 at 247,463 was accepted by `save_code` and then silently
+never evaluated - the runner came up with `character` defined and every script
+function undefined, with nothing in the console. The changelog had reached 9,255
+chars of that budget, so the file was one ordinary commit from failing whatever
+the commit did. It lives here now, and the header carries a pointer instead.
 
-Newest first. Entries are verbatim from the header they replaced.
+CORRECTED 2026-09-28: the number that failure produced, "roughly 240 KiB
+(245,760 chars)", is NOT the ceiling. Measured in Meltymerch's live CODE context,
+`typeof arbStockUnskip` and `typeof idleRestock` both return `function`, and
+those two names exist only in v63 (257,241 chars) and v64 (260,646). So a build
+6% past the supposed cap evaluates and runs, and v38's failure had some other
+cause or some other threshold. Two lessons, and the second is the useful one.
+The cap is unknown, not 245,760 - do not quote that figure as a limit. And
+because it is unknown, the only safe procedure after a deploy is still to
+FEATURE-DETECT something the new build alone has: an over-size slot fails by
+running the old code silently, which is indistinguishable from a successful
+deploy if you check the version string. -> CLAUDE.md, "Deploying a code slot"
+
+Keeping this file lean is therefore still worth doing, on the same reasoning that
+moved it here - it just is not a countdown to a known number.
+
+Newest first. Entries through v62 are verbatim from the header they replaced;
+v63 onward were written here directly, since the header stopped accumulating.
+
+## v67
+
+mluck is need-driven, and never a reason to summon.
+
+The operator reported the merchant repeatedly travelling to Dexon to buff him and
+then summoning him when the buff did not land - with more than 50 minutes still
+on the mluck he already had. Four defects, all downstream of one line:
+
+    const wantsMluck = CONFIG.mluck.targets.includes(recipientName);
+
+That tests membership of a config list, not need. It was unconditionally true for
+Dexon on every visit, whatever the visit was for and whatever his buff said.
+
+1. The `location` handler enqueued an mluck job for ANY `location` message from a
+   name in `CONFIG.mluck.targets`. `Ranger.js` sends that same message for pickup
+   as well as for mluck, so every pickup ask created a phantom buff job - and an
+   mluck job is a whole batch here: a shard hop, a trip, a stop.
+2. `visitOneStop` derived the mluck task from the config rather than from a queued
+   job, so a delivery-only visit carried one too.
+3. `attemptActions` only cleared the flag when the target was in mluck range, so
+   arriving out of range left "mluck outstanding" set on a live buff.
+4. `stillNeeded` counted mluck, so that stale flag reached `summonAndWait` - which
+   is what pulled Dexon off the farm spot for up to 60 seconds.
+
+MEASURED 2026-09-28 in Dexon's live CODE context, and this is what corrected a
+wrong first diagnosis of "the log says it is requesting, but nothing is sent":
+
+| probe | value |
+| --- | --- |
+| `mluckState()` | `{ok: false, why: "Meltymerch is not in the party"}` |
+| `character.s.mluck` | `{f: "Meltymerch", minsLeft: 42}` |
+| `pickupCooldownMs` | 15000 |
+| `lowInventorySlots` | 3 |
+
+So `needsUpdate` was false throughout and the mluck branch was sending nothing at
+all. The pickup branch was the only sender, four times a minute while the pack sat
+low. A 3.3-minute watch of the mluck gate saw zero sends and was read as "nothing
+is requesting anything" - it simply contained no pack-full event. Watch the thing
+the user described, not the thing you suspect.
+
+The fix is in two halves, deliberately, because either one alone leaves a hole.
+`Ranger.js` v62 puts `needsMluck` on the location message so a pickup ask stops
+reading as a buff ask, which stops the trip. This file stops the summon and stops
+the phantom task, which holds even against a pre-v62 sender. `mluckWanted()`
+replaces the membership test and is evaluated AFTER `travelToRecipient`, because
+before the trip we are usually on another shard, `get_player()` is null, and the
+sender's hint would decide by default every time.
+
+`mluck` is now absent from both `stillNeeded` and `stillMissing`. A summon costs
+the recipient up to 60 seconds off their spot, which is worth it for potions they
+have run out of or a pack they cannot empty, and never for a buff: mluck reaches
+320 units against this character's ~10 attack range, so a cast that did not land
+from here means the recipient is far enough away that their next request brings us
+back anyway. -> MerchantComments.md#mluck-intent
+
+## v66
+
+Restores `rabbitsfoot` as the priest's orb target at tier 2 and tier 3, reverting
+that half of v65.
+
+v65 moved it to `orbofint` on the reasoning that `rabbitsfoot` gives luck 15 and
+no combat stat, where `orbofint` gives int 13 at +3 - damage per slot. That is the
+right weighting for a slot doing a combat job and the wrong one here: the priest
+is the intended chest-opener by tier 3, luck raises loot quality, and the orb is
+where that build lives. The evidence was already in v65's own output and was read
+as noise - `lmace` carries luck 6 and `mshield+6` carries luck 14, which is a
+pattern, not a coincidence, across a kit that was assembled on purpose.
+
+The other three v65 corrections stand: they were slots where the plan pointed at
+something measurably worse than what is already worn.
+
+Investigating the remaining luck items - `ringofluck`, `mearring`, `ringhs` - is
+deferred by the operator until the fleet is closer to tier 3 on gear.
+
+## v65
+
+Four `GEAR_PROGRESSION` targets pointed at items worse than what the character
+already has equipped. Measured 2026-09-28 with the client's own
+`calculate_item_properties` over all 28 off-plan equipped slots. Twenty of them
+the plan gets right - that is where the party's missing piercing and frequency
+live. These did not:
+
+| plan target | what is worn instead |
+| --- | --- |
+| `pants@9` - stat 15, armor 12, res 9 | `frankypants+6` - stat 9, armor 68, res 54, vit 6, speed 1 |
+| `hhelmet@6` - stat 9, armor 58, res 61 | `xhelmet+4` - stat 8, armor 62, res 66 |
+
+`frankypants` is also roughly 10x cheaper to bring to a useful level once
+destroyed items are counted: `pants` is tier 1 on the 1,000-gold scroll but needs
++9, while `frankypants` is tier 3 on the 1,600,000 scroll and is already owned at
++6. Ranger and mage tier-2 pants become `frankypants@6`, ranger tier 3 becomes
+`frankypants@7`, priest tier-2 helmet becomes `xhelmet@6` to match the `xhelmet@8`
+that tier 3 already asked for.
+
+Priest pants stay `starkillers@8`. That one really is better - rpiercing 105,
+crit 3 - and is only absent because the item is hard to obtain, which is a
+sourcing problem rather than a wrong target.
+
+The orb change in this version was wrong and is reverted in v66.
+
+## v64
+
+Top up potions while parked, instead of only when a request arrives.
+
+MEASURED 2026-09-27: `buy_with_gold` has exactly one call site, inside
+`ensureStock`, and `ensureStock` has exactly two, both inside the delivery batch
+and both gated on a queued job. So standing at the town spot next to Ernis with
+an empty queue bought nothing, however long he stood there - and he sat on 176
+`hpot1` against a `deliveryAmount` of 1000. The next hp request would have had to
+wait out a shopping trip, from whatever shard arbitrage had taken him to.
+
+`CONFIG.idleRestock` and `idleRestock()`, called from `arbLoop` under the same
+`!ARB.cur && !ARB.busy && !state.busy` gate `ssTick` already uses, and ahead of it
+because restocking is cheap and someone may be about to ask. It calls
+`ensureStock` rather than `buy_with_gold` so the buy-and-verify path stays in one
+place, and `atTownSpot()` is already true there, so `ensureStock`'s travel branch
+never fires and this cannot move him.
+
+Gated on `atTownSpot()` rather than the home shard on purpose: Ernis is on `main`
+on every shard and gold travels with the character, so an arbitrage stop tops up
+as well as being home does. The throttle timestamp lives in CODE storage because
+a shard hop reloads the page, which would reset an in-memory timer and turn this
+into a per-tick check; it is written even when nothing was bought, so a failing
+buy retries on the cadence rather than on every tick.
+-> MerchantComments.md#idleRestock
+
+## v63
+
+Flips before the backlog, and the stock-recovery loop stopped.
+
+MEASURED: 68 identical "vitearring is not in the bank" ledger notes in 59
+minutes, median gap 28 seconds - one per 30-second look, each with a bank trip
+behind it, and the flip finder never reached at all.
+
+1. FLIPS FIRST, backlog second. v61 ran the backlog first on the reasoning that
+   it commits no gold. True, and not the deciding question: a flip is perishable -
+   the spreads measured on 2026-09-27 had been seen 7 and 48 seconds before they
+   were priced - while a banked row keeps indefinitely. With a single trade slot,
+   putting a 45-row queue at one row per 10-19 minutes ahead of every flip is a
+   full stop rather than a delay. -> MerchantComments.md#flips-before-backlog
+2. `arbStockForget` now writes a durable tombstone. It only pruned the in-memory
+   cache, and `arbStockLoad` rebuilds from `/trades` on every successful read
+   while the bridge still says `abandoned` - so the drop was undone on the next
+   look. That is the loop. The bridge is RIGHT to keep saying abandoned, since
+   that is what happened to the trade, and rewriting its status would book a close
+   that never occurred; so the correction is local and the ledger stays honest.
+   `arbStockSkipList()` and `arbStockUnskip(id)` mirror the never-trade helpers.
+   -> MerchantComments.md#stock-tombstones
+3. The note fires once per row instead of once per look, which the tombstone is
+   what makes possible.
 
 ## v62
 
