@@ -1863,3 +1863,147 @@ days.
 `arbChurnNote` mutates the map its caller loaded and returns whether anything
 changed, so a whole ingestion pass costs ONE write rather than one per merchant
 - the O(n^2) trap v54 removed from the chest map.
+
+---
+
+## mluck-intent
+
+`message: 'location'` carries two unrelated requests, and until v67 this file
+read both as one.
+
+`Ranger.js` sends it when the merchant could buff it and the buff is missing, AND
+when its pack is nearly full and it wants the mule. The handler here enqueued an
+`mluck` job for any `location` message from a name in `CONFIG.mluck.targets`, so
+every pickup ask produced a phantom buff job - and on this character an `mluck`
+job is a whole batch: a shard hop, a trip to the last-known coordinates, a stop.
+
+Measured in Dexon's live CODE context 2026-09-28, which is the measurement that
+identified the actual sender:
+
+| probe | value |
+| --- | --- |
+| `mluckState()` | `{ok: false, why: "Meltymerch is not in the party"}` |
+| `character.s.mluck` | `{f: "Meltymerch", minsLeft: 42}` |
+| `pickupCooldownMs` | 15000 |
+| `lowInventorySlots` | 3 |
+
+`needsUpdate` was false the whole time, so the mluck branch on the ranger was
+sending nothing; the pickup branch was sending four times a minute while the pack
+sat low. Worth recording how the first diagnosis went wrong: a 3.3-minute watch
+of the mluck gate saw zero sends, and that was read as "nothing requests
+anything". The window simply contained no pack-full event. The operator had
+described travelling and summoning; the instrumentation watched the gate instead.
+
+THE FIX IS DELIBERATELY IN TWO HALVES.
+
+`Ranger.js` v62 adds `needsMluck` to the location payload - its own `needsUpdate`
+- and the handler here refuses to enqueue on `false`. That is what stops the trip
+being taken, and it has to live on the sender because at enqueue time we are
+almost always on another shard for arbitrage, `get_player(name)` is null, and the
+buff cannot be seen from here at all. `undefined` from a pre-v62 sender keeps the
+old behaviour on purpose.
+
+This file stops the summon, which is the half that does not depend on the sender.
+`mluck` is absent from `stillNeeded` and from `stillMissing`. A summon costs the
+recipient up to 60 seconds off their farm spot: worth it for potions they have run
+out of or a pack they cannot empty, never for a buff. mluck reaches 320 units
+against this character's ~10 attack range, so a cast that failed from here means
+the recipient is far enough away that their next request brings us back anyway -
+there is no version of "summon them for the buff" that beats waiting.
+
+`mluckWanted()` replaces `CONFIG.mluck.targets.includes(recipientName)`, which
+tested membership of a config list rather than need and so was unconditionally
+true for Dexon on every visit, a delivery-only visit included. It is evaluated
+AFTER `travelToRecipient` on purpose: before the trip `get_player` is null and the
+hint decides by default, after it the buff can be read directly, and observation
+beats a hint that may be a minute old.
+
+`attemptActions` also clears the flag when the target already carries OUR mluck,
+regardless of range. `tryCastMluck` would return without casting anyway; leaving
+the flag set is what made a live buff read as unfinished work for the rest of the
+visit, and before the `stillNeeded` change that is exactly what reached the
+summon.
+
+One consequence worth stating plainly, so it is not later "fixed": a buff that
+expires while the merchant is elsewhere is NOT chased. The ranger asks again on
+its next cycle, and a request that arrives with the buff genuinely missing sends
+`needsMluck: true` and is served normally. mluck lasts an hour; nothing here is
+urgent enough to justify interrupting a farm spot for it.
+
+## stock-tombstones
+
+Rows the bridge still calls `abandoned` but which cannot be recovered, because
+the goods are not in the bank.
+
+The bridge is RIGHT to keep saying abandoned - that is what happened to the trade
+- and rewriting its status would book a close that never occurred and a receipt
+that never arrived. So the correction is local, in CODE storage under
+`arb_stock_skip`, and the ledger stays honest.
+
+Without it, `arbStockForget` only pruned `arbStockCache`. `arbStockLoad` rebuilds
+`keep` from `/trades` on every successful read, so the drop was undone on the next
+look: 68 identical notes in 59 minutes, median gap 28 seconds, a bank trip behind
+each one, and the flip finder never reached. The filter is applied AFTER the fetch,
+every time - the bridge is authoritative for what was abandoned, this is
+authoritative for what is worth trying.
+
+`arbStockForget(id, why, item)` returns true only the first time, so the caller
+can log once per row instead of once per look. `arbStockSkipList()` prints the
+map; `arbStockUnskip(id)` removes an entry and nulls the cache so the next load
+rebuilds from the bridge. Both mirror `arbNeverList` / `arbNeverForget` on
+purpose - one shape for "I have decided to ignore this" across the whole file.
+
+## flips-before-backlog
+
+Unwinding one abandoned row is SECOND to looking for flips, deliberately.
+
+v61 ran it first, reasoning that it commits no gold. That is true and it is not
+the deciding question. A flip is perishable: the spreads measured on 2026-09-27
+had been seen 7 and 48 seconds before they were priced. A banked row keeps
+indefinitely. Running the backlog first put a 45-row queue, moving at roughly one
+row per 10-19 minutes, in front of every flip - and because the executor has a
+single trade slot, that is a full stop rather than a delay.
+
+`arbTryStock()` returns true when it started one, so the caller knows the slot is
+spoken for. It is reached from the two no-flip exits in `arbLookForWork`: no flips
+found, and flips found but all of them suppressed or capped.
+
+## idleRestock
+
+Top up hp/mp while parked, rather than only when a request arrives.
+
+MEASURED 2026-09-27: `buy_with_gold` has exactly one call site, inside
+`ensureStock`, and `ensureStock` has exactly two, both inside the delivery batch
+and both gated on a queued job. So an empty queue bought nothing however long he
+stood next to Ernis, and he sat on 176 `hpot1` against a `deliveryAmount` of
+1000 - the next hp request would have paid for a shopping trip before anyone got a
+potion, from whatever shard arbitrage had taken him to.
+
+It calls `ensureStock` rather than `buy_with_gold` so the buy-and-verify path
+stays in one place. `atTownSpot()` is already true at the call site, so
+`ensureStock`'s travel branch is skipped and this never moves him.
+
+Gated on `atTownSpot()` rather than the home shard on purpose: Ernis is on `main`
+on every shard and gold travels with the character, so an arbitrage stop tops up
+just as well as being home does.
+
+The throttle timestamp lives in CODE storage because a shard hop reloads the page,
+which would reset an in-memory timer and turn this into a per-tick check. It is
+written even when nothing was bought, so a failing buy - broke, or out of
+inventory slots - retries on the cadence rather than on every tick. `target`
+defaults to `deliveryAmount + restockBuffer` so it cannot drift away from what a
+delivery actually needs.
+
+## anchors-that-are-missing
+
+Recorded rather than invented. These `-> MerchantComments.md#...` pointers exist
+in Merchant.js and resolve to nothing here as of 2026-09-28:
+
+`flipCoords`, `gearPacing`, `gearTripwire`, `gtFailOpen`, `minDwellMs`,
+`planCoords`
+
+They predate the v63-v67 work and the reasoning behind them was never written
+down, so there is nothing to recover - writing a plausible rationale for a number
+someone else measured would be worse than this list, because it would read as
+documentation. If you are the one who chose one of those values, this is the file
+it belongs in.
