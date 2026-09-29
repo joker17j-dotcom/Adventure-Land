@@ -218,7 +218,7 @@ const CONFIG = {
 		focusFire: {
 			enabled: true,
 			preferSingleTarget: false,
-			singleTargetMobs: ['cgoo', 'bigbird', 'poisio', 'mummy', 'prat', 'plantoid', 'fireroamer'],
+			singleTargetMobs: ['cgoo', 'bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer'],
 			leaderPicksLowestHp: true
 		},
 		targetPriority: ['FatherToken'],
