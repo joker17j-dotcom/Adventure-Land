@@ -321,7 +321,7 @@ const CONFIG = {
 	scout: {
 		// OFF, deliberately and temporarily.
 		// -> MerchantComments.md#enabled
-		enabled: false,
+		enabled: true,
 		// PARKED - hold the party's home shard and never hop just to scout.
 		// -> MerchantComments.md#parked
 		parked: true,
