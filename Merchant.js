@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v69
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v70
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -603,6 +603,44 @@ const CONFIG = {
 		   sender predates v62 and sends no needsMluck; a recipient that states its
 		   need is believed either way. */
 		refreshWithinMs: 10 * 60 * 1000,
+	},
+
+	/* PONTY BUY LIST - the tier-3 gear the operator wants picked up whenever it
+	   turns up in Ponty's stock during the ordinary scan cycle. -> PONTY BUY */
+	pontyBuy: {
+		enabled: true,
+
+		/* EDIT THIS. Item ids, any order, duplicates harmless - the set is
+		   rebuilt on every pass, so a change from the console takes effect on the
+		   next shard without a redeploy. Level is deliberately not part of the
+		   rule: any level found is bought. */
+		items: [
+			// ranger
+			'alloyquiver', 'fury', 'tshirt9', 'wingedboots', 'supermittens', 'ecape', 'suckerpunch',
+			// priest
+			'lmace', 'mshield', 'xhelmet', 'vattire', 'starkillers', 'mpxgloves', 'bcape',
+			'mpxamulet', 'sbelt', 'rabbitsfoot', 'cearring', 'zapper',
+			// mage
+			'gstaff', 'mageshood', 'jacko', 'cring',
+		],
+
+		/* The operator's two stops, and nothing else. Both are tested before
+		   EVERY purchase, because one buy can cross either line. */
+		goldFloor: 50000000,     // never let a buy take on-hand gold below this
+		stopAtFreeSlots: 3,      // stop while 3 or fewer inventory slots are free
+
+		/* Optional per-item ceiling, id -> max gold. An id absent from here has
+		   no ceiling, which is the operator's "any level, any price" default.
+		   Ponty's price is calculate_item_value(item) x G.multipliers
+		   .secondhands_mult, so it is a function of the item and its level, not a
+		   seller's asking price. */
+		maxPrice: {},
+
+		/* 'always' | 'low' | 'never'. The bank trip happens AFTER the buying is
+		   finished, never between two purchases, so a hop is never taken with the
+		   list half-bought. */
+		bankAfterBuy: 'always',
+		bankWhenFreeSlotsBelow: 12,   // only consulted when bankAfterBuy is 'low'
 	},
 
 	stand: {
@@ -3420,8 +3458,11 @@ function scoutPontyQuery() {
 			const list = Array.isArray(data) ? data
 				: (data && Array.isArray(data.items) ? data.items : null);
 			if (!list) return finish(null);
+			/* rid is what buy_secondhand() needs, and it is per listing per shard -
+			   the bridge's cached /ponty rows cannot supply it, so a purchase can
+			   only ever be made from a LIVE read like this one. -> PONTY BUY */
 			finish(list.filter((it) => it && it.name).map((it) => ({
-				name: it.name, level: it.level || 0, q: it.q || 1,
+				name: it.name, level: it.level || 0, q: it.q || 1, rid: it.rid || null,
 				p: it.p || null, price: scoutItemPrice(it),
 			})));
 		};
@@ -3477,8 +3518,208 @@ async function scoutPontyCheck() {
 		scoutBufferFor(scoutHere()).ponty = items;
 		scout.pontySeen[mShardKey()] = Date.now();
 		scoutLog(`Ponty: ${items.length} items on ${mShardKey()}`, '#5ED6A8');
+		/* Buy from the list BEFORE the report goes out and before the caller
+		   returns, which is what keeps the hop waiting: scoutVisitNextShard()
+		   returns after the scan and hops on a later tick. Banking comes after
+		   the buying, never between two purchases. -> PONTY BUY */
+		try {
+			const bought = await pontyBuyPass(items);
+			if (bought) await pontyStash(bought);
+		} catch (e) {
+			pontyLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red');
+		}
 	}
 }
+
+// ============================================================================
+// PONTY BUY - pick the gear list out of Ponty's stock during the scan cycle
+//
+// The operator's rule, 2026-09-30: buy the listed tier-3 gear whenever it shows
+// up while scanning, at any level, without leaving the ordinary cycle. Stop only
+// on three-or-fewer free inventory slots or on-hand gold below goldFloor. Bank
+// what is bought when the bank has room; keep it when it does not.
+//
+// WHY THIS LIVES IN scoutPontyCheck. Ponty answers, and sells, only within 500
+// units - MEASURED from the server source, node/server.js socket.on("secondhands")
+// and socket.on("sbuy"), which both gate on
+// simple_distance(G.maps.main.ref.secondhands, player) > 500. The town scan spot
+// is already inside it (47.4 units at the stand spot, 346.1 worst case, both
+// measured earlier and recorded at scoutPontyCheck), so nothing walks anywhere to
+// buy. sbuy also refuses with cant_in_bank, no_space and buy_cost, and with
+// item_gone when somebody else took the listing first - all four are ordinary
+// outcomes here, not faults, and each is logged as itself.
+//
+// PRICE. Ponty charges calculate_item_value(item) * G.multipliers
+// .secondhands_mult - 2x the item's own value, 3x for a cash item - so the price
+// is a property of the item and its level, not an asking price a seller chose.
+// scoutItemPrice() already computes exactly that for the scan report, so the
+// estimate and the gate use the same number the server will charge. Every
+// purchase is then VERIFIED by gold delta and by the item arriving, because an
+// estimate that silently drifts from the charge is how a gold floor stops
+// meaning anything.
+//
+// THE HOP WAITS BY CONSTRUCTION. scoutVisitNextShard() does the scan and then
+// `return`s so the hop happens on a LATER tick, and this pass is awaited inside
+// that scan. There is no separate "hold the hop" flag to get out of step.
+// ============================================================================
+const PONTY_LOG_KEY = 'ponty_bought';
+
+function pontyLog(m, c) { try { game_log('[ponty] ' + m, c || '#5ED6A8'); } catch (e) { } console.log('[ponty] ' + m); }
+function pontyFmt(n) { return (n == null || !isFinite(n)) ? '?' : Math.round(n).toLocaleString('en-US'); }
+
+/* Rebuilt per pass on purpose: the operator edits CONFIG.pontyBuy.items, and a
+   Set hoisted at load would ignore the edit until a redeploy. */
+function pontyWanted() {
+	const out = new Set();
+	for (const n of (CONFIG.pontyBuy.items || [])) if (n) out.add(String(n));
+	return out;
+}
+
+function pontyFreeSlots() {
+	let n = 0;
+	for (const it of character.items) if (!it) n++;
+	return n;
+}
+function pontySlotOf(name, level) {
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (it && it.name === name && (it.level || 0) === (level || 0)) return i;
+	}
+	return -1;
+}
+function pontyCount(name, level) {
+	let n = 0;
+	for (const it of character.items) if (it && it.name === name && (it.level || 0) === (level || 0)) n++;
+	return n;
+}
+
+/* Tested before every purchase, not once per pass. */
+function pontyBuyGate(cost) {
+	const cfg = CONFIG.pontyBuy;
+	const free = pontyFreeSlots();
+	if (free <= cfg.stopAtFreeSlots) return { ok: false, why: free + ' inventory slot(s) free' };
+	if (character.gold - (cost || 0) < cfg.goldFloor) {
+		return { ok: false, why: 'gold ' + pontyFmt(character.gold) + ' minus ' + pontyFmt(cost)
+			+ ' would fall below the ' + pontyFmt(cfg.goldFloor) + ' floor' };
+	}
+	return { ok: true };
+}
+
+function pontyRemember(bought) {
+	try {
+		const log = get(PONTY_LOG_KEY) || [];
+		for (const b of bought) log.push({ at: Date.now(), shard: mShardKey(), name: b.name, level: b.level, spent: b.spent });
+		while (log.length > 80) log.shift();
+		set(PONTY_LOG_KEY, log);
+	} catch (e) { pontyLog('could not record the purchase in storage', 'orange'); }
+}
+
+/* One listing. buy_secondhand() is the game's own wrapper and gives a real
+   verdict per rid; the raw emit is the fallback for a context without it, and is
+   judged only by what actually happened to gold and inventory. */
+async function pontyBuyOne(row) {
+	const before = character.gold;
+	const had = pontyCount(row.name, row.level);
+	let refused = null;
+	try {
+		if (typeof buy_secondhand === 'function') await buy_secondhand(row.rid);
+		else { parent.socket.emit('sbuy', { rid: row.rid }); await sleep(1200); }
+	} catch (e) { refused = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
+	await sleep(400);
+	const spent = before - character.gold;
+	const arrived = pontyCount(row.name, row.level) > had;
+	if (arrived) {
+		if (refused) pontyLog(row.name + ' reported "' + refused + '" but arrived anyway - trusting the inventory', 'orange');
+		return { ok: true, spent: spent > 0 ? spent : (row.price || 0) };
+	}
+	pontyLog('did not get ' + row.name + '+' + row.level + (refused ? ' (' + refused + ')' : ' (nothing arrived)')
+		+ (spent > 0 ? ' but ' + pontyFmt(spent) + ' gold left - CHECK THIS' : ''), spent > 0 ? 'red' : 'orange');
+	return { ok: false, why: refused || 'nothing arrived' };
+}
+
+async function pontyBuyPass(rows) {
+	const cfg = CONFIG.pontyBuy;
+	if (!cfg.enabled) return null;
+	const want = pontyWanted();
+	if (!want.size) return null;
+	const hits = (rows || []).filter((r) => r && r.rid && want.has(r.name));
+	if (!hits.length) return null;
+	/* Cheapest first, so a budget near the floor buys the most pieces rather
+	   than spending itself on whichever row happened to come back first. */
+	hits.sort((a, b) => (a.price == null ? Infinity : a.price) - (b.price == null ? Infinity : b.price));
+	pontyLog(hits.length + ' wanted item(s) in stock on ' + mShardKey() + ': '
+		+ hits.map((h) => h.name + '+' + h.level).join(', '), '#FFD700');
+	const bought = [];
+	for (const r of hits) {
+		const cap = (cfg.maxPrice || {})[r.name];
+		if (typeof cap === 'number' && r.price != null && r.price > cap) {
+			pontyLog('skipping ' + r.name + '+' + r.level + ' at ' + pontyFmt(r.price) + ' - over its ' + pontyFmt(cap) + ' cap', '#8b98ab');
+			continue;
+		}
+		const gate = pontyBuyGate(r.price || 0);
+		if (!gate.ok) { pontyLog('stopping here: ' + gate.why, 'orange'); break; }
+		const res = await pontyBuyOne(r);
+		if (res.ok) {
+			bought.push({ name: r.name, level: r.level, spent: res.spent });
+			pontyLog('bought ' + r.name + '+' + r.level + ' for ' + pontyFmt(res.spent)
+				+ ' (gold ' + pontyFmt(character.gold) + ', ' + pontyFreeSlots() + ' slots free)', '#7FD98A');
+		}
+	}
+	if (!bought.length) return null;
+	pontyRemember(bought);
+	return bought;
+}
+
+/* Bank space cannot be read from out here - character.bank is null anywhere but
+   inside the bank - so this TRIES and treats a refusal as "no room", which is
+   the operator's rule by a shorter route. Runs only after the buying is done. */
+async function pontyStash(bought) {
+	const cfg = CONFIG.pontyBuy;
+	if (!bought || !bought.length || cfg.bankAfterBuy === 'never') return;
+	if (cfg.bankAfterBuy === 'low' && pontyFreeSlots() > cfg.bankWhenFreeSlotsBelow) {
+		pontyLog('keeping ' + bought.length + ' item(s) on hand - ' + pontyFreeSlots() + ' slots free', '#8b98ab');
+		return;
+	}
+	if (!(await travelToBank())) { pontyLog('could not reach the bank - keeping them on hand', 'orange'); return; }
+	let stored = 0, kept = 0;
+	for (const b of bought) {
+		const idx = pontySlotOf(b.name, b.level);
+		if (idx < 0) continue;
+		try { await bank_store(idx); stored++; await sleep(300); }
+		catch (e) {
+			kept++;
+			pontyLog('bank would not take ' + b.name + '+' + b.level + ' ('
+				+ ((e && (e.reason || e.message)) ? (e.reason || e.message) : e) + ') - keeping it on hand', 'orange');
+		}
+	}
+	pontyLog('banked ' + stored + ' item(s)' + (kept ? ', kept ' + kept + ' (no room)' : '')
+		+ ' - returning to the scan spot', '#7FD98A');
+	await scoutGoToScanSpot();
+}
+
+/* Operator view: the list, the gates as they stand right now, and what has been
+   bought recently. */
+function pontyStatus() {
+	const cfg = CONFIG.pontyBuy;
+	const gate = pontyBuyGate(0);
+	pontyLog('enabled=' + cfg.enabled + ' items=' + pontyWanted().size
+		+ ' free=' + pontyFreeSlots() + ' (stop at ' + cfg.stopAtFreeSlots + ')'
+		+ ' gold=' + pontyFmt(character.gold) + ' (floor ' + pontyFmt(cfg.goldFloor) + ')'
+		+ ' bankAfterBuy=' + cfg.bankAfterBuy + ' -> ' + (gate.ok ? 'BUYING' : 'HOLDING: ' + gate.why),
+		gate.ok ? '#7FD98A' : 'orange');
+	pontyLog('list: ' + [...pontyWanted()].sort().join(', '));
+	const caps = Object.keys(cfg.maxPrice || {});
+	if (caps.length) pontyLog('price caps: ' + caps.map((k) => k + ' <= ' + pontyFmt(cfg.maxPrice[k])).join(', '));
+	let log = [];
+	try { log = get(PONTY_LOG_KEY) || []; } catch (e) { }
+	if (!log.length) { pontyLog('nothing bought yet'); return; }
+	for (const e of log.slice(-10)) {
+		pontyLog('  ' + new Date(e.at).toISOString().slice(0, 16).replace('T', ' ') + ' ' + e.shard
+			+ ' ' + e.name + '+' + e.level + ' for ' + pontyFmt(e.spent), '#8b98ab');
+	}
+	pontyLog('  (' + log.length + ' recorded, spent ' + pontyFmt(log.reduce((a, e) => a + (e.spent || 0), 0)) + ' in total)', '#8b98ab');
+}
+
 
 function scoutPontyDue() {
 	const last = scout.pontySeen[mShardKey()];
@@ -4901,7 +5142,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v69 / a reroute must be to someone else / 2026-09-29';
+const MERCHANT_BUILD = 'v70 / buys the gear list off Ponty while scanning / 2026-09-30';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
