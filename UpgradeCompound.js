@@ -1,9 +1,16 @@
 // ============================================================================
-// UpgradeCompound.js - v2 (2026-09-29) - upgrade AND compound to a target level
+// UpgradeCompound.js - v3 (2026-09-29) - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
 // Upgrade script is untouched; this is its successor, not an edit of it.
+//
+// SLOT 0 IS THE ITEM, as in the original. Whatever sits in slot 0 is evaluated
+// and rolled, up to its target level. For a compound the other two copies are
+// found anywhere else in the bag by name and level; slot 0 goes in first, and
+// the server keeps the FIRST selected item on success - so what you put in
+// slot 0 is what comes out a level higher. An empty slot 0 idles; it does not
+// stop, because a failed upgrade empties it and the next item is yours to add.
 //
 // EVERY MECHANIC HERE WAS PULLED FROM THE SERVER SOURCE AND THE GAME DOCS ON
 // 2026-09-29, not remembered. Sources: adventureland_mongodb node/server.js
@@ -49,10 +56,12 @@
 // ============================================================================
 
 const UC_CONFIG = {
-	/* What to make. mode is auto-detected from G.items (upgrade vs compound). */
-	TARGETS: [
-		{ item: 'frankypants', level: 7 },
-	],
+	/* How far to take whatever is in slot 0. Mode is auto-detected from G.items
+	   (upgrade vs compound). TARGET_LEVELS wins for a named item. */
+	TARGET_LEVEL: 7,
+	TARGET_LEVELS: {
+		// frankypants: 7,
+	},
 
 	/* Set a value here to override every other source for that item at +0.
 	   Left null, the chain is: Ponty -> market low -> NPC gold (if sold) -> STOP. */
@@ -112,6 +121,7 @@ const UC = {
 	prices: { at: 0, asks: {}, hist: {}, ponty: {}, errors: {} },   // asks = fresh, hist = aged
 	npcGold: null,        // name -> { g, npc, autobuy }
 	history: [],          // every roll: { t, mode, item, from, to, chance, exact, success, spent, lost }
+	idleNote: null,
 };
 
 function ucLog(m, c) { try { game_log('[uc] ' + m, c || '#8b98ab'); } catch (e) { } console.log('[uc] ' + m); }
@@ -377,14 +387,24 @@ function ucSlotsOf(name, level) {
 }
 function ucSlotOf(name) { return (typeof locate_item === 'function') ? locate_item(name) : ucSlotsOf(name, 0)[0]; }
 
-/* The next roll: the highest level below target that has enough copies. */
-function ucFrontier(name, mode, target) {
-	for (let L = target - 1; L >= 0; L--) {
-		const slots = ucSlotsOf(name, L);
-		if (mode === 'upgrade' && slots.length >= 1) return { level: L, slots: slots.slice(0, 1) };
-		if (mode === 'compound' && slots.length >= 3) return { level: L, slots: slots.slice(0, 3) };
-	}
-	return null;
+/* What is in slot 0, and how far it is meant to go. */
+function ucTarget() {
+	const it = character.items[0];
+	if (!it) return null;
+	const def = ucG().items[it.name];
+	const mode = ucMode(def);
+	const lvls = UC_CONFIG.TARGET_LEVELS || {};
+	const target = (typeof lvls[it.name] === 'number') ? lvls[it.name] : UC_CONFIG.TARGET_LEVEL;
+	return { item: it.name, level: it.level || 0, target: target, def: def, mode: mode };
+}
+
+/* The roll: slot 0 first, always. For a compound, two more copies of the same
+   name at the same level from anywhere else in the bag. */
+function ucSelect(t) {
+	if (t.mode === 'upgrade') return { level: t.level, slots: [0] };
+	const others = ucSlotsOf(t.item, t.level).filter(function (i) { return i !== 0; });
+	if (others.length < 2) return { level: t.level, slots: null, short: 2 - others.length };
+	return { level: t.level, slots: [0, others[0], others[1]] };
 }
 
 // --------------------------------------------------------------- stopping
@@ -395,9 +415,16 @@ function ucStop(reason, needs) {
 	ucLog('   then run ucResume()', 'orange');
 }
 function ucResume() { UC.stop = null; UC.npcGold = null; ucLog('resumed', '#7FD98A'); }
+/* Idle is not a stop: nothing needs buying, the operator just has not put the
+   next item in slot 0 yet. Said once, not every tick. */
+function ucIdle(why) { if (UC.idleNote !== why) { UC.idleNote = why; ucLog(why, '#8b98ab'); } }
 function ucStatus() {
 	ucLog('dryRun=' + UC_CONFIG.DRY_RUN + ' stopped=' + (UC.stop ? UC.stop.reason : 'no') + ' rolls=' + UC.history.length);
-	for (const t of UC_CONFIG.TARGETS) ucPrintPlan(ucPlan(t.item, t.level));
+	const t = ucTarget();
+	if (!t) { ucLog('slot 0 is empty - put the item to work on there', 'orange'); return; }
+	if (!t.mode) { ucLog(t.item + ' in slot 0 is neither upgradeable nor compoundable', 'red'); return; }
+	ucLog('slot 0: ' + t.item + ' +' + t.level + ' -> target +' + t.target + ' (' + t.mode + ')');
+	ucPrintPlan(ucPlan(t.item, t.target));
 }
 
 async function ucAcquire(name, how, cost) {
@@ -423,17 +450,18 @@ async function ucTick() {
 	if (typeof character === 'undefined' || character.rip) return;
 	UC.busy = true;
 	try {
-		await ucRefreshPrices(false);
-		for (const t of UC_CONFIG.TARGETS) {
-			const plan = ucPlan(t.item, t.level);
+		const t = ucTarget();
+		if (!t) { ucIdle('slot 0 is empty - waiting for an item'); return; }
+		if (!t.mode) { ucIdle(t.item + ' in slot 0 is neither upgradeable nor compoundable - waiting'); return; }
+		if (t.level >= t.target) { ucIdle(t.item + ' +' + t.level + ' in slot 0 is at target +' + t.target + ' - done, waiting'); return; }
+		UC.idleNote = null;
+		{
+			await ucRefreshPrices(false);
+			const plan = ucPlan(t.item, t.target);
 			if (plan.error) { ucStop(plan.error, []); return; }
-			const front = ucFrontier(t.item, plan.mode, t.level);
-			if (!front) {
-				const have = [];
-				for (let L = 0; L < t.level; L++) { const n = ucSlotsOf(t.item, L).length; if (n) have.push(n + 'x +' + L); }
-				const need = plan.mode === 'compound' ? '3 copies of ' + t.item + ' at one level' : '1 ' + t.item + ' below +' + t.level;
-				if (ucSlotsOf(t.item, t.level).length) { ucLog(t.item + ' +' + t.level + ' is DONE', '#7FD98A'); continue; }
-				ucStop('need ' + need + ' in inventory (have: ' + (have.join(', ') || 'none') + ')', [t.item + '+0']);
+			const front = ucSelect(t);
+			if (!front.slots) {
+				ucStop('compound needs ' + front.short + ' more ' + t.item + ' +' + t.level + ' in the bag to go with slot 0', [t.item + '+' + t.level + ' x' + front.short]);
 				return;
 			}
 			const step = plan.steps[front.level];
@@ -495,6 +523,6 @@ async function ucTick() {
 	if (typeof character === 'undefined') { ucLog('no character - load this in a CODE slot', 'red'); return; }
 	const missing = ['upgrade', 'compound', 'buy', 'quantity', 'locate_item'].filter(function (f) { return typeof window[f] !== 'function'; });
 	if (missing.length) ucLog('helpers not in scope: ' + missing.join(', ') + ' - this file expects the game CODE context', 'red');
-	ucLog('UpgradeCompound v2 loaded. DRY_RUN=' + UC_CONFIG.DRY_RUN + '. ucStatus() prints the plan; ucResume() clears a stop.', '#FFD700');
+	ucLog('UpgradeCompound v3 loaded. Slot 0 is the item. DRY_RUN=' + UC_CONFIG.DRY_RUN + '. ucStatus() prints the plan; ucResume() clears a stop.', '#FFD700');
 	setInterval(ucTick, UC_CONFIG.TICK_MS);
 })();
