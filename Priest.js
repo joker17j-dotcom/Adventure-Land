@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v34 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-29. The followers could strand themselves permanently, and the function meant to prevent it was the thing preventing the cure. MEASURED on MageofOz, wedged at (-336,1007) on main: 995 units from his own destination, 953 from Dexon, ZERO position change across 55 consecutive one-second samples, smart {moving:true, searching:true, found:false, plot:0}, travelState.inFlight FALSE, failures 1, lastError "still no route after town(): interrupted", and the last travel attempt started 2,567 seconds - 43 minutes - earlier. Dexon appeared in parent.entities on 0 of those 55 samples. Three defects that only bite together. (1) holdCohesion() returns true whenever the worst gap exceeds leash 150, and mainLoop reads a true as 'movement handled', so handleReturnHome() - the only path that pathfinds, counts failures and arms travelWatchdog - was never reached. The further out he drifted, the more certain it became that the one function able to fetch him would not run. (2) Its move is xmove, a straight line, which over that distance stops at the first wall AND interrupts any smart_move already in flight; lastError is that interruption, recorded in the file. So cohesion was not merely failing to help, it was cancelling the rescue. (3) It read member positions from parent.entities, which holds only what is ON SCREEN - so the member we have drifted away from is exactly the one that disappears from it, and the leader left the centroid at the moment cohesion existed to close on him. Both followers were left homing on each other: their worst gap of 480 units was the distance to EACH OTHER, not to Dexon. Fixes: positions now fall back to parent.party, which carries x/y/map for every member regardless of visibility (verified present live); past cohesion.handoff (400) the function stops nudging and calls handleReturnHome() so the pathfinder owns the trip; and unstickWatchdog() clears a wedged smart_move. That last one is not covered by travelWatchdog, which only orphans an attempt while inFlight is true - it was false here - and it matters because handleReturnHome() itself returns early while smart.moving is true, so the wedge blocked its own repair. Not diagnosed from reading: a one-second sampler over 55-60 samples on both followers is what separated 'cohesion never fires' (false - it fired on every sample) from 'cohesion fires and the move does not land' (true).) v33 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Priest changes. (1) holdCohesion() closes on the party whenever the worst distance to another member exceeds leash 150, which leaves margin inside his 197 heal range. It moves toward the CENTROID of the others rather than at the leader, so he settles between the two he has to reach instead of hugging one and losing the other, and it runs ahead of kiting and farming in mainLoop because being in heal range outranks both. Leader-exempt, so Dexon still drives the spot. (2) findBestTarget now takes Dexon's target first via focusFireTarget(), refusing it when out of range or dead. (3) The whole-field weight in avoidMobs subtracts kitePathPenalty instead of the v59 veto. Note scare() is still inert - no jacko anywhere on the account, and it drops only from Halloween candy0 at weight 1 of ~6.5 - so cohesion and focus fire are carrying this round.) v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v35 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-30. Change: BOSS EVENTS. The operator's rule, given 2026-09-30: cooperative bosses only, fought from maximum range, never expecting the kill. Cooperative is the game's own G.monsters[x].cooperative - credit shared by damage dealt - so a trip pays even when somebody else lands the finishing blow, and it is the only class of boss where chipping from range is a strategy rather than a wasted evening. An unknown monster is NOT treated as cooperative. THE OLD BEHAVIOUR WAS NOT A POLICY AT ALL, in three ways. First, shouldHandleEvents() asked only "is anything in getDynamicEvents() live", and EVENT_LOCATIONS lists dragold, mrgreen and mrpumpkin UNCONDITIONALLY - so the party dropped the farm for any of the three the moment it spawned, whatever the odds, with no cap and nothing to bring it home. Measured the same day against this party (Dexon 75, FatherToken 69, MageofOz 70, single-target party DPS about 2,400): mrgreen is 36M hp behind resistance 900, which is 6.6 HOURS, and its attack range is 620 against our 158/197/201 - there is no standing position it cannot reach. dragold is 4.1h, mrpumpkin 4.1h, franky 120M hp and 13.8h at range 948. Second, all three files ran the SAME most-damaged-event scan independently, so two live bosses could send the ranger to one and the priest to the other; the tie-break is now by name, the leader broadcasts its pick, and a follower believes that call for leaderTrustMs before deciding for itself. Third, crabxx was in the ranger's getDynamicEvents alone (v55), so he joined it while the other two kept farming - the boss side of a 960,000 hp fight with no healer, and its 11,706 per hit takes MageofOz down in 1.6 seconds. MAX RANGE IS TWO POSTURES and bossHoldDistance computes both from the live entity: outside the boss's own reach when ours is longer, which costs nothing (crabxx range 45, icegolem 64), and otherwise the far edge of ours, which is merely the best available (franky 948, mrgreen 620). JOINING is measured from adventureland_mongodb node/server.js socket.on('join'), not inferred: exactly four events teleport - goobrawl, crabxx to main (-1000,1700), franky to level2w (-300,150), icegolem to winterland (820,425) - and every other boss must be walked to. The same handler refuses with no_merchants (so never Meltymerch), cant_when_sick (hopsickness, i.e. just after a shard hop, which is now reported rather than retried blindly), cant_in_bank and cant_join for any name not listed, and it ignores the emit when we are already within 200 units - which is why repeating it is free. RETURN was left to my judgement, and it is: boss dead, event expired, maxDeaths 2, or a maxTripMs cap of 20 minutes, whichever comes first, then handleReturnHome(). A trip we GAVE UP on cools that event down for 30 minutes; one that simply ended does not, because those are different facts and cooling the second would refuse a boss the party could have finished. COMMANDS, asked for by name: bossJoin('franky') goes now whatever the gate thinks, clears that cooldown, and broadcasts to the other two from ANY character rather than only the leader - "go now" has to mean the party, not whichever console happened to be open; bossHome() abandons and returns; bossStatus() prints what is live, the gate's verdict on each with its reason, and where we would stand against each. The trip is persisted in CODE storage so a redeploy mid-event cannot hand the party another fresh 20 minutes at a boss it had already abandoned. handleSpecificEvent is now unreachable and marked for deletion next time the file is touched, the way Merchant.js retired heldScanMs. Verified with a 36-case node harness over the extracted block rather than by reading it: the gate, the name tie-break, both hold postures at all three ranges, join versus walk, hopsickness, the death and time caps, cooldown only on giving up, every command, a forced pick that is not live, follower precedence, and the persisted trip. CORRECTION to the v34 entry that follows: it says NOT DEPLOYED as of 2026-09-29, and that is stale - measured 2026-09-30 in FatherToken's live CODE context, typeof unstickWatchdog is "function" and CONFIG.party.cohesion.handoff is 400, so v34 IS deployed.) v34 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-29. The followers could strand themselves permanently, and the function meant to prevent it was the thing preventing the cure. MEASURED on MageofOz, wedged at (-336,1007) on main: 995 units from his own destination, 953 from Dexon, ZERO position change across 55 consecutive one-second samples, smart {moving:true, searching:true, found:false, plot:0}, travelState.inFlight FALSE, failures 1, lastError "still no route after town(): interrupted", and the last travel attempt started 2,567 seconds - 43 minutes - earlier. Dexon appeared in parent.entities on 0 of those 55 samples. Three defects that only bite together. (1) holdCohesion() returns true whenever the worst gap exceeds leash 150, and mainLoop reads a true as 'movement handled', so handleReturnHome() - the only path that pathfinds, counts failures and arms travelWatchdog - was never reached. The further out he drifted, the more certain it became that the one function able to fetch him would not run. (2) Its move is xmove, a straight line, which over that distance stops at the first wall AND interrupts any smart_move already in flight; lastError is that interruption, recorded in the file. So cohesion was not merely failing to help, it was cancelling the rescue. (3) It read member positions from parent.entities, which holds only what is ON SCREEN - so the member we have drifted away from is exactly the one that disappears from it, and the leader left the centroid at the moment cohesion existed to close on him. Both followers were left homing on each other: their worst gap of 480 units was the distance to EACH OTHER, not to Dexon. Fixes: positions now fall back to parent.party, which carries x/y/map for every member regardless of visibility (verified present live); past cohesion.handoff (400) the function stops nudging and calls handleReturnHome() so the pathfinder owns the trip; and unstickWatchdog() clears a wedged smart_move. That last one is not covered by travelWatchdog, which only orphans an attempt while inFlight is true - it was false here - and it matters because handleReturnHome() itself returns early while smart.moving is true, so the wedge blocked its own repair. Not diagnosed from reading: a one-second sampler over 55-60 samples on both followers is what separated 'cohesion never fires' (false - it fired on every sample) from 'cohesion fires and the move does not land' (true).) v33 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Priest changes. (1) holdCohesion() closes on the party whenever the worst distance to another member exceeds leash 150, which leaves margin inside his 197 heal range. It moves toward the CENTROID of the others rather than at the leader, so he settles between the two he has to reach instead of hugging one and losing the other, and it runs ahead of kiting and farming in mainLoop because being in heal range outranks both. Leader-exempt, so Dexon still drives the spot. (2) findBestTarget now takes Dexon's target first via focusFireTarget(), refusing it when out of range or dead. (3) The whole-field weight in avoidMobs subtracts kitePathPenalty instead of the v59 veto. Note scare() is still inert - no jacko anywhere on the account, and it drops only from Halloween candy0 at weight 1 of ~6.5 - so cohesion and focus fire are carrying this round.) v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
 // ============================================================================
 // ============================================================================
 // FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
@@ -310,6 +310,30 @@ const CONFIG = {
 		   he could not heal at all. 150 leaves margin inside 197. */
 		cohesion: { enabled: true, leash: 150, handoff: 400, stepMax: 120, stuckMs: 20000, debug: false },
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken']
+	},
+
+	/* BOSS EVENTS - the operator's rule, 2026-09-30: cooperative bosses only,
+	   fought from maximum range, never expecting the kill. -> bossTick */
+	bossEvents: {
+		enabled: true,
+		// G.monsters[x].cooperative - the game's own "credit is shared by damage
+		// dealt" flag, and the only class of boss where chipping from range is a
+		// strategy rather than a waste. An unknown monster is NOT cooperative.
+		cooperativeOnly: true,
+		// abtesting is team PvP with a 120s join window, not a boss.
+		exclude: new Set(['abtesting']),
+		// Names admitted even when the flag says no. Empty by design.
+		include: [],
+		holdFraction: 0.92,     // of OUR range, when we cannot get outside theirs
+		rangeMargin: 25,        // beyond THEIR range, when our reach allows it
+		holdTolerance: 25,      // don't re-step for less than this
+		maxTripMs: 20 * 60 * 1000,
+		maxDeaths: 2,
+		// After giving up on an event, leave it alone this long. Without it the
+		// party walks straight back out to the boss that just outlasted it.
+		cooldownMs: 30 * 60 * 1000,
+		leaderName: 'Dexon',
+		leaderTrustMs: 20000,
 	},
 
 	muling: {
@@ -1207,10 +1231,320 @@ async function potionLoop() {
 // ============================================================================
 // MOVEMENT FUNCTIONS
 // ============================================================================
+// ============================================================================
+// BOSS EVENTS - go, contribute from maximum range, come home.
+// Cooperative bosses only, fought from max range, never expecting the kill.
+// The reasoning and the measurements behind every number are in this version's
+// entry in the header above; what follows is what the code needs.
+//
+// MEASURED 2026-09-30 (Dexon 75 / FatherToken 69 / MageofOz 70, party
+// single-target DPS ~2,400, our ranges 158/197/201). hp, our time to kill,
+// THEIR attack range:
+//   crabxx    960k  462s   45   | icegolem   16M  5.2h   64
+//   dragold    25M  4.1h  320   | mrpumpkin  36M  4.1h  520
+//   mrgreen    36M  6.6h  620   | franky    120M 13.8h  948
+// A boss whose range is under ours can be shot for free; one above it hits us
+// wherever we stand, and we will never finish it. bossHoldDistance computes
+// both postures, and maxTripMs/maxDeaths bound the second kind.
+//
+// JOINING, from adventureland_mongodb node/server.js socket.on('join'):
+// exactly these four teleport, to these fixed spots, and everything else is
+// walked to. That handler also refuses with no_merchants, cant_when_sick
+// (hopsickness), cant_in_bank and cant_join - so the emit is NOT a general "go
+// to the event" call. It ignores the emit within 200 units of the destination,
+// which is why repeating it is free.
+// ============================================================================
+const BOSS_JOIN_SPOTS = {
+	goobrawl: { map: 'goobrawl', x: null, y: null },
+	crabxx: { map: 'main', x: -1000, y: 1700 },
+	franky: { map: 'level2w', x: -300, y: 150 },
+	icegolem: { map: 'winterland', x: 820, y: 425 },
+};
+
+const BOSS_KEY = 'boss_trip';
+const bossState = {
+	trip: null,         // { name, startedAt, deaths, wasRip, src }
+	cooldown: {},       // name -> ms until we will consider it again
+	fromLeader: null,   // { name, at } - the leader's current call
+	forced: null,       // { name, at } - bossJoin() from the console
+	lastNote: null,
+};
+/* The trip survives a reload, which matters because a redeploy mid-event would
+   otherwise restart the clock and hand the party another full 20 minutes at a
+   boss it had already given up on. */
+try {
+	const bossSaved = get(BOSS_KEY);
+	if (bossSaved && typeof bossSaved === 'object') {
+		bossState.trip = bossSaved.trip || null;
+		bossState.cooldown = bossSaved.cooldown || {};
+	}
+} catch (e) { }
+function bossSave() {
+	try { set(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown }); }
+	catch (e) { bossLog('could not persist the trip - a reload will restart its clock', 'orange'); }
+}
+function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch (e) { } console.log('[boss] ' + m); }
+/* Said once per distinct message: approach runs every tick and would otherwise
+   be the loudest thing in the log. */
+function bossNote(m) { if (bossState.lastNote !== m) { bossState.lastNote = m; bossLog(m, '#8b98ab'); } }
+function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName; }
+
+function bossCooperative(name) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+	const m = g && g.monsters && g.monsters[name];
+	return !!(m && m.cooperative);
+}
+
+function bossLiveNames() {
+	const S = (typeof parent !== 'undefined' && parent.S) || {};
+	const out = [];
+	for (const k in S) {
+		const v = S[k];
+		if (v && typeof v === 'object' && v.live) out.push(k);
+	}
+	return out;
+}
+
+/* The gate. Returns its reason rather than logging it, so bossStatus() can
+   print the whole picture in one pass. */
+function bossEligible(name) {
+	const cfg = CONFIG.bossEvents;
+	if (!cfg.enabled) return { ok: false, why: 'bossEvents.enabled is false' };
+	if (cfg.exclude.has(name)) return { ok: false, why: 'excluded' };
+	const byHand = cfg.include.indexOf(name) >= 0;
+	if (cfg.cooperativeOnly && !byHand && !bossCooperative(name)) return { ok: false, why: 'not cooperative' };
+	const until = bossState.cooldown[name] || 0;
+	if (until > Date.now()) return { ok: false, why: 'gave up on it ' + Math.round((until - Date.now()) / 60000) + ' min ago' };
+	return { ok: true, why: byHand ? 'included by hand' : 'cooperative' };
+}
+
+/* Which boss: an operator command first, then the leader's call, then our own
+   reading. The own-reading tie-break is by NAME, not by iteration order,
+   because three characters deciding independently have to land on the same
+   answer or the party splits between two live bosses. */
+function bossPick() {
+	const cfg = CONFIG.bossEvents;
+	if (bossState.forced && bossState.forced.name) {
+		const f = bossState.forced.name;
+		const d = (parent.S || {})[f];
+		if (d && d.live) return { name: f, src: 'command' };
+		bossLog('dropping the forced pick ' + f + ' - it is not live', 'orange');
+		bossState.forced = null;
+	}
+	if (!bossIsLeader() && bossState.fromLeader && bossState.fromLeader.name
+		&& (Date.now() - bossState.fromLeader.at) < cfg.leaderTrustMs) {
+		const n = bossState.fromLeader.name;
+		const d = (parent.S || {})[n];
+		if (d && d.live) return { name: n, src: 'leader' };
+	}
+	let best = null;
+	for (const n of bossLiveNames()) {
+		if (!bossEligible(n).ok) continue;
+		const d = parent.S[n];
+		const ratio = (d && d.max_hp) ? (d.hp / d.max_hp) : 1;
+		if (!best || ratio < best.ratio - 1e-9 || (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name)) {
+			best = { name: n, ratio: ratio };
+		}
+	}
+	return best ? { name: best.name, src: 'own' } : null;
+}
+
+/* Outside their reach when ours is longer - which costs nothing - and otherwise
+   the far edge of ours. Derived per boss from the live entity, never a
+   constant: the difference between crabxx at 45 and franky at 948 is the whole
+   decision. */
+function bossHoldDistance(mon) {
+	const cfg = CONFIG.bossEvents;
+	const mine = Math.max(20, character.range || 100);
+	const theirs = (mon && mon.range) || 0;
+	let hold = Math.min(mine * cfg.holdFraction, mine - 5);
+	const outside = theirs + cfg.rangeMargin;
+	if (outside < mine && hold < outside) hold = outside;
+	return Math.max(10, hold);
+}
+
+/* Stand at that distance, whether we are currently too close or too far. */
+async function bossPosture(mon) {
+	const hold = bossHoldDistance(mon);
+	const dx = mon.x - character.x, dy = mon.y - character.y;
+	const dist = Math.hypot(dx, dy) || 1;
+	if (Math.abs(dist - hold) <= CONFIG.bossEvents.holdTolerance) return;
+	if (smart.moving) return;
+	const f = hold / dist;
+	await xmove(mon.x - dx * f, mon.y - dy * f);
+}
+
+function bossWalkTarget(name) {
+	const d = (parent.S || {})[name];
+	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
+	for (const e of EVENT_LOCATIONS) if (e.name === name) return { map: e.map, x: e.x, y: e.y };
+	const spot = BOSS_JOIN_SPOTS[name];
+	if (spot && typeof spot.x === 'number') return { map: spot.map, x: spot.x, y: spot.y };
+	return null;
+}
+
+async function bossApproach(name) {
+	const mon = get_nearest_monster({ type: name });
+	if (mon) { await bossPosture(mon); return; }
+	if (BOSS_JOIN_SPOTS[name]) {
+		// hopsickness is the one refusal worth naming: it is temporary, and the
+		// alternative reading - "join is broken" - would send us walking to a
+		// destination the teleport reaches for free.
+		if (character.s && character.s.hopsickness) { bossNote('hopsick - cannot join ' + name + ' yet'); return; }
+		bossNote('joining ' + name);
+		try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
+		return;
+	}
+	if (smart.moving) return;
+	const where = bossWalkTarget(name);
+	if (!where) { bossNote('no position known for ' + name + ' - cannot travel'); return; }
+	bossNote('walking to ' + name + ' on ' + where.map);
+	smart_move({ map: where.map, x: where.x, y: where.y });
+}
+
+/* forced marks an operator command, which outranks the gate on every character
+   that hears it. An unforced call is the leader's ordinary pick, and only the
+   leader's is believed. */
+function bossBroadcast(name, forced) {
+	const members = (CONFIG.party && CONFIG.party.groupMembers) || [];
+	for (const m of members) {
+		if (m === character.name || m === 'Meltymerch') continue;   // join refuses merchants outright
+		try { plSend(m, { message: 'boss', name: name, forced: !!forced }); } catch (e) { }
+	}
+}
+
+/* Heard from another character. Lives here rather than in on_cm so all three
+   files carry one copy of the rule. */
+function bossOnCall(from, data) {
+	const members = (CONFIG.party && CONFIG.party.groupMembers) || [];
+	if (members.indexOf(from) < 0) return;
+	if (data.forced) {
+		if (data.name) {
+			bossState.forced = { name: data.name, at: Date.now() };
+			bossState.cooldown[data.name] = 0;
+			bossSave();
+			bossLog(from + ' called everyone to ' + data.name, '#7FD98A');
+		} else {
+			bossState.forced = null;
+			if (bossState.trip) bossEnd(from + ' called it off');
+			else bossLog(from + ' called it off');
+		}
+		return;
+	}
+	if (from !== CONFIG.bossEvents.leaderName) return;
+	bossState.fromLeader = { name: data.name || null, at: Date.now() };
+	if (!data.name && bossState.trip) bossEnd('the leader moved on');
+}
+
+/* Terminal for one trip. The cooldown is set ONLY when we gave up rather than
+   when the event ended on its own - otherwise the party turns round and walks
+   back out to the boss that just outlasted it, which is the same loop under a
+   different name. */
+function bossEnd(why) {
+	const t = bossState.trip;
+	if (!t) return;
+	const mins = Math.round((Date.now() - t.startedAt) / 60000);
+	const gaveUp = why.indexOf('death') >= 0 || why.indexOf('cap') >= 0 || why.indexOf('by hand') >= 0;
+	if (gaveUp) bossState.cooldown[t.name] = Date.now() + CONFIG.bossEvents.cooldownMs;
+	bossState.trip = null;
+	bossState.forced = null;
+	bossState.lastNote = null;
+	bossSave();
+	bossLog('leaving ' + t.name + ' after ' + mins + ' min (' + why + ') - back to farming'
+		+ (gaveUp ? ', and leaving it alone for ' + Math.round(CONFIG.bossEvents.cooldownMs / 60000) + ' min' : ''), 'orange');
+	if (bossIsLeader()) bossBroadcast(null);
+	try { if (typeof handleReturnHome === 'function') handleReturnHome(); } catch (e) { }
+}
+
+async function bossTick() {
+	const cfg = CONFIG.bossEvents;
+	const t0 = bossState.trip;
+	// Deaths are counted from the rip EDGE, so one corpse is one death however
+	// many ticks it lies there.
+	if (t0) {
+		if (character.rip && !t0.wasRip) {
+			t0.deaths++; t0.wasRip = true; bossSave();
+			bossLog('died at ' + t0.name + ' (' + t0.deaths + ' of ' + cfg.maxDeaths + ')', 'red');
+		} else if (!character.rip && t0.wasRip) {
+			t0.wasRip = false; bossSave();
+		}
+	}
+	const pick = bossPick();
+	if (!pick) { if (bossState.trip) bossEnd('nothing eligible is live'); return false; }
+	if (!bossState.trip || bossState.trip.name !== pick.name) {
+		if (bossState.trip) bossEnd('switching to ' + pick.name);
+		bossState.trip = { name: pick.name, startedAt: Date.now(), deaths: 0, wasRip: !!character.rip, src: pick.src };
+		bossSave();
+		bossLog('going to ' + pick.name + ' (' + pick.src + ', '
+			+ (BOSS_JOIN_SPOTS[pick.name] ? 'joinable' : 'on foot') + ')');
+		if (bossIsLeader()) bossBroadcast(pick.name);
+	}
+	const t = bossState.trip;
+	if (t.deaths >= cfg.maxDeaths) { bossEnd(t.deaths + ' deaths'); return false; }
+	if (Date.now() - t.startedAt > cfg.maxTripMs) { bossEnd('trip cap of ' + Math.round(cfg.maxTripMs / 60000) + ' min'); return false; }
+	if (character.rip) return true;   // the respawn path owns us until we are up
+	await bossApproach(t.name);
+	return true;
+}
+
+/* ---- operator commands ---------------------------------------------------
+   bossJoin('franky') goes now, whatever the gate thinks, and clears any
+   cooldown on that name. From Dexon it takes the party; from anyone else it
+   takes that character. bossHome() abandons the trip. bossStatus() prints what
+   is live, what the gate says about each, and where we would stand. */
+function bossJoin(name) {
+	if (!name) {
+		const live = bossLiveNames();
+		bossLog('bossJoin("<name>") - live now: ' + (live.length ? live.join(', ') : 'nothing')
+			+ ' | joinable: ' + Object.keys(BOSS_JOIN_SPOTS).join(', '));
+		return;
+	}
+	bossState.forced = { name: name, at: Date.now() };
+	bossState.cooldown[name] = 0;
+	bossSave();
+	bossLog('forced to ' + name + ' by hand', '#7FD98A');
+	// From ANY character, not just the leader: "go now" has to mean the party,
+	// not whichever console the operator happened to have open.
+	bossBroadcast(name, true);
+}
+function bossHome() {
+	bossState.forced = null;
+	bossBroadcast(null, true);
+	if (bossState.trip) bossEnd('bossHome() by hand');
+	else bossLog('not on a boss trip');
+}
+function bossStatus() {
+	const t = bossState.trip;
+	bossLog('leader=' + CONFIG.bossEvents.leaderName + ' me=' + character.name
+		+ ' trip=' + (t ? t.name + ' ' + Math.round((Date.now() - t.startedAt) / 60000) + 'min deaths=' + t.deaths + ' via ' + t.src : 'none'));
+	const live = bossLiveNames();
+	if (!live.length) bossLog('nothing live');
+	for (const n of live) {
+		const g = bossEligible(n);
+		const d = parent.S[n];
+		const mon = get_nearest_monster({ type: n });
+		const hold = mon ? Math.round(bossHoldDistance(mon)) : null;
+		bossLog('  ' + n + ': ' + (g.ok ? 'ELIGIBLE' : 'skip') + ' (' + g.why + ')'
+			+ (d && d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
+			+ (BOSS_JOIN_SPOTS[n] ? ' joinable' : ' on foot')
+			+ (hold != null ? ' hold at ' + hold + ' (my range ' + character.range + ', its ' + (mon.range || '?') + ')' : ''),
+			g.ok ? '#7FD98A' : '#8b98ab');
+	}
+	for (const n in bossState.cooldown) {
+		const left = bossState.cooldown[n] - Date.now();
+		if (left > 0) bossLog('  cooling: ' + n + ' for ' + Math.round(left / 60000) + ' min', '#8b98ab');
+	}
+}
+
+
 function shouldHandleEvents() {
 	const holidaySpirit = parent?.S?.holidayseason && !character?.s?.holidayspirit;
-	const hasHandleableEvent = getDynamicEvents().some(e => parent?.S?.[e.name]?.live);
-	return holidaySpirit || hasHandleableEvent;
+	/* The gate is the boss policy now, not "is anything live". The old test
+	   went through getDynamicEvents(), whose EVENT_LOCATIONS lists dragold,
+	   mrgreen and mrpumpkin UNCONDITIONALLY - so the farm was dropped for any
+	   of the three the moment it spawned, with no question of whether the party
+	   could contribute, and nothing to bring it home. */
+	return holidaySpirit || !!bossPick() || !!bossState.trip;
 }
 
 function handleEvents() {
@@ -1223,25 +1557,21 @@ function handleEvents() {
 		return;
 	}
 
-	let target = null, bestRatio = Infinity;
-	for (const e of getDynamicEvents()) {
-		const d = parent.S[e.name];
-		if (!d?.live) continue;
-		const r = d.hp / d.max_hp;
-		if (r < bestRatio) { bestRatio = r; target = e; }
-	}
-	if (!target) return;
-
-	if (target.join === true && character.map !== target.map) {
-		parent.socket.emit('join', { name: target.name });
-		return;
-	}
-
-	if (!smart.moving) {
-		handleSpecificEvent(target.name, target.map, target.x, target.y);
-	}
+	/* Everything below here used to be an independent decision per character:
+	   the same "most damaged live event" scan ran in all three files, so two
+	   live bosses could send the ranger to one and the priest to the other, and
+	   crabxx was in the ranger's list alone - he joined it while the other two
+	   kept farming, boss-side with no healer. bossTick owns the decision now,
+	   the leader broadcasts it, and the gate decides whether it is worth taking
+	   at all. -> BOSS EVENTS */
+	bossTick().catch(e => bossLog('tick threw: ' + (e && e.message || e), 'red'));
 }
 
+/* DEAD as of this version - bossPosture() replaced the boss branch and the
+   non-boss branch has no caller left, since only cooperative bosses and the
+   holiday tree reach handleEvents() now. Kept for one version so a diff is
+   readable; delete it next time this file is touched, in the same way
+   Merchant.js retired heldScanMs. */
 async function handleSpecificEvent(eventType, mapName, x, y) {
 	if (!parent?.S?.[eventType]?.live) return;
 
@@ -2529,6 +2859,7 @@ state.skinReady = true;
 
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
+	if (data.message === 'boss') { bossOnCall(name, data); return; }
 	if (name == "Dexon") {
 		if (data.message === 'farm_spot') {
 			const changed = home !== data.home || mobMap !== data.mobMap;
