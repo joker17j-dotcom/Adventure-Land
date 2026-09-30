@@ -28,6 +28,71 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v69
+
+A reroute has to be to someone else.
+
+The operator reported the merchant continually rerouting to the same merchant for
+arbitrage, when it should have stopped and banked. Measured on the live character
+2026-09-29: an `ascale` x36 trade had been in `at_sell` for 28.8 minutes with
+`attempts` reading 0.
+
+The loop, exactly:
+
+1. `arbApproach('Mercantor', hint)` walks to the buyer's last known spot. The
+   merchant was standing on it - main (538, 1126) against a hint of (538.03,
+   1125.88) - and `pEntity('Mercantor')` returned null. The stand was not there.
+2. `arbFindBuyerFor` was asked for another exit and returned **Mercantor**, from a
+   stand row the bridge was still serving at 120s old, comfortably inside
+   `sellMaxAgeSec`. (That row carried `x: 0, y: 0`, so it was not even a better
+   position - the placeholder the feed emits when it has none.)
+3. The reroute branch logged "buyer changed - rerouting to Mercantor", set
+   `t.attempts = 0`, and returned.
+4. Back to 1, every tick, indefinitely. The three-strike exit two lines below
+   could never be reached, so the goods were never banked and the stranding
+   breaker never counted anything.
+
+Four changes, and the first is the fix:
+
+- **The attempt is counted always, and before the search.** A reroute no longer
+  resets the counter. `arbAdvance` resets it in exactly one place now - when the
+  buy leg completes and the sell leg begins, which is a genuinely new leg.
+- **`t.tried` remembers every (shard|buyer|slot) this trade has failed against**,
+  and `arbFindBuyerFor` skips them. That is what makes a reroute a reroute rather
+  than a retry wearing a different log line. It is a third question, distinct from
+  `arbIsUsed` ("did we consume this order") and `arbFailBlocked` ("do we keep
+  losing against this counterparty").
+- **`arbFindBuyerFor` now consults `arbFailBlocked` too.** The planner has always
+  refused shelved counterparties; this search never did, so a counterparty the
+  planner would not touch was still offered as the way out. `arbNoteFailure` is
+  also called at the moment the approach fails rather than only when the trade
+  reaches a terminal state - which, in this bug, it never did.
+- **Two bounds over the top.** `maxSellAttempts` (4) caps the attempts for one
+  trade across every buyer, and `sellDeadlineMs` (15 min) bounds it in wall-clock
+  time from `t.sellSince`, because an attempt counter only bounds the paths that
+  increment it. Either one ends in `stranded`, which banks the goods and closes
+  the books.
+
+Two smaller defects found while reading the same path:
+
+- A reroute kept the **previous** buyer's coordinates, so the approach to the new
+  buyer would walk to the old one's spot and fail there. The candidate now carries
+  `map/x/y`, and a row with no usable position clears the hint instead, which fails
+  immediately rather than after a walk.
+- An order for 2 was a valid exit for 36. `trade_sell` is one call for the whole
+  quantity, so a short order is a failed attempt, not a partial sale. Orders
+  smaller than the holding are skipped and counted in the log.
+
+Verified with a node harness (17 cases) driving `arbAdvance` against the measured
+rows and an absent Mercantor: one tick counts the attempt, records the dead end,
+shelves the counterparty and goes to `stranded`; the next banks the goods. A
+genuine alternative is still taken, with the counter carried rather than reset and
+its position carried too; a run of absent buyers terminates at four; twenty minutes
+held strands on the deadline alone; a buyer who is actually there still sells; and
+an order for 2 is not offered for 36. The harness also caught an undeclared
+`tooSmall` counter, which in the CODE context would have thrown inside the one
+function the trade depends on for its exit.
+
 ## v68
 
 The relay cursor survives a hop, so ten minutes of answered requests stop coming
