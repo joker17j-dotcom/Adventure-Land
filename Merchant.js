@@ -626,6 +626,10 @@ const CONFIG = {
 			'mpxamulet', 'sbelt', 'rabbitsfoot', 'cearring', 'zapper',
 			// mage
 			'gstaff', 'mageshood', 'jacko', 'cring',
+			// Cake
+			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
+			// other
+			'leather', 'mysterybox', 'weaponbox', 'armorbox',
 		],
 
 		/* The operator's two stops, and nothing else. Both are tested before
