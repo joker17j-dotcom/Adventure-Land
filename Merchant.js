@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v67
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v68
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -75,7 +75,7 @@ const PARTY_LINK = {
 
 let plUp = false;           // is the bridge reachable right now
 let plProbed = 0;           // when we last found out
-let plCursor = 0;           // highest relay seq collected
+let plCursor = 0;           // highest relay seq collected - PERSISTED, see PL_CURSOR_KEY
 let plSeq = 0;              // our own outgoing counter
 const plSeen = new Map();   // message id -> when it may be forgotten
 
@@ -175,24 +175,50 @@ async function plPoll() {
 		return;
 	}
 	try {
-		const r = await plFetch(`/msg?to=${encodeURIComponent(plName())}&since=${plCursor}`);
-		plCursor = r.cursor || plCursor;
+		const since = plCursor;
+		const r = await plFetch(`/msg?to=${encodeURIComponent(plName())}&since=${since}`);
+		/* The one failure a remembered cursor can introduce: the bridge restarts,
+		   its seq begins again at 0, and a cursor from the old numbering sits above
+		   every new message - starving the merchant in silence. Its own cursor
+		   going backwards is the tell, and re-reading the backlog once is the
+		   cheap, safe answer. */
+		if (typeof r.cursor === 'number' && r.cursor < since) {
+			plLog('bridge seq went backwards (' + since + ' -> ' + r.cursor + ') - it restarted; reading from 0', 'orange');
+			plCursor = 0;
+			plSaveCursor(0);
+			return;
+		}
+		let high = since;
 		for (const m of (r.messages || [])) {
 			// Straight into the script's existing handler, so relayed and in-game
 			// messages take exactly the same path. plFirstTime drops whichever
 			// copy arrives second.
-			// Carry the relay's own timestamp through. The bridge stamps every
-			// message with `ts` from time.time() - epoch SECONDS - while every
-			// clock in this file is Date.now() milliseconds. Convert here, once:
-			// a raw seconds value compared against a ms watermark reads as 1970
-			// and would refuse EVERY request instead of only replayed ones.
-			// Messages that arrived in-game via send_cm have no _plts and need
-			// none - send_cm is live and cannot be replayed. Only the bridge
-			// stores messages, so only the bridge can hand one back twice.
 			const relayed = Object.assign({}, m.payload || {});
-			if (m.ts && !relayed._plts) relayed._plts = Math.round(m.ts * 1000);
+			/* When the message was SENT, from whichever field this bridge actually
+			   stamps. MEASURED 2026-09-29 against the running bridge: a /msg row
+			   carries seq, at, frm, id, payload - `at` is an ISO-8601 string, and
+			   NO row carries `ts`. This read only `ts`, so _plts was never set,
+			   every reqAt fell back to Date.now(), and a ten-minute-old replay
+			   looked newer than the delivery that had already satisfied it. The
+			   watermark below was inert from the day it shipped. Both fields are
+			   read now, seconds and ISO, so a bridge that adds `ts` later also
+			   works. In-game messages have no stamp and need none: send_cm is live
+			   and cannot be replayed - only the bridge stores, so only the bridge
+			   can hand one back twice. */
+			if (!relayed._plts) {
+				if (m.ts) relayed._plts = Math.round(Number(m.ts) * 1000);
+				else if (m.at) { const p = Date.parse(m.at); if (isFinite(p)) relayed._plts = p; }
+			}
 			try { on_cm(m.frm, relayed); } catch (e) { plLog('handler error: ' + e, 'orange'); }
+			if (typeof m.seq === 'number' && m.seq > high) high = m.seq;
 		}
+		/* Advanced only once the batch has been handled, then written straight to
+		   storage. A hop mid-batch therefore re-reads the tail instead of losing
+		   it, and the watermarks absorb the handful it re-reads - the safe
+		   direction. r.cursor can run ahead of the last message here, since the
+		   seq is shared with messages addressed to the other characters. */
+		plCursor = Math.max(high, Number(r.cursor) || 0);
+		if (plCursor !== since) plSaveCursor(plCursor);
 	} catch (e) {
 		plUp = false;
 		plProbed = Date.now();
@@ -204,24 +230,34 @@ function plStatus() {
 	return { bridge: plUp ? 'up' : 'off', cursor: plCursor, deduped: plSeen.size };
 }
 
-/* Per recipient+potion "already served" watermark.
+/* THE HOP REPLAY, and the three things that stop it.
 
-   plCursor and plSeen both live in memory, and change_server reloads the page
-   on every hop, so both reset. The bridge keeps messages for MESSAGE_TTL (10
-   minutes) and serves everything with seq > since, so after a hop the merchant
-   re-reads up to ten minutes of already-satisfied low_potions requests and
-   delivers against each one. Measured 2026-09-25: MageofOz went from 278 to
-   10,563 mpot1 on a single genuine request, and FatherToken reached 11,059.
+   change_server reloads the page on every hop - and the scout rotation hops
+   several times an hour - so every in-memory field resets. The bridge keeps
+   messages for MESSAGE_TTL (10 minutes) and serves everything with seq > since,
+   so a cursor that resets to 0 re-reads ten minutes of already-satisfied
+   requests and acts on each one. Measured 2026-09-25: MageofOz went from 278
+   to 10,563 mpot1 on a single genuine request, and FatherToken reached 11,059.
+   Measured 2026-09-29: 15 `location` rows in the backlog, every one carrying
+   needsMluck: true from before the buff was cast, while Dexon's mluck - from
+   Meltymerch - still had 52 minutes left on it.
 
-   This is the durable half of the fix: it lives in CODE storage, so it is the
-   one piece of state that a hop cannot erase. A request is refused only when
-   THAT character has already been served THAT potion since the request was
-   made - which is, by definition, a request that is already satisfied. It
-   never discards an unmet need, so it cannot hide one from arbOldestJobAgeMs
-   and the jobPreemptMs safeguard the way a blanket staleness gate would.
+   1. plCursor is PERSISTED (v68). The replay does not happen in the first
+      place: after a hop the merchant resumes from the seq it had reached.
+   2. The delivery watermark below, per recipient AND potion. A request is
+      refused only when THAT character has already been served THAT potion
+      since the request was made - by definition a request already satisfied.
+      It never discards an unmet need, so it cannot hide one from
+      arbOldestJobAgeMs and the jobPreemptMs safeguard the way a blanket
+      staleness gate would. Keyed per potion on purpose: an mp delivery must
+      not suppress an hp request made a second earlier.
+   3. The mluck watermark, same shape, added in v68 - deliveries had a guard
+      and buffs had none.
 
-   Keyed per potion on purpose: an mp delivery must not suppress an hp request
-   that happened to be made a second earlier. */
+   2 and 3 are the durable half: CODE storage is the only state a hop cannot
+   erase. They stay even with the cursor fixed, because a mid-batch reload
+   deliberately re-reads its tail, and because one of them being enough has
+   never been demonstrated. */
 function plDeliveredKey(recipient, potion) {
 	return 'pl_delivered_' + recipient + '_' + (potion === 'mp' ? 'mp' : 'hp');
 }
@@ -233,6 +269,42 @@ function plMarkDelivered(recipient, potion, when) {
 	try { set(plDeliveredKey(recipient, potion), when || Date.now()); }
 	catch (e) { plLog('could not persist delivery watermark for ' + recipient, 'orange'); }
 }
+
+/* The same durable trick for the buff. mluck lasts an hour (G.skills.mluck
+   .duration, measured 3,600,000 ms on 2026-09-29) and its `ms` field is the
+   remaining time, so a cast can be dated exactly from an observed buff. */
+function plMluckedKey(recipient) { return 'pl_mlucked_' + recipient; }
+function plMluckedAt(recipient) {
+	try { return Number(get(plMluckedKey(recipient))) || 0; } catch (e) { return 0; }
+}
+function plMarkMlucked(recipient, when) {
+	try { set(plMluckedKey(recipient), when || Date.now()); }
+	catch (e) { plLog('could not persist mluck watermark for ' + recipient, 'orange'); }
+}
+function plMluckDurationMs() {
+	try { const d = parent.G.skills.mluck.duration; if (typeof d === 'number' && d > 0) return d; }
+	catch (e) { }
+	return 3600000;
+}
+/* Only ever consulted when the sender gave no needsMluck - see on_cm. The
+   recipient's own view of its buff outranks this record every time. */
+function mluckStillFresh(recipient) {
+	const at = plMluckedAt(recipient);
+	if (!at) return false;
+	return (Date.now() - at) < (plMluckDurationMs() - CONFIG.mluck.refreshWithinMs);
+}
+
+/* Restored before the first poll, which is the whole point of persisting it. */
+const PL_CURSOR_KEY = 'pl_cursor';
+/* Loud on failure. A cursor that silently stops persisting brings the whole
+   replay back with nothing to show for it - the failure mode this file has
+   been bitten by twice now. */
+function plSaveCursor(n) {
+	try { set(PL_CURSOR_KEY, n); }
+	catch (e) { plLog('could not persist the relay cursor (' + n + ') - a hop will replay the backlog', 'red'); }
+}
+try { plCursor = Number(get(PL_CURSOR_KEY)) || 0; } catch (e) { plCursor = 0; }
+if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog replay', '#7FD98A');
 
 plProbe();
 setInterval(plPoll, PARTY_LINK.pollMs);
@@ -517,6 +589,11 @@ const CONFIG = {
 	mluck: {
 		minLevel: 40,
 		targets: ['Dexon'],
+		/* How close to expiry our own cast has to be before a location message
+		   that says nothing about the buff is worth a trip. Only reached when the
+		   sender predates v62 and sends no needsMluck; a recipient that states its
+		   need is believed either way. */
+		refreshWithinMs: 10 * 60 * 1000,
 	},
 
 	stand: {
@@ -937,6 +1014,18 @@ function on_cm(name, data) {
 		enqueueJob({ type: 'pickup', recipient: name, emptySlots: data.emptySlots, x: data.x, y: data.y, map: data.map, shard });
 	}
 	if (data.message === 'location' && CONFIG.mluck.targets.includes(name)) {
+		/* A replayed request, exactly as on the delivery side: sent before the
+		   buff it is asking for was cast, so it is answered already. This is the
+		   guard that was missing - the needsMluck: true it carries was true when
+		   it was sent, ten minutes ago, which is why observation alone never
+		   caught it: the trip was booked long before anyone could look. */
+		const reqAt = Number(data._plts) || Date.now();
+		const luckedAt = plMluckedAt(name);
+		if (luckedAt && reqAt <= luckedAt) {
+			plLog('ignoring replayed mluck request from ' + name + ' (sent '
+				+ Math.round((luckedAt - reqAt) / 1000) + 's before the buff was cast)', '#8b98ab');
+			return;
+		}
 		// `location` means "buff me" OR "empty my pack"; needsMluck says which.
 		// undefined = a pre-v62 sender, and keeps the old assumption on purpose.
 		// -> MerchantComments.md#mluck-intent
@@ -947,15 +1036,26 @@ function on_cm(name, data) {
 			if (state.queue.length !== before) {
 				game_log(`Dropped a stale mluck job for ${name} - their buff is live`, '#8b98ab');
 			}
-		} else if (character.level >= CONFIG.mluck.minLevel) {
+		} else if (character.level < CONFIG.mluck.minLevel) {
+			// Below minLevel: silently ignored, nothing to do yet.
+		} else if (data.needsMluck === undefined && mluckStillFresh(name)) {
+			/* No hint AND our own cast is nowhere near expiry. Throttled, because
+			   location arrives about once a second and this would otherwise be the
+			   loudest line in the log. */
+			if (Date.now() - mluckFreshNote > 60000) {
+				mluckFreshNote = Date.now();
+				plLog('no mluck trip for ' + name + ': our cast was '
+					+ Math.round((Date.now() - plMluckedAt(name)) / 60000) + ' min ago and they are not saying otherwise', '#8b98ab');
+			}
+		} else {
 			enqueueJob({
 				type: 'mluck', recipient: name, needsMluck: data.needsMluck,
 				x: data.x, y: data.y, map: data.map, shard
 			});
 		}
-		// Below CONFIG.mluck.minLevel: silently ignored, nothing to do yet.
 	}
 }
+let mluckFreshNote = 0;   // throttle for the line above
 
 function enqueueJob(job) {
 	// Avoid stacking duplicate pending jobs of the same type for the same character.
@@ -1114,7 +1214,14 @@ function mluckWanted(recipientName, hint) {
 	if (!CONFIG.mluck.targets.includes(recipientName)) return false;
 	if (character.level < CONFIG.mluck.minLevel) return false;
 	const t = get_player(recipientName);
-	if (!t) return hint !== false;
+	if (!t) {
+		// Can't see them. What they said about their own buff beats any record of
+		// ours; with nothing said, our own recent cast is the better guess than
+		// the old blanket yes.
+		if (hint === true) return true;
+		if (hint === false) return false;
+		return !mluckStillFresh(recipientName);
+	}
 	// Visible: observation beats any hint, however stale the hint has become.
 	return !t.s || !t.s.mluck || t.s.mluck.f !== character.name;
 }
@@ -1217,6 +1324,11 @@ async function attemptActions(recipientName, remaining) {
 		} else if (alreadyOurs) {
 			// Cleared regardless of range: tryCastMluck would no-op anyway, and the
 			// flag left set is what made a live buff read as unfinished work.
+			/* And date it while we can see it. `ms` is the remaining time, so the
+			   cast is now minus what has elapsed - which seeds the watermark for a
+			   buff cast before v68, or before this storage key existed at all. */
+			const left = Number(target.s.mluck.ms) || 0;
+			if (left > 0) plMarkMlucked(recipientName, Date.now() - (plMluckDurationMs() - left));
 			stillMluck = false;
 		} else if (is_in_range(target, 'mluck')) {
 			await tryCastMluck(recipientName);
@@ -1267,6 +1379,12 @@ async function tryCastMluck(targetName) {
 
 	try {
 		await use_skill('mluck', target);
+		/* Stamped AFTER the cast, unlike the delivery watermark. The asymmetry is
+		   deliberate: a mark written before a cast that then fails would refuse
+		   the hint-less replacement request for the best part of an hour, while a
+		   mark written late costs at most one redundant trip. A recipient running
+		   v62 or later states its need and is believed regardless. */
+		plMarkMlucked(targetName, Date.now());
 		game_log(`Cast mluck on ${targetName}`, '#00FF00');
 	} catch (e) {
 		game_log(`mluck on ${targetName} failed: ${e.reason || e}`, 'red');
@@ -4679,7 +4797,12 @@ function arbRestore() {
 // the game log named the wrong build for 25 versions. It no longer gates
 // anything: arbHalted() used to ignore a halt whose build differed, and that
 // clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-const MERCHANT_BUILD = 'v57 / arb.5 / 2026-09-26 / permanent counterparty blacklist';
+/* Read by the operator - and by anyone diagnosing this character from outside,
+   which is the reason it is now kept current. It sat at 'v57' through ten
+   releases, and on 2026-09-29 a live probe of the running merchant reported v57
+   while the deployed build was in fact v67. Feature-detection caught it; the
+   string should not have needed catching. Bump this with every version. */
+const MERCHANT_BUILD = 'v68 / relay cursor survives a hop / 2026-09-29';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
