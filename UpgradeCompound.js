@@ -1,5 +1,5 @@
 // ============================================================================
-// UpgradeCompound.js - v1 (2026-09-29) - upgrade AND compound to a target level
+// UpgradeCompound.js - v2 (2026-09-29) - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
@@ -37,10 +37,12 @@
 //     (480k / 242M) are vendor values and are IGNORED.
 //   - Crun's scroll3/cscroll3 count at min(market, his 480M) and are never
 //     auto-bought; the operator is told to buy them.
-//   - Base item: PRICE_OVERRIDES, then Ponty, then market low, then NPC gold
-//     if NPC-sold, else STOP and ask for an override. No price history exists
-//     anywhere in the stack (aldata serves live stands only), so a value the
-//     operator sets is the fallback, not a guess.
+//   - Base item: PRICE_OVERRIDES, then Ponty, then the lowest FRESH ask, then
+//     the lowest HISTORICAL ask, then NPC gold if NPC-sold, else STOP and ask
+//     for an override. A stand row older than HISTORICAL_AFTER_SEC (10 min) is
+//     historical: it prices the item, but it is not a listing anyone can buy
+//     from, so it never sends the operator shopping and never undercuts an NPC
+//     price that is actually payable.
 //   - When the cheapest path needs something not in inventory and not
 //     buyable from an NPC here: print exactly what to buy and STOP. The
 //     operator buys it, or proceeds by hand.
@@ -69,6 +71,7 @@ const UC_CONFIG = {
 	BRIDGE: 'http://127.0.0.1:8787',
 	ALDATA: 'https://aldata.earthiverse.ca',
 	PRICE_TTL_MS: 5 * 60 * 1000,
+	HISTORICAL_AFTER_SEC: 600,   // a stand row older than this is a price, not a listing
 	TICK_MS: 4000,
 	FETCH_MS: 8000,
 };
@@ -106,7 +109,7 @@ const UC_OFFERINGS = [null, 'offeringp', 'offering', 'offeringx'];   // index = 
 const UC = {
 	stop: null,           // { reason, needs: [...] } - set once, cleared by ucResume()
 	busy: false,
-	prices: { at: 0, asks: {}, ponty: {}, errors: {} },
+	prices: { at: 0, asks: {}, hist: {}, ponty: {}, errors: {} },   // asks = fresh, hist = aged
 	npcGold: null,        // name -> { g, npc, autobuy }
 	history: [],          // every roll: { t, mode, item, from, to, chance, exact, success, spent, lost }
 };
@@ -218,25 +221,40 @@ async function ucFetchJson(url) {
 	} finally { if (stop) clearTimeout(stop); }
 }
 
+/* ISO string or epoch, seconds or ms - aldata and the bridge need not agree. */
+function ucAgeSec(when) {
+	const t = (typeof when === 'number') ? when : Date.parse(when);
+	if (!isFinite(t)) return null;
+	const ms = (t > 1e12) ? t : (t > 1e9 ? t * 1000 : t);
+	return Math.round((Date.now() - ms) / 1000);
+}
+function ucAgeStr(sec) { return sec == null ? 'age unknown' : sec < 3600 ? Math.round(sec / 60) + 'm ago' : (sec / 3600).toFixed(1) + 'h ago'; }
+
 /* Lowest SELL listing per item+level across aldata and the bridge, plus Ponty
    separately. Same row shape Merchant.js reads: r.slots[k] = {name, level,
-   price, q, b}; b marks a buy order and is skipped. */
+   price, q, b}; b marks a buy order and is skipped. Each stand row carries
+   lastSeen; rows older than HISTORICAL_AFTER_SEC (or of unknown age) go to
+   `hist` - a price, not a listing. Fresh rows go to `asks`. */
 async function ucRefreshPrices(force) {
 	if (!force && Date.now() - UC.prices.at < UC_CONFIG.PRICE_TTL_MS) return UC.prices;
-	const asks = {}, ponty = {}, errors = {};
-	const take = function (bucket, name, level, price, src) {
+	const asks = {}, hist = {}, ponty = {}, errors = {};
+	const take = function (bucket, name, level, price, src, age) {
 		if (typeof price !== 'number' || !isFinite(price) || price <= 0) return;
 		const k = name + '+' + (level || 0);
-		if (!bucket[k] || price < bucket[k].price) bucket[k] = { price: price, src: src };
+		if (!bucket[k] || price < bucket[k].price) bucket[k] = { price: price, src: src, age: age };
 	};
 	const stands = async function (url, src) {
 		try {
 			const rows = await ucFetchJson(url);
 			if (!Array.isArray(rows)) throw new Error('not an array');
-			for (const r of rows) for (const k in (r.slots || {})) {
-				const sl = r.slots[k];
-				if (!sl || !sl.name || sl.b) continue;
-				take(asks, sl.name, sl.level, sl.price, src);
+			for (const r of rows) {
+				const age = ucAgeSec(r.lastSeen);
+				const fresh = age != null && age <= UC_CONFIG.HISTORICAL_AFTER_SEC;
+				for (const k in (r.slots || {})) {
+					const sl = r.slots[k];
+					if (!sl || !sl.name || sl.b) continue;
+					take(fresh ? asks : hist, sl.name, sl.level, sl.price, src, age);
+				}
 			}
 		} catch (e) { errors[src] = String(e && e.message || e); }
 	};
@@ -246,15 +264,18 @@ async function ucRefreshPrices(force) {
 		(async function () {
 			try {
 				const p = await ucFetchJson(UC_CONFIG.BRIDGE + '/ponty');
-				for (const shard in (p || {})) for (const it of ((p[shard] || {}).items || [])) {
-					if (it && it.name) take(ponty, it.name, it.level, it.price, 'ponty:' + shard);
+				for (const shard in (p || {})) {
+					const age = ucAgeSec((p[shard] || {}).at);
+					for (const it of ((p[shard] || {}).items || [])) {
+						if (it && it.name) take(ponty, it.name, it.level, it.price, 'ponty:' + shard, age);
+					}
 				}
 			} catch (e) { errors.ponty = String(e && e.message || e); }
 		})(),
 	]);
-	UC.prices = { at: Date.now(), asks: asks, ponty: ponty, errors: errors };
+	UC.prices = { at: Date.now(), asks: asks, hist: hist, ponty: ponty, errors: errors };
 	const es = Object.keys(errors);
-	ucLog('prices: ' + Object.keys(asks).length + ' asks, ' + Object.keys(ponty).length + ' ponty'
+	ucLog('prices: ' + Object.keys(asks).length + ' fresh asks, ' + Object.keys(hist).length + ' historical, ' + Object.keys(ponty).length + ' ponty'
 		+ (es.length ? ' - FAILED: ' + es.map(function (k) { return k + ' (' + errors[k] + ')'; }).join(', ') : ''),
 		es.length ? 'orange' : '#8b98ab');
 	return UC.prices;
@@ -268,12 +289,14 @@ async function ucRefreshPrices(force) {
 function ucSource(name) {
 	const held = (typeof quantity === 'function') ? quantity(name) : 0;
 	const npc = ucNpcGold()[name];
-	const mkt = UC.prices.asks[name + '+0'];
+	const mkt = UC.prices.asks[name + '+0'];          // fresh: someone is selling it now
+	const old = UC.prices.hist[name + '+0'];          // aged: a price, not a listing
 	let cost = null, how = null, note = '';
 	if (npc && npc.autobuy) { cost = npc.g; how = 'npc'; note = npc.npc; }
 	else if (npc && mkt && mkt.price < npc.g) { cost = mkt.price; how = 'market'; note = mkt.src + ' (under ' + npc.npc + '\'s ' + ucFmt(npc.g) + ')'; }
 	else if (npc) { cost = npc.g; how = 'market'; note = npc.npc + ' sells it, you buy it'; }
 	else if (mkt) { cost = mkt.price; how = 'market'; note = mkt.src; }
+	else if (old) { cost = old.price; how = 'market'; note = old.src + ' last seen ' + ucAgeStr(old.age) + ' - NOT currently listed'; }
 	if (held > 0) how = 'inventory';
 	return { name: name, cost: cost, how: how, held: held, note: note };
 }
@@ -283,9 +306,11 @@ function ucBaseValue(name) {
 	const ov = UC_CONFIG.PRICE_OVERRIDES[name];
 	if (typeof ov === 'number' && ov > 0) return { value: ov, src: 'override' };
 	const p = UC.prices.ponty[name + '+0'];
-	if (p) return { value: p.price, src: p.src };
+	if (p) return { value: p.price, src: p.src + ' (' + ucAgeStr(p.age) + ')' };
 	const m = UC.prices.asks[name + '+0'];
-	if (m) return { value: m.price, src: m.src };
+	if (m) return { value: m.price, src: m.src + ' (fresh)' };
+	const h = UC.prices.hist[name + '+0'];
+	if (h) return { value: h.price, src: h.src + ' (historical, ' + ucAgeStr(h.age) + ')' };
 	const npc = ucNpcGold()[name];
 	if (npc) return { value: npc.g, src: 'npc ' + npc.npc };
 	return { value: null, src: 'none' };
@@ -303,7 +328,7 @@ function ucPlan(name, target) {
 	const mode = ucMode(def);
 	if (!mode) return { error: name + ' is neither upgradeable nor compoundable' };
 	const base = ucBaseValue(name);
-	if (base.value == null) return { error: 'no value for ' + name + '+0 - not on Ponty, not on the market, not NPC-sold. Set UC_CONFIG.PRICE_OVERRIDES.' + name };
+	if (base.value == null) return { error: 'no value for ' + name + '+0 - not on Ponty, no fresh or historical ask, not NPC-sold. Set UC_CONFIG.PRICE_OVERRIDES.' + name };
 	const scrolls = mode === 'upgrade' ? UC_USCROLLS : UC_CSCROLLS;
 	const steps = [];
 	let C = base.value;
@@ -470,6 +495,6 @@ async function ucTick() {
 	if (typeof character === 'undefined') { ucLog('no character - load this in a CODE slot', 'red'); return; }
 	const missing = ['upgrade', 'compound', 'buy', 'quantity', 'locate_item'].filter(function (f) { return typeof window[f] !== 'function'; });
 	if (missing.length) ucLog('helpers not in scope: ' + missing.join(', ') + ' - this file expects the game CODE context', 'red');
-	ucLog('UpgradeCompound v1 loaded. DRY_RUN=' + UC_CONFIG.DRY_RUN + '. ucStatus() prints the plan; ucResume() clears a stop.', '#FFD700');
+	ucLog('UpgradeCompound v2 loaded. DRY_RUN=' + UC_CONFIG.DRY_RUN + '. ucStatus() prints the plan; ucResume() clears a stop.', '#FFD700');
 	setInterval(ucTick, UC_CONFIG.TICK_MS);
 })();
