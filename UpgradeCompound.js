@@ -1,5 +1,5 @@
 // ============================================================================
-// UpgradeCompound.js - v3 (2026-09-29) - upgrade AND compound to a target level
+// UpgradeCompound.js - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
@@ -11,6 +11,25 @@
 // the server keeps the FIRST selected item on success - so what you put in
 // slot 0 is what comes out a level higher. An empty slot 0 idles; it does not
 // stop, because a failed upgrade empties it and the next item is yours to add.
+//
+// A STOP IS NOT A DEAD END, and nothing here waits on you to notice it. Every
+// stop records a fingerprint of the situation it stopped in: what is in slot 0,
+// a tally of the whole bag, gold to the nearest million, and how far you stand
+// from the shrine and the two NPCs. Every tick compares that fingerprint with
+// now, and the moment it differs the stop clears itself and the plan is worked
+// out again. Drop a new item in slot 0, add the two compound copies, put the
+// offering you just bought in the bag, walk to the shrine - it picks up from
+// there on its own, no ucResume() needed. Nothing changed means it stays put
+// and stays quiet. Server refusals that are usually momentary (calculation mode
+// or a roll refused, an NPC buy that failed) also retry by themselves after
+// RETRY_MS, RETRY_TRIES times, and only then wait for you.
+//
+// AND NO AWAIT IS UNBOUNDED. buy(), calculation mode and the roll itself are
+// each wrapped in ucNoHang(), because an awaited call that never settles would
+// leave the tick lock held and every later tick would return at the door - the
+// exact shape of a script that looks alive and does nothing. A hang now costs
+// one tick. The lock itself has a backstop too, in case something outside these
+// three ever hangs.
 //
 // EVERY MECHANIC HERE WAS PULLED FROM THE SERVER SOURCE AND THE GAME DOCS ON
 // 2026-09-29, not remembered. Sources: adventureland_mongodb node/server.js
@@ -83,6 +102,19 @@ const UC_CONFIG = {
 	HISTORICAL_AFTER_SEC: 600,   // a stand row older than this is a price, not a listing
 	TICK_MS: 4000,
 	FETCH_MS: 8000,
+
+	/* A stop that is probably momentary retries itself this often, this many
+	   times, before it waits for the situation to change. A stop caused by
+	   something you have to do - an item to add, a walk to the shrine - does not
+	   use these: it clears the instant the fingerprint changes. */
+	RETRY_MS: 30000,
+	RETRY_TRIES: 3,
+
+	/* Ceilings on awaited game calls. A roll gets longer than the rest, and a
+	   roll that times out stops rather than retries: it may have landed. */
+	HANG_MS: 20000,
+	ROLL_HANG_MS: 30000,
+	BUSY_MAX_MS: 90000,   // backstop: force the tick lock open after this
 };
 
 // ------------------------------------------------------------ base chances
@@ -116,8 +148,12 @@ const UC_OFFERINGS = [null, 'offeringp', 'offering', 'offeringx'];   // index = 
 
 // --------------------------------------------------------------- state
 const UC = {
-	stop: null,           // { reason, needs: [...] } - set once, cleared by ucResume()
+	stop: null,           // { reason, needs, sig, tries, retryAt } - see ucStop()
+	prevStop: null,       // { reason, tries } while a timed retry is in flight
 	busy: false,
+	busyAt: 0,            // when the tick lock was taken, for the hang backstop
+	busySeq: 0,           // which tick holds it, so a forced-open tick cannot free another's
+	lastPrint: null,      // signature the plan was last printed for
 	prices: { at: 0, asks: {}, hist: {}, ponty: {}, errors: {} },   // asks = fresh, hist = aged
 	npcGold: null,        // name -> { g, npc, autobuy }
 	history: [],          // every roll: { t, mode, item, from, to, chance, exact, success, spent, lost }
@@ -407,14 +443,78 @@ function ucSelect(t) {
 	return { level: t.level, slots: [0, others[0], others[1]] };
 }
 
+// --------------------------------------------------------------- situation
+/* Coarse distance band to a spot, 0 (on top of it) to 6 (far). Bands, not raw
+   coordinates, so standing still reads as unchanged while walking over does
+   not go unnoticed - and so the exact NPC range does not have to be right. */
+function ucBand(id) {
+	const s = UC_SPOTS[id];
+	if (!s || typeof character === 'undefined' || character.map !== 'main') return 'x';
+	const dx = character.x - s.x, dy = character.y - s.y;
+	return String(Math.min(6, Math.floor(Math.sqrt(dx * dx + dy * dy) / 200)));
+}
+/* Everything about this character that a stop could be waiting on, in one
+   string: slot 0, the bag, gold to the million, and where he is standing. If
+   this is what it was when we stopped, nothing the operator could do has been
+   done yet. If it differs, the stop is stale and the plan is worth redoing. */
+function ucSignature() {
+	if (typeof character === 'undefined' || !character.items) return '-';
+	const bag = {};
+	for (const it of character.items) {
+		if (!it) continue;
+		const k = it.name + '+' + (it.level || 0);
+		bag[k] = (bag[k] || 0) + (it.q || 1);
+	}
+	const head = character.items[0] ? (character.items[0].name + '+' + (character.items[0].level || 0)) : '-';
+	return head + '|' + Object.keys(bag).sort().map(function (k) { return k + 'x' + bag[k]; }).join(',')
+		+ '|g' + Math.floor((character.gold || 0) / 1e6)
+		+ '|' + ucBand('shrine') + ucBand('scrolls') + ucBand('premium')
+		+ '|' + ucConfigSig();
+}
+/* The knobs the operator turns from the console belong in the fingerprint too:
+   flipping DRY_RUN, lowering MIN_CHANCE or adding a PRICE_OVERRIDE is a change
+   in the situation, and a stop should not outlive it. */
+function ucConfigSig() {
+	try {
+		return [UC_CONFIG.DRY_RUN, UC_CONFIG.MIN_CHANCE, UC_CONFIG.TARGET_LEVEL, UC_CONFIG.MIN_GOLD_TO_BUY,
+			JSON.stringify(UC_CONFIG.TARGET_LEVELS), JSON.stringify(UC_CONFIG.PRICE_OVERRIDES)].join(',');
+	} catch (e) { return '?'; }
+}
+
+/* An awaited game call that never settles would hold the tick lock forever and
+   every later tick would return at the door: alive, idle, silent. Bound them. */
+function ucNoHang(p, label, ms) {
+	return new Promise(function (res, rej) {
+		let done = false;
+		const timer = setTimeout(function () {
+			if (done) return;
+			done = true;
+			rej({ reason: label + ' never came back (' + Math.round(ms / 1000) + 's)' });
+		}, ms);
+		Promise.resolve(p).then(
+			function (v) { if (!done) { done = true; clearTimeout(timer); res(v); } },
+			function (e) { if (!done) { done = true; clearTimeout(timer); rej(e); } });
+	});
+}
+
 // --------------------------------------------------------------- stopping
-function ucStop(reason, needs) {
-	UC.stop = { reason: reason, needs: needs || [], at: Date.now() };
+/* retryMs > 0 marks a stop as probably momentary: it retries itself that many
+   ms later, up to RETRY_TRIES times for the same reason. Every stop, timed or
+   not, also clears itself as soon as ucSignature() changes. */
+function ucStop(reason, needs, retryMs) {
+	const tries = (UC.prevStop && UC.prevStop.reason === reason) ? UC.prevStop.tries : 0;
+	const timed = !!retryMs && tries < UC_CONFIG.RETRY_TRIES;
+	UC.stop = { reason: reason, needs: needs || [], at: Date.now(), sig: ucSignature(),
+		tries: tries, retryAt: timed ? Date.now() + retryMs : 0 };
+	UC.prevStop = null;
 	ucLog('STOPPED: ' + reason, 'red');
 	for (const n of (needs || [])) ucLog('   BUY  ' + n, 'orange');
-	ucLog('   then run ucResume()', 'orange');
+	ucLog(timed
+		? '   retrying on its own in ' + Math.round(retryMs / 1000) + 's ('
+			+ (UC_CONFIG.RETRY_TRIES - tries) + ' left), sooner if the bag, gold or where you stand changes'
+		: '   clears itself as soon as the bag, gold or where you stand changes - or run ucResume()', 'orange');
 }
-function ucResume() { UC.stop = null; UC.npcGold = null; ucLog('resumed', '#7FD98A'); }
+function ucResume() { UC.stop = null; UC.prevStop = null; UC.lastPrint = null; UC.npcGold = null; ucLog('resumed', '#7FD98A'); }
 /* Idle is not a stop: nothing needs buying, the operator just has not put the
    next item in slot 0 yet. Said once, not every tick. */
 function ucIdle(why) { if (UC.idleNote !== why) { UC.idleNote = why; ucLog(why, '#8b98ab'); } }
@@ -431,13 +531,13 @@ async function ucAcquire(name, how, cost) {
 	if (how === 'inventory') return true;
 	if (how === 'npc') {
 		if (character.gold - cost < UC_CONFIG.MIN_GOLD_TO_BUY) {
-			ucStop('gold ' + ucFmt(character.gold) + ' would fall below MIN_GOLD_TO_BUY buying ' + name, []);
+			ucStop('gold ' + ucFmt(character.gold) + ' would fall below MIN_GOLD_TO_BUY buying ' + name, [], 0);
 			return false;
 		}
-		try { await buy(name, 1); ucLog('bought 1 ' + name + ' for ' + ucFmt(cost), '#7FD98A'); return true; }
+		try { await ucNoHang(buy(name, 1), 'buy ' + name, UC_CONFIG.HANG_MS); ucLog('bought 1 ' + name + ' for ' + ucFmt(cost), '#7FD98A'); return true; }
 		catch (e) {
 			const npc = (ucNpcGold()[name] || {}).npc;
-			ucStop('could not buy ' + name + ' here (' + (e && (e.reason || e.message) || e) + ') - stand near ' + ucWhere(npc) + ', or buy it yourself', [name]);
+			ucStop('could not buy ' + name + ' here (' + (e && (e.reason || e.message) || e) + ') - stand near ' + ucWhere(npc) + ', or buy it yourself', [name], UC_CONFIG.RETRY_MS);
 			return false;
 		}
 	}
@@ -446,9 +546,30 @@ async function ucAcquire(name, how, cost) {
 
 // --------------------------------------------------------------- executor
 async function ucTick() {
-	if (UC.busy || UC.stop) return;
 	if (typeof character === 'undefined' || character.rip) return;
-	UC.busy = true;
+	/* Backstop for a hang outside the three bounded calls. Everything awaited
+	   below is capped well under BUSY_MAX_MS, so reaching this means something
+	   unexpected hung - say so, and let the next tick run. */
+	if (UC.busy) {
+		if (!UC.busyAt || Date.now() - UC.busyAt < UC_CONFIG.BUSY_MAX_MS) return;
+		ucLog('a tick held the lock for ' + Math.round((Date.now() - UC.busyAt) / 1000) + 's - forcing it open', 'red');
+		UC.busy = false;
+	}
+	if (UC.stop) {
+		const sig = ucSignature();
+		if (sig !== UC.stop.sig) {
+			ucLog('something changed - re-checking (was: ' + UC.stop.reason + ')', '#7FD98A');
+			UC.prevStop = null;
+		} else if (UC.stop.retryAt && Date.now() >= UC.stop.retryAt) {
+			ucLog('retrying (' + UC.stop.reason + ')');
+			UC.prevStop = { reason: UC.stop.reason, tries: UC.stop.tries + 1 };
+		} else return;
+		UC.stop = null; UC.npcGold = null; UC.lastPrint = null;
+	}
+	/* The lock is claimed with a serial number, so a tick whose lock was forced
+	   open cannot release the lock of the tick that replaced it. */
+	const mine = ++UC.busySeq;
+	UC.busy = true; UC.busyAt = Date.now();
 	try {
 		const t = ucTarget();
 		if (!t) { ucIdle('slot 0 is empty - waiting for an item'); return; }
@@ -465,7 +586,12 @@ async function ucTick() {
 				return;
 			}
 			const step = plan.steps[front.level];
-			ucPrintPlan(plan);
+			/* The plan only changes when the situation does, so print it when it
+			   does. A dry run has nothing else to do once it has printed: it waits
+			   here, silently, until the bag, gold or the operator moves. */
+			const sig = ucSignature();
+			if (sig === UC.lastPrint && UC_CONFIG.DRY_RUN) return;
+			if (sig !== UC.lastPrint) { ucPrintPlan(plan); UC.lastPrint = sig; }
 
 			// Everything the chosen step consumes, and where it comes from.
 			const needs = [];
@@ -477,35 +603,60 @@ async function ucTick() {
 				if (os.how === 'market') needs.push(step.offering + ' x1 @ ~' + ucFmt(os.cost) + ' [' + os.note + ']');
 			}
 			if (needs.length) { ucStop('cheapest path for ' + t.item + ' +' + front.level + '->' + (front.level + 1) + ' needs items you must buy', needs); return; }
-			if (!await ucAcquire(step.scroll, ss.how, ss.cost)) return;
-			if (step.offering && !await ucAcquire(step.offering, os.how, os.cost)) return;
+			/* A dry run spends nothing, so it does not buy the scroll either. Without
+			   it in the bag there is no slot to hand calculation mode, and EXACT comes
+			   back unavailable with the reason - which is the honest answer. */
+			if (!UC_CONFIG.DRY_RUN) {
+				if (!await ucAcquire(step.scroll, ss.how, ss.cost)) return;
+				if (step.offering && !await ucAcquire(step.offering, os.how, os.cost)) return;
+			}
 
 			const sSlot = ucSlotOf(step.scroll);
 			const oSlot = step.offering ? ucSlotOf(step.offering) : -1;
-			if (sSlot < 0 || (step.offering && oSlot < 0)) { ucStop('consumable vanished from inventory after acquire', []); return; }
+			const ready = sSlot >= 0 && (!step.offering || oSlot >= 0);
+			if (!ready && !UC_CONFIG.DRY_RUN) { ucStop('consumable vanished from inventory after acquire', []); return; }
 
 			// The game's own number for THIS roll - grace included.
-			let exact = null;
-			try {
+			let exact = null, noExact = null;
+			if (!ready) {
+				noExact = (sSlot < 0 ? step.scroll : step.offering) + ' is not in the bag and a dry run buys nothing';
+			} else try {
 				const pv = plan.mode === 'upgrade'
-					? await upgrade(front.slots[0], sSlot, oSlot >= 0 ? oSlot : null, true)
-					: await compound(front.slots[0], front.slots[1], front.slots[2], sSlot, oSlot >= 0 ? oSlot : null, true);
+					? await ucNoHang(upgrade(front.slots[0], sSlot, oSlot >= 0 ? oSlot : null, true), 'calculation mode', UC_CONFIG.HANG_MS)
+					: await ucNoHang(compound(front.slots[0], front.slots[1], front.slots[2], sSlot, oSlot >= 0 ? oSlot : null, true), 'calculation mode', UC_CONFIG.HANG_MS);
 				exact = pv && typeof pv.chance === 'number' ? pv.chance : null;
-			} catch (e) { ucStop('calculation mode refused: ' + (e && (e.reason || e.message) || e) + ' - stand near ' + ucWhere('shrine'), []); return; }
+			} catch (e) {
+				const why = 'calculation mode refused: ' + (e && (e.reason || e.message) || e) + ' - stand near ' + ucWhere('shrine');
+				if (!UC_CONFIG.DRY_RUN) { ucStop(why, [], UC_CONFIG.RETRY_MS); return; }
+				noExact = why;
+			}
 
 			const atRisk = step.inputs;
 			ucLog('ROLL ' + t.item + ' +' + front.level + ' -> +' + (front.level + 1) + ' with ' + step.scroll + (step.offering ? ' + ' + step.offering : '')
-				+ ': model ' + (step.p * 100).toFixed(1) + '%, EXACT ' + (exact == null ? '?' : (exact * 100).toFixed(1) + '%')
+				+ ': model ' + (step.p * 100).toFixed(1) + '%, EXACT ' + (exact == null ? ('unavailable - ' + (noExact || '?')) : (exact * 100).toFixed(1) + '%')
 				+ ', at risk ' + ucFmt(atRisk) + ' + ' + ucFmt(step.scrollCost + step.offeringCost), '#FFD700');
 			if (exact != null && exact < UC_CONFIG.MIN_CHANCE) { ucStop('exact chance ' + (exact * 100).toFixed(1) + '% is below MIN_CHANCE', []); return; }
-			if (UC_CONFIG.DRY_RUN) { ucLog('DRY_RUN - not rolling. Set UC_CONFIG.DRY_RUN = false to proceed.', 'orange'); return; }
+			if (UC_CONFIG.DRY_RUN) {
+				UC.lastPrint = sig;
+				ucLog('DRY_RUN - not rolling, and nothing bought. Set UC_CONFIG.DRY_RUN = false to proceed.', 'orange');
+				return;
+			}
 
 			let res = null;
 			try {
 				res = plan.mode === 'upgrade'
-					? await upgrade(front.slots[0], sSlot, oSlot >= 0 ? oSlot : null)
-					: await compound(front.slots[0], front.slots[1], front.slots[2], sSlot, oSlot >= 0 ? oSlot : null);
-			} catch (e) { ucStop('roll rejected: ' + (e && (e.reason || e.message) || e), []); return; }
+					? await ucNoHang(upgrade(front.slots[0], sSlot, oSlot >= 0 ? oSlot : null), 'the roll', UC_CONFIG.ROLL_HANG_MS)
+					: await ucNoHang(compound(front.slots[0], front.slots[1], front.slots[2], sSlot, oSlot >= 0 ? oSlot : null), 'the roll', UC_CONFIG.ROLL_HANG_MS);
+			} catch (e) {
+				/* A refused roll changed nothing and is worth retrying. A roll that
+				   never came back may have landed, so it is NOT retried on a timer -
+				   but if it did land the bag changed, and that clears this stop by
+				   itself on the next tick, with the real state in hand. */
+				const msg = (e && (e.reason || e.message) || e);
+				const hung = String(msg).indexOf('never came back') >= 0;
+				ucStop('roll ' + (hung ? 'may or may not have happened: ' : 'rejected: ') + msg, [], hung ? 0 : UC_CONFIG.RETRY_MS);
+				return;
+			}
 			const ok = !!(res && res.success);
 			UC.history.push({ t: Date.now(), mode: plan.mode, item: t.item, from: front.level, to: front.level + 1,
 				chance: step.p, exact: exact, success: ok, spent: step.scrollCost + step.offeringCost, lost: ok ? 0 : atRisk });
@@ -515,7 +666,7 @@ async function ucTick() {
 		}
 	} catch (e) {
 		ucLog('tick threw: ' + (e && e.message || e), 'red');
-	} finally { UC.busy = false; }
+	} finally { if (UC.busySeq === mine) { UC.busy = false; UC.busyAt = 0; } }
 }
 
 // --------------------------------------------------------------- startup
@@ -523,6 +674,7 @@ async function ucTick() {
 	if (typeof character === 'undefined') { ucLog('no character - load this in a CODE slot', 'red'); return; }
 	const missing = ['upgrade', 'compound', 'buy', 'quantity', 'locate_item'].filter(function (f) { return typeof window[f] !== 'function'; });
 	if (missing.length) ucLog('helpers not in scope: ' + missing.join(', ') + ' - this file expects the game CODE context', 'red');
-	ucLog('UpgradeCompound v3 loaded. Slot 0 is the item. DRY_RUN=' + UC_CONFIG.DRY_RUN + '. ucStatus() prints the plan; ucResume() clears a stop.', '#FFD700');
+	ucLog('UpgradeCompound v4 loaded. Slot 0 is the item. DRY_RUN=' + UC_CONFIG.DRY_RUN
+		+ '. A stop clears itself when the bag, gold or where you stand changes; ucStatus() prints the plan, ucResume() forces it.', '#FFD700');
 	setInterval(ucTick, UC_CONFIG.TICK_MS);
 })();
