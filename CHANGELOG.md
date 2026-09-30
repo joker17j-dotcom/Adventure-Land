@@ -28,6 +28,62 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v68
+
+The relay cursor survives a hop, so ten minutes of answered requests stop coming
+back.
+
+The operator reported the merchant forgetting that he had already given mluck and
+already delivered potions, and doing both again after a server hop. One root cause
+and two failed defences, all measured 2026-09-29 rather than read.
+
+`plCursor` lived only in memory. `change_server` reloads the page, the scout
+rotation hops several times an hour, and the bridge serves every message with
+`seq > since` for MESSAGE_TTL (10 minutes). So each hop asked for `since=0` and
+was handed back the whole backlog, which the handler then acted on. Measured: 15
+`location` rows waiting for Meltymerch, every one carrying `needsMluck: true`
+from before the buff was cast, while Dexon's mluck - from Meltymerch - still had
+52 minutes left. It is now persisted in CODE storage and restored before the
+first poll, advanced only after a batch is handled, and reset to 0 if the bridge's
+own cursor ever goes backwards (a bridge restart renumbers from 0, and a stale
+high cursor would starve the merchant in silence).
+
+The delivery watermark added in v58 was supposed to catch the potion half. It
+never fired once. `plPoll` read `m.ts` and converted from epoch seconds, on the
+stated premise that "the bridge stamps every message with `ts` from time.time()".
+A live probe of the running bridge says otherwise: a `/msg` row carries `seq`,
+`at`, `frm`, `id`, `payload`, where `at` is an ISO-8601 string, and NO row carries
+`ts` at all. So `_plts` was never set, every `reqAt` fell back to `Date.now()`,
+and a ten-minute-old replay always looked newer than the delivery that had
+already satisfied it. Both fields are read now. This is the second time an
+unverified claim about the bridge's shape sat in a comment and cost a real bug;
+the comment now says what was measured and when.
+
+mluck had no watermark at all - deliveries had one and buffs did not. There is one
+now, the same shape: `pl_mlucked_<name>`, stamped after a successful cast, and a
+`location` request sent before that stamp is refused as answered. It is also
+seeded from an observed buff, since `s.mluck.ms` is the remaining time and mluck
+lasts an hour, so a buff cast before this key existed can still be dated exactly.
+A recipient that states its own need still outranks the record every time: only a
+sender with no `needsMluck` at all - a pre-v62 Ranger - is held off by
+`CONFIG.mluck.refreshWithinMs` (10 minutes before expiry).
+
+`MERCHANT_BUILD` is bumped too, and is expected to be bumped from here on. It sat
+at `'v57 / arb.5'` through ten releases, and a live probe of the merchant during
+this diagnosis reported v57 while the deployed build was v67 - a wrong answer to
+the first question anyone asks. Feature-detection caught it, which is the
+procedure that works, but the string should not have needed catching.
+
+Verified by extracting the changed functions into a node harness (18 cases) rather
+than by reading them: the persisted cursor survives a simulated reload and asks
+for `since=6399`; a replayed mluck request and a replayed `low_potions` request
+are both refused with a reason; genuinely later requests of both kinds are still
+served; a hintless request is held off at 5 minutes and honoured at 55; a bridge
+whose seq goes backwards resets the cursor; and a poll that fails mid-batch leaves
+the cursor where it was. The harness also caught `plSaveCursor` swallowing a
+failed write in silence, which would have brought the whole replay back with
+nothing in the log - it now says so in red.
+
 ## v67
 
 mluck is need-driven, and never a reason to summon.
