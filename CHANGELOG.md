@@ -28,6 +28,77 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v71
+
+Arbitrage can actually buy from Ponty, and no NPC is ever shelved again.
+
+Two operator rules, 2026-09-30: Ponty - no NPC - may ever be blacklisted; an
+individual attempt may be given up on when the item has gone; and the executor
+should be able to buy from him.
+
+WHAT WAS WRONG. `arbProbePontyRows()` has always pushed Ponty's stock onto the BUY
+side of the flip search, tagged `npc: true, target: 'Ponty', slot: null`, and
+nothing downstream filtered it: the `pick` filter tests affordability, item caps,
+`arbIsUsed`, `arbFailBlocked` and the never-list, but never `buyIsNpc`. The buy leg
+then ran `trade_buy(pEntity(t.buyFrom), t.buySlot, t.qty)`, which needs a loaded
+player stand and a trade slot. Measured 2026-09-30: `pEntity('Ponty')` resolves to
+entity id `$Ponty` with `npc: true` and ZERO slots, and the trade record carries
+`buySlot: null` with `buyX`/`buyY` null. So every Ponty flip was planned,
+travelled toward and abandoned in `at_buy`, and `buyIsNpc` was written into the
+record and read by nothing.
+
+It was not theoretical. `arb_fails` held four entries and all four were Ponty -
+USV n=5, EUIII n=5, USIV n=3, ASIAI n=2. Fifteen abandoned trades, and the only
+shelved counterparties on record. Nothing was spent (every one abandoned with
+`disposition: 'nothing_spent'`) but at `neverTradeAfter` (8) the name is promoted
+permanently, so he was three failures per shard from blacklisting the single
+counterparty that cannot move, cannot log off and never runs out of stock.
+
+NO NPC IS SHELVED. `arbIsNpcTarget()` is DERIVED from `G.npcs` - all 132 names and
+ids, so it covers Lucas, Garwyn, Crun and anything the game adds later, not a
+hardcoded 'Ponty'. `arbNoteFailure`, `arbNeverHold` and `arbNeverPromote` all
+refuse an NPC, and the two READ gates - `arbNeverBlocked` and `arbFailBlocked` -
+refuse one too, because entries written before this version are still in CODE
+storage and a deploy does not clear them. An empty read of `G.npcs` falls back to
+{'Ponty'} rather than to an empty set: failing open there would re-open the hole.
+
+THE NPC BUY LEG. `at_buy` branches before its approach-and-verify path, because
+Ponty has no position to walk to, no slot to verify and no entity to trade with.
+`arbPontyBuy()` instead:
+  - checks `scoutPontyDistance() <= 500`, the same gate the scout uses, since the
+    town spot is already inside it (47.4 units, 346.1 worst case);
+  - takes a LIVE `get_secondhands()` read, because a rid is per listing per shard
+    and the bridge's cached `/ponty` rows carry none;
+  - re-matches on name AND level AND special - a +2 does not fill a +0 flip;
+  - RE-PRICES from the live row via `scoutItemPrice()` and refuses anything more
+    than `npcPriceDrift` (2%) above what was planned, since the plan came from a
+    cached scan and his price is a function of the item, so drift means a
+    different listing;
+  - re-checks the gold floor at the live price;
+  - buys one listing with `buy_secondhand(rid)` and verifies by gold delta AND by
+    the item arriving. Gold gone with nothing arrived logs CHECK THIS in red.
+
+A Ponty row is ONE item, so a multi-quantity flip is trimmed to x1 rather than
+committing to sell a quantity we do not hold. No `arbMarkUsed`: there is no slot
+to mark, the listing is consumed by the purchase itself, and marking the NAME
+would refuse everything else he stocks for `usedCooldownMs`.
+
+Failures are classified rather than counted alike. `item_gone` - the normal one,
+somebody else took the listing between the scan and the trip - a price that
+drifted, `no_space` and the gold floor all give up on that attempt immediately,
+which is exactly the operator's rule. Out of range, a failed read and `cooldown`
+are retried up to three times. Nothing shelves the counterparty either way.
+
+Verified with a 36-case node harness: the NPC predicate against G.npcs, all three
+write paths and both read paths refusing an NPC while still shelving a player, a
+pre-v71 stored Ponty entry not blocking, the happy purchase, level and special
+mismatches, item_gone, price drift inside and outside tolerance, the gold floor at
+the live price, out of range, off main, a failed read, no_space, cooldown, the
+gold-without-item case, and the x4 trim. The harness caught two of my own errors,
+one of which mattered: my stubbed `parent` had no `calculate_item_value`, so
+`scoutItemPrice()` returned null, the re-pricing fell back to the planned figure,
+and the drift test was passing without exercising the drift path at all.
+
 ## v70
 
 He buys the gear list off Ponty while he is already standing there.
