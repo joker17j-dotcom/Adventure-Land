@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v70
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v71
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -410,6 +410,10 @@ const CONFIG = {
 		/* Total sell attempts for ONE trade, across every buyer it is rerouted
 		   to. Never reset by a reroute - that reset is what let a trade loop on
 		   the same absent buyer for 29 minutes with attempts still reading 0. */
+		/* How much dearer than planned a LIVE Ponty listing may be before the
+		   trade is refused. The plan comes from a cached scan and his price is a
+		   function of the item, so any drift means a different listing. */
+		npcPriceDrift: 0.02,
 		maxSellAttempts: 4,
 		/* And a wall clock over the top of it, because an attempt counter only
 		   bounds the paths that increment it. Goods held longer than this are
@@ -1797,6 +1801,37 @@ const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
    -> MerchantComments.md#NEVER_TRADE_NAMES */
 const NEVER_TRADE_NAMES = new Set(['Kazhag', 'Balitr']);
 
+/* AN NPC IS NEVER SHELVED AND NEVER BLACKLISTED. The operator's rule,
+   2026-09-30, and it closes a live hole: arb_fails held FOUR entries and all
+   four were Ponty - USV n=5, EUIII n=5, USIV n=3, ASIAI n=2, fifteen abandoned
+   trades and the only shelved counterparties on record. At neverTradeAfter (8)
+   that promotes the name permanently, so the merchant was three failures per
+   shard away from blacklisting the one counterparty that cannot move, cannot
+   log off and never runs out of stock for good.
+
+   The set is DERIVED from G.npcs rather than listing names, so it covers all
+   132 of them and stays right when the game adds one. Measured 2026-09-30:
+   G.npcs.secondhands.name is 'Ponty', role 'secondhands'. The name is what the
+   failure bookkeeping is keyed on, which is why the lookup is by name. */
+let arbNpcNameCache = null;
+function arbNpcNames() {
+	if (arbNpcNameCache) return arbNpcNameCache;
+	const out = new Set();
+	try {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+		for (const id in (g && g.npcs) || {}) {
+			const n = g.npcs[id];
+			if (n && n.name) out.add(String(n.name));
+			out.add(String(id));
+		}
+	} catch (e) { }
+	// Never let an empty read pass for "no NPCs": that would re-open the hole.
+	if (!out.size) { out.add('Ponty'); return out; }
+	arbNpcNameCache = out;
+	return out;
+}
+function arbIsNpcTarget(target) { return !!target && arbNpcNames().has(String(target)); }
+
 const ARB_NEVER_KEY = 'arb_never';
 const ARB_CHURN_KEY = 'arb_churn';
 
@@ -1809,6 +1844,9 @@ function arbNeverAuto() {
 function arbNeverBlocked(target) {
 	if (!target) return false;
 	if (NEVER_TRADE_NAMES.has(target)) return true;
+	/* Reads as well as writes: entries written before v71 are still in storage,
+	   and a deploy does not clear them. */
+	if (arbIsNpcTarget(target)) return false;
 	const e = arbNeverAuto()[target];
 	if (!e) return false;
 	// A churn HOLD carries `until` and expires; a promotion has none and is permanent.
@@ -1823,6 +1861,7 @@ function arbNeverBlocked(target) {
    permanently via arbNeverPromote. -> MerchantComments.md#NEVER_TRADE_NAMES */
 function arbNeverHold(target, why, ms) {
 	if (!target || NEVER_TRADE_NAMES.has(target)) return false;
+	if (arbIsNpcTarget(target)) return false;   // -> AN NPC IS NEVER SHELVED
 	const m = arbNeverAuto();
 	const cur = m[target];
 	if (cur && !cur.until) return false;                 // never downgrade a permanent entry
@@ -1835,6 +1874,10 @@ function arbNeverHold(target, why, ms) {
 
 function arbNeverPromote(target, why) {
 	if (!target || NEVER_TRADE_NAMES.has(target)) return false;
+	if (arbIsNpcTarget(target)) {
+		arbLog('not blacklisting the NPC ' + target + ' (' + (why || '') + ') - an NPC is never shelved', '#8b98ab');
+		return false;
+	}
 	const m = arbNeverAuto();
 	if (m[target] && !m[target].until) return false;   // already permanent
 	m[target] = { at: new Date().toISOString(), why: why || 'repeated failures' };
@@ -4144,6 +4187,9 @@ function arbLoadFails() {
 
 function arbNoteFailure(shard, target) {
 	if (!shard || !target) return;
+	/* An NPC failing means THIS listing went, not that the counterparty is bad.
+	   Give up on the attempt and nothing else. -> AN NPC IS NEVER SHELVED */
+	if (arbIsNpcTarget(target)) return;
 	const m = arbLoadFails();
 	const k = arbFailKey(shard, target);
 	const n = ((m[k] && m[k].n) || 0) + 1;
@@ -4171,6 +4217,7 @@ function arbClearFailure(shard, target) {
 }
 
 function arbFailBlocked(shard, target, fails) {
+	if (arbIsNpcTarget(target)) return false;   // -> AN NPC IS NEVER SHELVED
 	const m = fails || arbLoadFails();
 	const e = m[arbFailKey(shard, target)];
 	return !!(e && e.until > Date.now());
@@ -4460,8 +4507,133 @@ async function arbAdvance() {
 		return;
 	}
 
+/* ---- buying the NPC leg (Ponty) -------------------------------------------
+   arbProbePontyRows() has always put Ponty's stock on the BUY side of the flip
+   search, tagged npc: true, target 'Ponty', slot null. Nothing could act on it:
+   the buy leg ran trade_buy(pEntity(name), slot, qty), which needs a loaded
+   player stand and a trade slot, and Ponty has neither - measured 2026-09-30,
+   pEntity('Ponty') resolves to entity id $Ponty with npc: true and ZERO slots.
+   So every Ponty-sourced flip was planned, travelled toward and abandoned.
+
+   What it takes instead, all measured from adventureland_mongodb
+   node/server.js:
+     - socket.on("sbuy") buys ONE listing by rid, and a rid is per listing per
+       shard. The bridge's cached /ponty rows carry no rid, so the executor has
+       to take a LIVE read on arrival and re-match by name and level.
+     - Both the read and the buy gate on
+       simple_distance(G.maps.main.ref.secondhands, player) > 500, so the town
+       spot qualifies and nothing walks to him. scoutPontyDistance() is the same
+       check the scout already uses.
+     - The price is calculate_item_value(item) * G.multipliers.secondhands_mult
+       (measured: 2), a property of the item, so a live row can be re-priced and
+       compared with what was planned rather than trusted.
+     - sbuy refuses with cant_in_bank, no_space, buy_cost and item_gone. Each is
+       an ordinary outcome, and item_gone in particular is the normal one: somebody
+       else took the listing between the scan and the trip. */
+function arbPontyPlanned(t) { return !!t && (t.buyIsNpc || arbIsNpcTarget(t.buyFrom)); }
+
+async function arbPontyLive() {
+	if (typeof get_secondhands !== 'function') return { rows: null, why: 'get_secondhands is not in this context' };
+	try {
+		const r = await noHang(get_secondhands(8000), 'get_secondhands', 10000);
+		const list = (r && Array.isArray(r.items)) ? r.items : (Array.isArray(r) ? r : null);
+		if (!list) return { rows: null, why: 'no items in the reply' };
+		return { rows: list.filter((it) => it && it.name && it.rid) };
+	} catch (e) {
+		return { rows: null, why: (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e) };
+	}
+}
+
+/* The cheapest live listing that matches what was planned. Level and special
+   must match exactly - a +2 is not the +0 the flip was priced on. */
+function arbPontyMatch(rows, t) {
+	let best = null;
+	for (const it of rows) {
+		if (it.name !== t.item) continue;
+		if ((it.level || 0) !== (t.level || 0)) continue;
+		if ((it.p || null) !== (t.special || null)) continue;
+		const price = scoutItemPrice(it);
+		const cand = { rid: it.rid, price: (price == null ? t.buyPrice : price), q: it.q || 1 };
+		if (!best || cand.price < best.price) best = cand;
+	}
+	return best;
+}
+
+/* Returns the same shape the trade_buy path produces, so at_buy reads one way. */
+async function arbPontyBuy(t) {
+	const dist = (typeof scoutPontyDistance === 'function') ? scoutPontyDistance() : null;
+	if (dist === null || dist > 500) {
+		return { ok: false, retry: true, reason: 'Ponty out of range ('
+			+ (dist === null ? 'off main' : Math.round(dist)) + ') - the town spot is inside 500' };
+	}
+	const live = await arbPontyLive();
+	if (!live.rows) return { ok: false, retry: true, reason: 'could not read Ponty: ' + live.why };
+	const hit = arbPontyMatch(live.rows, t);
+	if (!hit) return { ok: false, retry: false, reason: 'item_gone - ' + t.item + '+' + (t.level || 0) + ' is no longer in his stock' };
+	/* Re-priced from the live row, because the plan came from a cached scan. A
+	   listing that costs materially more than planned is not the trade that was
+	   chosen, so it is refused rather than silently bought. */
+	if (hit.price > t.buyPrice * (1 + (CONFIG.arbitrage.npcPriceDrift || 0))) {
+		return { ok: false, retry: false, reason: 'priced at ' + hit.price + '/unit against the ' + t.buyPrice + ' planned' };
+	}
+	if (!arbAffordable(hit.price, character.gold)) {
+		return { ok: false, retry: false, reason: 'would breach the ' + CONFIG.arbitrage.goldFloor + ' gold floor at the live price' };
+	}
+	/* ONE listing per sbuy, and a Ponty row is one item - so a multi-quantity
+	   flip cannot be filled here. Take the one and correct the trade down to it
+	   rather than selling a quantity we do not hold. */
+	const before = character.gold;
+	const had = pontyCount(t.item, t.level || 0);
+	let refused = null;
+	try { await noHang(buy_secondhand(hit.rid), 'buy_secondhand', 12000); }
+	catch (e) { refused = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
+	await sleep(400);
+	const spent = before - character.gold;
+	const arrived = pontyCount(t.item, t.level || 0) > had;
+	if (!arrived) {
+		return { ok: false, retry: refused === 'cooldown' || refused === 'distance',
+			reason: (refused || 'nothing arrived') + (spent > 0 ? ' but ' + spent + ' gold left - CHECK THIS' : '') };
+	}
+	if (t.qty > 1) {
+		arbLog('Ponty sells one listing at a time - trimming ' + t.item + ' from x' + t.qty + ' to x1', '#8b98ab');
+		t.qty = 1;
+	}
+	return { ok: true, spent: spent > 0 ? spent : hit.price, rid: hit.rid };
+}
+
+
 	// ---- at_buy: verify, afford, buy ---------------------------------------
 	if (t.phase === 'at_buy') {
+		/* The NPC leg does not approach, verify or trade_buy like a stand: Ponty
+		   has no position to walk to, no slot to verify and no entity to trade
+		   with. It reads him live, re-matches, re-prices and buys by rid.
+		   -> buying the NPC leg */
+		if (arbPontyPlanned(t)) {
+			const pr = await arbPontyBuy(t);
+			if (!pr.ok) {
+				t.attempts = (t.attempts || 0) + 1;
+				const out = !pr.retry || t.attempts >= 3;
+				arbLog('Ponty buy: ' + pr.reason + (out ? ' - giving up on this attempt' : ' - retrying'),
+					out ? 'orange' : '#8b98ab');
+				if (out) arbFinish(t, 'abandoned', { reason: 'Ponty: ' + pr.reason, disposition: 'nothing_spent' });
+				else arbSaveTrade(t);
+				return;
+			}
+			t.actualSpend = pr.spent;
+			/* No arbMarkUsed: there is no slot to mark, the listing is consumed by
+			   the purchase itself, and marking the NAME would refuse every other
+			   thing he has for usedCooldownMs. */
+			t.phase = 'holding';
+			t.attempts = 0;
+			t.sellSince = t.sellSince || Date.now();
+			arbSaveTrade(t);
+			arbLedger({ id: t.id, event: 'open', item: t.item, level: t.level, special: t.special,
+				qty: t.qty, buyPrice: t.buyPrice, buyFrom: t.buyFrom, buyShard: t.buyShard,
+				spend: t.actualSpend, taxRate: t.taxRate });
+			arbHeldAdd(t.item, t.qty, t.actualSpend);
+			arbLog('bought ' + t.item + ' x' + t.qty + ' from Ponty for ' + t.actualSpend, '#7FD98A');
+			return;
+		}
 		const near = await arbApproach(t.buyFrom, { map: t.buyMap, x: t.buyX, y: t.buyY });
 		if (!near.ok) {
 			t.attempts = (t.attempts || 0) + 1;
@@ -5142,7 +5314,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v70 / buys the gear list off Ponty while scanning / 2026-09-30';
+const MERCHANT_BUILD = 'v71 / arbitrage can actually buy from Ponty, and no NPC is ever shelved / 2026-09-30';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
