@@ -28,6 +28,67 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v70
+
+He buys the gear list off Ponty while he is already standing there.
+
+The operator's rule, 2026-09-30: pick up a named list of tier-3 gear whenever it
+turns up in Ponty's stock during the ordinary scan cycle, at any level, without
+leaving the cycle to do it. Stop only on three-or-fewer free inventory slots or
+on-hand gold below 50,000,000. Bank what is bought if the bank has room; keep it
+if it does not. The list is edited by hand and will grow.
+
+Where it hooks in, and why there. `scoutPontyCheck()` already stands in range and
+reads Ponty every `pontyEveryMs`: both the read and the purchase are gated by the
+server on `simple_distance(G.maps.main.ref.secondhands, player) > 500`
+(node/server.js, `socket.on("secondhands")` and `socket.on("sbuy")`), and the town
+scan spot measures 47.4 units from him, 346.1 worst case. So nothing walks
+anywhere - the buying happens in the gap where the scan already happens.
+
+The hop waits by construction rather than by a flag. `scoutVisitNextShard()` does
+the scan and then returns so the hop falls on a LATER tick, and the buy pass is
+awaited inside that scan. There is no "hold the hop" state to get out of step
+with, which is the failure mode a separate flag would have introduced.
+
+One real change was needed to make a purchase possible at all: `scoutPontyQuery()`
+threw away the `rid`. It is per listing per shard, `buy_secondhand()` needs it, and
+the bridge's cached `/ponty` rows cannot supply one - so a purchase can only ever
+be made from a live read. It is carried through now, and a row without a rid is
+refused rather than attempted.
+
+Price is not a seller's asking price: Ponty charges
+`calculate_item_value(item) * G.multipliers.secondhands_mult` - 2x the item's own
+value, 3x for a cash item - so it is a property of the item and its level.
+`scoutItemPrice()` already computes exactly that for the scan report, so the gate
+and the report agree. Every purchase is then verified by gold delta AND by the
+item arriving in the bag, because an estimate that drifts from the charge is how a
+gold floor quietly stops meaning anything. A buy that reports a refusal but
+arrives anyway is trusted and logged; one that takes gold without arriving is
+logged in red.
+
+Both stops are tested before EVERY purchase, not once per pass, because one buy
+can cross either line. Rows are taken cheapest-first, so a budget near the floor
+buys the most pieces instead of spending itself on whichever listing came back
+first. `maxPrice` is an optional per-item ceiling, empty by default.
+
+Bank space cannot be read from the town spot - `character.bank` is null anywhere
+but inside the bank - so `pontyStash()` tries and treats a refusal as "no room",
+which is the operator's rule by a shorter route. It runs after the buying is
+finished, never between two purchases, and returns to the scan spot afterwards.
+
+`CONFIG.pontyBuy.items` is a plain array rebuilt into a Set on every pass, so
+adding an id from the console takes effect on the next shard with no redeploy.
+Duplicates are harmless - the operator's own list had `wingedboots` twice, and it
+dedupes to 23. `pontyStatus()` prints the list, both gates as they stand, any
+price caps, and the last ten purchases from a log kept in CODE storage.
+
+Verified with a 32-case node harness over the extracted functions: the dedupe, any
+level bought, unwanted and rid-less rows refused, cheapest-first ordering, the
+gold floor at the pass boundary and mid-pass, the slot floor at exactly 3, the
+price cap, banking, a full bank, an unreachable bank, the 'low' mode, item_gone,
+the disabled and empty-list cases, and the purchase log. The harness also caught
+one arithmetic error in my own test expectations rather than in the code.
+
 ## v69
 
 A reroute has to be to someone else.
