@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v68
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v69
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -407,6 +407,15 @@ const CONFIG = {
 		// A listing older than this is treated as gone rather than as an offer.
 		// -> MerchantComments.md#sellMaxAgeSec
 		sellMaxAgeSec: 7 * 60,
+		/* Total sell attempts for ONE trade, across every buyer it is rerouted
+		   to. Never reset by a reroute - that reset is what let a trade loop on
+		   the same absent buyer for 29 minutes with attempts still reading 0. */
+		maxSellAttempts: 4,
+		/* And a wall clock over the top of it, because an attempt counter only
+		   bounds the paths that increment it. Goods held longer than this are
+		   banked whatever the market says: the gold is already spent, and the
+		   merchant standing still is the larger cost. */
+		sellDeadlineMs: 15 * 60 * 1000,
 		// How close to get to a stand before trading. Not a measured limit - a
 		// -> MerchantComments.md#approachUnits
 		approachUnits: 350,
@@ -2090,7 +2099,7 @@ function arbStockPlan(sale) {
 		sellX: sale.sellX, sellY: sale.sellY,
 		spend: sale.stock.spend, actualSpend: sale.stock.spend,
 		expectProfit: sale.profit, taxRate: sale.taxRate,
-		goldAtStart: character.gold, attempts: 0,
+		goldAtStart: character.gold, attempts: 0, tried: [],
 	};
 }
 
@@ -3926,6 +3935,37 @@ function arbFailBlocked(shard, target, fails) {
 	return !!(e && e.until > Date.now());
 }
 
+/* PER-TRADE dead ends, which is a different question again from arbIsUsed
+   ("did we consume this order") and arbFailBlocked ("do we keep losing against
+   this counterparty"). This one is only "has THIS trade already stood in front
+   of that slot and failed", and it is what makes a reroute a reroute rather
+   than a retry wearing a different log line. */
+function arbSellSlotKey(shard, target, slot) {
+	return String(shard) + '|' + String(target) + '|' + String(slot);
+}
+function arbSellTried(t, shard, target, slot) {
+	if (!t || !target || !slot) return;
+	if (!Array.isArray(t.tried)) t.tried = [];
+	const k = arbSellSlotKey(shard, target, slot);
+	if (t.tried.indexOf(k) < 0) t.tried.push(k);
+}
+function arbSellTriedAlready(t, shard, target, slot) {
+	return !!(t && Array.isArray(t.tried) && t.tried.indexOf(arbSellSlotKey(shard, target, slot)) >= 0);
+}
+
+/* Held goods have a deadline. t.sellSince is stamped when the goods became
+   ours; t.at is the fallback for a trade that was in flight across the
+   upgrade. Only the two phases that can loop are checked - a hop in progress
+   is not a stall. */
+function arbSellOverdueMs(t) {
+	const limit = CONFIG.arbitrage.sellDeadlineMs;
+	if (!limit || !t) return 0;
+	const since = t.sellSince || t.at;
+	if (!since) return 0;
+	const held = Date.now() - since;
+	return held > limit ? held : 0;
+}
+
 function arbStrandings(delta) {
 	let n = 0;
 	try { n = get(ARB_STRAND_KEY) || 0; } catch (e) { n = 0; }
@@ -4035,6 +4075,9 @@ function arbPlan(flip, gold) {
 		spend: flip.spend, expectProfit: flip.profit, taxRate: flip.taxRate,
 		goldAtStart: gold,
 		attempts: 0,
+		/* Every (shard|buyer|slot) this trade has already failed against, so a
+		   reroute goes to someone new or not at all. -> arbSellTried */
+		tried: [],
 	};
 }
 
@@ -4212,7 +4255,9 @@ async function arbAdvance() {
 		// the sell leg strands, this stand must still not be re-bought from.
 		arbMarkUsed(t.buyShard, t.buyFrom, t.buySlot);
 		t.phase = 'holding';
+		// A new leg, so the counter legitimately restarts here - and only here.
 		t.attempts = 0;
+		t.sellSince = t.sellSince || Date.now();
 		arbSaveTrade(t);
 		arbLedger({
 			id: t.id, event: 'open', item: t.item, level: t.level, special: t.special,
@@ -4233,12 +4278,20 @@ async function arbAdvance() {
 			arbClearTrade();
 			return;
 		}
-		t.phase = 'holding'; arbSaveTrade(t);
+		t.phase = 'holding';
+		t.sellSince = t.sellSince || Date.now();
+		arbSaveTrade(t);
 		return;
 	}
 
 	// ---- holding: an item we paid for, and a shard to reach ----------------
 	if (t.phase === 'holding') {
+		const over = arbSellOverdueMs(t);
+		if (over) {
+			t.phase = 'stranded'; arbSaveTrade(t);
+			arbLog('held ' + t.item + ' for ' + Math.round(over / 60000) + ' min without selling it - banking it', 'orange');
+			return;
+		}
 		if (here !== t.sellShard) {
 			arbSaveTrade(t);
 			arbLog('hopping to ' + t.sellShard + ' to sell ' + t.item);
@@ -4251,26 +4304,57 @@ async function arbAdvance() {
 
 	// ---- at_sell: verify, sell, or find another buyer ----------------------
 	if (t.phase === 'at_sell') {
+		const over = arbSellOverdueMs(t);
+		if (over) {
+			t.phase = 'stranded'; arbSaveTrade(t);
+			arbLog('held ' + t.item + ' for ' + Math.round(over / 60000) + ' min without selling it - banking it', 'orange');
+			return;
+		}
 		const near = await arbApproach(t.sellTo, { map: t.sellMap, x: t.sellX, y: t.sellY });
 		const v = near.ok ? arbStillThere(t, 'sell') : { ok: false, reason: near.reason };
 		if (!v.ok) {
-			// The buyer is gone or has repriced. Re-ask the market rather than
-			// give up: the item is already paid for, so any profitable exit
-			// beats banking it.
-			const alt = await arbFindBuyerFor(t);
+			/* The buyer is gone or has repriced. Re-asking the market is right - the
+			   item is already paid for, so any profitable exit beats banking it -
+			   but the answer has to be SOMEONE ELSE.
+
+			   MEASURED 2026-09-29: an ascale x36 trade sat in at_sell for 29 minutes
+			   with attempts reading 0. Mercantor's stand row kept coming back from
+			   the bridge at 120s old, so arbFindBuyerFor returned the same buyer the
+			   approach had just failed on, the reroute branch logged 'buyer changed'
+			   and reset attempts to 0, and the 3-strike exit below could never be
+			   reached. The merchant was standing ON the row's coordinates with
+			   pEntity('Mercantor') null - the stand was simply not there. (That row
+			   carried x: 0, y: 0, so even its position was no help.)
+
+			   So: count the attempt ALWAYS and before anything else, shelve the
+			   counterparty at once rather than waiting for the trade to end, and
+			   remember the dead end on the trade so the search cannot offer it
+			   again. */
+			arbSellTried(t, t.sellShard, t.sellTo, t.sellSlot);
+			t.attempts = (t.attempts || 0) + 1;
+			arbNoteFailure(t.sellShard, t.sellTo);
+			const left = (CONFIG.arbitrage.maxSellAttempts || 4) - t.attempts;
+			const alt = left > 0 ? await arbFindBuyerFor(t) : null;
 			if (alt) {
-				arbLog('buyer changed - rerouting to ' + alt.target + ' on ' + alt.shard + ' @ ' + alt.price, '#FFD700');
+				arbLog('buyer gone (' + (v.reason || '?') + ') - rerouting to ' + alt.target
+					+ ' on ' + alt.shard + ' @ ' + alt.price + ' (' + left + ' attempt(s) left)', '#FFD700');
 				t.sellTo = alt.target; t.sellShard = alt.shard; t.sellSlot = alt.slot; t.sellPrice = alt.price;
+				/* Carry the new buyer's position, or clear the old one. Rerouting
+				   while keeping the previous buyer's coordinates would send the
+				   merchant to the wrong spot and fail there; a null hint at least
+				   fails immediately instead of walking first. A row at exactly 0,0 is
+				   the placeholder the bridge emits when it has no position. */
+				const hasPos = alt.map && typeof alt.x === 'number' && typeof alt.y === 'number'
+					&& isFinite(alt.x) && isFinite(alt.y) && !(alt.x === 0 && alt.y === 0);
+				t.sellMap = hasPos ? alt.map : null;
+				t.sellX = hasPos ? alt.x : null;
+				t.sellY = hasPos ? alt.y : null;
 				t.phase = (alt.shard === here) ? 'at_sell' : 'holding';
-				t.attempts = 0;
 				arbSaveTrade(t);
 				return;
 			}
-			t.attempts = (t.attempts || 0) + 1;
-			if (t.attempts >= 3) {
-				t.phase = 'stranded'; arbSaveTrade(t);
-				arbLog('no buyer for ' + t.item + ' - banking it', 'orange');
-			} else arbSaveTrade(t);
+			t.phase = 'stranded'; arbSaveTrade(t);
+			arbLog('no other buyer for ' + t.item + ' after ' + t.attempts + ' attempt(s) - banking it', 'orange');
 			return;
 		}
 		const r = await arbGoldDelta(trade_sell, [pEntity(t.sellTo), t.sellSlot, t.qty],
@@ -4346,7 +4430,7 @@ async function arbFindBuyerFor(t) {
 	const cost = t.actualSpend || t.spend || 0;
 	const tr = (typeof t.taxRate === 'number' ? t.taxRate : arbTaxRate()) || 0;
 	const need = cost * (CONFIG.arbitrage.fallbackMinRecovery || 0);
-	let best = null, refused = 0, bestRefused = null;
+	let best = null, refused = 0, bestRefused = null, deadEnds = 0, shelved = 0, tooSmall = 0;
 	for (const r of rows) {
 		// Not even a last-resort exit. -> NEVER_TRADE_NAMES
 		if (arbNeverBlocked(r.id)) continue;
@@ -4359,17 +4443,32 @@ async function arbFindBuyerFor(t) {
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			const shard = String(r.serverRegion) + String(r.serverIdentifier);
 			if (arbIsUsed(shard, r.id, k)) continue;   // we already filled this one
+			// Stood here already this trade and it did not work. The whole point.
+			if (arbSellTriedAlready(t, shard, r.id, k)) { deadEnds++; continue; }
+			/* And the planner's own gate, which this search never consulted: a
+			   counterparty shelved for repeated failures was still offered here as
+			   the way out, which is how the same absent buyer kept winning. */
+			if (arbFailBlocked(shard, r.id)) { shelved++; continue; }
+			/* An order for 2 cannot absorb 36. trade_sell is one call for the whole
+			   quantity, so a short order is a failed attempt, not a partial sale. */
+			if (typeof sl.q === 'number' && isFinite(sl.q) && sl.q < t.qty) { tooSmall++; continue; }
 			if (sl.price * t.qty * (1 - tr) < need) {
 				refused++;
 				if (bestRefused == null || sl.price > bestRefused) bestRefused = sl.price;
 				continue;
 			}
-			const cand = { target: r.id, slot: k, price: sl.price, shard: shard, ageSec: age };
+			const cand = { target: r.id, slot: k, price: sl.price, shard: shard, ageSec: age,
+				map: r.map || null, x: r.x, y: r.y };
 			if (!best || cand.price > best.price) best = cand;
 		}
 	}
 	/* A refusal must say so, or "nobody was buying" and "everyone was buying too
 	   cheaply" stay indistinguishable in the log forever. */
+	if (!best && (deadEnds || shelved || tooSmall)) {
+		arbLog('no new buyer for ' + t.item + ' - ' + deadEnds + ' already tried this trade, '
+			+ shelved + ' shelved for repeated failures, ' + tooSmall + ' wanting fewer than '
+			+ t.qty, '#8b98ab');
+	}
 	if (!best && refused) {
 		const perUnit = (t.qty && (1 - tr)) ? Math.ceil(need / (t.qty * (1 - tr))) : null;
 		arbLog('refused ' + refused + ' bid(s) for ' + t.item + ' below the reserve - best was '
@@ -4802,7 +4901,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v68 / relay cursor survives a hop / 2026-09-29';
+const MERCHANT_BUILD = 'v69 / a reroute must be to someone else / 2026-09-29';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
