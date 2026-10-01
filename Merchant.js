@@ -629,7 +629,7 @@ const CONFIG = {
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
-			'leather', 'mysterybox', 'weaponbox', 'armorbox',
+			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken',
 		],
 
 		/* The operator's two stops, and nothing else. Both are tested before
