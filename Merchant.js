@@ -319,10 +319,17 @@ const CONFIG = {
 	// somewhere else never changes where "here" is.
 	homeServer: 'USIV',
 	scout: {
-		// OFF, deliberately and temporarily.
+		// ON. The operator's standing preference, 2026-10-01: keep scouting
+		// enabled and keep `parked` true. This REPLACES the earlier arrangement,
+		// where a release carried these two at their defaults and the operator
+		// flipped them by hand after deploying - `true` is the default now, so do
+		// not reset it on a push. The comment this replaces said "OFF,
+		// deliberately and temporarily" while the value next to it was already
+		// true, which is the sort of line a later reader fixes the wrong way.
 		// -> MerchantComments.md#enabled
 		enabled: true,
 		// PARKED - hold the party's home shard and never hop just to scout.
+		// Standing preference 2026-10-01: keep this true, same as `enabled`.
 		// -> MerchantComments.md#parked
 		parked: true,
 		bridge: 'http://127.0.0.1:8787',
