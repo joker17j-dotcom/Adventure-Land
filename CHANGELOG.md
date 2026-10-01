@@ -28,6 +28,67 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v72
+
+The Ponty arbitrage buy never ran. Merchant.js never had `noHang()`.
+
+v71 called `noHang()` twice in the Ponty buy path - once to bound
+`get_secondhands()` and once to bound `buy_secondhand()`. This file does not have
+that helper. It shipped in Ranger v51 / Priest v26 / Mage v50 and was never
+ported here, AND THIS FILE ALREADY SAID SO, in two separate comments: the mover
+note ("has no noHang(), so a never-settling await would wedge every mover for
+good") and the self-chained-loop note ("Merchant.js never got noHang() - that
+shipped in Ranger v51"). I wrote the call anyway, directly below a line that
+correctly guards `get_secondhands` with `typeof`.
+
+Referencing an undeclared identifier THROWS. The throw landed in
+`arbPontyLive()`'s own `catch`, which turned it into
+`{ rows: null, why: 'noHang is not defined' }`, which `arbPontyBuy()` turned into
+`could not read Ponty: noHang is not defined` with `retry: true`. Three attempts,
+then `arbFinish(..., 'abandoned', { disposition: 'nothing_spent' })`. So no gold
+was ever at risk and nothing looked broken from the ledger's side - arbitrage
+simply never bought from Ponty, which is exactly the feature v71 existed to add.
+This is Form B from the conventions, verbatim: a catch swallowing a
+ReferenceError and returning a plausible lie. Form A would have been louder.
+
+Measured in Meltymerch's live CODE context, 2026-10-01: `typeof noHang` is
+`"undefined"`. The operator saw it as one log line,
+`[arb] Ponty buy: could not read Ponty: noHang is not defined - retrying`.
+
+THE FIX IS LOCAL. `arbNoHang(p, label, ms)` is built on the `Promise.race` idiom
+this file already uses twice - for the party link and for the scout bridge - so
+the timeout the code was written to have is kept without taking a dependency on
+the party scripts. Do not swap `noHang()` back in; there is a comment above it
+saying so.
+
+ALSO FIXED, same bug class, and this one predates v71: `sfx(data.sound)` in the
+timestamped game-log listener. `sfx` is not in the CODE context either (measured
+alongside the rest), so any `game_log` message carrying a sound threw, and
+`addLogEntry` on the very next statement never ran - the log silently dropped
+those entries. `sfx` DOES exist on the top window, and that block already reaches
+through `parent` for `socket` and `draw_trigger`, so it is now
+`parent.sfx(data.sound)` and the sound survives.
+
+HOW THIS GOT PAST 36 PASSING TESTS, which is the part worth remembering. The v71
+harness defined the helper itself, at line 20: `noHang: async (p) => p`. It
+supplied the one thing the real context lacks, so the happy-path purchase test
+passed against a context that does not exist. A harness is only as good as its
+fidelity to the real context, and a stub for a missing helper converts a hard
+failure into a green tick.
+
+`m72test.js` deliberately does NOT define `noHang`, and adds two static checks
+that would have caught this on day one: no bare `noHang(` call site survives
+anywhere in the file (comments and strings stripped first - the first version of
+that check produced three false hits from block-comment continuation lines), and
+`arbNoHang` is really called at both sites. Thirteen pass, including
+`arbPontyLive` reporting a timeout instead of wedging when `get_secondhands`
+never settles, which is the case the bound exists for.
+
+The sweep generalised: every identifier Merchant.js calls but does not define - 39
+of them - was checked with `typeof` against the live merchant context. Only
+`noHang` and `sfx` came back undefined. Worth re-running after any version that
+borrows code from the party scripts, because that is how both of these arrived.
+
 ## v71
 
 Arbitrage can actually buy from Ponty, and no NPC is ever shelved again.
