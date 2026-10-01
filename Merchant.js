@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v71
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v72
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -4538,10 +4538,30 @@ async function arbAdvance() {
        else took the listing between the scan and the trip. */
 function arbPontyPlanned(t) { return !!t && (t.buyIsNpc || arbIsNpcTarget(t.buyFrom)); }
 
+/* MERCHANT.JS HAS NO noHang(). That helper shipped in Ranger v51 / Priest v26 /
+   Mage v50 and was never ported here - this file says so twice already, at the
+   mover note and in the self-chained-loop note. v71 called it anyway, in both
+   Ponty functions below, and referencing an undeclared identifier THROWS rather
+   than evaluating to undefined. The throw landed in arbPontyLive's own catch and
+   came back out as "could not read Ponty: noHang is not defined" with
+   retry: true, so every Ponty flip burned its three attempts and abandoned -
+   textbook Form B, a catch returning a plausible lie. Measured in Meltymerch's
+   live CODE context 2026-10-01: typeof noHang === 'undefined'.
+
+   So the bound lives here, local and self-contained, with no dependency on the
+   party scripts. Promise.race is the idiom this file already uses for the party
+   link and the scout bridge. Do NOT replace this with noHang(). */
+function arbNoHang(p, label, ms) {
+	return Promise.race([
+		Promise.resolve(p),
+		new Promise((_, rej) => setTimeout(() => rej(new Error((label || 'call') + ' timed out after ' + ms + 'ms')), ms)),
+	]);
+}
+
 async function arbPontyLive() {
 	if (typeof get_secondhands !== 'function') return { rows: null, why: 'get_secondhands is not in this context' };
 	try {
-		const r = await noHang(get_secondhands(8000), 'get_secondhands', 10000);
+		const r = await arbNoHang(get_secondhands(8000), 'get_secondhands', 10000);
 		const list = (r && Array.isArray(r.items)) ? r.items : (Array.isArray(r) ? r : null);
 		if (!list) return { rows: null, why: 'no items in the reply' };
 		return { rows: list.filter((it) => it && it.name && it.rid) };
@@ -4591,7 +4611,7 @@ async function arbPontyBuy(t) {
 	const before = character.gold;
 	const had = pontyCount(t.item, t.level || 0);
 	let refused = null;
-	try { await noHang(buy_secondhand(hit.rid), 'buy_secondhand', 12000); }
+	try { await arbNoHang(buy_secondhand(hit.rid), 'buy_secondhand', 12000); }
 	catch (e) { refused = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
 	await sleep(400);
 	const spent = before - character.gold;
@@ -5320,7 +5340,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v71 / arbitrage can actually buy from Ponty, and no NPC is ever shelved / 2026-09-30';
+const MERCHANT_BUILD = 'v72 / the Ponty buy actually runs - Merchant.js never had noHang() / 2026-10-01';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -6889,7 +6909,7 @@ if (parent.$) {
 					if (typeof data === 'string') {
 						addLogEntry(`${timestamp} | ${data}`, 'gray');
 					} else {
-						if (data.sound) sfx(data.sound);
+						if (data.sound) parent.sfx(data.sound);
 						addLogEntry(`${timestamp} | ${data.message}`, data.color);
 					}
 				});
