@@ -28,6 +28,53 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v74
+
+A purchase now forces a rescan, so the posted scan never advertises what we just
+took.
+
+There was nothing to suppress. The report already came last - after the Ponty buy
+and after the stand buy - and there is exactly one post per visit. The flaw was
+that it posted the buffer captured BEFORE the buying, and that order is right,
+because the buy needs the data. So the report advertised the exact slot we had
+just emptied, with our own name on the scan.
+
+What that costs. Any reader of that post - the bridge, ALData, FamilyFleet, or
+this merchant's own `arbProbeFindFlips` while the row is still inside
+`sellMaxAgeSec` - plans a trip for an item already sitting in our bank.
+`arbStillThere()` catches it at the till, so no gold is at risk: the buy leg
+verifies the listing and abandons. But the trip is spent, and on another shard the
+hop goes with it. It is the cheapest possible class of bug to fix and the most
+annoying to watch.
+
+`scoutRescanAfterBuy(reason, alsoPonty)` runs between the buying and the report
+whenever either pass actually bought something: back to the scan spot, drop this
+shard's stands, read them again, and let the report post THAT. Both buy paths
+already walk back to the scan spot, so the travel is normally a no-op.
+
+The Ponty leg is separate on purpose. Ponty's stock is its own buffer
+(`bucket.ponty`) and a stand rescan does not touch it, so a Ponty purchase needs
+its own re-read. It calls `scoutPontyQuery()` directly and NOT
+`scoutPontyCheck()`, because the latter buys - a rescan that bought again would be
+a loop. `scoutPontyCheck()` now returns what it bought so the caller can tell
+whether that re-read is needed. If Ponty does not answer, the previous stock is
+kept rather than cleared, and the log says so instead of implying a fresh read.
+
+It fails safe twice. `CONFIG.scout.rescanAfterBuy` set false turns the whole thing
+off and the behaviour is exactly v73's. And if the walk back to the scan spot
+fails, it does NOT re-read from wherever it is standing - a settle scan taken at
+the seller's feet would be a worse lie than the stale one. It says "posting the
+pre-purchase scan" and lets the old buffer go out.
+
+123/123 across both harnesses. Two of those assertions had to be corrected rather
+than the code: a `try { await sbBuyPass(` pattern that stopped matching when the
+result moved into a variable, and a "does not call scoutPontyCheck" regex that
+searched from the first occurrence of the NAME anywhere in the file, including the
+`-> ` pointer comments, so it was measuring the wrong span.
+
+313,240 -> 316,436 chars. Same deploy rule as v73: feature-detect, in this case
+`typeof scoutRescanAfterBuy === 'function'`.
+
 ## v73
 
 Gear-plan pieces are now bought off other players' stands, not just off Ponty.
