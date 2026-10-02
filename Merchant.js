@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v73
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v74
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -363,6 +363,10 @@ const CONFIG = {
 		   here the walk is already paid for and a scan costs a synchronous
 		   read of parent.entities plus a post. */
 		townScanMs: 20 * 1000,
+		/* Never publish a listing we just bought. The scan is captured BEFORE the
+		   buying, which is the right order - the buy needs the data - so without
+		   this the report advertises the slot we emptied. -> scoutRescanAfterBuy */
+		rescanAfterBuy: true,
 		// Where the stands are, as a box in world coordinates.
 		// -> MerchantComments.md#standRegion
 		standRegion: { minX: -250, maxX: 260, minY: -210, maxY: 190 },
@@ -3627,7 +3631,9 @@ async function scoutPontyCheck() {
 		   the buying, never between two purchases. -> PONTY BUY */
 		try {
 			const bought = await pontyBuyPass(items);
-			if (bought) await pontyStash(bought);
+			/* Handed back so the caller knows the buffered Ponty stock is now stale
+			   by exactly what we took. -> scoutRescanAfterBuy */
+			if (bought) { await pontyStash(bought); return bought; }
 		} catch (e) {
 			pontyLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red');
 		}
@@ -4098,6 +4104,49 @@ function sbStatus() {
 }
 
 
+/* RESCAN AFTER A PURCHASE - never publish a listing we just took.
+
+   The scan is captured BEFORE the buying, and that order is right: the buy needs
+   the data. But it means the report would advertise the exact slot we emptied.
+   Anyone reading it - the bridge, ALData, FamilyFleet, or this merchant's own
+   flip finder while the row is still inside sellMaxAgeSec - then plans a trip for
+   an item already sitting in our bank. arbStillThere() catches it at the till, so
+   no gold is lost, but the trip is spent and on another shard the hop with it.
+
+   So when anything was bought, drop this shard's stands, read them again from the
+   scan spot, and let the report post THAT. Both buy paths already walk back to the
+   scan spot, so the travel here is normally a no-op.
+
+   It does NOT suppress a post. There is only one post per visit and it already
+   comes after the buying; what was missing was that the buffer behind it had gone
+   stale by our own hand. */
+async function scoutRescanAfterBuy(reason, alsoPonty) {
+	if (!CONFIG.scout.rescanAfterBuy) return false;
+	if (!(await scoutGoToScanSpot())) {
+		scoutLog('could not get back to the scan spot - posting the pre-purchase scan', 'orange');
+		return false;
+	}
+	await scoutSettleScan();        // clears this shard's stands first, by design
+	let pontyNote = '';
+	if (alsoPonty) {
+		/* Ponty's stock is a separate buffer and a stand rescan does not touch it,
+		   so a Ponty purchase needs its own re-read. He answers only within 500
+		   units - the same gate scoutPontyCheck tests, which the scan spot passes
+		   at 47.4. Deliberately not routed through scoutPontyCheck: that would buy
+		   again, and this is a read. */
+		const items = await scoutPontyQuery();
+		if (items) {
+			scoutBufferFor(scoutHere()).ponty = items;
+			pontyNote = ', Ponty re-read at ' + items.length + ' item(s)';
+		} else {
+			pontyNote = ', Ponty did not answer - his stock stands as read before the buy';
+		}
+	}
+	scoutLog('rescanned after ' + reason + ': ' + scoutCurrentShardCount() + ' stand(s) on '
+		+ mShardKey() + pontyNote + ' - posting this one', '#5ED6A8');
+	return true;
+}
+
 function scoutPontyDue() {
 	const last = scout.pontySeen[mShardKey()];
 	return !last || Date.now() - last > CONFIG.scout.pontyEveryMs;
@@ -4321,8 +4370,12 @@ async function scoutHeldScan() {
 		   true, so the gear buy has to hang off BOTH scans or it would only ever
 		   fire on the shard-rotation cycle the operator has turned off.
 		   -> STAND BUY */
-		try { await sbBuyPass('town scan'); }
+		let boughtStand = null;
+		try { boughtStand = await sbBuyPass('town scan'); }
 		catch (e) { sbLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red'); }
+		/* No Ponty leg on this path, so the stand rescan is the whole of it.
+		   -> scoutRescanAfterBuy */
+		if (boughtStand && boughtStand.length) await scoutRescanAfterBuy('a stand purchase', false);
 		const r = await scoutReportConfirmed();
 		if (r && r.reply) scout.lastReply = r.reply;
 		scoutSaveBuffer();
@@ -4345,11 +4398,17 @@ async function scoutVisitNextShard() {
 			// where the read will happen.
 			await scoutGoToScanSpot();
 			await scoutSettleScan();
-			if (scoutPontyDue()) await scoutPontyCheck();
+			let boughtPonty = null, boughtStand = null;
+			if (scoutPontyDue()) boughtPonty = await scoutPontyCheck();
 			/* After the scan, so the stand data is already buffered, and before the
 			   report, exactly like the Ponty buy. -> STAND BUY */
-			try { await sbBuyPass('shard scan'); }
+			try { boughtStand = await sbBuyPass('shard scan'); }
 			catch (e) { sbLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red'); }
+			/* Either purchase makes the captured scan wrong about our own doing, so
+			   read it again before the report goes out. -> scoutRescanAfterBuy */
+			if ((boughtPonty && boughtPonty.length) || (boughtStand && boughtStand.length)) {
+				await scoutRescanAfterBuy('a purchase on ' + here, !!(boughtPonty && boughtPonty.length));
+			}
 			const r = await scoutReportConfirmed();
 			if (r && r.reply) scout.lastReply = r.reply;
 			if (r && r.confirmed) scoutSave('scanned', here);
@@ -5678,7 +5737,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v73 / gear-plan pieces bought off player stands at or under 1,000,000 / 2026-10-02';
+const MERCHANT_BUILD = 'v74 / a purchase forces a rescan, so the report never advertises what we just took / 2026-10-02';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
