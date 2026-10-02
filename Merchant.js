@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v72
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v73
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -658,6 +658,53 @@ const CONFIG = {
 		   list half-bought. */
 		bankAfterBuy: 'always',
 		bankWhenFreeSlotsBelow: 12,   // only consulted when bankAfterBuy is 'low'
+	},
+
+	/* STAND BUY LIST - the gear-plan pieces worth taking off another player's
+	   stand when they are cheap enough. -> STAND BUY */
+	standBuy: {
+		enabled: true,
+
+		/* EDIT THIS, exactly like pontyBuy.items above - ids, any order,
+		   duplicates harmless, rebuilt on every pass so a console change takes
+		   effect on the next scan without a redeploy. Seeded 2026-10-02 with the
+		   intersection of GEAR_PROGRESSION and pontyBuy.items: 23 of those 43 ids
+		   are gear-plan pieces, the other 20 (boxes, slices, scrolls, offerings,
+		   tracker, leather, funtoken) are not and are deliberately absent. Level
+		   is not part of the rule - any level at or under the cap is bought. */
+		items: [
+			// ranger
+			'alloyquiver', 'fury', 'suckerpunch',
+			// priest
+			'lmace', 'mshield', 'xhelmet', 'vattire', 'bcape', 'mpxamulet',
+			'mpxgloves', 'sbelt', 'rabbitsfoot',
+			// mage
+			'gstaff', 'mageshood', 'jacko',
+			// shared by two or three of the three classes
+			'cearring', 'cring', 'ecape', 'starkillers', 'supermittens', 'tshirt9',
+			'wingedboots', 'zapper',
+		],
+
+		/* The operator's line, 2026-10-02: a listing above this is left alone.
+		   Unlike Ponty's price this is a SELLER'S ASKING price - whatever they
+		   typed, with no relation to calculate_item_value - so this ceiling is
+		   doing real work rather than acting as a sanity check. */
+		maxPrice: 1000000,
+		maxPriceByItem: {},      // optional id -> gold, overrides maxPrice for that id
+
+		goldFloor: 50000000,     // never let a buy take on-hand gold below this
+		stopAtFreeSlots: 3,      // stop while 3 or fewer inventory slots are free
+
+		/* Each purchase costs a walk to the seller and back, which Ponty's does
+		   not, so a pass is bounded instead of draining every listing on the shard
+		   in one go. Whatever is left is still there on the next scan. */
+		maxPerPass: 3,
+		skipAfterMissMs: 20 * 60 * 1000,   // don't re-walk a listing that just fell through
+
+		dryRun: false,           // rehearse the whole pass, stopping short of trade_buy
+
+		bankAfterBuy: 'always',  // 'always' | 'low' | 'never'
+		bankWhenFreeSlotsBelow: 12,
 	},
 
 	stand: {
@@ -3777,6 +3824,280 @@ function pontyStatus() {
 }
 
 
+// ============================================================================
+// STAND BUY - take the gear-plan pieces off another player's stand when cheap
+//
+// The operator's rule, 2026-10-02: for the ids on BOTH the gear plan and the
+// Ponty buy list, buy from a player's stand whenever the listed price is
+// 1,000,000 or less. The list is its own editable array, same as the Ponty one.
+//
+// WHY THIS IS NOT ARBITRAGE. Arbitrage buys to RESELL, so it will not look at a
+// listing without a matching buy order clearing minProfit - a cheap wingedboots
+// nobody is bidding on is invisible to it. This buys to KEEP: the only test is
+// the price, and the piece goes to the bank instead of back on the market. It
+// also keeps gear spending out of the arbitrage ledger, which is why it has its
+// own log key rather than writing trades.
+//
+// WHY IT HANGS OFF THE SCAN. scoutSettleScan() already reads every stand on
+// every shard into scout.shards, from the live entity list, seconds old - so
+// unlike the arbitrage finders there is no freshness question and no bridge
+// dependency. The one unavoidable cost is the walk: trade_buy needs the stand
+// loaded, where Ponty sells from 500 units away.
+//
+// WHAT IT WILL NOT DO. Never buys from the operator's own characters, never
+// touches a buy order, and never pays more than a price it re-read on arrival.
+// ============================================================================
+const SB_LOG_KEY = 'standbuy_log';
+const sbSkip = new Map();    // shard|seller|slot -> until. Runtime only, by design.
+
+function sbLog(m, c) { try { game_log('[gearbuy] ' + m, c || '#C7A3FF'); } catch (e) { } console.log('[gearbuy] ' + m); }
+function sbFmt(n) { return (n == null || !isFinite(n)) ? '?' : Math.round(n).toLocaleString('en-US'); }
+
+/* Rebuilt per pass for the same reason pontyWanted() is: the operator edits the
+   list from the console, and a Set hoisted at load would ignore that until a
+   redeploy. */
+function sbWanted() {
+	const out = new Set();
+	for (const n of ((CONFIG.standBuy || {}).items || [])) if (n) out.add(String(n));
+	return out;
+}
+
+/* Our own characters are never a counterparty. Standing operator rule, and the
+   mule is included because he holds gear on purpose. */
+function sbOwnNames() {
+	const out = new Set(CONFIG.partyMembers || []);
+	out.add(character.name);
+	if (CONFIG.muling && CONFIG.muling.muleName) out.add(CONFIG.muling.muleName);
+	return out;
+}
+
+function sbCap(name) {
+	const cfg = CONFIG.standBuy || {};
+	const per = (cfg.maxPriceByItem || {})[name];
+	if (typeof per === 'number' && isFinite(per)) return per;
+	return (typeof cfg.maxPrice === 'number' && isFinite(cfg.maxPrice)) ? cfg.maxPrice : 0;
+}
+
+/* Tested before every purchase, not once per pass - the same two gates as the
+   Ponty list, reusing its two helpers because they are the same questions. */
+function sbGate(cost) {
+	const cfg = CONFIG.standBuy;
+	const free = pontyFreeSlots();
+	if (free <= cfg.stopAtFreeSlots) return { ok: false, why: free + ' inventory slot(s) free' };
+	if (character.gold - (cost || 0) < cfg.goldFloor) {
+		return { ok: false, why: 'gold ' + sbFmt(character.gold) + ' minus ' + sbFmt(cost)
+			+ ' would fall below the ' + sbFmt(cfg.goldFloor) + ' floor' };
+	}
+	return { ok: true };
+}
+
+function sbSkipKey(seller, slot) { return mShardKey() + '|' + seller + '|' + slot; }
+function sbSkipped(seller, slot) {
+	const k = sbSkipKey(seller, slot);
+	const until = sbSkip.get(k);
+	if (until == null) return false;
+	if (Date.now() >= until) { sbSkip.delete(k); return false; }
+	return true;
+}
+
+/* Candidates from this shard's stands: the buffer the settle scan just filled,
+   plus a live read for anything that arrived since. Live wins - its price is the
+   newer one. A buffered row that has scrolled out of vision is still usable,
+   because it carries map/x/y and arbApproach walks to a last-known spot. */
+function sbOffers() {
+	const want = sbWanted();
+	const mine = sbOwnNames();
+	const rows = new Map();
+	const buf = scout.shards.get(mShardKey());
+	if (buf && buf.stands) for (const r of buf.stands.values()) if (r && r.id) rows.set(r.id, r);
+	try { for (const r of scoutScanStands()) if (r && r.id) rows.set(r.id, r); } catch (e) { }
+	const out = [];
+	for (const r of rows.values()) {
+		if (mine.has(r.id)) continue;
+		if (arbNeverBlocked(r.id)) continue;
+		for (const k in (r.slots || {})) {
+			const sl = r.slots[k];
+			if (!sl || !sl.name) continue;
+			if (sl.b) continue;                                // a buy order, not for sale
+			if (!want.has(sl.name)) continue;
+			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;
+			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
+			if (sl.price > sbCap(sl.name)) continue;
+			if (sbSkipped(r.id, k)) continue;
+			out.push({ seller: r.id, slot: k, name: sl.name, level: sl.level || 0,
+				p: sl.p || null, price: sl.price, q: sl.q || 1,
+				map: r.map, x: r.x, y: r.y });
+		}
+	}
+	out.sort((a, b) => a.price - b.price);   // cheapest first, so a tight budget buys the most
+	return out;
+}
+
+/* Is this still the listing the scan saw? A price that moved UP is a different
+   trade nobody evaluated; a price that moved down is fine and is what gets paid.
+   Read off the live entity, not a probe, because we are standing next to them. */
+function sbVerify(row) {
+	const e = pEntity(row.seller);
+	if (!e) return { ok: false, why: 'seller not loaded on arrival' };
+	if (!e.stand) return { ok: false, why: 'stand is closed' };
+	const sl = (e.slots || {})[row.slot];
+	if (!sl || !sl.name) return { ok: false, why: 'slot ' + row.slot + ' is empty now' };
+	if (sl.b) return { ok: false, why: 'slot ' + row.slot + ' is a buy order now' };
+	if (sl.name !== row.name || (sl.level || 0) !== row.level) {
+		return { ok: false, why: 'slot now holds ' + sl.name + '+' + (sl.level || 0) };
+	}
+	if (!(typeof sl.price === 'number' && isFinite(sl.price))) return { ok: false, why: 'no price on the slot' };
+	if (sl.price > row.price) return { ok: false, why: 'price moved up to ' + sbFmt(sl.price) };
+	return { ok: true, price: sl.price };
+}
+
+/* One listing: walk, re-read, buy, and judge by what happened to the inventory
+   rather than by what the call returned. */
+async function sbBuyOne(row) {
+	const cfg = CONFIG.standBuy;
+	const ap = await arbApproach(row.seller, { map: row.map, x: row.x, y: row.y });
+	if (!ap.ok) return { ok: false, why: 'could not reach ' + row.seller + ': ' + ap.reason };
+
+	const v = sbVerify(row);
+	if (!v.ok) return { ok: false, why: v.why };
+	const cap = sbCap(row.name);
+	if (v.price > cap) return { ok: false, why: 'live price ' + sbFmt(v.price) + ' is over its ' + sbFmt(cap) + ' cap' };
+	const gate = sbGate(v.price);
+	if (!gate.ok) return { ok: false, why: gate.why, stop: true };
+
+	if (cfg.dryRun) {
+		sbLog('DRY RUN: would buy ' + row.name + '+' + row.level + ' from ' + row.seller
+			+ ' slot ' + row.slot + ' for ' + sbFmt(v.price), '#FFD700');
+		return { ok: false, why: 'dry run' };
+	}
+
+	const had = pontyCount(row.name, row.level);
+	const before = character.gold;
+	let refused = null;
+	try { await trade_buy(pEntity(row.seller), row.slot, 1); }
+	catch (e) { refused = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
+	await sleep(1200);           // the gold change lands on a socket round trip
+	const spent = before - character.gold;
+	if (pontyCount(row.name, row.level) > had) {
+		if (refused) sbLog(row.name + ' reported "' + refused + '" but arrived anyway - trusting the inventory', 'orange');
+		return { ok: true, spent: spent > 0 ? spent : v.price };
+	}
+	return { ok: false, why: (refused || 'nothing arrived')
+		+ (spent > 0 ? ' but ' + sbFmt(spent) + ' gold left - CHECK THIS' : '') };
+}
+
+function sbRemember(bought) {
+	try {
+		const log = get(SB_LOG_KEY) || [];
+		for (const b of bought) {
+			log.push({ at: Date.now(), shard: mShardKey(), name: b.name, level: b.level, spent: b.spent, from: b.from });
+		}
+		while (log.length > 80) log.shift();
+		set(SB_LOG_KEY, log);
+	} catch (e) { sbLog('could not record the purchase in storage', 'orange'); }
+}
+
+/* Same shape and same reasoning as pontyStash: bank space cannot be read from
+   outside the bank, so this TRIES and treats a refusal as "no room". Runs after
+   the buying, never between two purchases. */
+async function sbStash(bought) {
+	const cfg = CONFIG.standBuy;
+	if (!bought || !bought.length || cfg.bankAfterBuy === 'never') return;
+	if (cfg.bankAfterBuy === 'low' && pontyFreeSlots() > cfg.bankWhenFreeSlotsBelow) {
+		sbLog('keeping ' + bought.length + ' item(s) on hand - ' + pontyFreeSlots() + ' slots free', '#8b98ab');
+		return;
+	}
+	if (!(await travelToBank())) { sbLog('could not reach the bank - keeping them on hand', 'orange'); return; }
+	let stored = 0, kept = 0;
+	for (const b of bought) {
+		const idx = pontySlotOf(b.name, b.level);
+		if (idx < 0) continue;
+		try { await bank_store(idx); stored++; await sleep(300); }
+		catch (e) {
+			kept++;
+			sbLog('bank would not take ' + b.name + '+' + b.level + ' ('
+				+ ((e && (e.reason || e.message)) ? (e.reason || e.message) : e) + ') - keeping it on hand', 'orange');
+		}
+	}
+	sbLog('banked ' + stored + ' item(s)' + (kept ? ', kept ' + kept + ' (no room)' : ''), '#7FD98A');
+}
+
+async function sbBuyPass(why) {
+	const cfg = CONFIG.standBuy;
+	if (!cfg || !cfg.enabled) return null;
+	/* A missing or nonsense ceiling must not read as "no ceiling". This feature
+	   spends up to the cap per item on a stranger's asking price, so the failure
+	   mode of guessing wrong is paying it. */
+	if (!(typeof cfg.maxPrice === 'number' && isFinite(cfg.maxPrice) && cfg.maxPrice > 0)) {
+		sbLog('CONFIG.standBuy.maxPrice is not a positive number - refusing to buy rather than assume no ceiling', 'red');
+		return null;
+	}
+	if (!sbWanted().size) return null;
+	const offers = sbOffers();
+	if (!offers.length) return null;
+
+	sbLog(offers.length + ' gear-plan listing(s) at or under cap on ' + mShardKey()
+		+ ' (' + (why || 'scan') + '): '
+		+ offers.slice(0, 6).map((o) => o.name + '+' + o.level + ' ' + sbFmt(o.price) + ' @' + o.seller).join(', ')
+		+ (offers.length > 6 ? ', +' + (offers.length - 6) + ' more' : ''), '#FFD700');
+
+	const bought = [];
+	let walked = 0;
+	for (const o of offers) {
+		if (walked >= cfg.maxPerPass) {
+			sbLog('stopping at ' + cfg.maxPerPass + ' seller(s) this pass - the rest keep until the next scan', '#8b98ab');
+			break;
+		}
+		const gate = sbGate(o.price);
+		if (!gate.ok) { sbLog('stopping here: ' + gate.why, 'orange'); break; }
+		walked++;
+		const res = await sbBuyOne(o);
+		if (res.ok) {
+			bought.push({ name: o.name, level: o.level, spent: res.spent, from: o.seller });
+			sbLog('bought ' + o.name + '+' + o.level + ' from ' + o.seller + ' for ' + sbFmt(res.spent)
+				+ ' (gold ' + sbFmt(character.gold) + ', ' + pontyFreeSlots() + ' slots free)', '#7FD98A');
+		} else {
+			sbLog('no deal on ' + o.name + '+' + o.level + ' from ' + o.seller + ': ' + res.why, 'orange');
+			if (res.stop) break;
+			sbSkip.set(sbSkipKey(o.seller, o.slot), Date.now() + (cfg.skipAfterMissMs || 0));
+		}
+	}
+
+	if (bought.length) { sbRemember(bought); await sbStash(bought); }
+	/* We walked off the scan spot, and both callers expect to still be standing
+	   on it - scoutHeldScan's own gate is mInTown(). Cheap when already there. */
+	if (walked) await scoutGoToScanSpot();
+	return bought.length ? bought : null;
+}
+
+/* Operator view: the list, the gates as they stand, and what has been bought. */
+function sbStatus() {
+	const cfg = CONFIG.standBuy;
+	const gate = sbGate(0);
+	sbLog('enabled=' + cfg.enabled + (cfg.dryRun ? ' DRY RUN' : '') + ' items=' + sbWanted().size
+		+ ' cap=' + sbFmt(cfg.maxPrice) + ' free=' + pontyFreeSlots() + ' (stop at ' + cfg.stopAtFreeSlots + ')'
+		+ ' gold=' + sbFmt(character.gold) + ' (floor ' + sbFmt(cfg.goldFloor) + ')'
+		+ ' maxPerPass=' + cfg.maxPerPass + ' bankAfterBuy=' + cfg.bankAfterBuy
+		+ ' -> ' + (gate.ok ? 'BUYING' : 'HOLDING: ' + gate.why), gate.ok ? '#7FD98A' : 'orange');
+	sbLog('list: ' + [...sbWanted()].sort().join(', '));
+	const caps = Object.keys(cfg.maxPriceByItem || {});
+	if (caps.length) sbLog('per-item caps: ' + caps.map((k) => k + ' <= ' + sbFmt(cfg.maxPriceByItem[k])).join(', '));
+	const offers = sbOffers();
+	sbLog(offers.length + ' listing(s) would qualify on ' + mShardKey() + ' right now'
+		+ (offers.length ? ': ' + offers.slice(0, 8).map((o) => o.name + '+' + o.level + ' ' + sbFmt(o.price) + ' @' + o.seller).join(', ') : ''),
+		offers.length ? '#FFD700' : '#8b98ab');
+	if (sbSkip.size) sbLog(sbSkip.size + ' listing(s) on the miss-skip list');
+	let log = [];
+	try { log = get(SB_LOG_KEY) || []; } catch (e) { }
+	if (!log.length) { sbLog('nothing bought yet'); return; }
+	for (const e of log.slice(-10)) {
+		sbLog('  ' + new Date(e.at).toISOString().slice(0, 16).replace('T', ' ') + ' ' + e.shard
+			+ ' ' + e.name + '+' + e.level + ' for ' + sbFmt(e.spent) + ' from ' + (e.from || '?'), '#8b98ab');
+	}
+	sbLog('  (' + log.length + ' recorded, spent ' + sbFmt(log.reduce((a, e) => a + (e.spent || 0), 0)) + ' in total)', '#8b98ab');
+}
+
+
 function scoutPontyDue() {
 	const last = scout.pontySeen[mShardKey()];
 	return !last || Date.now() - last > CONFIG.scout.pontyEveryMs;
@@ -3996,6 +4317,12 @@ async function scoutHeldScan() {
 	state.busy = true;
 	try {
 		await scoutSettleScan();
+		/* The parked path is the one that actually runs while scout.parked is
+		   true, so the gear buy has to hang off BOTH scans or it would only ever
+		   fire on the shard-rotation cycle the operator has turned off.
+		   -> STAND BUY */
+		try { await sbBuyPass('town scan'); }
+		catch (e) { sbLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red'); }
 		const r = await scoutReportConfirmed();
 		if (r && r.reply) scout.lastReply = r.reply;
 		scoutSaveBuffer();
@@ -4019,6 +4346,10 @@ async function scoutVisitNextShard() {
 			await scoutGoToScanSpot();
 			await scoutSettleScan();
 			if (scoutPontyDue()) await scoutPontyCheck();
+			/* After the scan, so the stand data is already buffered, and before the
+			   report, exactly like the Ponty buy. -> STAND BUY */
+			try { await sbBuyPass('shard scan'); }
+			catch (e) { sbLog('buy pass threw: ' + ((e && e.message) ? e.message : e) + ' - the scan itself stands', 'red'); }
 			const r = await scoutReportConfirmed();
 			if (r && r.reply) scout.lastReply = r.reply;
 			if (r && r.confirmed) scoutSave('scanned', here);
@@ -5347,7 +5678,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v72 / the Ponty buy actually runs - Merchant.js never had noHang() / 2026-10-01';
+const MERCHANT_BUILD = 'v73 / gear-plan pieces bought off player stands at or under 1,000,000 / 2026-10-02';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
