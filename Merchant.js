@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v74
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v75
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2429,9 +2429,15 @@ const GEAR_PROGRESSION = {
 			orb: { item: 'jacko', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
 		},
 		{
-			// Mainhand is Blaster (gstaff), a two-handed great_staff - no offhand.
+			/* Mainhand is the Spark Staff, a two-handed great_staff - hence no offhand.
+			   CORRECTED 2026-10-02: this row said gstaff (Blaster) by mistake. Blaster is
+			   stronger at the same level (139 attack / 131 range at +9 against sparkstaff's
+			   126.5 / 122.5) but its grade thresholds are [0,0,9,10] against sparkstaff's
+			   [0,5,10,12], so it sits in an expensive band from level zero, and it costs
+			   1,240,000 against 224,000. MageofOz is already on sparkstaff+6, which beats a
+			   fully upgraded tier-2 firestaff+9 on both attack and range. */
 			earring1: { item: 'cearring', level: 5, method: 'compound' }, helmet: { item: 'mageshood', level: 9, method: 'upgrade' }, earring2: { item: 'cearring', level: 5, method: 'compound' }, amulet: { item: 'intamulet', level: 5, method: 'compound' },
-			mainhand: { item: 'gstaff', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 6, method: 'upgrade' }, offhand: null, cape: { item: 'ecape', level: 9, method: 'upgrade' },
+			mainhand: { item: 'sparkstaff', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 6, method: 'upgrade' }, offhand: null, cape: { item: 'ecape', level: 9, method: 'upgrade' },
 			ring1: { item: 'zapper', level: 1, method: 'compound' }, pants: { item: 'starkillers', level: 8, method: 'upgrade' }, ring2: { item: 'cring', level: 5, method: 'compound' }, belt: { item: 'intbelt', level: 5, method: 'compound' },
 			orb: { item: 'jacko', level: 5, method: 'compound' }, shoes: { item: 'wingedboots', level: 10, method: 'upgrade' }, gloves: { item: 'supermittens', level: 8, method: 'upgrade' }, elixir: null,
 		},
@@ -5737,7 +5743,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v74 / a purchase forces a rescan, so the report never advertises what we just took / 2026-10-02';
+const MERCHANT_BUILD = 'v75 / mage tier-3 mainhand corrected to sparkstaff@9 - gstaff was a slip / 2026-10-02';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
