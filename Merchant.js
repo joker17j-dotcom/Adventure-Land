@@ -640,7 +640,7 @@ const CONFIG = {
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
-			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'tracker', 'stormfeather',
+			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'tracker', 'feather0',
 			//upgrade
 			'scroll3', 'scroll4', 'cscroll3', 'cscroll4', 'offeringp', 'offering', 'offeringx',
 		],
