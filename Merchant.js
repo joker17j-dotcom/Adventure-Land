@@ -636,7 +636,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'starkillers', 'mpxgloves', 'bcape',
 			'mpxamulet', 'sbelt', 'rabbitsfoot', 'cearring', 'zapper',
 			// mage
-			'gstaff', 'mageshood', 'jacko', 'cring',
+			'sparkstaff', 'mageshood', 'jacko', 'cring',
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
@@ -683,7 +683,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'bcape', 'mpxamulet',
 			'mpxgloves', 'sbelt', 'rabbitsfoot',
 			// mage
-			'gstaff', 'mageshood', 'jacko',
+			'sparkstaff', 'mageshood', 'jacko',
 			// shared by two or three of the three classes
 			'cearring', 'cring', 'ecape', 'starkillers', 'supermittens', 'tshirt9',
 			'wingedboots', 'zapper',
