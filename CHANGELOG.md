@@ -28,6 +28,54 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v75
+
+Mage tier-3 mainhand corrected to `sparkstaff@9`. The row said `gstaff` by
+mistake - the operator's slip, caught when MageofOz was equipped with a Spark
+Staff and the plan disagreed.
+
+Both are two-handed `great_staff`, so `offhand: null` was right either way and
+nothing else in the row moves. The comment above it, which named Blaster
+specifically, is rewritten rather than left to contradict the entry.
+
+Blaster is the stronger weapon at the same level - 139 attack / 131 range at +9
+against sparkstaff's 126.5 / 122.5 - so this is not a correction of a weaker
+choice. It is a correction of an expensive one: Blaster's grade thresholds are
+`[0,0,9,10]` against sparkstaff's `[0,5,10,12]`, so it sits in an expensive band
+from level zero, and it costs 1,240,000 against 224,000. Measured live
+2026-10-02: MageofOz is on `sparkstaff+6` at 104 attack / 109 range, which
+already beats a fully upgraded tier-2 `firestaff+9` at 84.5 / 87.5, and carries
+blast, which firestaff does not.
+
+REBASED MID-EDIT. The operator added `feather0` to `pontyBuy.items` (a08f076,
+ad04ad6) while this change was being prepared. The editor's own base hash caught
+it before anything was written, the two ops applied unchanged against the new
+base - different region - and that edit is preserved.
+
+THE BUY LISTS, which this commit deliberately did not touch. Dropping `gstaff`
+from the plan left it on `pontyBuy.items` and `standBuy.items` while no longer
+being gear, and left `sparkstaff` as gear on neither list. Those lists belong to
+the operator, so a code change does not get to edit them; the drift was reported
+instead. The operator closed it himself in 216ccb5, swapping `gstaff` for
+`sparkstaff` on both, and `standBuy.items` is once again exactly the
+gear-plan/Ponty intersection at 23 ids.
+
+That round trip is why the harness assertion which caught this was SOFTENED
+rather than deleted. The hard check is now "nothing on standBuy is outside the
+Ponty list", which is always a mistake. Gear-plan membership is REPORTED as drift
+in both directions - what is on the list and should not be, and what should be on
+it and is not. It printed the `gstaff` drift when the plan changed and printed
+"no drift" once the lists were fixed, which is the behaviour wanted: asserting
+the seeded equality forever would fail after every legitimate plan edit, and a
+suite that fails for legitimate reasons gets ignored.
+
+Tier 2 is untouched and still reads `firestaff@9` with `offhand: wbook0@4`. That
+is now incoherent with a tier 3 the mage has already passed, and with a
+two-handed weapon he cannot pair an offhand with. Left for the operator.
+
+316,448 -> 316,929 chars. 121/121 across both harnesses, re-run against the
+operator's follow-up commit.
+
 ## v74
 
 A purchase now forces a rescan, so the posted scan never advertises what we just
