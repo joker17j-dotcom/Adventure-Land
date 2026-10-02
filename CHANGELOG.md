@@ -28,6 +28,61 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v73
+
+Gear-plan pieces are now bought off other players' stands, not just off Ponty.
+
+The operator's rule, 2026-10-02: for the ids that are on BOTH the gear plan and
+the Ponty buy list, buy from a player's stand whenever the listed price is
+1,000,000 or less. `CONFIG.standBuy.items` is seeded with that intersection,
+computed from the file rather than typed: 23 of `pontyBuy.items`' 43 ids appear in
+`GEAR_PROGRESSION`. The other 20 - boxes, cake slices, scrolls, offerings,
+tracker, leather, funtoken, anniversarygift - are not gear and are deliberately
+absent. The list is edited exactly like the Ponty one, and it is rebuilt from
+CONFIG on every pass, so a console change takes effect on the next scan.
+
+WHY THIS IS NOT ARBITRAGE. Arbitrage buys to resell, so it will not look at a
+listing without a matching buy order clearing `minProfit`. A wingedboots at 50,000
+that nobody is bidding on is invisible to it, which is precisely the listing worth
+having. This buys to KEEP: the only test is the price, the piece goes to the bank,
+and the spend stays out of the arbitrage ledger under its own `standbuy_log` key
+so a gear purchase can never be read as a flip.
+
+WHY IT HANGS OFF BOTH SCANS. `scoutSettleScan()` already reads every stand into
+`scout.shards` from the live entity list, seconds old, so unlike the arbitrage
+finders there is no freshness question and no bridge dependency. It is called from
+two places: the shard-rotation cycle in `scoutVisitNextShard`, and `scoutHeldScan`
+for the parked case. Since `CONFIG.scout.parked` is now true by standing
+preference, hooking only the first would have produced a feature that never ran -
+the same shape of mistake as v71's `noHang`, caught here by asking which path
+actually executes rather than which one reads as the main one.
+
+WHAT IT WILL NOT DO. It never buys from `CONFIG.partyMembers`, the mule, or this
+character - the operator's standing "never stage either leg using my own
+characters", applied to a feature that has only one leg. It never touches a buy
+order (`slot.b`). It re-reads the slot off the live entity after arriving and
+refuses a price that moved UP, taking one that moved down. A nonsense or missing
+`maxPrice` caps at 0 and refuses to buy rather than reading as "no ceiling" - the
+failure mode of guessing wrong here is paying a stranger's asking price.
+
+Bounded at `maxPerPass: 3` sellers, because unlike Ponty every purchase costs a
+walk there and back; the rest are still listed on the next scan. A listing that
+falls through is skipped for 20 minutes so the walk is not repeated. `dryRun`
+rehearses the whole pass, approach and price check included, stopping short of
+`trade_buy`.
+
+No cap on copies. Bank contents cannot be read from outside the bank, so an
+inventory count would be wrong the moment the first copy is banked. The 50,000,000
+gold floor is the real brake, per the operator's accepted overbuying risk.
+
+85/85 in the harness, which provides nothing the real CODE context does not and
+asserts statically that the new block contains no `noHang(` call site.
+
+SIZE. 297,392 -> 313,240 chars. The cap is still unknown (see the note at the top
+of this file) and the failure mode is silent: an over-size slot runs the OLD build
+with nothing in the console. After deploying, feature-detect
+`typeof sbStatus === 'function'`, not the version string.
+
 ## v72
 
 The Ponty arbitrage buy never ran. Merchant.js never had `noHang()`.
