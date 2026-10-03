@@ -191,6 +191,18 @@ const CONFIG = {
 			// Names refused even when the game flags them cooperative.
 			// abtesting is team PvP with a join window, not a boss.
 			exclude: ['abtesting'],
+
+			/* TRAVEL, added 2026-10-03 at the operator's instruction. The ATTACK
+			   rule above is unchanged and still Ranger.js's: somebody else must
+			   already be on it. Travelling and swinging are separate decisions, so
+			   a boss nobody has engaged is one this character goes to, stands at,
+			   and does not open - the caps below are what end that standoff. */
+			travel: true,
+			maxTripMs: 20 * 60 * 1000,
+			maxDeaths: 2,
+			// After giving up, leave it alone this long. Without it the character
+			// walks straight back to the boss that just outlasted it.
+			cooldownMs: 30 * 60 * 1000,
 		},
 
 		/* FARM RANKING - stand where the WORN gear gets better.
@@ -1238,6 +1250,207 @@ function coopBossInReach() {
 	return null;
 }
 
+/* ---------------------------------------------------------- the boss trip
+
+   TRAVEL IS NEW, the attack rule is not. The operator's instruction, 2026-10-03:
+   these characters should GO to a cooperative boss, and should still only swing
+   at it on Ranger.js's condition - mob.target is set, somebody else is already
+   on it. Those are two separate questions and keeping them separate is the whole
+   design: coopBossInReach() below is untouched and still the only thing that
+   decides whether to attack, so a boss nobody else has engaged is one this
+   character will stand next to and not hit. That is intended. The trip caps
+   below are what stop it standing there for ever.
+
+   PORTED FROM Ranger.js v65 WITHOUT the party half. Dexon's version has a
+   leader, a broadcast and a trust window because three characters have to land
+   on the same boss or the party splits. These rangers are alone on their shards,
+   so there is nobody to agree with and all of that is dead weight here. What
+   carries over is the part that is about one character: the gate, the live read
+   from parent.S, the join spots, and the trip caps. */
+const BOSS_JOIN_SPOTS = {
+	goobrawl: { map: 'goobrawl', x: null, y: null },
+	crabxx: { map: 'main', x: -1000, y: 1700 },
+	franky: { map: 'level2w', x: -300, y: 150 },
+	icegolem: { map: 'winterland', x: 820, y: 425 },
+};
+
+/* The trip survives a reload. Without that a redeploy mid-event restarts the
+   clock and hands the character another full trip at a boss it had already given
+   up on - and a reload is exactly what a shard hop costs. */
+const bossState = { trip: null, cooldown: {}, forced: null, lastNote: null };
+try {
+	const saved = SS.get('boss_trip', null);
+	if (saved && typeof saved === 'object') {
+		bossState.trip = saved.trip || null;
+		bossState.cooldown = saved.cooldown || {};
+	}
+} catch (e) { }
+function bossSave() {
+	try { SS.set('boss_trip', { trip: bossState.trip, cooldown: bossState.cooldown }); }
+	catch (e) { log('[boss] could not persist the trip - a reload will restart its clock', 'orange'); }
+}
+function bossLog(m, c) { log('[boss] ' + m, c || '#FFD700'); }
+/* Said once per distinct message: approach runs every tick and would otherwise
+   be the loudest thing in the log. */
+function bossNote(m) { if (bossState.lastNote !== m) { bossState.lastNote = m; bossLog(m, '#8b98ab'); } }
+
+function bossLiveNames() {
+	const S = (typeof parent !== 'undefined' && parent.S) || {};
+	const out = [];
+	for (const k in S) { const v = S[k]; if (v && typeof v === 'object' && v.live) out.push(k); }
+	return out;
+}
+
+/* The gate. Returns its reason rather than logging it, so bossStatus() can
+   print the whole picture in one pass. */
+function bossEligible(name) {
+	const cfg = CONFIG.ranger.coopBosses;
+	if (!cfg.enabled || !cfg.travel) return { ok: false, why: 'travel is off' };
+	if ((cfg.exclude || []).indexOf(name) !== -1) return { ok: false, why: 'excluded' };
+	if (!isCoopBoss(name)) return { ok: false, why: 'not cooperative' };
+	const until = bossState.cooldown[name] || 0;
+	if (until > Date.now()) return { ok: false, why: 'gave up, ' + Math.round((until - Date.now()) / 60000) + ' min left' };
+	return { ok: true, why: 'cooperative' };
+}
+
+/* Which boss: an operator command first, then the weakest eligible one, tied
+   by name. Weakest-first because a boss already most of the way down is the one
+   most likely to die while we are still useful to it. */
+function bossPick() {
+	if (bossState.forced && bossState.forced.name) {
+		const f = bossState.forced.name;
+		const d = ((parent && parent.S) || {})[f];
+		if (d && d.live) return { name: f, src: 'command' };
+		bossLog('dropping the forced pick ' + f + ' - it is not live', 'orange');
+		bossState.forced = null;
+	}
+	let best = null;
+	for (const n of bossLiveNames()) {
+		if (!bossEligible(n).ok) continue;
+		const d = parent.S[n];
+		const ratio = (d && d.max_hp) ? (d.hp / d.max_hp) : 1;
+		if (!best || ratio < best.ratio - 1e-9 || (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name)) {
+			best = { name: n, ratio };
+		}
+	}
+	return best ? { name: best.name, src: 'own' } : null;
+}
+
+function bossWalkTarget(name) {
+	const d = ((parent && parent.S) || {})[name];
+	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
+	const spot = BOSS_JOIN_SPOTS[name];
+	if (spot && typeof spot.x === 'number') return { map: spot.map, x: spot.x, y: spot.y };
+	const spawn = monsterSpawn('main', name);
+	return spawn || null;
+}
+
+function bossEnd(why) {
+	const t = bossState.trip;
+	if (!t) return;
+	bossState.cooldown[t.name] = Date.now() + (CONFIG.ranger.coopBosses.cooldownMs || 30 * 60 * 1000);
+	bossState.trip = null;
+	bossState.lastNote = null;
+	bossSave();
+	bossLog('leaving ' + t.name + ': ' + why, '#E9C46A');
+}
+
+/* Get there. Returns once a step has been taken or the trip is over - the
+   caller owns the tick either way, which is what keeps the farm loop from
+   walking us back to the farm spot in the same breath. */
+async function bossApproach(name) {
+	if (get_nearest_monster({ type: name })) return;   // arrived; the attack rule decides from here
+	if (BOSS_JOIN_SPOTS[name]) {
+		// hopsickness is the one refusal worth naming: it is temporary, and the
+		// alternative reading - "join is broken" - would send us walking to a
+		// destination the teleport reaches for free.
+		if (character.s && character.s.hopsickness) { bossNote('hopsick - cannot join ' + name + ' yet'); return; }
+		bossNote('joining ' + name);
+		try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
+		return;
+	}
+	const where = bossWalkTarget(name);
+	if (!where) { bossNote('no position known for ' + name + ' - cannot travel'); return; }
+	bossNote('walking to ' + name + ' on ' + where.map);
+	await goTo(where);
+}
+
+/* Returns true when the boss path owns this tick. */
+async function bossTick() {
+	const cfg = CONFIG.ranger.coopBosses;
+	if (!cfg.enabled || !cfg.travel) { if (bossState.trip) bossEnd('travel turned off'); return false; }
+
+	// Deaths are counted from the rip EDGE, so one corpse is one death however
+	// many ticks it lies there.
+	const t0 = bossState.trip;
+	if (t0) {
+		if (character.rip && !t0.wasRip) {
+			t0.deaths++; t0.wasRip = true; bossSave();
+			bossLog('died at ' + t0.name + ' (' + t0.deaths + ' of ' + cfg.maxDeaths + ')', 'red');
+		} else if (!character.rip && t0.wasRip) { t0.wasRip = false; bossSave(); }
+	}
+
+	const pick = bossPick();
+	if (!pick) { if (bossState.trip) bossEnd('nothing eligible is live'); return false; }
+	if (!bossState.trip || bossState.trip.name !== pick.name) {
+		if (bossState.trip) bossEnd('switching to ' + pick.name);
+		bossState.trip = { name: pick.name, startedAt: Date.now(), deaths: 0, wasRip: !!character.rip, src: pick.src };
+		bossSave();
+		bossLog('going to ' + pick.name + ' (' + pick.src + ', '
+			+ (BOSS_JOIN_SPOTS[pick.name] ? 'joinable' : 'on foot') + ')');
+	}
+
+	const t = bossState.trip;
+	if (t.deaths >= cfg.maxDeaths) { bossEnd(t.deaths + ' deaths'); return false; }
+	if (Date.now() - t.startedAt > cfg.maxTripMs) { bossEnd('trip cap of ' + Math.round(cfg.maxTripMs / 60000) + ' min'); return false; }
+	if (character.rip) return true;      // the respawn path owns us until we are up
+
+	/* ARRIVED. The attack rule is coopBossInReach's and nothing here overrides
+	   it: if nobody else is on this boss we stand here and do not swing, and the
+	   trip cap above is what eventually sends us home. Travelling to a boss and
+	   declining to open it is the instruction, not a bug. */
+	const mob = coopBossInReach();
+	if (mob) { await attackWithRotation(mob); return true; }
+
+	await bossApproach(t.name);
+	return true;
+}
+
+// ---- operator commands ----------------------------------------------------
+function bossJoin(name) {
+	if (!name) {
+		const live = bossLiveNames();
+		bossLog('bossJoin("<name>") - live now: ' + (live.length ? live.join(', ') : 'nothing')
+			+ ' | joinable: ' + Object.keys(BOSS_JOIN_SPOTS).join(', '));
+		return;
+	}
+	bossState.forced = { name, at: Date.now() };
+	bossState.cooldown[name] = 0;
+	bossSave();
+	bossLog('forced to ' + name + ' by hand', '#7FD98A');
+}
+function bossHome() {
+	bossState.forced = null;
+	if (bossState.trip) bossEnd('bossHome() by hand');
+	else bossLog('not on a boss trip');
+}
+function bossStatus() {
+	const t = bossState.trip;
+	bossLog('travel=' + (CONFIG.ranger.coopBosses.travel ? 'on' : 'off')
+		+ ' trip=' + (t ? t.name + ' ' + Math.round((Date.now() - t.startedAt) / 60000) + 'min deaths=' + t.deaths + ' via ' + t.src : 'none'));
+	const live = bossLiveNames();
+	if (!live.length) { bossLog('nothing is live'); return; }
+	for (const n of live) {
+		const e = bossEligible(n);
+		const d = parent.S[n] || {};
+		const mob = get_nearest_monster({ type: n });
+		bossLog('  ' + n + ': ' + (e.ok ? 'ELIGIBLE' : 'no - ' + e.why)
+			+ (d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
+			+ (mob ? (mob.target ? ' - engaged by ' + mob.target + ', we would attack' : ' - nobody on it, we would hold') : ''),
+			e.ok ? '#7FD98A' : '#8b98ab');
+	}
+}
+
 // ============================================================================
 // FARM RANKING - stand where the gear this character is WEARING gets better
 // ============================================================================
@@ -1778,9 +1991,14 @@ async function farmTick() {
 	   its own drops - and chests expire. */
 	await lootTick();
 
-	/* A cooperative boss somebody else is already holding outranks the farm
-	   target: shared credit by damage dealt makes it free value, and it is in
-	   range or it is not considered at all. -> COOPERATIVE BOSSES */
+	/* A live boss event outranks the farm spot entirely: bossTick travels, and
+	   while a trip is running it owns the tick so nothing below walks us back.
+	   It also handles the attack itself, on the same rule as below.
+	   -> the boss trip */
+	if (await bossTick()) return;
+
+	/* No trip, but a cooperative boss wandered into the farm spot and somebody
+	   else is holding it: free credit, no travel. -> COOPERATIVE BOSSES */
 	const boss = coopBossInReach();
 	if (boss) { await attackWithRotation(boss); return; }
 
