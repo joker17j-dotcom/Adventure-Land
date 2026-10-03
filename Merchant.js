@@ -331,7 +331,7 @@ const CONFIG = {
 		// PARKED - hold the party's home shard and never hop just to scout.
 		// Standing preference 2026-10-01: keep this true, same as `enabled`.
 		// -> MerchantComments.md#parked
-		parked: true,
+		parked: false,
 		bridge: 'http://127.0.0.1:8787',
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// -> MerchantComments.md#aldata
