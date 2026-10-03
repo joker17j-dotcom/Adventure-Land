@@ -182,6 +182,41 @@ const CONFIG = {
 		// "Comfortably farming crabx" needs a number, so: survive the pack
 		// indefinitely with headroom, and be able to kill inside a sane window.
 		// Both are measured against live stats each time, not decided once.
+		/* COOPERATIVE BOSSES - join, never open. -> COOPERATIVE BOSSES */
+		coopBosses: {
+			enabled: true,
+			// Below this much health, leave it alone: a boss somebody else is
+			// holding is still a boss, and the credit is not worth the trip back.
+			minHpFraction: 0.6,
+			// Names refused even when the game flags them cooperative.
+			// abtesting is team PvP with a join window, not a boss.
+			exclude: ['abtesting'],
+		},
+
+		/* FARM RANKING - stand where the WORN gear gets better.
+		   -> FARM RANKING */
+		farmRanking: {
+			enabled: true,
+			/* Maps to consider. Deliberately a list rather than "every map G
+			   declares": most of them are instances, dungeons or event spaces
+			   this character has no business walking into alone, and the safety
+			   test cannot tell a hard monster from an unreachable one. Add a map
+			   here once it is known to be walkable and worth farming. */
+			maps: ['main'],
+			// Never ranked, whatever the numbers say.
+			never: ['phoenix', 'mrpumpkin', 'mrgreen', 'grinch', 'snowman'],
+			/* Refuse pure damage outright rather than modelling it: it ignores
+			   armour and resistance, so the survival margin would be computed
+			   against a defence that does not apply. */
+			refusePure: true,
+			// How long to stay quiet after reporting that nothing qualified.
+			quietMs: 15 * 60 * 1000,
+			/* THE FALLBACK, by the operator's instruction 2026-10-03: crab, not
+			   goo and not crabx. When nothing safe advances the plan the answer
+			   is the safest thing on the board. */
+			fallback: { map: 'main', monster: 'crab' },
+		},
+
 		crabxReady: {
 			minLevel: 40,
 			// Incoming dps from the assumed number of attackers must leave this
@@ -980,7 +1015,8 @@ const RANGER_ROTATION = [
 // ============================================================================
 
 const ranger = {
-	spot: null,             // 'goo' | 'crabx'
+	spot: null,             // { map, monster, x, y, why } - see chooseSpot
+	rankingQuietUntil: 0,   // do not repeat "nothing qualified" every minute
 	lastReadinessCheck: 0,
 	lastTownTripAt: 0,
 	parked: false,          // full bag, waiting out the clock in town
@@ -1118,52 +1154,357 @@ function mitigated(dps, defense) {
 	return dps * (1 - (d / (d + K)));
 }
 
-/* Is this character comfortably able to farm crabx?
+// ============================================================================
+// EXCHANGEABLE ITEMS - never sold, always banked
+// ============================================================================
+/* DERIVED FROM THE GAME, not from a list here. An item is exchangeable exactly
+   when G.items[name].e is defined: it is the count the exchange NPC wants, so
+   its presence IS the flag. Measured 2026-10-03 in the live client: 45 items
+   carry it - gems, every box and envelope, the candies, seashell, leather,
+   lostearring, gemfragment, goldenegg, basketofeggs, 5bucks, mysterybox.
 
-   Three questions, all answered from live stats so the verdict tracks gear and
-   levels rather than being decided once at startup:
-     - past the level floor,
-     - the pack's incoming damage leaves the required headroom against our
-       sustain,
-     - and a single target dies inside a sane window, because standing next to
-       something we cannot kill is not farming.
+   NOT `type`. x0 (Quantum Piece) is type 'quest' and has no `e`, so typing on
+   the field would protect things that cannot be exchanged and would still miss
+   gem0, which is type 'gem'. The `e` field is the only honest test, and because
+   it is read from G rather than written down, an item the game adds later is
+   covered the day it appears.
 
-   Re-checked on a timer, and it demotes as readily as it promotes. */
-function crabxReady() {
-	const cfg = CONFIG.ranger.crabxReady;
-	if (character.level < cfg.minLevel) return false;
-
-	const mob = monsterDef(CONFIG.ranger.spots.crabx.monster);
-	if (!mob) return false;                   // unknown monster: do not gamble
-
-	const incoming = (mob.attack || 0) * (mob.frequency || 1) * cfg.maxAttackers;
-	const sustain = healThroughput();
-	if (incoming * cfg.minSurvivalMargin > sustain) return false;
-
-	const effective = Math.max(mitigated(myDps(), mob.armor || 0), 1);
-	const ttk = (mob.hp || 1) / effective;
-	if (ttk > cfg.maxSecondsToKill) return false;
-
-	return true;
+   Why this matters enough to be its own rule: the sell pass's default is "sell
+   anything the plan does not want", and a Mystery Box is worth 12,000,000 to
+   the right NPC and 0 to the plan. Selling one is not a small mistake. */
+function isExchangeable(name) {
+	const d = itemDef(name);
+	return !!(d && d.e !== undefined);
 }
 
-/* Which spot we should be on right now. goo is the floor and is never gated -
-   a character that cannot handle goo has bigger problems than spot selection. */
+// ============================================================================
+// COOPERATIVE BOSSES - join a fight, never open one
+// ============================================================================
+/* The same rule Dexon runs (Ranger v64), ported deliberately rather than
+   copied: a cooperative monster shares credit by damage dealt, so chipping at
+   one somebody else is already fighting PAYS, while opening one alone is a long
+   fight this character will usually lose and always lose money on.
+
+   So the test is mob.target - is anyone on it? - and not the monster's name.
+   G.monsters[t].cooperative is the game's own flag and the set is built from it
+   on first use, which means a boss the game adds later is covered without an
+   edit here. An unknown monster is NOT cooperative.
+
+   WHY A RANGER AND NOT A PARTY. Dexon's version exists so three characters can
+   join a boss together. These rangers are alone on their shards, so the honest
+   framing is different: this is opportunism. A boss that wanders into the farm
+   spot while another player is holding it is free damage and free credit. It is
+   not a reason to travel, and nothing below moves the character. */
+let coopBossCache = null;
+function coopBosses() {
+	if (coopBossCache) return coopBossCache;
+	const out = new Set();
+	try {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+		for (const t in (g && g.monsters) || {}) if (g.monsters[t] && g.monsters[t].cooperative) out.add(t);
+	} catch (e) { }
+	// An empty read is "G is not ready", not "there are none" - do not cache it.
+	if (out.size) coopBossCache = out;
+	return out;
+}
+
+function isCoopBoss(mtype) {
+	return !!mtype && coopBosses().has(mtype);
+}
+
+/* Someone else's fight, in range, worth joining?
+
+   IN RANGE ONLY. get_nearest_monster is bounded by vision, and this
+   deliberately does not walk: a boss across the map is somebody else's
+   business, and a ranger that leaves its spot to chase one stops farming and
+   stops being where the bank window expects it.
+
+   `target` is the test for "already engaged". It is set on the monster when it
+   has someone, so a null means we would be the one opening the fight. */
+function coopBossInReach() {
+	const cfg = CONFIG.ranger.coopBosses || {};
+	if (!cfg.enabled) return null;
+	if (!coopBosses().size) return null;
+	if (character.hp / character.max_hp < (cfg.minHpFraction || 0.6)) return null;
+	for (const t of coopBosses()) {
+		if ((cfg.exclude || []).indexOf(t) !== -1) continue;
+		let mob = null;
+		try { mob = get_nearest_monster({ type: t }); } catch (e) { continue; }
+		if (!mob || mob.dead) continue;
+		if (mob.target === null || mob.target === undefined) continue;   // nobody on it: not ours to open
+		if (typeof is_in_range === 'function' && !is_in_range(mob)) continue;
+		return mob;
+	}
+	return null;
+}
+
+// ============================================================================
+// FARM RANKING - stand where the gear this character is WEARING gets better
+// ============================================================================
+/* THE BRIEF, 2026-10-03: pick a reasonably safe spot whose drops advance the
+   gear plan, judged only against what this character has ON, with no reference
+   to the bank or to anyone else. Fall back to crab when nothing qualifies.
+
+   That last clause is the important one. The old chooser had two spots and a
+   graduation test between them; this has every pack the game declares and a
+   plan to satisfy, so "found nothing" is a normal outcome rather than an error,
+   and it has to land somewhere safe rather than somewhere ambitious.
+
+   WHAT COUNTS AS WANTED. For each equipped slot, the plan's lowest tier whose
+   target this character does not already meet. The item named there is wanted;
+   everything else is not. Reading the WORN item rather than the bag or the bank
+   is the whole point - a ranger with a firebow+5 on does not want another
+   firebow, and a ranger with an empty cape slot wants the first cape the plan
+   names, not the tier-3 one.
+
+   WHAT COUNTS AS SAFE is the crabxReady model, generalised: the pack's incoming
+   damage must leave a margin against our sustain, and one target must die
+   inside a sane window. Those two numbers were already the file's definition of
+   "comfortable", so the ranking inherits a definition the operator has already
+   watched work rather than inventing a second one. */
+
+/* Every pack the game declares, as flat candidates. Built per pass rather than
+   cached: level and gear move, and a spot that was unsafe an hour ago may not
+   be now. */
+function farmCandidates() {
+	const cfg = CONFIG.ranger.farmRanking;
+	const out = [];
+	let g = null;
+	try { g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null; } catch (e) { }
+	if (!g || !g.maps) return out;
+	for (const mapName of (cfg.maps || [])) {
+		const m = g.maps[mapName];
+		if (!m || !Array.isArray(m.monsters)) continue;
+		for (const pack of m.monsters) {
+			if (!pack || !pack.type) continue;
+			if ((cfg.never || []).indexOf(pack.type) !== -1) continue;
+			const b = pack.boundary;
+			out.push({
+				type: pack.type, map: mapName,
+				x: b ? Math.round((b[0] + b[2]) / 2) : (pack.x || 0),
+				y: b ? Math.round((b[1] + b[3]) / 2) : (pack.y || 0),
+				count: pack.count || 1,
+				grow: !!pack.grow,
+				hasBoundary: !!b,
+			});
+		}
+	}
+	return out;
+}
+
+/* The crabxReady test, applied to any monster.
+
+   Returns a reason when it says no, because "nothing was safe" with no detail
+   is the kind of verdict nobody can act on - and this runs over fifty-odd packs
+   where knowing WHICH test rejected a spot is the difference between tuning a
+   number and guessing. */
+/* This absorbed crabxReady(), which asked the same two questions of one
+   monster and is gone. Its `minLevel: 40` deliberately did NOT come with it:
+   that number meant "old enough for crabx specifically", and as a universal
+   gate it would refuse a level-20 character the crab it can obviously handle.
+   The two live-stat tests already answer "can this character handle it" without
+   a hardcoded level, which is why they were the right thing to generalise. The
+   key keeps its name because the config block is shared. */
+function spotSafety(cand) {
+	const cfg = CONFIG.ranger.crabxReady;
+	const mob = monsterDef(cand.type);
+	if (!mob) return { ok: false, why: 'unknown monster' };
+	if (mob.cooperative) return { ok: false, why: 'cooperative boss' };
+	/* PURE DAMAGE IS CHECKED FIRST, before any number is computed. It ignores
+	   armour and resistance, so every figure below would be measured against a
+	   defence that does not apply - and when the first version checked it last,
+	   booboo came back as 'incoming 792 dps vs sustain 200', which is a true
+	   sentence that names the wrong reason and sends you tuning a margin that was
+	   never the problem. Refused rather than modelled. */
+	if (mob.damage_type === 'pure' && (cfg.refusePure !== false)) {
+		return { ok: false, why: 'pure damage, unmitigable' };
+	}
+	/* HOW MANY CAN REACH US AT ONCE, which is the configured assumption and NOT
+	   the pack size. The first version doubled it for a `grow` pack on the
+	   grounds that such a pack cannot be thinned - true, but it confuses SUPPLY
+	   with SIMULTANEOUS ATTACKERS. grow means the next one spawns in 25ms rather
+	   than in `respawn` seconds; it does not mean six of them hit you at the same
+	   time. The doubling rejected goo - 30 attack x 6 - which these characters
+	   farm perfectly well, and a safety model that refuses the spot the operator
+	   is already standing on is wrong about safety. */
+	const attackers = Math.min(cand.count, cfg.maxAttackers || 3);
+	const incoming = (mob.attack || 0) * (mob.frequency || 1) * attackers;
+	const sustain = healThroughput();
+	if (incoming * (cfg.minSurvivalMargin || 1.5) > sustain) {
+		return { ok: false, why: 'incoming ' + Math.round(incoming) + ' dps vs sustain ' + Math.round(sustain) };
+	}
+	const effective = Math.max(mitigated(myDps(), mob.armor || 0), 1);
+	const ttk = (mob.hp || 1) / effective;
+	if (ttk > (cfg.maxSecondsToKill || 12)) {
+		return { ok: false, why: Math.round(ttk) + 's to kill one' };
+	}
+	return { ok: true, ttk, incoming, attackers };
+}
+
+/* What this character still needs, read off what it is WEARING.
+
+   One entry per slot: the tier ABOVE the highest one the worn item already
+   satisfies. An empty slot, or one holding something the plan never mentions,
+   wants tier 1. A slot whose worn item satisfies the last tier wants nothing.
+
+   WALKING DOWN FROM THE TOP, not up from the bottom. The first version stopped
+   at the lowest unmet tier, which is wrong whenever consecutive tiers name
+   DIFFERENT items: a ranger wearing tshirt9+4 - the tier-3 chest - does not
+   satisfy tier 1's coat@6, so the upward walk declared it wanted a coat. It
+   would have sent a fully geared character to farm starter gear. Highest
+   satisfied tier, then the next one up, is the question actually being asked. */
+function wantedFromWorn() {
+	const want = new Map();            // item name -> { slot, tier, level }
+	const slots = (character && character.slots) || {};
+	for (const slot of GEAR_SLOTS) {
+		const worn = slots[slot] || null;
+		let best = -1;                 // highest tier index the worn item satisfies
+		for (let t = 0; t < RANGER_GEAR.length; t++) {
+			const spec = RANGER_GEAR[t] && RANGER_GEAR[t][slot];
+			if (!spec || !spec.item) continue;
+			if (worn && satisfies(worn, spec)) best = t;
+		}
+		for (let t = best + 1; t < RANGER_GEAR.length; t++) {
+			const spec = RANGER_GEAR[t] && RANGER_GEAR[t][slot];
+			if (!spec || !spec.item) continue;
+			if (!want.has(spec.item)) want.set(spec.item, { slot, tier: t, level: spec.level });
+			break;                     // only the next rung, not every rung above
+		}
+	}
+	return want;
+}
+
+/* Does this monster drop anything on that list, and how often?
+
+   Reads the monster's own table AND the map table, because a map drop rolls on
+   every kill there - that is how the stat belts arrive on spookytown, and a
+   ranking that only read monster tables would call that map worthless.
+
+   The map roll is hp-weighted by the server (hp_mult = max_hp/1000), so it is
+   scaled here the same way rather than counted at face value. Monster drops are
+   not weighted that way and are taken as written. */
+function dropValue(cand, want) {
+	let g = null;
+	try { g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null; } catch (e) { }
+	if (!g || !g.drops) return { score: 0, items: [] };
+	const mob = monsterDef(cand.type) || {};
+	const hpMult = (mob.hp || 0) / 1000;
+	const hits = [];
+	let score = 0;
+
+	const consider = (chance, name, weight) => {
+		if (!name || !want.has(name)) return;
+		const c = (typeof chance === 'number' && isFinite(chance)) ? chance : 0;
+		const w = want.get(name);
+		/* An earlier tier is worth more than a later one: it is the next thing
+		   this character can actually wear. */
+		const tierWeight = 1 / (1 + w.tier);
+		score += c * weight * tierWeight;
+		hits.push(name + ' (' + w.slot + ', tier ' + (w.tier + 1) + ')');
+	};
+
+	for (const row of ((g.drops.monsters && g.drops.monsters[cand.type]) || [])) {
+		if (!Array.isArray(row)) continue;
+		// [chance, name] and [chance, 'open', pool] both occur.
+		if (row[1] === 'open') {
+			for (const sub of ((g.drops[row[2]]) || [])) if (Array.isArray(sub)) consider(row[0], sub[1], 1);
+		} else consider(row[0], row[1], 1);
+	}
+	for (const row of ((g.drops.maps && g.drops.maps[cand.map]) || [])) {
+		if (!Array.isArray(row)) continue;
+		if (row[1] === 'open') {
+			for (const sub of ((g.drops[row[2]]) || [])) if (Array.isArray(sub)) consider(row[0] * hpMult, sub[1], 1);
+		} else consider(row[0] * hpMult, row[1], 1);
+	}
+	return { score, items: [...new Set(hits)] };
+}
+
+/* The ranking itself. Safety is a GATE, not a term: an unsafe spot with a
+   perfect drop table is still a spot this character dies at, and averaging the
+   two would let a good drop buy its way past the survival test. */
+function rankFarmSpots() {
+	const want = wantedFromWorn();
+	const rows = [];
+	for (const cand of farmCandidates()) {
+		const safe = spotSafety(cand);
+		if (!safe.ok) { rows.push({ cand, ok: false, why: safe.why }); continue; }
+		const dv = dropValue(cand, want);
+		if (dv.score <= 0) { rows.push({ cand, ok: false, why: 'drops nothing on the plan' }); continue; }
+		/* Among spots that are safe AND useful, prefer the one that kills faster:
+		   the drop chance is per kill, so kills per second is the multiplier that
+		   turns a drop table into a rate. */
+		rows.push({ cand, ok: true, score: dv.score / Math.max(safe.ttk, 0.1), items: dv.items, ttk: safe.ttk });
+	}
+	const good = rows.filter((r) => r.ok).sort((a, b) => b.score - a.score);
+	return { good, all: rows, want };
+}
+
+/* Which spot we should be on right now.
+
+   Re-ranked on the same timer the graduation test used, and it demotes as
+   readily as it promotes: gear improves, a slot gets filled, and the spot that
+   was worth standing at stops being. Logging only on CHANGE keeps a sixty-pack
+   ranking from filling the log every minute.
+
+   THE FALLBACK IS CRAB, by the operator's instruction. Not goo and not crabx:
+   when nothing safe advances the plan the right answer is the safest thing on
+   the board, not the most ambitious thing this character can survive. If crab
+   itself is missing from the game data the old goo spot is the floor under the
+   floor, because standing still is worse than farming something. */
 function chooseSpot() {
 	const now = Date.now();
 	if (ranger.spot && now - ranger.lastReadinessCheck < CONFIG.ranger.crabxReady.checkEveryMs) {
 		return ranger.spot;
 	}
 	ranger.lastReadinessCheck = now;
-	const want = crabxReady() ? 'crabx' : 'goo';
-	if (want !== ranger.spot) {
-		log(ranger.spot === null
-			? `farming ${want}`
-			: (want === 'crabx' ? 'stats now carry crabx - moving up' : 'crabx is no longer comfortable - dropping back to goo'),
-			want === 'crabx' ? '#7FD98A' : '#E9C46A');
-		ranger.spot = want;
+
+	let pick = null;
+	if (CONFIG.ranger.farmRanking && CONFIG.ranger.farmRanking.enabled) {
+		const r = rankFarmSpots();
+		if (r.good.length) {
+			const best = r.good[0];
+			pick = { map: best.cand.map, monster: best.cand.type, x: best.cand.x, y: best.cand.y,
+				why: 'advances ' + best.items.slice(0, 3).join(', ') };
+		} else if (!ranger.rankingQuietUntil || now > ranger.rankingQuietUntil) {
+			ranger.rankingQuietUntil = now + (CONFIG.ranger.farmRanking.quietMs || 15 * 60 * 1000);
+			const wanted = [...r.want.keys()];
+			log(wanted.length
+				? `nothing safe drops ${wanted.slice(0, 5).join(', ')} - falling back`
+				: 'the worn gear already meets the plan at every slot - falling back', '#8b98ab');
+		}
 	}
+
+	if (!pick) {
+		const fb = CONFIG.ranger.farmRanking.fallback;
+		const spawn = monsterSpawn(fb.map, fb.monster);
+		pick = monsterDef(fb.monster)
+			? { map: fb.map, monster: fb.monster, x: spawn ? spawn.x : 0, y: spawn ? spawn.y : 0, why: 'fallback' }
+			: Object.assign({ why: 'fallback (crab missing from game data)' }, CONFIG.ranger.spots.goo);
+	}
+
+	const key = pick.monster + '@' + pick.map;
+	if (!ranger.spot || key !== ranger.spot.monster + '@' + ranger.spot.map) {
+		log(`farming ${key} - ${pick.why}`, pick.why === 'fallback' ? '#E9C46A' : '#7FD98A');
+	}
+	ranger.spot = pick;
 	return ranger.spot;
+}
+
+/* Operator view: what is worn against the plan, what that makes wanted, and
+   why each spot was or was not chosen. Read-only. */
+function farmStatus() {
+	const r = rankFarmSpots();
+	log('wanted, from what is worn: ' + ([...r.want.entries()]
+		.map(([n, w]) => n + '+' + w.level + ' (' + w.slot + ')').join(', ') || 'nothing - the plan is met'), '#FFD700');
+	log(r.good.length + ' of ' + r.all.length + ' pack(s) are safe AND advance the plan', r.good.length ? '#7FD98A' : '#E9C46A');
+	for (const g of r.good.slice(0, 8)) {
+		log('  ' + g.cand.type + '@' + g.cand.map + '  score ' + g.score.toExponential(2)
+			+ '  ' + Math.round(g.ttk) + 's/kill  -> ' + g.items.join(', '), '#8b98ab');
+	}
+	const why = {};
+	for (const r2 of r.all) if (!r2.ok) why[r2.why] = (why[r2.why] || 0) + 1;
+	log('rejected: ' + Object.keys(why).map((k) => k + ' x' + why[k]).join(', '), '#8b98ab');
+	return r;
 }
 
 // ============================================================================
@@ -1429,14 +1770,19 @@ async function lootTick() {
 }
 
 async function farmTick() {
-	const spotName = chooseSpot();
-	const spot = CONFIG.ranger.spots[spotName];
-	if (!spot) return;
+	const spot = chooseSpot();
+	if (!spot || !spot.monster) return;
 
 	/* Before anything else, including the walk below. A character that is about
 	   to travel to a new pack should leave with the floor cleared, not abandon
 	   its own drops - and chests expire. */
 	await lootTick();
+
+	/* A cooperative boss somebody else is already holding outranks the farm
+	   target: shared credit by damage dealt makes it free value, and it is in
+	   range or it is not considered at all. -> COOPERATIVE BOSSES */
+	const boss = coopBossInReach();
+	if (boss) { await attackWithRotation(boss); return; }
 
 	const target = get_nearest_monster({ type: spot.monster });
 	if (!target) {
@@ -1456,7 +1802,12 @@ async function farmTick() {
 		   no_target means "not currently attacking anyone", which is NARROWER
 		   than the call that just returned null, not wider. The branch could
 		   never find anything the line above had missed. */
-		const spawn = monsterSpawn(spot.map, spot.monster);
+		/* The ranked spot carries the pack's own boundary centre, which is a
+		   better destination than the map's spawn table entry - and for a spot
+		   the table does not list at all, it is the only one. */
+		const spawn = (typeof spot.x === 'number' && typeof spot.y === 'number' && (spot.x || spot.y))
+			? { map: spot.map, x: spot.x, y: spot.y }
+			: monsterSpawn(spot.map, spot.monster);
 		if (spawn) await goTo(spawn);
 		return;
 	}
@@ -1865,6 +2216,11 @@ function isWorkItem(it) {
 }
 
 function shouldBank(item) {
+	/* Exchangeable goods go in whoever is carrying them and whatever the plan
+	   thinks, because the bank is where they accumulate until there are enough
+	   to exchange - that is the whole point of the `e` count.
+	   -> EXCHANGEABLE ITEMS */
+	if (isExchangeable(item.name)) return true;
 	if (!isPlanItem(item.name)) return false;
 	if (slotToEquip(item)) return false;
 	if (myRole() === 'merchant') {
@@ -1894,6 +2250,9 @@ function shouldBank(item) {
 function shouldSell(item) {
 	if (KEEP_ITEMS.has(item.name)) return false;
 	if (NEVER_SELL.has(item.name)) return false;
+	// -> EXCHANGEABLE ITEMS. A Mystery Box is 12,000,000 to the right NPC and
+	// nothing at all to the plan, so the plan must not be the one deciding.
+	if (isExchangeable(item.name)) return false;
 	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
 	return true;
 }
