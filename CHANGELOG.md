@@ -28,6 +28,108 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v76
+
+Exchangeable items are never sold, and are banked when he is already at the
+bank. The operator's rule, 2026-10-03.
+
+An exchangeable item is one that can be traded for a random reward -
+`G.items[name].e`, which holds the QUANTITY the exchange consumes rather than a
+boolean, so the test is field presence and not truthiness. `design/items.js`
+labels the field in its own header: `// "e" Exchangable`. The set is DERIVED
+from `G.items` rather than listed, so a game update that adds one is covered
+without a redeploy.
+
+WHY THIS IS A RULE AND NOT A PRICE CHECK. Two exchangeables were sitting on
+`CONFIG.selling.whitelist`, which means `sellTrash()` was vendoring them on
+sight: `seashell` (NPC 800, e=20) and `gem0` (Raw Emerald, NPC 240,000, e=1).
+
+`gem0`'s exchange table in `design/drops.js` pays out 100,000-6,400,000 in
+gold, a `weaponbox` or `armorbox`, `scroll1` x10, `cscroll1` x4, and at 0.641%
+an `offering`. Counting ONLY the pure-gold rows - no valuation assumptions
+needed for those - the exchange averages 262,779 against the 240,000 vendor
+price, and every box, scroll and offering is upside on top. So the NPC price is
+not a floor to measure against; it is the worst available exit, and a
+value-based guard waves `gem0` through precisely BECAUSE 240,000 looks like
+real money. That is the same shape as the `slice_blueberry` entry from
+2026-09-22 and the `tracker` note in PROTECTED_ITEM_NAMES: a vendor price tells
+you nothing about what an item is for.
+
+The whitelist is deliberately left exactly as the operator wrote it. The guard
+outranks it instead, so `gem0` and `seashell` can stay listed without being
+sold, and removing them by hand is not a prerequisite for the rule holding.
+
+SEED + DERIVED, UNIONED. A derived-only set that read an empty or missing
+`G.items` would be EMPTY, and an empty protection set protects nothing - the
+failure is silent and costs 240,000 a gem. So the 45 names measured 2026-10-03
+against `design/items.js` are hardcoded as a floor and the derived half extends
+it; neither can shrink the other. The cache is only written once the derived
+half actually read something, so a failed read does not freeze the gap in for
+the rest of the session.
+
+FIVE SELL PATHS, ALL OF THEM. `sellTrash`, the aggressive low-space dump,
+`ssVendorBound` (so it never reaches the player stand either), the four
+arbitrage feed-ingestion filters, and `arbProbeNpcSell`. The arbitrage guards go
+at INGESTION for the reason NO_TRADE_ITEM_NAMES already documents: a name
+filtered out of the buys/sells feed cannot reach any caller. The hand-run probe
+is guarded too - it deliberately sells a real item, which is exactly why a
+measurement is not an exemption.
+
+BANKED, BUT NEVER TRAVELLED FOR. The second half of the operator's rule was
+explicit: bank them when he is at the bank anyway, do not spend a trip on it.
+`bankExchangeables()` therefore refuses to move - it returns 0 unless
+`character.map` is already the bank map - and the only thing that calls it is a
+new arrival wrapper around `travelToBank`. Every bank visit in the script goes
+through `travelToBank` (the ponty and stand-buy runs, the fully-progressed gear
+sweep, arbitrage's stock retrieval and its abandoned-stock banking), which makes
+it the one choke point where "at the bank for some other reason" is true. The
+original body is now `travelToBankRaw`; all seven call sites are unchanged.
+
+`character.bank` is checked as well as the map, because `bank_store()` rejects
+with `not_in_bank` until it populates, and it populates on arrival rather than
+with the map change - `arbStockRetrieve` already carries a branch for "at the
+bank but character.bank is empty". An empty read here is a quiet return, not an
+error; the next bank visit picks the goods up.
+
+THE WRAPPER CANNOT THROW, and this is the part that would have bitten.
+`travelToBank` is awaited in boolean position at every call site -
+`if (!(await travelToBank()))` - so a rejection escaping the sweep would not
+return false, it would blow up the caller. That is CLAUDE.md's Form A, the one
+that left three rangers standing next to monsters for hours. Hence the
+try/catch, and hence the catch LOGS: a silent default is indistinguishable from
+a working one.
+
+Slot pressure is mostly imaginary here - `bank_store()` with no pack argument
+prefers a slot it can stack into and nearly every exchangeable is stackable
+(`gem0` is `s:true`), so a sweep usually merges into a stack it already owns.
+`storage_full` ends the sweep rather than retrying and the goods stay in
+inventory. Locked items (`l === 'l'`) are left alone and logged, since that is
+the operator's own hands-off marker and silently relocating one is worse than
+leaving it; arbitrage-held names are left to `arbBankItem`, which owns that exit
+and keeps the registry straight.
+
+Measured while writing this, and it affects nothing in the file but is worth
+recording next to the note above: `save_code_api` in the current server source
+has no length validation at all - the code goes straight into a MongoDB
+document, whose own BSON ceiling is 16 MB. So if there is a practical ceiling it
+is not an explicit check there. That is a source read and not a live
+measurement, so it does not retire the feature-detect rule; v76 is 325,270
+chars against 260,646 for the largest build CONFIRMED by feature detection to
+evaluate, which makes feature-detecting after this deploy more important than
+usual, not less.
+
+222/222 across three harnesses: 101 new, 83 for v73's stand buy, 38 for v74.
+The new harness runs the five sell paths for real against a stubbed inventory,
+so a guard that is present but unreachable still fails.
+
+Two harness corrections, both mine and neither a code change. The v76 harness
+counted `await travelToBank()` call sites against the raw source and found 8
+where there are 7, because v76's own doc comment quotes the call shape - it now
+counts against a comment-stripped copy. And v73's harness supplies
+`isExchangeable` to its extracted stand-buy block: in the real file that is a
+hoisted top-level declaration and so is in scope, but the harness slices the
+block out on its own.
+
 ## v75
 
 Mage tier-3 mainhand corrected to `sparkstaff@9`. The row said `gstaff` by
