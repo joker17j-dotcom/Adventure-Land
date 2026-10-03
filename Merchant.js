@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v75
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v76
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -1823,6 +1823,9 @@ function sellTrash() {
 		const item = character.items[i];
 		if (item && whitelist.has(item.name) && item.p === undefined && item.l !== 'l') {
 			if (held[item.name]) continue;   // arbitrage paid real gold for this
+			/* The whitelist is not the last word. gem0 and seashell are both on
+			   it and both exchangeable; this is the guard that outranks it. */
+			if (isExchangeable(item.name)) continue;
 			sell(i);
 		}
 	}
@@ -1857,6 +1860,76 @@ const PROTECTED_ITEM_NAMES = new Set([
    INGESTION rather than at the point of sale: a name filtered out of the
    buys/sells feed cannot reach any caller, hand-run probes included. */
 const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
+
+/* EXCHANGEABLE ITEMS ARE NEVER SOLD. The operator's rule, 2026-10-03.
+
+   An exchangeable item is one Wizard/Ponty will trade for a random reward -
+   G.items[name].e, which is the QUANTITY the exchange consumes, not a boolean.
+   items.js labels the field itself: `// "e" Exchangable`. Derived rather than
+   listed, so a game update that adds one is covered without a redeploy.
+
+   WHY IT IS A RULE AND NOT A PRICE CHECK. Two exchangeables were sitting on
+   CONFIG.selling.whitelist, so sellTrash() vendored them on sight:
+
+     gem0 (Raw Emerald)  NPC 240,000
+     seashell            NPC 800, e=20
+
+   gem0's exchange table (design/drops.js) pays out 100k-6.4M in gold, a
+   weaponbox or armorbox, scroll1 x10, cscroll1 x4, and - at 0.641% - an
+   offering. Counting ONLY the pure-gold rows, which need no valuation
+   assumptions at all, the exchange averages 262,779 against a 240,000 vendor
+   price. Every box, scroll and offering is upside on top of that. So the NPC
+   price is not a floor to compare against; it is the worst available exit, and
+   a value-based guard waves it through precisely because 240,000 looks like
+   real money.
+
+   SEED + DERIVED, UNIONED. A derived-only set that reads an empty or missing
+   G.items would be EMPTY, and an empty protection set protects nothing - the
+   failure is silent and costs 240,000 a gem. The seed is the 45 names measured
+   2026-10-03 against design/items.js; the derived half extends it. Neither can
+   shrink the other. -> MerchantComments.md#EXCHANGEABLE */
+const EXCHANGEABLE_SEED = ['cosmo0', 'cosmo1', 'cosmo2', 'cosmo3', 'cosmo4', 'cosmo5',
+	'sixcake', 'anniversarygift', 'gem0', 'gem1', 'candypop', 'candy0', 'candy1',
+	'candy0v2', 'candy1v2', 'candy0v3', 'candy1v3', 'bugbountybox', 'apologybox',
+	'weaponbox', 'armorbox', 'jewellerybox', 'mistletoe', 'candycane', 'marketparcel',
+	'gift0', 'gift1', 'redenvelope', 'redenvelopev2', 'redenvelopev3', 'redenvelopev4',
+	'greenenvelope', 'brownenvelope', 'mysterybox', 'troll', 'glitch', '5bucks',
+	'seashell', 'leather', 'gemfragment', 'ornament', 'lostearring', 'xbox',
+	'goldenegg', 'basketofeggs'];
+
+let exchangeableCache = null;
+function exchangeableNames() {
+	if (exchangeableCache) return exchangeableCache;
+	const out = new Set(EXCHANGEABLE_SEED);
+	try {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+		for (const id in (g && g.items) || {}) {
+			const it = g.items[id];
+			if (it && it.e !== undefined) out.add(String(id));
+		}
+	} catch (e) { }
+	/* Only cache once the derived half actually read something. A failed read
+	   caching the seed alone would freeze the gap in for the session. */
+	if (out.size > EXCHANGEABLE_SEED.length) exchangeableCache = out;
+	return out;
+}
+
+function isExchangeable(name) { return !!name && exchangeableNames().has(String(name)); }
+
+/* What the rule is costing or saving, on demand. */
+function exchangeableReport() {
+	const names = exchangeableNames();
+	const held = [];
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (it && it.name && names.has(it.name)) held.push({ slot: i, name: it.name, q: it.q || 1, locked: it.l === 'l' });
+	}
+	const wl = (CONFIG.selling.whitelist || []).filter(function (n) { return names.has(n); });
+	const out = { known: names.size, derived: exchangeableCache !== null, onHand: held,
+		stillOnSellWhitelist: wl, atBank: character.map === CONFIG.bank.map };
+	console.log('exchangeables', out);
+	return out;
+}
 
 /* Counterparties never traded with. PERMANENT, unlike arb_fail, which caps at a
    one-hour hold and forgets the count. By NAME, not shard|name. Filtered at feed
@@ -2187,6 +2260,7 @@ async function arbStockFindSale() {
 			const sl = r.slots[k];
 			if (!sl || !sl.name || !sl.b) continue;
 			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;
+			if (isExchangeable(sl.name)) continue;   // never sold, so never a sell target
 			if (typeof sl.price !== 'number' || !isFinite(sl.price)) continue;
 			const s = want.get(sl.name + '|' + (sl.level || 0));
 			if (!s) continue;
@@ -2332,6 +2406,7 @@ function sellAggressivelyIfLowOnSpace() {
 		if (!item || !item.name) continue;
 		if (item.p !== undefined || item.l === 'l') continue; // already listed for sale, or locked - can't sell either way
 		if (PROTECTED_ITEM_NAMES.has(item.name)) continue;
+		if (isExchangeable(item.name)) continue;   // -> EXCHANGEABLE ITEMS ARE NEVER SOLD
 		if (isTier2OrTier3GearItem(item.name)) continue;
 		if (held[item.name]) continue;   // arbitrage stock - vendoring it realises the loss
 
@@ -2729,7 +2804,86 @@ async function ensureUpgradeMaterials(scrollName, offeringName) {
 }
 
 
+/* DEPOSIT EXCHANGEABLES, BUT NEVER TRAVEL FOR THEM. The operator's rule,
+   2026-10-03: bank them when he is at the bank anyway, and do not spend a trip
+   on it. So this refuses to move - it is a sweep, not an errand - and the only
+   thing that ever calls it is the arrival wrapper below.
+
+   WHY character.bank IS CHECKED AS WELL AS THE MAP. bank_store() rejects with
+   "not_in_bank" unless character.bank is populated, and it populates on arrival
+   rather than with the map change - arbStockRetrieve already carries a branch
+   for "at the bank but character.bank is empty". An empty read here is a quiet
+   return, not an error: the next bank visit picks the items up.
+
+   SLOT PRESSURE IS LARGELY IMAGINARY HERE. bank_store() with no pack argument
+   prefers a slot it can STACK into, and nearly every exchangeable is stackable
+   (gem0 is s:true), so a sweep usually merges into a stack it already owns
+   instead of consuming a slot. storage_full still ends the sweep rather than
+   retrying, and the goods simply stay in inventory for next time.
+
+   IT MUST NOT THROW. travelToBank is awaited in boolean position at every call
+   site - `if (!(await travelToBank()))` - so a rejection escaping this sweep
+   would not return false, it would blow up the caller. That is CLAUDE.md's
+   Form A, and it cost three rangers an afternoon. Hence the catch, and hence
+   the catch logs: a silent default is indistinguishable from a working one.
+   -> MerchantComments.md#bankExchangeables */
+async function bankExchangeables() {
+	const names = exchangeableNames();
+	if (character.map !== CONFIG.bank.map) return 0;   // never travels, by design
+	if (!character.bank) return 0;                     // arrived, not open yet
+
+	// Highest index first, matching bankFullyProgressedItems. A store nulls the
+	// slot in place rather than shifting (server.js: player.items[inv] = null),
+	// so this is belt-and-braces rather than load-bearing.
+	const todo = [];
+	let locked = 0;
+	for (let i = character.items.length - 1; i >= 0; i--) {
+		const it = character.items[i];
+		if (!it || !it.name || !names.has(it.name)) continue;
+		if (it.b) continue;                        // blocked - the server refuses it
+		if (it.l === 'l') { locked++; continue; }  // the operator's own hands-off marker
+		if (arbHeldNames()[it.name]) continue;     // arbitrage owns this exit (arbBankItem)
+		todo.push(i);
+	}
+	if (locked) {
+		game_log('[exch] leaving ' + locked + ' locked exchangeable(s) in inventory - '
+			+ 'unlock them if you want them banked', '#8b98ab');
+	}
+	if (!todo.length) return 0;
+
+	let stored = 0;
+	for (const idx of todo) {
+		const name = character.items[idx] && character.items[idx].name;
+		try {
+			await bank_store(idx);
+			stored++;
+			await sleep(300);
+		} catch (e) {
+			const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+			game_log('[exch] bank_store failed for ' + (name || 'slot ' + idx) + ' - ' + why, 'red');
+			if (why === 'storage_full') break;   // nothing later will fit either
+		}
+	}
+	if (stored) game_log('[exch] banked ' + stored + ' exchangeable item(s)', '#00FF00');
+	return stored;
+}
+
+/* The arrival wrapper. Every bank visit in the script goes through
+   travelToBank, which makes it the one choke point where "we are at the bank
+   for some other reason" is true - the ponty and stand-buy runs, the
+   fully-progressed gear sweep, arbitrage's stock retrieval and its abandoned
+   -stock banking all land here. Hooking the sweep on arrival therefore covers
+   every one of them without any of them creating a trip. */
 async function travelToBank() {
+	const arrived = await travelToBankRaw();
+	if (arrived) {
+		try { await bankExchangeables(); }
+		catch (e) { game_log('[exch] sweep threw and was swallowed - ' + (e && (e.reason || e.message) || e), 'red'); }
+	}
+	return arrived;
+}
+
+async function travelToBankRaw() {
 	if (character.map === CONFIG.bank.map) return true;
 	try {
 		await moveTo({ to: 'bank' });
@@ -3933,6 +4087,7 @@ function sbOffers() {
 			if (sl.b) continue;                                // a buy order, not for sale
 			if (!want.has(sl.name)) continue;
 			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;
+			if (isExchangeable(sl.name)) continue;   // -> EXCHANGEABLE ITEMS ARE NEVER SOLD
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			if (sl.price > sbCap(sl.name)) continue;
 			if (sbSkipped(r.id, k)) continue;
@@ -5508,6 +5663,7 @@ function ssVendorBound(item) {
 	if (item.l === 'l') return false;
 	if (item.p !== undefined) return false;
 	if (PROTECTED_ITEM_NAMES.has(item.name)) return false;
+	if (isExchangeable(item.name)) return false;   // -> EXCHANGEABLE ITEMS ARE NEVER SOLD
 	if (isTier2OrTier3GearItem(item.name)) return false;
 	if (arbHeldNames()[item.name]) return false;   // arbitrage owns this exit
 	return true;
@@ -5743,7 +5899,7 @@ function arbRestore() {
    releases, and on 2026-09-29 a live probe of the running merchant reported v57
    while the deployed build was in fact v67. Feature-detection caught it; the
    string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v75 / mage tier-3 mainhand corrected to sparkstaff@9 - gstaff was a slip / 2026-10-02';
+const MERCHANT_BUILD = 'v76 / exchangeables are never sold, and are banked when already at the bank / 2026-10-03';
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
@@ -6346,6 +6502,7 @@ async function arbProbeFindFlips(opts) {
 			const sl = r.slots[k];
 			if (!sl || !sl.name) continue;
 			if (NO_TRADE_ITEM_NAMES.has(sl.name)) continue;   // never buy, never sell
+			if (isExchangeable(sl.name)) continue;            // bought, it could never be flipped
 			if (!(typeof sl.price === 'number' && isFinite(sl.price))) continue;
 			const rec = {
 				key: sl.name + '|' + (sl.level || 0) + '|' + (sl.p || ''),
@@ -6361,6 +6518,7 @@ async function arbProbeFindFlips(opts) {
 	const pon = await arbProbePontyRows();
 	for (const r of pon.rows) {
 		if (NO_TRADE_ITEM_NAMES.has(r.name)) continue;   // never buy, never sell
+		if (isExchangeable(r.name)) continue;            // bought, it could never be flipped
 		if (!(typeof r.price === 'number' && isFinite(r.price))) continue;
 		buys.push(Object.assign({ key: r.name + '|' + r.level + '|' + (r.p || ''), map: 'main', x: null, y: null }, r));
 	}
@@ -7002,6 +7160,12 @@ async function arbProbeNpcSell(idx, confirm) {
 	if (!it) { pLog('slot ' + idx + ' is empty', 'orange'); return null; }
 	if (isKnownGearItem(it.name)) {
 		pLog('refused: ' + it.name + ' is on a gear plan - pick junk', 'orange');
+		return null;
+	}
+	/* The probe is hand-run and deliberately sells a real item, which is exactly
+	   why the rule has to reach it too - a measurement is not an exemption. */
+	if (isExchangeable(it.name)) {
+		pLog('refused: ' + it.name + ' is exchangeable and is never sold', 'orange');
 		return null;
 	}
 	let expected = null;
