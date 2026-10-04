@@ -1,5 +1,5 @@
 // ============================================================================
-// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v2
+// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v3 (opens EVERYTHING Xyn takes, not just the three anniversary boxes. boxes goes from 3 to 33, derived by listing G.items entries with an "e" and no "quest" - def.quest is what routes an exchange away from G.maps.main.exchange, and these have none, so one standing position covers all 33. sixcake and 5bucks are excluded on purpose: they carry an "e" but have NO entry in design/drops.js, and the handler gates on !D.drops[dropId], so they fail as "invalid" - an unhandled reason that would burn three consecutive-failure slots and stop the run. Found by parsing drops.js rather than by trying it. findBox now skips a stack smaller than the item's e, because candypop (10) and ornament (20) consume a whole stack and the server refuses a short one with "exchange_notenough", also unhandled. autoSell goes from 7 entries to 45, built from the 148 distinct rewards across those 32 tables and filtered on gear plan, exchangeability, type, live market price >= 50,000 and vendor >= 100,000. THE MARKET TEST IS WHAT MAKES IT SAFE: cxjar vendors for 1 and sells for 1,000,000, tshirt3 vendors for 72 and sells for 200,000,000, and both sort to the top of a cheapest-first vendor list. ftrinket keeps 2 alongside poker's 3 - FatherToken wears ftrinket+2. angelwings, puppyer, tshirt7, talkingskull and tristone were removed from the sell list by the operator after review; the classifier will keep proposing them, so do not re-add them from a fresh run) - v2
 // ============================================================================
 // Everything below is read from the game's own data at runtime, or was read
 // out of the server source rather than remembered. The numbers that matter:
@@ -55,10 +55,32 @@
 // ============================================================================
 
 const CONFIG = {
-	// All three anniversary exchangeables, each consuming one per exchange
-	// (their "e" is 1 in the item data). Add to this list rather than
-	// rewriting it - an unknown name is skipped, not an error.
-	boxes: ['anniversarygift', 'gift0', 'gift1'],
+	/* EVERY item Xyn takes, read off G at runtime on 2026-10-04 by listing the
+	   G.items entries that carry an "e" and no "quest" - def.quest is exactly
+	   what sends an exchange somewhere other than G.maps.main.exchange, and
+	   none of these have one. Add to this list rather than rewriting it; an
+	   unknown name is skipped, not an error.
+
+	   sixcake and 5bucks are DELIBERATELY ABSENT. Both carry an "e" but have no
+	   entry in design/drops.js, and the handler gates on
+	   !def || !def.e || !D.drops[dropId] - so they fail as "invalid", a reason
+	   the catch below does not special-case, and three of them in a row stops
+	   the run with boxes still in the bag. Verified by parsing drops.js.
+
+	   candypop (e=10) and ornament (e=20) consume a whole stack per exchange.
+	   findBox skips a stack that is too small rather than letting the server
+	   refuse it with "exchange_notenough" - another unhandled reason. */
+	boxes: [
+		'anniversarygift', 'gift0', 'gift1',
+		'gem0', 'gem1',
+		'candy0', 'candy1', 'candy0v2', 'candy1v2', 'candy0v3', 'candy1v3',
+		'candypop', 'candycane', 'mistletoe', 'ornament',
+		'basketofeggs', 'goldenegg', 'xbox', 'mysterybox', 'troll', 'glitch',
+		'weaponbox', 'armorbox', 'jewellerybox', 'bugbountybox', 'apologybox',
+		'redenvelope', 'redenvelopev2', 'redenvelopev3', 'redenvelopev4',
+		'greenenvelope', 'brownenvelope',
+		'marketparcel',
+	],
 
 	// Stop when the bag gets this tight. The rewards have to land somewhere,
 	// and the server refuses outright at zero free slots - stopping a little
@@ -66,7 +88,19 @@ const CONFIG = {
 	minFreeSlots: 3,
 
 	/* Sold to the nearest merchant as it accumulates. The number is how many
-	   to KEEP, not how many to sell.
+	   to KEEP, not how many to sell. Everything below came out of the 32 Xyn
+	   drop tables in design/drops.js - 148 distinct reward items - filtered to
+	   the ones worth nothing to us. A reward is KEPT OFF this list if it is on
+	   the gear plan, is itself exchangeable, is a scroll/offering/potion/
+	   elixir/booster/token/gem, has a live market price at or above 50,000, or
+	   vendors for 100,000 or more.
+
+	   THE MARKET TEST IS LOAD-BEARING. Vendor value alone would have been a
+	   disaster, because the two worst offenders sort to the TOP of a
+	   cheapest-first vendor list. Measured 2026-10-04:
+	     cxjar    vendors for 1  and sells for 1,000,000
+	     tshirt3  vendors for 72 and sells for 200,000,000
+	   Both drop from these tables. Neither is on this list.
 
 	   poker keeps 3 deliberately. It sells for 9,600, which is exactly what
 	   the market charges for one, and poker+0 (armor 11 / resistance 6, crit
@@ -75,9 +109,34 @@ const CONFIG = {
 	   same price you would buy it back for. Three covers the party; set it to
 	   0 if you would rather have the gold.
 
+	   ftrinket keeps 2 for the same reason - FatherToken wears ftrinket+2 in
+	   his orb slot, so they are a spare and an upgrade path, not chaff.
+
+	   HELD OUT BY THE OPERATOR 2026-10-04, not by the filter: angelwings,
+	   puppyer, tshirt7, talkingskull and tristone. Do not re-add them from a
+	   fresh classifier run - the filter will keep proposing them.
+
 	   confetti is g20 - it sells for 12 gold. It is on this list to free the
 	   slot, not to earn anything. */
-	autoSell: { partyhat: 0, confetti: 0, poker: 3, pants:0, shoes:0, gloves:0, coat:0},
+	autoSell: {
+		// kept deliberately - see above
+		poker: 3, ftrinket: 2,
+
+		// pure slot-clearers: throwables, novelty wearables, low-tier gear
+		snowball: 0, confetti: 0, firecrackers: 0, smoke: 0,
+		broom: 0, emptyheart: 0, partyhat: 0, rednose: 0,
+		tshirt0: 0, tshirt1: 0, tshirt2: 0, tshirt4: 0, tshirt6: 0,
+		tshirt8: 0, tshirt88: 0,
+		xmashat: 0, xmassweater: 0, xmaspants: 0, xmasshoes: 0,
+		warmscarf: 0, eslippers: 0, epyjamas: 0, luckyt: 0,
+		bunnyears: 0, eears: 0, gphelmet: 0, helmet1: 0,
+		gloves1: 0, mittens: 0,
+		hpamulet: 0, hpbelt: 0, skullamulet: 0,
+		cupid: 0, snowflakes: 0, ornamentstaff: 0, bataxe: 0, pinkie: 0,
+
+		// carried over from the slot-8 build
+		pants: 0, shoes: 0, gloves: 0, coat: 0, helmet: 0, wbreeches: 0,
+	},
 
 	// Sell every this many opens, so slots come back during a long run rather
 	// than only at the end.
@@ -218,13 +277,23 @@ function atHub(spot) {
 	} catch (e) { return false; }
 }
 
-// First box in the bag, re-read every time. The inventory shifts under us on
-// every exchange - the box is consumed and a reward appears - so an index
-// cached across iterations is an index pointing at the wrong thing.
+/* First exchangeable in the bag, re-read every time. The inventory shifts under
+   us on every exchange - the box is consumed and a reward appears - so an index
+   cached across iterations is an index pointing at the wrong thing.
+
+   A stack smaller than the item's "e" is SKIPPED, not attempted. The server
+   consumes def.e per exchange and refuses below it with "exchange_notenough";
+   candypop needs 10 and ornament 20, so a part-stack of either would fail three
+   times in a row and stop the run while other boxes still sat in the bag. */
 function findBox() {
 	const items = character.items || [];
 	for (let i = 0; i < items.length; i++) {
-		if (items[i] && CONFIG.boxes.includes(items[i].name)) return i;
+		const it = items[i];
+		if (!it || !CONFIG.boxes.includes(it.name)) continue;
+		let need = 1;
+		try { need = (parent.G.items[it.name] || {}).e || 1; } catch (e) { }
+		if ((it.q || 1) < need) continue;
+		return i;
 	}
 	return -1;
 }
