@@ -489,7 +489,7 @@ const CONFIG = {
 	   mhOn() and mhOff() flip 'enabled' at runtime; off restores ordinary
 	   farming and hands the spot straight back to the scorer. */
 	monsterHunt: {
-		enabled: false,
+		enabled: true,
 		/* The backstop on waiting for everyone, NOT the rule. The rule is in
 		   mhSettled(): a member holding an unexpired hunt counts as settled,
 		   because the server answers monsterhunt_already and leaves it
