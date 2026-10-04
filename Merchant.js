@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v78
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v79
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2796,39 +2796,58 @@ const GEAR_VALUE_OVERRIDES = {
 // pair of agreeing market anchors. A live anchor BEATS these, which is the
 // point: they keep the planner working while the market is silent, they are not
 // a claim about what an item is worth today.
-//
-// Provenance, so a later reader can argue with them instead of guessing:
-//   gcape, sbelt, tshirt9  operator's flat value, 2026-10-03
-//   starkillers            just under 100,000,000 actually paid
-//   mshield                720,001 market bid, which beat the 10-funtoken route
-//   rabbitsfoot            120 funtokens x 1,050,000 bid
-//   mmhat                  7 monstertokens x 1,500,000 ask
-//   ecape                  exactly 1/1000 of rabbitsfoot: both drop from
-//                          basketofeggs at weights 1 and 0.001 of 5.721, so the
-//                          ratio holds whatever a basket costs. Cross-checks to
-//                          within 9% of the basket's own Ponty price, and the
-//                          market cannot price it - the three live anchors
-//                          back-solve to 1, 548,887 and 29,473,137.
+/* Provenance, so a later reader can argue with them instead of guessing. The
+   market figures are the dearest credible live anchor at +0, measured
+   2026-10-04; a bid is quoted in preference to an ask where both exist,
+   because gold is committed behind it.
+     gcape, sbelt, tshirt9   operator's flat value, 2026-10-03
+     mpxgloves 3,000,000,000 and zapper 2,000,000,000   +0 buy orders
+     suckerpunch             +0 ask 2,000,000,000, against a 30-deep bid at
+                             1,100,000,000 - 1.8x apart, so both are credible
+     fury 300,000,000        +0 buy order, 10 deep
+     mpxamulet 300,000,000   +0 buy order
+     starkillers             just under 100,000,000 actually paid
+     sparkstaff 12,227,542   +7 ask 320,000,000 back-solved through the
+                             recurrence; agrees with the 18-deep +0 bid at
+                             5,000,000 to within 2.45x
+     rabbitsfoot             120 funtokens x 1,050,000 bid
+     mmhat                   7 monstertokens x 1,500,000 ask
+     frankypants, harmor     Ponty price (g x 1.2), which matches the live ask
+     mshield 720,000         +0 market bid, which beat the 10-funtoken route
+     firestaff, firebow      +0 ask
+     ecape 126,000           exactly 1/1000 of rabbitsfoot: both drop from
+                             basketofeggs at weights 1 and 0.001 of 5.721, so
+                             the ratio holds whatever a basket costs. Within 9%
+                             of the basket's own Ponty price, and the market
+                             cannot price it - its three live anchors back-solve
+                             to 1, 548,887 and 29,473,137.
+
+   NEVER set one of these from G.items[x].g. That is a vendor number, not a
+   market one, and it is wrong by orders of magnitude exactly where it matters:
+   tshirt9's g is 120 against a real 2,000,000,000, and zapper's 6,400,000
+   against a live 2,000,000,000 buy order. A fallback BELOW the true value is
+   the dangerous direction - it tells the planner the copy is cheap, so it rolls
+   on with a cheap scroll instead of handing over. That is how the starkillers
+   were lost. */
 const GEAR_VALUE_FALLBACK = {
-		gcape: 2000000000,
-		sbelt: 2000000000,
-		tshirt9: 2000000000,
-		starkillers: 100000000,
-		mshield: 720001,
-		rabbitsfoot: 126000000,
-		mmhat: 10500000,
-		ecape: 126000,
-		suckerpunch: 2000000,
-		firestaff: 500000,
-		firebow: 100000,
-		mshield: 720000,
-		frankypants: 936000,
-		harmor: 576000,
-		mpxamulet: 56000000,
-		mpxgloves: 34000000,
-		fury: 6400000,
-		zapper: 6400000,
-		sparkstaff: 12227542,
+	mpxgloves:   3000000000,
+	gcape:       2000000000,
+	sbelt:       2000000000,
+	tshirt9:     2000000000,
+	suckerpunch: 2000000000,
+	zapper:      2000000000,
+	fury:        300000000,
+	mpxamulet:   300000000,
+	rabbitsfoot: 126000000,
+	starkillers: 100000000,
+	sparkstaff:  12227542,
+	mmhat:       10500000,
+	frankypants: 936000,
+	mshield:     720000,
+	harmor:      576000,
+	firestaff:   500000,
+	firebow:     267000,
+	ecape:       126000,
 };
 
 // Two independent anchors disagreeing by more than this factor means at least
