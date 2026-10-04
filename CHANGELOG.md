@@ -28,6 +28,65 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v80
+
+Surplus jacko stopped at +2 and stayed there. `findBaseDuplicateGroup` gated on
+
+    if (item.level !== 0 && item.level !== 1) return;
+
+which permits a combine at +0 and at +1 and stops at +2 - so anything arriving in
+bulk accumulated at +2 and was never advanced again. Measured in the bank
+2026-10-04, before the change: 9x jacko+0, 2x jacko+1, 1x jacko+2, 1x jacko+3.
+That distribution IS the bug - a pipeline that halts at +2 leaves a single stuck
++2 and a long tail of raw ones.
+
+Replaced the hardcoded gate with a per-item ceiling, `surplusCeiling(name)`,
+reading `CONFIG.gearProgression.surplusTargets`. The default for any name NOT
+listed is 2, which is the old gate exactly, so the change is additive rather than
+a global loosening - that mattered more than the feature, because raising the
+ceiling for every compoundable item would have had the planner spending scrolls
+combining rings and amulets the plan wants at specific levels.
+
+Proved additive rather than asserted: the v79 and v80 functions were both lifted
+and run over the same 9-case matrix (jacko and cring at +0..+3, coat at +0).
+Exactly one cell differs - jacko+2 x3 goes from no-op to combine@2 - and every
+other cell is bit-identical. `surplusTargets` has one entry, `jacko: 3`.
+
+The ceiling is deliberately BOTH the stop point for compounding and the level the
+new bank path banks at. One number, so a finished item can never be both "done"
+and "eligible for another roll"; two numbers would eventually disagree.
+
+New: `planSurplusBank()` (side-effect free, returns the indices this pass would
+bank) and `bankSurplusCompounded()`. The predicate in `gearProgressionLoop` and
+the executor call the same planner, so they cannot disagree about what is due.
+Banks ONLY names in `surplusTargets` sitting at exactly their ceiling; everything
+else stays in the bag. Gated on free slots <= `surplusBankAtFreeSlots` (2),
+because a trip closes the stand and walks both ways and is not worth making every
+time one jacko finishes. `surplusReserve` (1) holds one back, so the planner can
+still fill MageofOz's orb slot and 3x +3 -> +4 stays open without a trip to fetch
+one out again; set it to 0 to bank all of them.
+
+Free slots are COUNTED, not read from `character.esize`. `arbProbeInv` already
+logs a "DISAGREE - esize does not mean free slots" warning when the two differ,
+so esize is not a trustworthy answer to "is the bag full" and this path does not
+ask it.
+
+Also: a locked item is now skipped when forming a compound group. The server
+refuses `compound()` on a locked item outright, so this converts a guaranteed
+failed attempt into a skip. Deliberately broader than the `it.l === 'l'` test in
+`bankExchangeables` - for a protective skip, either marker should count.
+
+One deliberate behaviour change beyond the ceiling: an item whose `level` is
+`undefined` is now treated as +0 and is eligible, where `!== 0 && !== 1` skipped
+it. Undefined means +0 for a compoundable, so this is a fix, but it is a change.
+
+KNOWN SIDE EFFECT, not introduced here: `travelToBank()` runs
+`bankExchangeables()` on arrival by design, so this trip also sweeps loose
+exchangeables. That is true of every bank visit in the script. Lock an
+exchangeable to exempt it.
+
+21/21 unit assertions on the lifted functions; `node --check` clean.
+
 ## v79
 
 Six fallback prices had been set to the item's vendor `g`, and two of those sat
