@@ -28,6 +28,53 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v79
+
+Six fallback prices had been set to the item's vendor `g`, and two of those sat
+below it. That is the one direction that costs items.
+
+A fallback BELOW the real value does not make the planner cautious - it makes it
+confident. `pickBestValueStep` weighs the copy against the scroll, so a cheap
+copy justifies a cheap scroll and a low success rate, and the step goes ahead.
+Set `zapper` at its g of 6,400,000 and the planner happily compounds a ring that
+has a live 2,000,000,000 buy order against it. That is the starkillers failure
+with a different item id.
+
+Measured against the live market, 2026-10-04:
+
+      item          was (= vendor g)      now            basis
+      zapper               6,400,000    2,000,000,000    +0 buy order
+      mpxgloves           34,000,000    3,000,000,000    +0 buy order
+      suckerpunch          2,000,000    2,000,000,000    +0 ask, with a 30-deep
+                                                         bid at 1,100,000,000
+      fury                 6,400,000      300,000,000    +0 buy order, 10 deep
+      mpxamulet           56,000,000      300,000,000    +0 buy order
+      firebow                100,000          267,000    +0 ask
+
+What it changes in practice: `zapper`, `mpxgloves` and `suckerpunch` now hand
+over at +0 instead of rolling to +1, +4 and +2, and `fury` stops at +2 instead
+of +6. For items worth two and three billion, +0 is the right answer.
+
+`firebow` reaches +8 either way, so that one is only an honesty fix - and its
+fallback is nearly unreachable anyway, since it is on PONTY_PRICED_ITEMS and the
+Ponty price is computed rather than observed.
+
+DUPLICATE KEY. Both tables carried `mshield` twice - 720,001 and then 720,000.
+A duplicate key in an object literal is silently taken by the last writer, so
+the first was dead and nothing anywhere could show it: the evaluated object has
+one `mshield`, and only the source text has two. The values were a gold apart so
+nothing moved, but the next one might not be.
+
+The harness now parses the table out of the SOURCE TEXT rather than reading the
+evaluated object, precisely because the object cannot show a shadowed key, and
+asserts no entry equals its item's vendor g. Against the previous version those
+two guards fail 5 times - one for the duplicate, four for the g-copies.
+
+WHY g IS NEVER THE ANSWER. It is a vendor number and it is wrong by orders of
+magnitude exactly where the money is: `tshirt9`'s g is 120 against a real
+2,000,000,000, `zapper`'s is 6,400,000 against a live 2,000,000,000 bid. A note
+to that effect now sits above the table.
+
 ## v78
 
 Split the price table in two, and carried the same split plus two real fixes
