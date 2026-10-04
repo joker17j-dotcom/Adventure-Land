@@ -28,6 +28,142 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v77
+
+Tier-2/tier-3 gear steps are now planned with the copy's own value in the
+arithmetic, and hand the item over instead of gambling once the cheapest move
+needs something no NPC sells. Four separate defects came out of building it.
+
+THE ORIGINAL DEFECT. `pickBestUpgradeStep` and `pickBestCompoundStep` minimise
+`cost / chance`, where `cost` is scroll + offering ONLY. The copy going into the
+roll is not in the arithmetic at all, so a 1,000-gold scroll on a 100,000,000
+item scores as the cheapest move available - which it is, if the item is free.
+This is what was lost with the starkillers. The fix is the recurrence
+UpgradeCompound.js already used:
+
+    upgrade    C(L+1) = (    C + scroll + offering) / p
+    compound   C(L+1) = (3 * C + scroll + offering) / p
+
+Adding the stake to the numerator shifts the optimum toward a higher success
+rate, because the constant amplifies what p buys. That is the whole behavioural
+difference, and it is why a dear copy now buys scroll2 where a cheap one takes
+scroll1.
+
+DEFECT 2 - GRACE USED THE WRONG VARIABLE, WITH THE WRONG SIGN. The server adds
+`item_def.igrace` to grace, not `igrade`, and igrace is a PENALTY assigned at
+boot in `server_functions.js`: igrade 0 -> +1, igrade 1 -> -1, igrade 2 -> -2.
+`getUpgradeChance` added `+ igrade`, so every igrade-1 item - which is any item
+whose `grades[0]` is 0, mmhat included - scored grace 1 where the server scores
+0, and every chance came back optimistic. Wrong direction for a function whose
+output decides whether to gamble a nine-figure item.
+
+Worth knowing WHERE it bit, because it is not everywhere. In the no-offering
+branch the server subtracts `0.4 / (new_level - 0.999)^2` from grace, and for
+these probability tables that subtraction cancels the whole grace term at every
+level - so on offering-free steps the mix-up was invisible. It bit on
+offering-bearing steps, where grace is added straight onto the product. Measured
+on mmhat +8 against a grade-2 offering: 0.100733 before, 0.092400 after, an 9%
+overstatement. The effect was to over-credit offerings, making them look worth
+buying sooner than they are. The player and server grace pools
+(`player.p.ugrace`, `S.ugrace`, `player.p.ograce`) are real and non-zero in play
+but unreadable from the client, so they stay at zero - the conservative floor,
+and the same choice UpgradeCompound.js makes deliberately.
+
+DEFECT 3 - THE STAKE IS THE COPY IN HAND, NOT A FRESH ONE. The first cut of
+`pickBestValueStep` fed the +0 price in as `inputs` at every level. A +7 copy
+embodies every roll that got it there, so that repeats the original omission one
+level up: the offering never looks worth buying because it is being weighed
+against a fraction of the real stake. `gvCarriedValue` now supplies the worth of
+the copy at its CURRENT level - the live market at that level when anybody is
+trading it, since that is the actual replacement cost, otherwise the recurrence
+walked up from +0. Before the fix mmhat ran to +9 unopposed; after it, the
+ladder is 10,500,000 -> 10,540,211 -> 10,907,434 -> 11,646,206 -> 16,036,569 ->
+24,980,976 -> 57,040,722, and +6 is where it stops.
+
+DEFECT 4 - UpgradeCompound.js DIVIDES BY AN UNCLAMPED PROBABILITY. Not fixed
+here, because it is the other file, but recorded so it does not get ported in
+later. The game's own cap lets probability exceed 1 - the server rolls
+`Math.random() < probability`, so anything >= 1 simply means certain - and
+`ucPlan` divides by it, reporting a next level CHEAPER than the copy going into
+it. Merchant.js's `getUpgradeChance` already clamps, and `pickBestValueStep`
+clamps again rather than relying on that staying true.
+
+THE STOPS, and why they are not errors. The operator's rule, 2026-10-04: take it
+as far as the cheap offering-free optimum goes, then hand over to
+UpgradeCompound.js or a manual roll. Three reasons:
+
+  wants_offering            the cheapest move includes an offering
+  scroll_not_npc_buyable    needs grade 3+, which no NPC sells
+  value_unknown             no override, no Ponty price, no agreeing anchors
+
+Lucas stocks grades 0-2 of both scroll lines; grade 3 and 4 exist in `G.items`
+and nobody sells either. Held items are BANKED rather than merely skipped -
+`gearHeldKeys` is rebuilt every pass, so an item that becomes priceable again
+simply stops being held, and nothing needs un-banking.
+
+Deliberately INDEPENDENT of `CONFIG.gearTripwire.mode`, which stays 'off'. The
+tripwire's four reasons are a separate judgement that has never run in enforce
+mode, and turning on the operator's banking rule must not quietly turn on
+`buy_beats_build`, `no_improvement` and `inputs_unobtainable` with it.
+
+VALUATION. `gvBaseValue` is override, then Ponty for the seven items he
+reliably restocks, then the live market, then nothing. It reuses `gtQuote`,
+which already returns cheapest ask AND best bid - a standing buy order is as
+real an anchor as an ask, since somebody is holding gold against it - and takes
+the dearer of them, because the question is replacement cost. Two anchors more
+than 3x apart mean at least one is a parking price with no way to tell which, so
+neither is trusted and the item hands over with the divergence logged. The band
+is loose on purpose: real `g`-to-paid gaps reach 13x (starkillers' `g` is
+7,800,000 against ~100,000,000 paid), so this is here to catch 80x, not 2x.
+
+TIER ROUTING. Tier-1 levels keep the original materials-only economics, where
+the scroll dominates and a loss costs little. At and above the tier-1 target -
+and for every item tier 1 never mentions - the new path takes over. NOTE that
+`GEAR_PROGRESSION`'s tier-1 objects are still EMPTY; the lists live in
+MerchantComments.md under #earring1 / #earring1-2 / #earring1-3 and have never
+been pasted in, so today `usesValuePlanning` answers true for everything. It
+starts splitting the moment tier 1 is populated: 11 of the 37 plan items are
+shared with tier 1 and would then route by level. Cross-class disagreement
+resolves by PARTY_CLASSES order, the same priority the stand path uses for
+shared-name arrivals; only `intamulet` currently differs (priest 2, mage 1 -> 2).
+
+mageshood IS NOT AN OBTAINABLE ITEM, and was the mage helmet at both T2 and T3.
+The id is valid - `G.items.mageshood` is Mage's Hood, tier 2, g 640,000 - but
+`design/items.js` authors `"ignore": true` on it, and that flag is consumed by
+the game's OWN progression engine (`js/progression/engine.js`: `if (d.ignore ||
+d.cash || d.expires || d.event) return;`), by the item codex listing
+(`js/html.js`), and by the docs URL set (`seo_paths.js`). A search of the
+deployed data returns count 1 for mageshood - the definition, matched on `skin`
+alone - against count 9 for a control (`firestaff`, which surfaces craft,
+dismantle, two drops, two monsters and two positions). No drop table, no craft,
+no dismantle, no NPC, no token route. It is defined so existing copies keep
+working, and cannot be acquired.
+
+Replaced with `mmhat` (Hat of the Hunter Mage, tier 2.125, class mage,
+rpiercing 40, grades [0,7,10,12]) at the same +7 and +9 targets, and swapped in
+`pontyBuy.items` and `standBuy.items` too. mmhat is obtainable: 7 monstertokens
+(`tokens.monstertoken.mmhat`) or a `glitch`/`lglitch` drop. 46 of 637 items
+carry `ignore: true`; mageshood was the only one in the gear plan, but
+`offeringp` and `offeringx` are also retired - which is the measured reason no
+NPC sells them, and why `BUYABLE_OFFERING_INDICES = [0, 2]` is correct rather
+than lucky.
+
+Note that `grades[0]` is 0 for both mmhat and mageshood, so `level >= 0` is
+always true and the grade is NEVER 0 for either: scroll0 is not usable on them
+at any level, and the ladder starts at scroll1. mmhat is grade 1 to +6, grade 2
+from +7, grade 3 from +10.
+
+HARNESS. `v77test.js`, 50 assertions, driven off the shipped text by brace-
+matching rather than a copy that can drift. Mutation-tested: reverting the grace
+fix fails 1, feeding the base price as the stake fails 12, raising
+NPC_MAX_SCROLL_GRADE to 3 fails 1, dropping the wants_offering stop fails 2, and
+disabling the divergence gate fails 3.
+
+SIZE. 339,170 chars, up from v76's 325,287. The cap is still unknown - see the
+header of this file - so FEATURE-DETECT after deploying rather than reading the
+version string: `typeof gvCarriedValue` and `typeof pickBestValueStep` should
+both return `function`.
+
 ## v76
 
 Exchangeable items are never sold, and are banked when he is already at the
