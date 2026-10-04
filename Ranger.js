@@ -1,5 +1,5 @@
 // ============================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v65 (The achievement queue walks a list of monster rungs on its own, behind CONFIG.achievements.enabled - default FALSE, so this build changes nothing until you flip it. Why: a farm spot lives in manualOverride, a runtime let, and it is lost silently two ways - a reload wipes it, and checkFarmEconomics blacklists the spot the override points at, which is how the party left rat@mansion for booboo@spookytown on 2026-10-01 with 2,583 score still owed, on a death's xp loss divided into a rate. The queue is persisted in CODE storage, re-asserted every 30s, and re-adds its spot to PERMANENT_WHITELIST on every pass because that Set is rebuilt from source on load too. Progress is READ from the tracker, never counted: parent.tracker is a cache that sat frozen at 11,038 rat kills while 203 landed, so achvRefresh emits the socket's own tracker request with parent.render_tracker suppressed for the round trip - the game's handler ends in show_modal and would open a panel on the operator otherwise. Needs a tracker ITEM in the bag; the server handler returns early without one. An override pointing somewhere the queue did not put it means the operator moved the party by hand, so the queue stands down and says so rather than dragging them back. achvStatus() / achvSkip() / achvReset(i) / achvResume() from the console. / 2026-10-02) - v64 (Cooperative bosses are engaged only once somebody else is on them, and six of them were missing from the list that decides it. attackIfTargeted resolves to mob.target != null, which IS the operator's rule - cooperative credit is shared by damage dealt, so joining a fight in progress pays and opening one alone does not. Measured 2026-10-02 in Dexon's live CODE context with a snowman alive at 155-165 units against his 165 range: shouldAttackMob(snowman) returned FALSE and cache.targets.inRange was EMPTY, so handleAttack returned on its first line. snowman was not `home` (spider), not in alwaysAttack, and not in attackIfTargeted, so it fell to the targetPriority fallback - is the mob hitting FatherToken - and the boss spent the fight on Jasnah, ShallanDavar and Ratage, strangers' characters. He fired 8 times in 223 seconds, every one an incidental arcticbee, against the ~70 his cadence allows. v63 walked him to the boss and held him at the computed range; the attack gate then refused the target, which is why the symptom was 'arrived and did nothing'. Derived from G.monsters[x].cooperative the same day: 19 cooperative monsters exist, allBosses already covered 13, and the six added here are the remainder - pinkgoo, rharpy, rimedjinn, slenderman, snowman, tiger. allBosses itself is deliberately NOT widened: it also feeds COMBAT_SETS.bosses, so that is a separate decision. Two findings recorded rather than acted on. rimedjinn has range 200 against Dexon's 165 and FatherToken's 197, so only MageofOz can outrange it and bossHoldDistance will park the other two inside its reach for a 640,000 hp fight - the mrgreen problem again, and a candidate for CONFIG.bossEvents.exclude. bscorpion and ent sit in attackIfTargeted but are NOT cooperative; they predate the boss work and read as a 'dangerous, only if already engaged' rule, so they are left alone. Priest.js and Mage.js need a DIFFERENT fix and are untouched here: their actionLoop has no equivalent filter, and findBestTarget's boss branch takes any BOSS_SET member in range unconditionally - too loose where this was too strict - so the same six names belong in their allBosses AND that branch needs the already-engaged test.) - v63 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-30. Change: BOSS EVENTS. The operator's rule, given 2026-09-30: cooperative bosses only, fought from maximum range, never expecting the kill. Cooperative is the game's own G.monsters[x].cooperative - credit shared by damage dealt - so a trip pays even when somebody else lands the finishing blow, and it is the only class of boss where chipping from range is a strategy rather than a wasted evening. An unknown monster is NOT treated as cooperative. THE OLD BEHAVIOUR WAS NOT A POLICY AT ALL, in three ways. First, shouldHandleEvents() asked only "is anything in getDynamicEvents() live", and EVENT_LOCATIONS lists dragold, mrgreen and mrpumpkin UNCONDITIONALLY - so the party dropped the farm for any of the three the moment it spawned, whatever the odds, with no cap and nothing to bring it home. Measured the same day against this party (Dexon 75, FatherToken 69, MageofOz 70, single-target party DPS about 2,400): mrgreen is 36M hp behind resistance 900, which is 6.6 HOURS, and its attack range is 620 against our 158/197/201 - there is no standing position it cannot reach. dragold is 4.1h, mrpumpkin 4.1h, franky 120M hp and 13.8h at range 948. Second, all three files ran the SAME most-damaged-event scan independently, so two live bosses could send the ranger to one and the priest to the other; the tie-break is now by name, the leader broadcasts its pick, and a follower believes that call for leaderTrustMs before deciding for itself. Third, crabxx was in the ranger's getDynamicEvents alone (v55), so he joined it while the other two kept farming - the boss side of a 960,000 hp fight with no healer, and its 11,706 per hit takes MageofOz down in 1.6 seconds. MAX RANGE IS TWO POSTURES and bossHoldDistance computes both from the live entity: outside the boss's own reach when ours is longer, which costs nothing (crabxx range 45, icegolem 64), and otherwise the far edge of ours, which is merely the best available (franky 948, mrgreen 620). JOINING is measured from adventureland_mongodb node/server.js socket.on('join'), not inferred: exactly four events teleport - goobrawl, crabxx to main (-1000,1700), franky to level2w (-300,150), icegolem to winterland (820,425) - and every other boss must be walked to. The same handler refuses with no_merchants (so never Meltymerch), cant_when_sick (hopsickness, i.e. just after a shard hop, which is now reported rather than retried blindly), cant_in_bank and cant_join for any name not listed, and it ignores the emit when we are already within 200 units - which is why repeating it is free. RETURN was left to my judgement, and it is: boss dead, event expired, maxDeaths 2, or a maxTripMs cap of 20 minutes, whichever comes first, then handleReturnHome(). A trip we GAVE UP on cools that event down for 30 minutes; one that simply ended does not, because those are different facts and cooling the second would refuse a boss the party could have finished. COMMANDS, asked for by name: bossJoin('franky') goes now whatever the gate thinks, clears that cooldown, and broadcasts to the other two from ANY character rather than only the leader - "go now" has to mean the party, not whichever console happened to be open; bossHome() abandons and returns; bossStatus() prints what is live, the gate's verdict on each with its reason, and where we would stand against each. The trip is persisted in CODE storage so a redeploy mid-event cannot hand the party another fresh 20 minutes at a boss it had already abandoned. handleSpecificEvent is now unreachable and marked for deletion next time the file is touched, the way Merchant.js retired heldScanMs. Verified with a 36-case node harness over the extracted block rather than by reading it: the gate, the name tie-break, both hold postures at all three ranges, join versus walk, hopsickness, the death and time caps, cooldown only on giving up, every command, a forced pick that is not live, follower precedence, and the persisted trip. CORRECTION to the v62 entry that follows: it still says NOT DEPLOYED as of 2026-09-28, and that is stale - measured 2026-09-30 in Dexon's live CODE context, String(sendLocationUpdate) contains needsMluck, so v62 IS deployed. The operator deployed it and the marker was never cleared. Read every deployment marker below with that in mind and feature-detect rather than trusting one.) v62 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-28. Change: the mluck request carries its INTENT. sendLocationUpdate sends one `message: 'location'` for two unrelated reasons - "the merchant can buff me and my buff is missing" and "my pack is nearly full, come and empty it" - and Merchant.js read ANY location message from a name in CONFIG.mluck.targets as a buff request. So every pickup ask enqueued an mluck job on the merchant, and an mluck job is a whole batch there on its own: a shard hop, a trip to Dexon's last-known coordinates, and - when he arrived with Dexon further than mluck's 320 units away - summonAndWait, which pulls Dexon off the farm spot for up to 60 seconds. The operator observed exactly that on 2026-09-28 with more than 50 minutes left on the buff. Measured in his live CODE context the same day, which is what identified the real sender: mluckState() returned {ok:false, why:"Meltymerch is not in the party"} while character.s.mluck read {f:"Meltymerch", minsLeft:42}, so needsUpdate was FALSE and the mluck branch was sending nothing at all; pickupCooldownMs is 15000 and lowInventorySlots is 3, so the pickup branch was asking every 15 seconds. The location message now carries needsMluck, which is this file's own needsUpdate, and the merchant refuses to enqueue when it reads false. This is the half that stops the trip being taken; Merchant v67 is the half that stops the summon, and it also covers a legacy sender that omits the field. Two smaller fixes in the same pass. (1) The [mluck] log line was keyed off gate.ok, which only says the merchant COULD cast it, so it printed "requesting" for the entire hour a fresh buff was running. That wording cost a wrong diagnosis: the log and the observed travelling looked like the same event and NEITHER of them was the request. It is keyed off the decision now, it names which of the two reasons applies, and the throttle compares the whole note so a genuine change still prints. (2) rangedKiting.autoBySpeed defaults to false. It was true, and kiteCandidateTypes() then added every monster Dexon outruns by speedRatio 1.3 on top of the hand-tuned list - 13 types where the list holds 1 - so "authoritative, never derived" was true of the list and not of the behaviour. The operator set it false on the live slot on 2026-09-28; the file now agrees instead of quietly re-enabling it on the next deploy. Also carried in from the live slot: 'boar' in CONFIG.combat.focusFire.singleTargetMobs. Feature-detected 2026-09-28, the slot held ['cgoo','bigbird','mummy','prat','plantoid','fireroamer','boar'] against the repo's six after eaea6d6 removed poisio, so a deploy from the repo would have dropped an operator edit. Drift is a two-way diff; this is the repo catching up, not a combat decision made here.) v61 (DEPLOYED TO THE LIVE SLOT 2026-09-26 - this entry originally carried a NOT-DEPLOYED hold while Dexon stayed on v60; the operator deployed it later the same day, and it is verified live by feature-detecting CONFIG.combat.focusFire.singleTargetMobs in his CODE context with all seven entries present, not by the slot version number. The hand-test that motivated the hold is ANSWERED and the answer is that cgoo stays on the list: with single-target OFF at cgoo one 605s window lost the priest at t=532s and the mage at t=593s, incoming hits on the priest went from 0.034/s to 1.25/s (2.96 average attackers, peak 10), and Dexon's xp rate did NOT improve - 11,131/s against 11,600/s with single-target on. The mechanism was aggro inheritance, not the priest fighting: the priest's own output measured 0.10 attacks/s, so the damage Dexon spread across 2-3 mobs and then kited away from settled on the nearest body. Written 2026-09-26 at the operator's request so it exists while he hand-tests whether v60's other changes hold the party together at cgoo with single-target OFF. Do not save_code this file without being asked. Change: preferSingleTarget was a hardcoded global true in v60; it becomes a curated per-monster list, singleTargetMobs, with the global left in place but off. The gate now tests the monsters actually IN RANGE as well as `home`, because the case that motivated the list is bigbird sharing main with crab. Seed chosen from two measured quantities against Dexon's 880 attack and 223 armor: danger per mob (attack after mitigation x frequency) and volleys to kill under a 5shot at its 0.5 multiplier. crab is danger 7 and 1.1 volleys - one cast removes it, so AoE is pure gain; bee 6 and 0.7; goo 2 and 0.2; snake 11 and 1.6. cgoo is 299 and 5.5. bigbird is 299 and 73, poisio 112 and 8.2, mummy 392 and 27, prat 398 and 25, plantoid 598 and 325, fireroamer 299 and 217. So the seed is cgoo (unchanged behaviour at the current spot), bigbird and poisio (they share main with crab, which is where AoE resumes), and four that pre-cover the achievement shortlist maps. Bosses are deliberately absent - AoE needs 4+ targets in range so a lone boss never triggers it, and ignoreAddsDuringCrabxx already covers the one that arrives with a swarm; adding fifteen names would make a hand-maintained list harder to read for no measured gain. Worth recording: cgoo is the WEAKEST entry on its own list at 5.5 volleys, where everything else runs 8 to 325 - its case rests on danger and the respawn cap, and that ceiling model is the one the v60 evidence strained, so cgoo is the entry most worth re-testing once this is a list that can be toggled. The Set is rebuilt per call instead of hoisted into COMBAT_SETS so it can be edited from the console without a redeploy.) v60 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Ranger changes. (1) CONFIG.movement.anchors overrides the spawn-boundary centre that scoreAllFarmSpots returns; 'cgoo@level2s' anchors to (-86,683), which measures 3 open lanes of 24, is reachable in the same flood-fill region, sits 222 units out and keeps 2 lanes facing the spawn so monsters still come. It is a funnel to pull into, not a firing position - nothing that tight has line of fire to the spawn centre - and it costs no exp/hr because cgoo is respawn-capped at 8 spawns / 48s = 0.167 kills per second, which the party already exceeds about fivefold. (2) Focus fire: preferSingleTarget skips the AoE branches, since 5shot lands at a 0.5 multiplier and 3shot at 0.7, so against 2,400 hp a 5shot needs 5.5 casts per target against single-target's 2.7 - it keeps five monsters alive and swinging instead of removing one every ~2.3s. leaderPicksLowestHp finishes wounded mobs; the old single-target fallback used inRange[0], and sortedByHP sorts b.hp - a.hp, so it was opening on the HEALTHIEST mob in range. AoE also resumes automatically whenever attackers drop below courage. (3) kitePathBlocked became kitePathPenalty. Measured offline: with 11 cgoo scattered at 25-70 units, 180 of 180 candidates were passable and ZERO survived the veto, so inside the pack - the only case that kills - the whole-field scorer never ran and every decision fell through to the crude ladder. As a cost rather than a veto the ranking survives and the scorer picks the least-bad route. Verified: where the veto froze, the penalty moves and lifts mean distance from the field 45.0 to 69.0.) v59 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. Six changes. (1) Retreat and disengage now score direction against the whole threat field via kiteMultiWeight, signed and urgency-weighted - a candidate that escapes one monster into another is penalised, not merely unrewarded, and threats we are already deep inside weigh more. Closing and recentring keep single-target scoring, which measured correct. (2) kitePathBlocked vetoes candidates whose ROUTE closes on a threat, not just whose endpoint is farther. The harness caught this: from inside a pack the old scorer picked a point 30 units beyond a mob standing 10 units away, scoring it as ten units gained while the path walked over it. Priest.js had tangent cones for this; this file had nothing. (3) Step-length retry at 1, 1/2 and 1/4 - a wall 30 units out used to block every candidate while 10 units of room existed. (4) An ordered ladder fallback, borrowed in shape from the old Party.js handleKiting which always produced some move where the scored sampler could produce none; corrected to stop at +-120 degrees rather than its +-180, which aimed into what it was fleeing, and to retry shorter steps. (5) `if (!found) return true` became `return false`. It claimed the tick was handled while moving nothing AND suppressed the walkInCircle fallback at the call site, which is consistent with him sitting at 10 units for seconds. A gated pathfinder last resort runs first: xmove falls back to smart_move for walls, but the scored pass never reached it because every candidate is pre-filtered through can_move_to, and smart_move is blind to monsters so it only fires below courage. (6) Disengage mode (reason 4) abandons the band entirely once attackers reach character.courage, and smart.moving no longer vetoes kiting outright - a crowd cancels the path instead. Verified with a stub harness over live G.monsters replaying the recorded pack geometry: the old pick is vetoed, the new one leaves sideways, step retry uses 15 where 30 was walled, and the ladder escapes a narrow corridor.) v58 (Kiting is enabled and no longer bscorpion-only, and scare counts attackers instead of detecting one. Four parts. (1) rangedKiting.enabled was false and targets was ['bscorpion'], so the engine - 90 sample angles, throttling, weighting - had never run against anything else. It is on, and kiteCandidateTypes() adds any monster we outrun by speedRatio 1.3 on top of the hand-tuned list, which stays authoritative. (2) The hold band is derived per target by kiteBand() from kiteThreatRadius() + rangeBuffer instead of the fixed 155/170, and that radius is max(range, widest aura) because bscorpion's danger is weakness_aura at radius 100, NOT its 32 attack range - deriving from range alone would have moved the hold from 155 to 52 and parked him inside the aura. bscorpion therefore keeps its measured numbers as an explicit override, optimalDistance 170 above his 160 range included, which is an avoid rather than a kite-and-shoot. (3) cfg.maxDistance was null, so `dist > cfg.maxDistance` coerced to `dist > 0`: reason 2 fired on every tick reason 1 did not, repositionThreshold was unreachable dead config, and the `nd > maxDistance` penalty scored every candidate -1000 alike. The per-target band makes all three behave as designed. (4) scare() fired when any ONE monster had held aggro for 250ms, so the 5s cooldown was routinely already spent when it mattered; it now counts attackers and fires at character.courage. Measured 2026-09-26 at cgoo: the party took 294 hits, FatherToken 190 of them, and all three died - a feared character stops acting, and for the healer that means it stops healing. Also: the kiting branch sat as an `else if` above walkInCircle(), so enabling it would have retired circle-walking entirely and left him standing still wherever nothing was kite-worthy; it is chained now. Verified with a stub harness over live G.monsters - every derived band starts outside the target's threat radius, and monsters we cannot outrun or outrange are refused.) v57 (The inventory sorter is gone. It pinned tracker/ancientcomputer/hpot1/mpot1/xptome/pumpkinspice/xpbooster to slots 0-6 from maintenanceLoop, which runs every TICK_RATE.maintenance = 2000ms, and swap() is an EXCHANGE - so it did not merely hold those items in place, it evicted whatever the operator dragged into one of those slots. Measured 2026-09-26: forcing the tracker from slot 0 to slot 8 landed at +500ms and was reverted by +1000ms, which is why manual dragging had become impossible rather than merely awkward. It only started biting today, because v56 fixed the dead 'tracktrix' spelling to 'tracker' AND a tracker was acquired the same hour, so slot 0 was defended for the first time ever. Nothing depends on the slots it was maintaining: there is not one numeric index into character.items anywhere in this file, every lookup is by name, and MageofOz has run without a sorter the whole time. The potion path is unaffected in practice - use_skill('use_hp') resolves to use('hp'), which scans items from the LAST slot BACKWARDS and drinks the first gives match, and measured the same day the only hp/mp-giving items in the bag are hpot1 and mpot1 themselves, so there is nothing to mis-pick. Note the pins were the WORSE arrangement for that scan: slots 2 and 3 are scanned last, so a second hp/mp consumable would have taken priority over the potions, not the other way round. The tracker is still safe without the pin - neverSell and muling.excludeItems protect it, which is what v56 was actually for. Slot order is now the operator's to arrange by hand.) v56 (Tracktrix is now actually protected, which it was not before. The item's NAME is tracker - Tracktrix is only its display label, G.items.tracker.name - and there is no tracktrix key in G.items at all. Measured 2026-09-25. So the 'tracktrix' string that had been sitting in inventoryRelief.neverSell could never match item.name and protected nothing, and the same typo in inventorySorter's slot map meant the item was never pinned to slot 0 either. Priest.js already spelled it correctly as tracker: 0, and that disagreement between the two files is what the typo was hiding behind. This was not theoretical: reliefSellable() sorts candidates by NPC value ASCENDING and sells the cheapest first, and a tracker vendors for SEVEN GOLD - it would have been the first thing off the pack the next time the bag filled with no mule in reach. It was also missing from muling.excludeItems in every spelling, so clearInventory() was handing it to Meltymerch on sight. Protected now on the same footing as tier-1 potions: not sold, not muled, pinned to slot 0. It is the item that records achievements for bonus stats, so its value is in holding it, never in what it fetches.) v55 (Giga Crab is now joined, and his contribution is logged for later review. Three parts. (1) getDynamicEvents() injects crabxx when parent.S.crabxx.live, with join: true - G.events.crabxx carries join: true and duration 2400 as a daily, so arrival is an event join rather than a walk, and handleEvents() already emits the join for any entry with that flag. There is no static monster pack for crabxx, so the smart_move G.monsters fallback would have found nothing and silently done nothing. (2) shouldAttackMob ignores crabx while crabxx is live. Measured 2026-09-25: a crabx hits for 189 after mitigation against a 4,621 HP pool - 24 hits - and the boss spawns 1,000 of them, so volume is what kills a ranger here. The boss itself hits for 12,572, 2.7x the whole pool, so there is no posture in which he trades with it; he stands outside its 45 range with his 160 and contributes damage, which is what cooperative credit pays on. ignoreAddsDuringCrabxx turns this off. (3) A contribution log in CODE storage, so it survives the change_server reload exactly as the chest map now does. Damage comes from the game's own hit events filtered to our own id against a crabxx target, not inferred from attack calls, so only landed hits count. Writes are batched to one per 10s rather than one per hit. Query it any day with crabxxReport(). Left deliberately unanswered for now: whether to generalise the dragold cross-shard hunter to this boss. At ~491 effective DPS into 960,000 HP behind armor 320 and phresistance 30, and with other players finishing it well inside the 40-minute window, the value of hopping depends on damage actually landed - which is the number this log exists to produce.) v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v66 (Monster Hunt, behind CONFIG.monsterHunt.enabled - default FALSE, so this build changes nothing until mhOn(). All three characters accept their own hunt, because the assignment is per-character and three characters are three independent rolls: measured live 2026-10-03 on US IV, Dexon drew cgoo x50, FatherToken osnake x34 and MageofOz crabx x51, three DIFFERENT targets held at once, since assign() skips any type already published in server.s and every one of these characters is account level 75, which publishes. Dexon ranks them with the party's OWN farm model - mitigated() dps, the priest's heal throughput, incoming dps at maxConcurrentAttackers and the same uptimeFraction gate - minus the xp and gold-margin gates, which are not reasons to refuse a hunt paid in tokens. It waits for every member to settle before choosing, where a member still holding an unexpired hunt counts as settled because they cannot reroll and waiting for them would never end. mh_mode tells the other two whether they are walking to a hunt or back to a farm. Credit is shard-locked and fails silently (monster_hunt_logic returns unless sn matches), so every pass re-checks the shard and abandons rather than killing for nothing. mhOn() / mhOff() / mhStatus() / mhSkip()) - v65 (The achievement queue walks a list of monster rungs on its own, behind CONFIG.achievements.enabled - default FALSE, so this build changes nothing until you flip it. Why: a farm spot lives in manualOverride, a runtime let, and it is lost silently two ways - a reload wipes it, and checkFarmEconomics blacklists the spot the override points at, which is how the party left rat@mansion for booboo@spookytown on 2026-10-01 with 2,583 score still owed, on a death's xp loss divided into a rate. The queue is persisted in CODE storage, re-asserted every 30s, and re-adds its spot to PERMANENT_WHITELIST on every pass because that Set is rebuilt from source on load too. Progress is READ from the tracker, never counted: parent.tracker is a cache that sat frozen at 11,038 rat kills while 203 landed, so achvRefresh emits the socket's own tracker request with parent.render_tracker suppressed for the round trip - the game's handler ends in show_modal and would open a panel on the operator otherwise. Needs a tracker ITEM in the bag; the server handler returns early without one. An override pointing somewhere the queue did not put it means the operator moved the party by hand, so the queue stands down and says so rather than dragging them back. achvStatus() / achvSkip() / achvReset(i) / achvResume() from the console. / 2026-10-02) - v64 (Cooperative bosses are engaged only once somebody else is on them, and six of them were missing from the list that decides it. attackIfTargeted resolves to mob.target != null, which IS the operator's rule - cooperative credit is shared by damage dealt, so joining a fight in progress pays and opening one alone does not. Measured 2026-10-02 in Dexon's live CODE context with a snowman alive at 155-165 units against his 165 range: shouldAttackMob(snowman) returned FALSE and cache.targets.inRange was EMPTY, so handleAttack returned on its first line. snowman was not `home` (spider), not in alwaysAttack, and not in attackIfTargeted, so it fell to the targetPriority fallback - is the mob hitting FatherToken - and the boss spent the fight on Jasnah, ShallanDavar and Ratage, strangers' characters. He fired 8 times in 223 seconds, every one an incidental arcticbee, against the ~70 his cadence allows. v63 walked him to the boss and held him at the computed range; the attack gate then refused the target, which is why the symptom was 'arrived and did nothing'. Derived from G.monsters[x].cooperative the same day: 19 cooperative monsters exist, allBosses already covered 13, and the six added here are the remainder - pinkgoo, rharpy, rimedjinn, slenderman, snowman, tiger. allBosses itself is deliberately NOT widened: it also feeds COMBAT_SETS.bosses, so that is a separate decision. Two findings recorded rather than acted on. rimedjinn has range 200 against Dexon's 165 and FatherToken's 197, so only MageofOz can outrange it and bossHoldDistance will park the other two inside its reach for a 640,000 hp fight - the mrgreen problem again, and a candidate for CONFIG.bossEvents.exclude. bscorpion and ent sit in attackIfTargeted but are NOT cooperative; they predate the boss work and read as a 'dangerous, only if already engaged' rule, so they are left alone. Priest.js and Mage.js need a DIFFERENT fix and are untouched here: their actionLoop has no equivalent filter, and findBestTarget's boss branch takes any BOSS_SET member in range unconditionally - too loose where this was too strict - so the same six names belong in their allBosses AND that branch needs the already-engaged test.) - v63 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-30. Change: BOSS EVENTS. The operator's rule, given 2026-09-30: cooperative bosses only, fought from maximum range, never expecting the kill. Cooperative is the game's own G.monsters[x].cooperative - credit shared by damage dealt - so a trip pays even when somebody else lands the finishing blow, and it is the only class of boss where chipping from range is a strategy rather than a wasted evening. An unknown monster is NOT treated as cooperative. THE OLD BEHAVIOUR WAS NOT A POLICY AT ALL, in three ways. First, shouldHandleEvents() asked only "is anything in getDynamicEvents() live", and EVENT_LOCATIONS lists dragold, mrgreen and mrpumpkin UNCONDITIONALLY - so the party dropped the farm for any of the three the moment it spawned, whatever the odds, with no cap and nothing to bring it home. Measured the same day against this party (Dexon 75, FatherToken 69, MageofOz 70, single-target party DPS about 2,400): mrgreen is 36M hp behind resistance 900, which is 6.6 HOURS, and its attack range is 620 against our 158/197/201 - there is no standing position it cannot reach. dragold is 4.1h, mrpumpkin 4.1h, franky 120M hp and 13.8h at range 948. Second, all three files ran the SAME most-damaged-event scan independently, so two live bosses could send the ranger to one and the priest to the other; the tie-break is now by name, the leader broadcasts its pick, and a follower believes that call for leaderTrustMs before deciding for itself. Third, crabxx was in the ranger's getDynamicEvents alone (v55), so he joined it while the other two kept farming - the boss side of a 960,000 hp fight with no healer, and its 11,706 per hit takes MageofOz down in 1.6 seconds. MAX RANGE IS TWO POSTURES and bossHoldDistance computes both from the live entity: outside the boss's own reach when ours is longer, which costs nothing (crabxx range 45, icegolem 64), and otherwise the far edge of ours, which is merely the best available (franky 948, mrgreen 620). JOINING is measured from adventureland_mongodb node/server.js socket.on('join'), not inferred: exactly four events teleport - goobrawl, crabxx to main (-1000,1700), franky to level2w (-300,150), icegolem to winterland (820,425) - and every other boss must be walked to. The same handler refuses with no_merchants (so never Meltymerch), cant_when_sick (hopsickness, i.e. just after a shard hop, which is now reported rather than retried blindly), cant_in_bank and cant_join for any name not listed, and it ignores the emit when we are already within 200 units - which is why repeating it is free. RETURN was left to my judgement, and it is: boss dead, event expired, maxDeaths 2, or a maxTripMs cap of 20 minutes, whichever comes first, then handleReturnHome(). A trip we GAVE UP on cools that event down for 30 minutes; one that simply ended does not, because those are different facts and cooling the second would refuse a boss the party could have finished. COMMANDS, asked for by name: bossJoin('franky') goes now whatever the gate thinks, clears that cooldown, and broadcasts to the other two from ANY character rather than only the leader - "go now" has to mean the party, not whichever console happened to be open; bossHome() abandons and returns; bossStatus() prints what is live, the gate's verdict on each with its reason, and where we would stand against each. The trip is persisted in CODE storage so a redeploy mid-event cannot hand the party another fresh 20 minutes at a boss it had already abandoned. handleSpecificEvent is now unreachable and marked for deletion next time the file is touched, the way Merchant.js retired heldScanMs. Verified with a 36-case node harness over the extracted block rather than by reading it: the gate, the name tie-break, both hold postures at all three ranges, join versus walk, hopsickness, the death and time caps, cooldown only on giving up, every command, a forced pick that is not live, follower precedence, and the persisted trip. CORRECTION to the v62 entry that follows: it still says NOT DEPLOYED as of 2026-09-28, and that is stale - measured 2026-09-30 in Dexon's live CODE context, String(sendLocationUpdate) contains needsMluck, so v62 IS deployed. The operator deployed it and the marker was never cleared. Read every deployment marker below with that in mind and feature-detect rather than trusting one.) v62 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-28. Change: the mluck request carries its INTENT. sendLocationUpdate sends one `message: 'location'` for two unrelated reasons - "the merchant can buff me and my buff is missing" and "my pack is nearly full, come and empty it" - and Merchant.js read ANY location message from a name in CONFIG.mluck.targets as a buff request. So every pickup ask enqueued an mluck job on the merchant, and an mluck job is a whole batch there on its own: a shard hop, a trip to Dexon's last-known coordinates, and - when he arrived with Dexon further than mluck's 320 units away - summonAndWait, which pulls Dexon off the farm spot for up to 60 seconds. The operator observed exactly that on 2026-09-28 with more than 50 minutes left on the buff. Measured in his live CODE context the same day, which is what identified the real sender: mluckState() returned {ok:false, why:"Meltymerch is not in the party"} while character.s.mluck read {f:"Meltymerch", minsLeft:42}, so needsUpdate was FALSE and the mluck branch was sending nothing at all; pickupCooldownMs is 15000 and lowInventorySlots is 3, so the pickup branch was asking every 15 seconds. The location message now carries needsMluck, which is this file's own needsUpdate, and the merchant refuses to enqueue when it reads false. This is the half that stops the trip being taken; Merchant v67 is the half that stops the summon, and it also covers a legacy sender that omits the field. Two smaller fixes in the same pass. (1) The [mluck] log line was keyed off gate.ok, which only says the merchant COULD cast it, so it printed "requesting" for the entire hour a fresh buff was running. That wording cost a wrong diagnosis: the log and the observed travelling looked like the same event and NEITHER of them was the request. It is keyed off the decision now, it names which of the two reasons applies, and the throttle compares the whole note so a genuine change still prints. (2) rangedKiting.autoBySpeed defaults to false. It was true, and kiteCandidateTypes() then added every monster Dexon outruns by speedRatio 1.3 on top of the hand-tuned list - 13 types where the list holds 1 - so "authoritative, never derived" was true of the list and not of the behaviour. The operator set it false on the live slot on 2026-09-28; the file now agrees instead of quietly re-enabling it on the next deploy. Also carried in from the live slot: 'boar' in CONFIG.combat.focusFire.singleTargetMobs. Feature-detected 2026-09-28, the slot held ['cgoo','bigbird','mummy','prat','plantoid','fireroamer','boar'] against the repo's six after eaea6d6 removed poisio, so a deploy from the repo would have dropped an operator edit. Drift is a two-way diff; this is the repo catching up, not a combat decision made here.) v61 (DEPLOYED TO THE LIVE SLOT 2026-09-26 - this entry originally carried a NOT-DEPLOYED hold while Dexon stayed on v60; the operator deployed it later the same day, and it is verified live by feature-detecting CONFIG.combat.focusFire.singleTargetMobs in his CODE context with all seven entries present, not by the slot version number. The hand-test that motivated the hold is ANSWERED and the answer is that cgoo stays on the list: with single-target OFF at cgoo one 605s window lost the priest at t=532s and the mage at t=593s, incoming hits on the priest went from 0.034/s to 1.25/s (2.96 average attackers, peak 10), and Dexon's xp rate did NOT improve - 11,131/s against 11,600/s with single-target on. The mechanism was aggro inheritance, not the priest fighting: the priest's own output measured 0.10 attacks/s, so the damage Dexon spread across 2-3 mobs and then kited away from settled on the nearest body. Written 2026-09-26 at the operator's request so it exists while he hand-tests whether v60's other changes hold the party together at cgoo with single-target OFF. Do not save_code this file without being asked. Change: preferSingleTarget was a hardcoded global true in v60; it becomes a curated per-monster list, singleTargetMobs, with the global left in place but off. The gate now tests the monsters actually IN RANGE as well as `home`, because the case that motivated the list is bigbird sharing main with crab. Seed chosen from two measured quantities against Dexon's 880 attack and 223 armor: danger per mob (attack after mitigation x frequency) and volleys to kill under a 5shot at its 0.5 multiplier. crab is danger 7 and 1.1 volleys - one cast removes it, so AoE is pure gain; bee 6 and 0.7; goo 2 and 0.2; snake 11 and 1.6. cgoo is 299 and 5.5. bigbird is 299 and 73, poisio 112 and 8.2, mummy 392 and 27, prat 398 and 25, plantoid 598 and 325, fireroamer 299 and 217. So the seed is cgoo (unchanged behaviour at the current spot), bigbird and poisio (they share main with crab, which is where AoE resumes), and four that pre-cover the achievement shortlist maps. Bosses are deliberately absent - AoE needs 4+ targets in range so a lone boss never triggers it, and ignoreAddsDuringCrabxx already covers the one that arrives with a swarm; adding fifteen names would make a hand-maintained list harder to read for no measured gain. Worth recording: cgoo is the WEAKEST entry on its own list at 5.5 volleys, where everything else runs 8 to 325 - its case rests on danger and the respawn cap, and that ceiling model is the one the v60 evidence strained, so cgoo is the entry most worth re-testing once this is a list that can be toggled. The Set is rebuilt per call instead of hoisted into COMBAT_SETS so it can be edited from the console without a redeploy.) v60 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Ranger changes. (1) CONFIG.movement.anchors overrides the spawn-boundary centre that scoreAllFarmSpots returns; 'cgoo@level2s' anchors to (-86,683), which measures 3 open lanes of 24, is reachable in the same flood-fill region, sits 222 units out and keeps 2 lanes facing the spawn so monsters still come. It is a funnel to pull into, not a firing position - nothing that tight has line of fire to the spawn centre - and it costs no exp/hr because cgoo is respawn-capped at 8 spawns / 48s = 0.167 kills per second, which the party already exceeds about fivefold. (2) Focus fire: preferSingleTarget skips the AoE branches, since 5shot lands at a 0.5 multiplier and 3shot at 0.7, so against 2,400 hp a 5shot needs 5.5 casts per target against single-target's 2.7 - it keeps five monsters alive and swinging instead of removing one every ~2.3s. leaderPicksLowestHp finishes wounded mobs; the old single-target fallback used inRange[0], and sortedByHP sorts b.hp - a.hp, so it was opening on the HEALTHIEST mob in range. AoE also resumes automatically whenever attackers drop below courage. (3) kitePathBlocked became kitePathPenalty. Measured offline: with 11 cgoo scattered at 25-70 units, 180 of 180 candidates were passable and ZERO survived the veto, so inside the pack - the only case that kills - the whole-field scorer never ran and every decision fell through to the crude ladder. As a cost rather than a veto the ranking survives and the scorer picks the least-bad route. Verified: where the veto froze, the penalty moves and lifts mean distance from the field 45.0 to 69.0.) v59 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. Six changes. (1) Retreat and disengage now score direction against the whole threat field via kiteMultiWeight, signed and urgency-weighted - a candidate that escapes one monster into another is penalised, not merely unrewarded, and threats we are already deep inside weigh more. Closing and recentring keep single-target scoring, which measured correct. (2) kitePathBlocked vetoes candidates whose ROUTE closes on a threat, not just whose endpoint is farther. The harness caught this: from inside a pack the old scorer picked a point 30 units beyond a mob standing 10 units away, scoring it as ten units gained while the path walked over it. Priest.js had tangent cones for this; this file had nothing. (3) Step-length retry at 1, 1/2 and 1/4 - a wall 30 units out used to block every candidate while 10 units of room existed. (4) An ordered ladder fallback, borrowed in shape from the old Party.js handleKiting which always produced some move where the scored sampler could produce none; corrected to stop at +-120 degrees rather than its +-180, which aimed into what it was fleeing, and to retry shorter steps. (5) `if (!found) return true` became `return false`. It claimed the tick was handled while moving nothing AND suppressed the walkInCircle fallback at the call site, which is consistent with him sitting at 10 units for seconds. A gated pathfinder last resort runs first: xmove falls back to smart_move for walls, but the scored pass never reached it because every candidate is pre-filtered through can_move_to, and smart_move is blind to monsters so it only fires below courage. (6) Disengage mode (reason 4) abandons the band entirely once attackers reach character.courage, and smart.moving no longer vetoes kiting outright - a crowd cancels the path instead. Verified with a stub harness over live G.monsters replaying the recorded pack geometry: the old pick is vetoed, the new one leaves sideways, step retry uses 15 where 30 was walled, and the ladder escapes a narrow corridor.) v58 (Kiting is enabled and no longer bscorpion-only, and scare counts attackers instead of detecting one. Four parts. (1) rangedKiting.enabled was false and targets was ['bscorpion'], so the engine - 90 sample angles, throttling, weighting - had never run against anything else. It is on, and kiteCandidateTypes() adds any monster we outrun by speedRatio 1.3 on top of the hand-tuned list, which stays authoritative. (2) The hold band is derived per target by kiteBand() from kiteThreatRadius() + rangeBuffer instead of the fixed 155/170, and that radius is max(range, widest aura) because bscorpion's danger is weakness_aura at radius 100, NOT its 32 attack range - deriving from range alone would have moved the hold from 155 to 52 and parked him inside the aura. bscorpion therefore keeps its measured numbers as an explicit override, optimalDistance 170 above his 160 range included, which is an avoid rather than a kite-and-shoot. (3) cfg.maxDistance was null, so `dist > cfg.maxDistance` coerced to `dist > 0`: reason 2 fired on every tick reason 1 did not, repositionThreshold was unreachable dead config, and the `nd > maxDistance` penalty scored every candidate -1000 alike. The per-target band makes all three behave as designed. (4) scare() fired when any ONE monster had held aggro for 250ms, so the 5s cooldown was routinely already spent when it mattered; it now counts attackers and fires at character.courage. Measured 2026-09-26 at cgoo: the party took 294 hits, FatherToken 190 of them, and all three died - a feared character stops acting, and for the healer that means it stops healing. Also: the kiting branch sat as an `else if` above walkInCircle(), so enabling it would have retired circle-walking entirely and left him standing still wherever nothing was kite-worthy; it is chained now. Verified with a stub harness over live G.monsters - every derived band starts outside the target's threat radius, and monsters we cannot outrun or outrange are refused.) v57 (The inventory sorter is gone. It pinned tracker/ancientcomputer/hpot1/mpot1/xptome/pumpkinspice/xpbooster to slots 0-6 from maintenanceLoop, which runs every TICK_RATE.maintenance = 2000ms, and swap() is an EXCHANGE - so it did not merely hold those items in place, it evicted whatever the operator dragged into one of those slots. Measured 2026-09-26: forcing the tracker from slot 0 to slot 8 landed at +500ms and was reverted by +1000ms, which is why manual dragging had become impossible rather than merely awkward. It only started biting today, because v56 fixed the dead 'tracktrix' spelling to 'tracker' AND a tracker was acquired the same hour, so slot 0 was defended for the first time ever. Nothing depends on the slots it was maintaining: there is not one numeric index into character.items anywhere in this file, every lookup is by name, and MageofOz has run without a sorter the whole time. The potion path is unaffected in practice - use_skill('use_hp') resolves to use('hp'), which scans items from the LAST slot BACKWARDS and drinks the first gives match, and measured the same day the only hp/mp-giving items in the bag are hpot1 and mpot1 themselves, so there is nothing to mis-pick. Note the pins were the WORSE arrangement for that scan: slots 2 and 3 are scanned last, so a second hp/mp consumable would have taken priority over the potions, not the other way round. The tracker is still safe without the pin - neverSell and muling.excludeItems protect it, which is what v56 was actually for. Slot order is now the operator's to arrange by hand.) v56 (Tracktrix is now actually protected, which it was not before. The item's NAME is tracker - Tracktrix is only its display label, G.items.tracker.name - and there is no tracktrix key in G.items at all. Measured 2026-09-25. So the 'tracktrix' string that had been sitting in inventoryRelief.neverSell could never match item.name and protected nothing, and the same typo in inventorySorter's slot map meant the item was never pinned to slot 0 either. Priest.js already spelled it correctly as tracker: 0, and that disagreement between the two files is what the typo was hiding behind. This was not theoretical: reliefSellable() sorts candidates by NPC value ASCENDING and sells the cheapest first, and a tracker vendors for SEVEN GOLD - it would have been the first thing off the pack the next time the bag filled with no mule in reach. It was also missing from muling.excludeItems in every spelling, so clearInventory() was handing it to Meltymerch on sight. Protected now on the same footing as tier-1 potions: not sold, not muled, pinned to slot 0. It is the item that records achievements for bonus stats, so its value is in holding it, never in what it fetches.) v55 (Giga Crab is now joined, and his contribution is logged for later review. Three parts. (1) getDynamicEvents() injects crabxx when parent.S.crabxx.live, with join: true - G.events.crabxx carries join: true and duration 2400 as a daily, so arrival is an event join rather than a walk, and handleEvents() already emits the join for any entry with that flag. There is no static monster pack for crabxx, so the smart_move G.monsters fallback would have found nothing and silently done nothing. (2) shouldAttackMob ignores crabx while crabxx is live. Measured 2026-09-25: a crabx hits for 189 after mitigation against a 4,621 HP pool - 24 hits - and the boss spawns 1,000 of them, so volume is what kills a ranger here. The boss itself hits for 12,572, 2.7x the whole pool, so there is no posture in which he trades with it; he stands outside its 45 range with his 160 and contributes damage, which is what cooperative credit pays on. ignoreAddsDuringCrabxx turns this off. (3) A contribution log in CODE storage, so it survives the change_server reload exactly as the chest map now does. Damage comes from the game's own hit events filtered to our own id against a crabxx target, not inferred from attack calls, so only landed hits count. Writes are batched to one per 10s rather than one per hit. Query it any day with crabxxReport(). Left deliberately unanswered for now: whether to generalise the dragold cross-shard hunter to this boss. At ~491 effective DPS into 960,000 HP behind armor 320 and phresistance 30, and with other players finishing it well inside the 40-minute window, the value of hopping depends on damage actually landed - which is the number this log exists to produce.) v54 (Chest looting was stalled, not slow. updateChestsInStorage() stamped every chest with performance.now(), which is measured from PAGE LOAD and resets to ~0 on every reload, while the chest map persists in CODE storage. So after any hop or redeploy each stored chest carried a stamp from the previous session's clock, now - storedAt went NEGATIVE, the < delay test passed, and the entry was skipped forever - and never removed either, since removal only happened after a successful loot. Measured 2026-09-25 on Dexon: 9,342 of 9,465 stored chests were stamped in the future and permanently unlootable while ~5,500 chests sat within 800 units, nearest 3 units away. Now Date.now(), which survives a reload. A negative age means a stamp from another clock - legacy performance.now() values read as 1970 - and is treated as ready rather than stranded, so this class of bug cannot recur silently. Two further defects fixed in the same pass: the try wrapped the WHOLE loop, so one loot() throw aborted every remaining chest and left the offender at the head of the map for the next pass to abort on again; and removeChestId() re-read and re-wrote the entire map per chest, O(n) each and O(n^2) across a backlog this size, which would wedge the tab during a drain. Removals are now batched into one write per pass, and maxPerPass bounds the drain rate. Looting costs no exp: loot is not a skill, shares no cooldown with attack, and runs on its own interval. Ranger: delayMs 180000 unchanged; added maxPerPass.) v53 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from inventoryRelief.neverSell and muling.excludeItems.) v52 (Farm scoring now uses the game's own armor curve. mitigated() applied 1-x/(x+900), an approximation that tracks parent.damage_multiplier closely near armor 100 but diverges badly above 400: at defense 900 it returned x0.500 where the game returns x0.313, overestimating our damage by 60%. 13 of the 86 monsters this scorer ranks sit above 400, so the tankiest mobs were systematically over-ranked - mrgreen at defense 900 drops 12% and the armor-900 dummy 37%. damage_multiplier is typeof-guarded rather than assumed, and its null return for an undefined argument is rejected; the old curve stays as a fallback that logs once, so a missing helper cannot masquerade as a correct estimate. No top-10 spot changes today - the top spots are defense 0 - but the error grows as party DPS rises and high-defense mobs become viable candidates.) v51 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable. Ranger only: handleAttack fired at mobs it could not reach. top5/top3 were sliced from sortedByHP, which is every monster on screen sorted by HP descending and NOT range-filtered, and of six branches only the last checked range. The healthiest mobs on screen are the ones still at full HP precisely because nobody can reach them, so the aoe branches shot at those. The clumped guard did not help: it proves some mob is close, then the shot goes to top3 anyway. Measured: 33 consecutive 3shot casts at crabs 683-715 units away against a range of 158, 0 xp from all 33. Now sliced from cache.targets.inRange - same list, same HP order - so every branch inherits the range check. The single-target fallback also moved from sortedByHP[0] to inRange[0]: it used to test the healthiest mob on screen and so attacked nothing at all whenever that one was out of reach.)
 // ============================================================================
 // ============================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v50 (DPS meter: the 'hit' listener is now replaced rather than added to. The socket lives in the game frame and outlives a CODE restart, so every reload added another - nine on this character after a morning of redeploys. Orphans belong to destroyed CODE frames where parent is null, and the line reading parent.party_list sat outside the try, so an orphan threw into socket.io's emit loop and aborted the listeners behind it. The live handler registers last, so it never ran and this meter read zero while the rest of the party's read correctly. Now: remove our own previous handler by reference - not a blanket removeListener, which would strip the client's own damage-number rendering - and guard the first line so a surviving orphan returns quietly. Orphans already on the socket need a page reload; a CODE reload cannot reach them.)
@@ -485,6 +485,24 @@ const CONFIG = {
 	},
 
 	/* ACHIEVEMENT QUEUE - off until you turn it on. -> ACHIEVEMENT QUEUE below. */
+	/* MONSTER HUNT - off until you turn it on. -> MONSTER HUNT below.
+	   mhOn() and mhOff() flip 'enabled' at runtime; off restores ordinary
+	   farming and hands the spot straight back to the scorer. */
+	monsterHunt: {
+		enabled: false,
+		/* The backstop on waiting for everyone, NOT the rule. The rule is in
+		   mhSettled(): a member holding an unexpired hunt counts as settled,
+		   because the server answers monsterhunt_already and leaves it
+		   untouched, so they cannot reroll and waiting for them to "accept"
+		   would never finish. This timer only covers a character gone quiet. */
+		acceptWaitMs: 90 * 1000,
+		askMs: 20 * 1000,               // how often to poll the other two for progress
+		maxCount: 150,                  // refuse a grind longer than this many kills
+		huntCapMs: 25 * 60 * 1000,      // give up on one target after this
+		turnInMarginMs: 7 * 60 * 1000,  // clock kept spare to bank what is already done
+		retryMs: 5 * 60 * 1000,         // after a cycle with nothing viable, hold off this long
+	},
+
 	achievements: {
 		enabled: false,
 		refreshMs: 5 * 60 * 1000,   // how often to ask the server for a fresh tracker
@@ -825,6 +843,9 @@ async function mainLoop() {
 		// Selling junk off to make room. Same shape as waiting for the merchant:
 		// stand down until it finishes, and it always finishes.
 		if (state.sellingOff) return setTimeout(mainLoop, 250);
+		/* A Daisy trip owns movement. Same shape as the merchant wait: stand down
+		   until it finishes, and it always finishes - mhGoDaisy is noHang-bounded. */
+		if (mhBusy) return setTimeout(mainLoop, 250);
 		if (state.waitingForMerchant) {
 			if (Date.now() - state.waitingForMerchantSince > MERCHANT_WAIT_TIMEOUT_MS) {
 				state.waitingForMerchant = false;
@@ -3961,6 +3982,11 @@ function achvAdvance(reason) {
 async function achvTick() {
 	const cfg = achvCfg();
 	if (!cfg.enabled || achvPaused) return;
+	/* The monster hunt owns the farm spot while a cycle is live, and the override
+	   check further down would read that as the operator moving the party by
+	   hand - which stands the queue down PERMANENTLY until achvResume(). Return
+	   before that happens; the queue picks up again when mhOff() releases. */
+	if (typeof mhOwnsSpot === 'function' && mhOwnsSpot()) return;
 	const t = achvTarget();
 	if (!t) return;
 
@@ -4032,6 +4058,10 @@ try {
 setInterval(() => {
 	achvTick().catch((e) => achvLog('tick threw: ' + ((e && e.message) || e), 'red'));
 }, (CONFIG.achievements && CONFIG.achievements.reassertMs) || 30000);
+
+setInterval(() => {
+	mhTick().catch((e) => mhLog('tick threw: ' + ((e && e.message) || e), 'red'));
+}, (CONFIG.monsterHunt && CONFIG.monsterHunt.tickMs) || 5000);
 
 /* The toolbar is static markup in the game's index.html, so it is normally
    there long before any CODE runs and the dock succeeds first time. If it
@@ -4274,9 +4304,434 @@ function updateFarmUI() {
 	$list.html(rows || '<div style="opacity:0.7;">No viable candidates yet</div>');
 }
 
+// ============================================================================
+// MONSTER HUNT - THE LEADER HALF. Dexon decides; Priest.js and Mage.js obey.
+// ============================================================================
+/* THE TOGGLE IS CONFIG.monsterHunt.enabled, default FALSE, and mhOn()/mhOff()
+   flip it at runtime. Off means the party farms exactly as it did before: this
+   block releases the override it set, tells the other two they are farming
+   again, and stops touching anything.
+
+   WHY ALL THREE CHARACTERS HUNT. Accepting is a per-character socket emit and
+   the assignment is per-character, so three characters are three independent
+   rolls. Measured live 2026-10-03 on US IV: Dexon drew cgoo x50, FatherToken
+   osnake x34, MageofOz crabx x51 - three DIFFERENT monsters held at once,
+   because assign() skips any type already published in server.s as somebody's
+   hunt and every one of these characters is account level 75, which publishes.
+   So three rolls give three chances that at least one target is something this
+   party should actually fight, and the counts came back small enough (24k-214k
+   total damage) that all three fit inside one 30-minute window. One roll would
+   mean accepting whatever came up or waiting the clock out.
+
+   SAFETY IS NOT HAND-ROLLED HERE. A hunt target is judged by the party's own
+   farm scorer - real measured dps through mitigated(), the priest's actual heal
+   throughput, incoming dps at FARM_SEARCH.maxConcurrentAttackers, and the same
+   uptimeFraction gate the farm search uses. What mhEvaluate() deliberately
+   drops are the ECONOMIC gates: a hunt is paid in monstertokens, so the xp
+   rate and the gold-margin test that scoreAllFarmSpots() applies are not
+   reasons to refuse one.
+
+   CREDIT IS SHARD-LOCKED AND FAILS SILENTLY. monster_hunt_logic returns on its
+   first line unless s.monsterhunt.sn === region + " " + server_name, and
+   nothing logs the mismatch. So a shard hop mid-hunt freezes every counter
+   while the party keeps killing. mhTick checks the shard on every pass and
+   abandons rather than grinding for nothing. -> mhStale */
+const MH_DAISY = { map: 'main', x: 126, y: -413 };
+const MH_DAISY_RADIUS = 340;
+const MH_FOLLOWERS = ['FatherToken', 'MageofOz'];
+const MH_KEY = 'mh_state';
+
+let mhPhase = 'off';          // off | gather | hunt | turnin
+let mhPool = {};              // name -> last report
+let mhPick = null;            // { owner, id, map, x, y, c, estSec }
+let mhPhaseSince = 0;
+let mhAskedAt = 0;
+let mhModeSent = null;
+let mhDone = [];              // owners whose hunt reached zero this cycle
+let mhBusy = false;           // a Daisy trip owns movement; mainLoop stands down
+
+function mhCfg() { return CONFIG.monsterHunt || { enabled: false }; }
+function mhLog(m, c) { try { game_log('[mh] ' + m, c || '#9FD3FF'); } catch (e) { } console.log('[mh] ' + m); }
+function mhShard() { try { return String(parent.server_region) + ' ' + String(parent.server_identifier); } catch (e) { return null; } }
+function mhSelfHunt() { try { return (character.s && character.s.monsterhunt) || null; } catch (e) { return null; } }
+function mhAtDaisy() {
+	try {
+		return character.map === MH_DAISY.map
+			&& Math.hypot(character.x - MH_DAISY.x, character.y - MH_DAISY.y) <= MH_DAISY_RADIUS;
+	} catch (e) { return false; }
+}
+
+/* Our own report, in the same shape the followers send, so the pool is uniform
+   and the ranking does not special-case the leader. */
+function mhSelfReport() {
+	const h = mhSelfHunt(), shard = mhShard();
+	return { id: h ? h.id : null, c: h ? h.c : null, ms: h ? h.ms : null, sn: h ? h.sn : null,
+		shard: shard, stale: !!(h && shard && h.sn !== shard), atDaisy: mhAtDaisy(),
+		esize: character.esize, why: 'self', at: Date.now() };
+}
+
+function mhRefresh() { mhPool[character.name] = mhSelfReport(); }
+
+/* SAFETY AND COST, from the party's own model. Returns null when this monster
+   is not something the party should be standing in. */
+function mhEvaluate(id) {
+	if (!id) return null;
+	if (!parent.G || !parent.G.maps || !parent.G.monsters) return null;
+	const mob = parent.G.monsters[id];
+	if (!mob || !mob.hp) return null;
+	/* Pure damage ignores armour AND resistance, so no amount of gear or
+	   healing makes it survivable - it is a refusal, not a score. */
+	if (mob.damage_type === 'pure') return null;
+
+	const dps = getPartyDps();
+	const heal = estimateHealThroughput();
+	const blacklist = getBlacklist();
+	let best = null;
+
+	for (const mapName in parent.G.maps) {
+		const mapData = parent.G.maps[mapName];
+		if (!isMapSafeForFarming(mapData) || !mapData.monsters) continue;
+		for (const spot of mapData.monsters) {
+			if (spot.type !== id) continue;
+			if (!Array.isArray(spot.boundary) || spot.boundary.length < 4) continue;
+			const key = spotKey(id, mapName);
+			if (isPermanentlyBlacklisted(key)) { /* whitelisted spots are fine */ }
+			else if (blacklist[key]) continue;
+
+			const eff = Math.max(mitigated(dps.physical, mob.armor || 0) + mitigated(dps.magical, mob.resistance || 0), 1);
+			const attackers = Math.min(spot.count || 1, FARM_SEARCH.maxConcurrentAttackers);
+			const incoming = (mob.attack || 0) * (mob.frequency || 1) * attackers;
+
+			let uptime = 1;
+			if (heal - incoming < 0) {
+				const ttd = (3 * (character.max_hp || 2000)) / Math.abs(heal - incoming);
+				const deathsPerHour = 3600 / ttd;
+				uptime = Math.max(0, (3600 - deathsPerHour * FARM_SEARCH.avgDeathDowntimeSec) / 3600);
+			}
+			if (uptime < FARM_SEARCH.minUptimeFraction) continue;
+
+			/* Throughput is the lesser of how fast we can kill and how fast they
+			   come back - a four-spawn pack on a 60s respawn is supply-bound no
+			   matter how hard the party hits. */
+			const killRate = Math.min(eff / mob.hp, (spot.count || 1) / (mob.respawn || 1));
+			if (!(killRate > 0)) continue;
+			const [bx1, by1, bx2, by2] = spot.boundary;
+			const cand = { id: id, map: mapName, x: (bx1 + bx2) / 2, y: (by1 + by2) / 2,
+				uptime: uptime, killRate: killRate * uptime, count: spot.count || 1 };
+			if (!best || cand.killRate > best.killRate) best = cand;
+		}
+	}
+	return best;
+}
+
+/* Seconds to clear this hunt, or null when it should not be attempted. */
+function mhScore(rep) {
+	if (!rep || !rep.id || !rep.c) return null;
+	if (rep.stale) return null;
+	const cfg = mhCfg();
+	if (cfg.maxCount && rep.c > cfg.maxCount) return null;
+	const ev = mhEvaluate(rep.id);
+	if (!ev) return null;
+	const sec = rep.c / ev.killRate;
+	/* No point starting something the hunt's own clock will outlive. */
+	const leftSec = Math.max(0, (rep.ms || 0) / 1000);
+	if (sec > leftSec) return null;
+	return Object.assign({}, ev, { estSec: sec, c: rep.c, msLeft: rep.ms });
+}
+
+/* THE WAIT RULE. Choose only once every member has settled, where settled means
+   we have heard SOMETHING definite from them: a hunt they accepted, a hunt they
+   were already holding and cannot reroll (the operator's exception - its timer
+   has not expired, so waiting for them to accept would be waiting for ever), or
+   a flat refusal. A member we have heard nothing at all from is not settled, and
+   acceptWaitMs is the backstop so one silent character cannot stall the cycle. */
+function mhSettled(name) {
+	const r = mhPool[name];
+	if (!r) return false;
+	if (r.id) return true;                       // holding or accepted something
+	return r.why === 'refused' || r.why === 'no slot'
+		|| r.why === 'could not reach Daisy' || r.why === 'emit failed';
+}
+
+function mhRoster() { return [character.name].concat(MH_FOLLOWERS.filter((n) => mhInParty(n))); }
+
+function mhInParty(name) {
+	try { const p = (typeof get_party === 'function' ? get_party() : null) || {}; return !!p[name]; }
+	catch (e) { return false; }
+}
+
+function mhAllSettled() {
+	const roster = mhRoster();
+	const unsettled = roster.filter((n) => !mhSettled(n));
+	if (!unsettled.length) return { ready: true, why: 'all ' + roster.length + ' settled' };
+	if (Date.now() - mhPhaseSince > (mhCfg().acceptWaitMs || 90000))
+		return { ready: true, why: 'waited out ' + unsettled.join(', ') };
+	return { ready: false, waiting: unsettled };
+}
+
+/* The notification the operator asked for: are we walking to a hunt, or to a
+   farm? Sent on every transition and whenever the target changes, so the other
+   two always have a reason for where they are being taken. */
+function mhSendMode(mode, target, map, why) {
+	const sig = mode + '|' + (target || '') + '|' + (map || '') + '|' + (why || '');
+	if (sig === mhModeSent) return;
+	mhModeSent = sig;
+	try { plSend(MH_FOLLOWERS, { message: 'mh_mode', mode: mode, target: target || null, map: map || null, why: why || null }); }
+	catch (e) { mhLog('mode broadcast failed: ' + e, 'orange'); }
+	mhLog(mode === 'hunt' ? ('hunting ' + target + '@' + map + (why ? ' - ' + why : '')) : ('farming' + (why ? ' - ' + why : '')),
+		mode === 'hunt' ? '#FFD700' : '#7FD98A');
+}
+
+function mhTell(names, message, extra) {
+	try { plSend(names, Object.assign({ message: message }, extra || {})); }
+	catch (e) { mhLog(message + ' to ' + names + ' failed: ' + e, 'orange'); }
+}
+
+/* Pin the spot the same way the achievement queue does, for the same reason:
+   checkFarmEconomics will otherwise blacklist a spot chosen for a reason it
+   cannot see, and PERMANENT_WHITELIST is rebuilt from source on load so the
+   addition has to be re-made rather than assumed. */
+function mhApply(pick) {
+	try { PERMANENT_WHITELIST.add(spotKey(pick.id, pick.map)); getBlacklist(); } catch (e) { }
+	manualOverride = { home: pick.id, mobMap: pick.map, x: pick.x, y: pick.y, expPerSecond: 0, uptimeFraction: pick.uptime || 1 };
+	try { runFarmSearch(); } catch (e) { mhLog('runFarmSearch threw: ' + e, 'red'); }
+	mhSendMode('hunt', pick.id, pick.map, pick.owner + "'s hunt, " + pick.c + ' left, ~' + Math.round(pick.estSec / 60) + ' min');
+}
+
+function mhOwnsSpot() {
+	return !!(mhCfg().enabled && mhPick && manualOverride
+		&& manualOverride.home === mhPick.id && manualOverride.mobMap === mhPick.map);
+}
+
+function mhRelease(why) {
+	if (mhPick && manualOverride && manualOverride.home === mhPick.id && manualOverride.mobMap === mhPick.map) {
+		manualOverride = null;
+		try { runFarmSearch(); } catch (e) { }
+	}
+	mhPick = null;
+	mhSendMode('farm', null, null, why || null);
+}
+
+function mhReset(why, phase) {
+	mhRelease(why);
+	mhPool = {};
+	mhDone = [];
+	mhPhase = phase || 'off';
+	mhPhaseSince = Date.now();
+	mhAskedAt = 0;
+}
+
+async function mhGoDaisy() {
+	if (mhAtDaisy()) return true;
+	try { await noHang(smart_move({ map: MH_DAISY.map, x: MH_DAISY.x, y: MH_DAISY.y }), 'mh daisy', 120000); }
+	catch (e) { mhLog('could not reach Daisy: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
+	return mhAtDaisy();
+}
+
+async function mhAcceptSelf() {
+	const have = mhSelfHunt();
+	if (have && have.c) { mhRefresh(); mhPool[character.name].why = 'already held'; return true; }
+	if (!character.esize) { mhRefresh(); mhPool[character.name].why = 'no slot'; mhLog('no free slot - not accepting', 'orange'); return false; }
+	/* The flag has to span the walk, the emit AND the settle sleep, not just the
+	   walk: mainLoop would otherwise start dragging us back to the farm spot
+	   between arriving and the server answering. */
+	mhBusy = true;
+	try {
+		if (!(await mhGoDaisy())) { mhRefresh(); mhPool[character.name].why = 'could not reach Daisy'; return false; }
+		try { parent.socket.emit('monsterhunt'); } catch (e) { mhLog('emit failed: ' + e, 'red'); mhRefresh(); mhPool[character.name].why = 'emit failed'; return false; }
+		await sleep(1500);
+		mhRefresh();
+		const h = mhSelfHunt();
+		mhPool[character.name].why = h ? 'accepted' : 'refused';
+		mhLog(h ? ('accepted ' + h.id + ' x' + h.c) : 'the server refused the hunt', h ? '#7FD98A' : 'orange');
+		return !!h;
+	} finally { mhBusy = false; }
+}
+
+async function mhTurnInSelf() {
+	const h = mhSelfHunt();
+	if (!h || h.c) return false;
+	mhBusy = true;
+	try {
+		if (!(await mhGoDaisy())) return false;
+		try { parent.socket.emit('monsterhunt'); } catch (e) { mhLog('emit failed: ' + e, 'red'); return false; }
+		await sleep(1500);
+		const done = !mhSelfHunt();
+		mhLog(done ? 'turned in - token collected' : 'turn-in did not take', done ? '#7FD98A' : 'orange');
+		mhRefresh();
+		return done;
+	} finally { mhBusy = false; }
+}
+
+/* Follower reports arrive here, routed from on_cm. */
+function mhOnReport(name, data) {
+	mhPool[name] = { id: data.id || null, c: data.c, ms: data.ms, sn: data.sn, shard: data.shard,
+		stale: !!data.stale, atDaisy: !!data.atDaisy, esize: data.esize, why: data.why || 'asked', at: Date.now() };
+	mhLog(name + ': ' + (data.id ? (data.id + ' x' + data.c + (data.stale ? ' STALE(' + data.sn + ' vs ' + data.shard + ')' : '')) : ('none - ' + data.why)), '#8b98ab');
+}
+
+function mhStale() {
+	const shard = mhShard();
+	const bad = [];
+	for (const n in mhPool) { const r = mhPool[n]; if (r && r.id && r.sn && shard && r.sn !== shard) bad.push(n); }
+	return bad;
+}
+
+async function mhTick() {
+	const cfg = mhCfg();
+	if (!cfg.enabled) {
+		if (mhPhase !== 'off') { mhLog('disabled - handing the spot back', '#FFD700'); mhReset('monster hunt turned off', 'off'); }
+		return;
+	}
+	if (mhPhase === 'off') { mhPhase = 'gather'; mhPhaseSince = Date.now(); mhPool = {}; mhDone = []; mhLog('enabled - collecting hunts', '#FFD700'); }
+
+	/* Our own live state first, THEN the staleness judgement. Reading the pool
+	   before refreshing it meant our own shard change was only ever noticed on
+	   the FOLLOWING tick, because nothing had written our current sn yet - the
+	   harness caught that, and a tick of grinding for no credit is exactly what
+	   this check exists to prevent. */
+	mhRefresh();
+
+	/* A hop invalidates every hunt taken on the old shard, silently. Catch it
+	   before the party spends the window killing things for no credit. */
+	const stale = mhStale();
+	if (stale.length && mhPhase !== 'gather') {
+		mhLog('shard changed - ' + stale.join(', ') + " hunt(s) no longer count, restarting", 'orange');
+		mhReset('shard changed', 'gather');
+		return;
+	}
+
+	if (mhPhase === 'gather') {
+		mhRefresh();
+		if (!mhSettled(character.name)) {
+			mhSendMode('farm', null, null, 'collecting hunts');
+			await mhAcceptSelf();
+		}
+		if (Date.now() - mhAskedAt > (cfg.askMs || 20000)) {
+			mhAskedAt = Date.now();
+			for (const n of MH_FOLLOWERS) {
+				if (!mhInParty(n)) continue;
+				mhTell([n], mhSettled(n) ? 'mh_ask' : 'mh_accept');
+			}
+		}
+		const s = mhAllSettled();
+		if (!s.ready) return;
+
+		const ranked = mhRoster().map((n) => {
+			const sc = mhScore(mhPool[n]);
+			return sc ? Object.assign({ owner: n }, sc) : null;
+		}).filter(Boolean).sort((a, b) => a.estSec - b.estSec);
+
+		if (!ranked.length) {
+			const held = mhRoster().filter((n) => mhPool[n] && mhPool[n].id);
+			mhLog('nothing worth hunting (' + s.why + '): '
+				+ (held.length ? held.map((n) => n + '=' + mhPool[n].id + ' x' + mhPool[n].c).join(', ') : 'no hunts at all')
+				+ ' - farming until they expire', 'orange');
+			mhReset('no acceptable target', 'gather');
+			mhPhaseSince = Date.now() + (cfg.retryMs || 300000) - (cfg.acceptWaitMs || 90000);
+			return;
+		}
+		mhPick = ranked[0];
+		mhLog('picked ' + mhPick.owner + "'s " + mhPick.id + ' x' + mhPick.c + ' (~'
+			+ Math.round(mhPick.estSec / 60) + ' min) from ' + ranked.length + ' viable; ' + s.why, '#FFD700');
+		mhPhase = 'hunt';
+		mhPhaseSince = Date.now();
+		mhApply(mhPick);
+		return;
+	}
+
+	if (mhPhase === 'hunt') {
+		if (!mhPick) { mhPhase = 'gather'; mhPhaseSince = Date.now(); return; }
+		if (!mhOwnsSpot()) { mhLog('re-asserting ' + mhPick.id + '@' + mhPick.map, '#8b98ab'); mhApply(mhPick); }
+
+		mhRefresh();
+		if (Date.now() - mhAskedAt > (cfg.askMs || 20000)) {
+			mhAskedAt = Date.now();
+			for (const n of MH_FOLLOWERS) if (mhInParty(n)) mhTell([n], 'mh_ask');
+		}
+
+		const owner = mhPool[mhPick.owner];
+		if (owner && owner.id === mhPick.id && !owner.c) {
+			mhLog(mhPick.owner + ' finished ' + mhPick.id, '#7FD98A');
+			if (mhDone.indexOf(mhPick.owner) < 0) mhDone.push(mhPick.owner);
+			/* Another hunt still worth doing, and enough clock left on the ones
+			   already finished to bank them afterwards? Then keep going. */
+			const next = mhRoster().filter((n) => n !== mhPick.owner && mhDone.indexOf(n) < 0)
+				.map((n) => { const sc = mhScore(mhPool[n]); return sc ? Object.assign({ owner: n }, sc) : null; })
+				.filter(Boolean).sort((a, b) => a.estSec - b.estSec);
+			const margin = Math.min.apply(null, mhDone.map((n) => (mhPool[n] && mhPool[n].ms) || 0).concat([Infinity]));
+			if (next.length && margin > (cfg.turnInMarginMs || 420000)) {
+				mhPick = next[0];
+				mhLog('next: ' + mhPick.owner + "'s " + mhPick.id + ' x' + mhPick.c, '#FFD700');
+				mhApply(mhPick);
+				return;
+			}
+			mhPhase = 'turnin';
+			mhPhaseSince = Date.now();
+			mhSendMode('farm', null, null, 'banking ' + mhDone.length + ' token(s)');
+			return;
+		}
+
+		if (Date.now() - mhPhaseSince > (cfg.huntCapMs || 1500000)) {
+			mhLog('gave up on ' + mhPick.id + ' after ' + Math.round((Date.now() - mhPhaseSince) / 60000) + ' min', 'orange');
+			mhPhase = mhDone.length ? 'turnin' : 'gather';
+			mhPhaseSince = Date.now();
+			mhRelease('hunt cap reached');
+		}
+		return;
+	}
+
+	if (mhPhase === 'turnin') {
+		mhRelease('turning in');
+		mhBusy = true;
+		let reached;
+		try { reached = await mhGoDaisy(); } finally { mhBusy = false; }
+		if (!reached) {
+			if (Date.now() - mhPhaseSince > 180000) { mhLog('cannot reach Daisy - giving up on this cycle', 'red'); mhReset('could not bank', 'gather'); }
+			return;
+		}
+		await mhTurnInSelf();
+		for (const n of MH_FOLLOWERS) if (mhInParty(n) && mhDone.indexOf(n) >= 0) mhTell([n], 'mh_turnin');
+		await sleep(3000);
+		mhLog('cycle done - ' + mhDone.length + ' hunt(s) completed', '#7FD98A');
+		mhReset('cycle complete', 'gather');
+		return;
+	}
+}
+
+// ---- console helpers -------------------------------------------------------
+function mhOn() { CONFIG.monsterHunt.enabled = true; mhLog('ON', '#7FD98A'); return mhStatus(); }
+function mhOff() { CONFIG.monsterHunt.enabled = false; mhReset('turned off by hand', 'off'); mhLog('OFF - farming as normal', '#FFD700'); return mhStatus(); }
+function mhSkip() {
+	if (!mhPick) { mhLog('nothing picked', '#8b98ab'); return null; }
+	mhLog('skipping ' + mhPick.id + ' by hand', '#FFD700');
+	mhRelease('skipped by hand');
+	mhPhase = 'gather';
+	mhPhaseSince = Date.now();
+	return mhStatus();
+}
+function mhStatus() {
+	mhRefresh();
+	const rows = {};
+	for (const n of mhRoster()) {
+		const r = mhPool[n];
+		const sc = mhScore(r);
+		rows[n] = r ? ((r.id ? r.id + ' x' + r.c + ' (' + Math.round((r.ms || 0) / 60000) + ' min)' : 'none')
+			+ (r.stale ? ' STALE' : '') + ' - ' + r.why
+			+ (r.id ? (sc ? '  viable ~' + Math.round(sc.estSec / 60) + ' min' : '  REFUSED') : '')) : 'no report';
+	}
+	const out = { enabled: !!mhCfg().enabled, phase: mhPhase, busy: mhBusy, shard: mhShard(),
+		pick: mhPick ? (mhPick.owner + ':' + mhPick.id + '@' + mhPick.map) : null,
+		done: mhDone.slice(), reports: rows, ownsSpot: mhOwnsSpot(),
+		waiting: mhAllSettled().waiting || null };
+	console.log('[mh]', out);
+	return out;
+}
+
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (data.message === 'boss') { bossOnCall(name, data); return; }
+	if (data.message === 'mh_report' && (name === 'FatherToken' || name === 'MageofOz')) { mhOnReport(name, data); return; }
 	if (data.message === 'dps_report' && partyDpsReports[name]) {
 		partyDpsReports[name] = { type: data.damageType, dps: data.dps, maxHp: data.maxHp, level: data.level, receivedAt: Date.now() };
 		return;
