@@ -28,6 +28,88 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v78
+
+Split the price table in two, and carried the same split plus two real fixes
+into UpgradeCompound.js v5.
+
+OVERRIDE AND FALLBACK ARE DIFFERENT THINGS, and v77 conflated them.
+`GEAR_VALUE_OVERRIDES` held seven derived numbers AND was the first thing
+checked, so there was nowhere to put an operator decision that would not be
+mixed in with values this script had worked out for itself. Now:
+
+  GEAR_VALUE_OVERRIDES   empty, yours. Beats every other source, market included.
+  GEAR_VALUE_FALLBACK    the derived numbers. Consulted LAST, after Ponty and
+                         after a pair of agreeing market anchors.
+
+The behavioural change: a live anchor now BEATS the flat values. gcape, sbelt
+and tshirt9 at 2,000,000,000 were set "for now", which is fallback semantics -
+a floor that keeps the planner working while the market is silent, not a claim
+about what the item is worth today. If you want one of them to hold against the
+market, put it in GEAR_VALUE_OVERRIDES and it will.
+
+Divergent anchors still fall THROUGH to the fallback rather than handing the
+item over, so a parking price no longer costs progress on an item whose value
+is otherwise known.
+
+ecape = 126,000, and it is a derivation rather than a quote. The market cannot
+price this item: the three live anchors back-solve to +0 bases of 1, 548,887
+and 29,473,137 - seven orders of magnitude apart - because from a base of even
+100,000 the expected cost to reach +9 is 1.14 BILLION, so the +9s on the market
+sit far below their own build cost and came from luck, not from anybody rolling
+them. Inverting a chain of 1.8% and 6.6% steps amplifies any error without
+limit.
+
+The drop table answers it instead. ecape and rabbitsfoot come out of the SAME
+container, `basketofeggs` (g 20,000, e 1), at weights 1 and 0.001 of a 5.721
+total - so ecape is exactly one thousandth of rabbitsfoot whatever a basket
+costs, and rabbitsfoot is already set at 126,000,000 from the funtoken route.
+Cross-check: pricing the basket at its own Ponty value (24,000) implies
+rabbitsfoot 137,304,000 against the funtoken figure of 126,000,000, 9% apart by
+two completely unrelated routes. At 126,000 ecape runs to +8 and stops on
+wants_offering, clearing both T2 targets (+7) and one short of T3 (+9).
+
+UpgradeCompound.js v5 - TWO REAL DEFECTS, and one I was wrong about.
+
+1. `ucPlan` divided by an unclamped probability. `ucUpgradeChance` caps at
+   min(base + 0.36, base * 3) with NO clamp to 1 - correct, because the server
+   rolls Math.random() < probability and anything at or above 1 just means
+   certain - but ucPlan then divided by it. Measured on mmhat: without the
+   clamp E[+2] comes back 9,880,919 against inputs of 10,000,198, a level
+   cheaper than the copy going into it. It also biases the choice toward
+   offerings, since offerings are exactly what push p past 1.
+
+2. The planner could choose `offeringp` and `offeringx`, which are RETIRED -
+   both carry "ignore": true in design/items.js, which is the measured reason
+   no NPC stocks them. Verified by mutation: hand the planner the full offering
+   list and it picks offeringp immediately. ucSource then resolves it to
+   market, ucAcquire fails, and the run stops partway up a ladder it had
+   already printed as a plan. UC_OFFERINGS keeps all four entries because that
+   array is indexed by grade and the chance maths needs them; the new
+   UC_PLANNABLE_OFFERINGS is what the planner iterates.
+
+3. NOT a defect, recorded so it is not "fixed" later: UC plans with every grace
+   term at zero, which is right - a hypothetical +0 copy has no grace - and at
+   roll time it calls the game's own calculation mode (`upgrade(..., true)`)
+   for the exact chance with grace included, and gates MIN_CHANCE on that. The
+   igrade/igrace sign error fixed in Merchant v77 has no equivalent here.
+
+UC also gains PRICE_FALLBACK with the same eight values, consulted after Ponty,
+the fresh ask, the historical ask and the NPC price. PRICE_OVERRIDES stays
+empty. Keep the two tables in step - a value that differs between the files
+means the merchant and the tool that takes over from it disagree about what the
+same item is worth.
+
+Still different between the two, deliberately: Merchant values the copy at its
+CURRENT level from the live market when anyone is trading it there
+(gvCarriedValue), while UC always uses the recurrence walked up from +0. UC is
+not wrong - it never had the carried-value bug - but the two can put different
+numbers on the same +6 copy.
+
+HARNESSES. v78test.js, 61 assertions; reverting to override-first semantics
+fails 3. uc5test.js, 23 assertions; removing the clamp fails 1, handing the
+planner the retired offerings fails 1, dropping the fallback tier fails 2.
+
 ## v77
 
 Tier-2/tier-3 gear steps are now planned with the copy's own value in the
