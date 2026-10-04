@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v76
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v77
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -636,7 +636,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'starkillers', 'mpxgloves', 'bcape',
 			'mpxamulet', 'sbelt', 'rabbitsfoot', 'cearring', 'zapper',
 			// mage
-			'sparkstaff', 'mageshood', 'jacko', 'cring',
+			'sparkstaff', 'mmhat', 'jacko', 'cring',
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
@@ -683,7 +683,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'bcape', 'mpxamulet',
 			'mpxgloves', 'sbelt', 'rabbitsfoot',
 			// mage
-			'sparkstaff', 'mageshood', 'jacko',
+			'sparkstaff', 'mmhat', 'jacko',
 			// shared by two or three of the three classes
 			'cearring', 'cring', 'ecape', 'starkillers', 'supermittens', 'tshirt9',
 			'wingedboots', 'zapper',
@@ -2498,7 +2498,7 @@ const GEAR_PROGRESSION = {
 			// -> MerchantComments.md#earring1-3
 		},
 		{
-			earring1: { item: 'cearring', level: 3, method: 'compound' }, helmet: { item: 'mageshood', level: 7, method: 'upgrade' }, earring2: { item: 'cearring', level: 3, method: 'compound' }, amulet: { item: 'intamulet', level: 4, method: 'compound' },
+			earring1: { item: 'cearring', level: 3, method: 'compound' }, helmet: { item: 'mmhat', level: 7, method: 'upgrade' }, earring2: { item: 'cearring', level: 3, method: 'compound' }, amulet: { item: 'intamulet', level: 4, method: 'compound' },
 			mainhand: { item: 'firestaff', level: 9, method: 'upgrade' }, chest: { item: 'coat', level: 9, method: 'upgrade' }, offhand: { item: 'wbook0', level: 4, method: 'compound' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'cring', level: 3, method: 'compound' }, belt: { item: 'intbelt', level: 4, method: 'compound' },
 			orb: { item: 'jacko', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
@@ -2511,7 +2511,7 @@ const GEAR_PROGRESSION = {
 			   [0,5,10,12], so it sits in an expensive band from level zero, and it costs
 			   1,240,000 against 224,000. MageofOz is already on sparkstaff+6, which beats a
 			   fully upgraded tier-2 firestaff+9 on both attack and range. */
-			earring1: { item: 'cearring', level: 5, method: 'compound' }, helmet: { item: 'mageshood', level: 9, method: 'upgrade' }, earring2: { item: 'cearring', level: 5, method: 'compound' }, amulet: { item: 'intamulet', level: 5, method: 'compound' },
+			earring1: { item: 'cearring', level: 5, method: 'compound' }, helmet: { item: 'mmhat', level: 9, method: 'upgrade' }, earring2: { item: 'cearring', level: 5, method: 'compound' }, amulet: { item: 'intamulet', level: 5, method: 'compound' },
 			mainhand: { item: 'sparkstaff', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 6, method: 'upgrade' }, offhand: null, cape: { item: 'ecape', level: 9, method: 'upgrade' },
 			ring1: { item: 'zapper', level: 1, method: 'compound' }, pants: { item: 'starkillers', level: 8, method: 'upgrade' }, ring2: { item: 'cring', level: 5, method: 'compound' }, belt: { item: 'intbelt', level: 5, method: 'compound' },
 			orb: { item: 'jacko', level: 5, method: 'compound' }, shoes: { item: 'wingedboots', level: 10, method: 'upgrade' }, gloves: { item: 'supermittens', level: 8, method: 'upgrade' }, elixir: null,
@@ -2660,7 +2660,20 @@ function getUpgradeChance(item, scrollGrade, offeringIdx) {
 	const oprobability = tableLookup(UPGRADES, igrade, new_level);
 	if (oprobability == null) return { chance: 0 };
 	let probability = oprobability;
-	let grace = Math.max(0, Math.min(new_level + 1, (item.grace || 0) + igrade));
+	/* The server adds item_def.igrace here, NOT igrade, and igrace is a
+	   PENALTY assigned at boot - igrade 0 -> +1, igrade 1 -> -1, igrade 2 ->
+	   -2 (server_functions.js). Using igrade added +1 where the server
+	   subtracts 1, so a fresh copy of any igrade-1 item scored grace 1 where
+	   the server scores 0, and every chance this returned was optimistic.
+	   That is the wrong direction for a function whose output decides whether
+	   to gamble a 100,000,000-gold item.
+
+	   The player and server grace pools (player.p.ugrace[new_level],
+	   S.ugrace[new_level], player.p.ograce) are real and non-zero in play but
+	   are not readable from the client, so they stay at zero: the conservative
+	   floor, and the same choice UpgradeCompound.js makes deliberately. */
+	const igrace = igrade === 0 ? 1 : (igrade === 1 ? -1 : -2);
+	let grace = Math.max(0, Math.min(new_level + 1, (item.grace || 0) + igrace));
 	grace = (probability * grace) / new_level + grace / 1000;
 	let high = false;
 	if (scrollGrade > grade && new_level <= 10) { probability = probability * 1.2 + 0.01; high = true; }
@@ -2740,6 +2753,251 @@ function pickBestCompoundStep(item) {
 		}
 	}
 	return best;
+}
+
+
+// ============================================================================
+// VALUE-INCLUSIVE STEP PLANNING - tier 2 / tier 3
+//
+// The original pickBestUpgradeStep/pickBestCompoundStep minimise cost/chance,
+// where 'cost' is scroll + offering ONLY. The copy going into the roll is not
+// in the arithmetic, so a 1,000-gold scroll on a 100,000,000-gold item scores
+// as the cheapest move available. It is the cheapest move only if the item is
+// free. This is what was lost with the starkillers.
+//
+// The fix is the recurrence UpgradeCompound.js already uses:
+//     upgrade    C(L+1) = (    C + scroll + offering) / p
+//     compound   C(L+1) = (3 * C + scroll + offering) / p
+// Adding the copy's value to the numerator shifts the optimum toward a higher
+// success rate, because the constant amplifies what p buys. That is the whole
+// behavioural difference.
+
+// Lucas (the 'scrolls' NPC) stocks grades 0-2 of both scroll lines. Grade 3
+// and 4 exist in G.items but NO NPC sells either, so a step needing one is a
+// step this script cannot supply - it hands over rather than stall holding a
+// half-built item. Measured from live NPC stock, not inferred from price.
+const NPC_MAX_SCROLL_GRADE = 2;
+
+// Ponty restocks these often enough that his price is the honest replacement
+// cost. USER-CONFIRMED list - do not extend it by reading G.items[x].g, which
+// is a weak anchor: starkillers' g is 7,800,000 against ~100,000,000 actually
+// paid, a 12.8x gap.
+const PONTY_PRICED_ITEMS = new Set(['harmor', 'firebow', 'dexearring', 'frankypants', 'wbook0', 'coat', 'dexbelt']);
+
+// Flat +0 values set directly by the user, checked before any market read so a
+// parking price on the day cannot move them. An item absent from here and not
+// in PONTY_PRICED_ITEMS is valued from the live market below.
+const GEAR_VALUE_OVERRIDES = {
+	gcape: 2000000000,
+	sbelt: 2000000000,
+	tshirt9: 2000000000,
+	starkillers: 100000000,
+	mshield: 720001,
+	rabbitsfoot: 126000000,
+	mmhat: 10500000,
+};
+
+// Two independent anchors disagreeing by more than this factor means at least
+// one is a parking price, and there is no way to tell which. Neither is
+// trusted: the item hands over and the divergence is logged so a value can be
+// added above. Real g-to-paid gaps reach 13x, so this is deliberately loose -
+// it is here to catch 80x, not 2x.
+const VALUE_DIVERGENCE_LIMIT = 3;
+
+/* Items the value planner has handed over, as 'name|level' keys. Recorded by
+   attemptBestPlanStep and read by the next bank pass, so a price appearing
+   later simply drops the item from the set instead of needing an un-bank. */
+let gearHeldKeys = new Set();
+const gearHeldKey = (item) => item.name + '|' + (item.level || 0);
+
+/* What losing one +0 copy actually costs - the number the old path omitted.
+   Order: user override, then Ponty for the items he reliably carries, then the
+   live market, then nothing. Reuses gtQuote, which already returns cheapest
+   ask AND best bid with an age bound; a standing buy order is as real an
+   anchor as an ask, since somebody is holding gold against it.
+
+   A null value is a RESULT, not a failure: it means hand the item over and
+   tell the user to price it. */
+function gvBaseValue(name, rows) {
+	const ov = GEAR_VALUE_OVERRIDES[name];
+	if (ov != null) return { value: ov, src: 'override' };
+
+	let ponty = null;
+	try { ponty = scoutItemPrice({ name: name, level: 0 }); } catch (e) { ponty = null; }
+
+	if (PONTY_PRICED_ITEMS.has(name)) {
+		if (ponty != null) return { value: ponty, src: 'ponty ' + ponty };
+		return { value: null, src: 'ponty price unavailable' };
+	}
+
+	const q = rows ? gtQuote(rows, name, 0) : null;
+	const anchors = [];
+	if (q && q.ask != null) anchors.push(['ask', q.ask]);
+	if (q && q.bid != null) anchors.push(['bid', q.bid]);
+	if (ponty != null) anchors.push(['ponty', ponty]);
+	if (!anchors.length) return { value: null, src: 'no anchor' };
+
+	let lo = anchors[0][1], hi = anchors[0][1];
+	for (const a of anchors) { if (a[1] < lo) lo = a[1]; if (a[1] > hi) hi = a[1]; }
+	const detail = anchors.map((a) => a[0] + ' ' + a[1]).join(' vs ');
+	if (lo > 0 && hi / lo > VALUE_DIVERGENCE_LIMIT) {
+		return { value: null, src: 'anchors disagree (' + detail + ')' };
+	}
+	// Replacement cost, so the dearest credible anchor is the right one.
+	return { value: hi, src: 'max of ' + detail };
+}
+
+/* What the copy IN HAND is worth, which is what the recurrence needs as its
+   input - not the +0 price. A +7 copy embodies every roll that got it there,
+   so feeding the +0 price into the arithmetic repeats the original omission
+   one level up: the offering never looks worth buying because it is being
+   compared against a fraction of the real stake.
+
+   Preference is the live market at THIS level, since that is the actual
+   replacement cost, falling back to walking the recurrence up from +0 for the
+   levels nobody trades - which is most of them above about +4. */
+function gvCarriedValue(name, level, rows, baseValue, mode) {
+	if (!level) return { value: baseValue, src: 'base' };
+
+	const q = rows ? gtQuote(rows, name, level) : null;
+	if (q) {
+		const seen = [];
+		if (q.ask != null) seen.push(q.ask);
+		if (q.bid != null) seen.push(q.bid);
+		if (seen.length) {
+			const lo = Math.min.apply(null, seen), hi = Math.max.apply(null, seen);
+			if (!(lo > 0 && hi / lo > VALUE_DIVERGENCE_LIMIT)) {
+				return { value: hi, src: 'market at +' + level };
+			}
+		}
+	}
+
+	const costs = mode === 'compound' ? COSTS.cscroll : COSTS.scroll;
+	const chanceOf = mode === 'compound' ? getCompoundChance : getUpgradeChance;
+	const mult = mode === 'compound' ? 3 : 1;
+	let C = baseValue;
+	for (let L = 0; L < level; L++) {
+		const at = { name: name, level: L };
+		const g = item_grade(at);
+		let bestNext = null;
+		for (let s = g; s <= Math.min(g + 1, NPC_MAX_SCROLL_GRADE); s++) {
+			for (const o of BUYABLE_OFFERING_INDICES) {
+				const { chance } = chanceOf(at, s, o);
+				if (!chance) continue;
+				const nx = (mult * C + costs[s] + COSTS.offering[o]) / Math.min(chance, 1);
+				if (bestNext == null || nx < bestNext) bestNext = nx;
+			}
+		}
+		// Not walkable this far with NPC stock - keep the best value proven so
+		// far rather than inventing one.
+		if (bestNext == null) break;
+		C = bestNext;
+	}
+	return { value: C, src: 'recurrence from +0' };
+}
+
+/* The tier-1 target level for an item, using PARTY_CLASSES order as the
+   attribution priority when a name appears in more than one class's tier 1 -
+   the same priority the stand/delivery path already uses for shared-name
+   arrivals. Only intamulet currently differs (priest 2, mage 1 -> 2).
+   Returns null for an item tier 1 does not mention at all. */
+function tier1TargetLevel(itemName) {
+	for (const cls of PARTY_CLASSES) {
+		const tiers = GEAR_PROGRESSION[cls];
+		const tier1 = tiers && tiers[0];
+		if (!tier1) continue;
+		for (const slotName in tier1) {
+			const entry = tier1[slotName];
+			if (entry && entry.item === itemName) {
+				try { return decodeLevel(entry.level); } catch (e) { return null; }
+			}
+		}
+	}
+	return null;
+}
+
+/* Tier-1 levels keep the original materials-only economics: those items are
+   cheap enough that the scroll dominates and losing one costs little. At and
+   above the tier-1 target - and for every item tier 1 never mentions - the
+   copy is worth more than the materials, so the value-inclusive path takes
+   over.
+
+   NOTE: GEAR_PROGRESSION's tier-1 objects are currently EMPTY (the lists live
+   in MerchantComments.md under #earring1 / #earring1-2 / #earring1-3 and have
+   never been pasted in), so today this answers true for every item. It starts
+   splitting the moment tier 1 is populated - 11 of the 37 plan items are
+   shared with tier 1 and would then route by level. */
+function usesValuePlanning(itemName, level) {
+	const t1 = tier1TargetLevel(itemName);
+	if (t1 === null) return true;
+	return (level || 0) >= t1;
+}
+
+/* One step, chosen with the copy's value in the arithmetic. 'carriedValue' is
+   the worth of ONE copy at its CURRENT level - see gvCarriedValue - not the
+   +0 price.
+
+   The clamp on 'chance' is load-bearing. The game's own cap lets probability
+   exceed 1 - the server rolls Math.random() < probability, so anything >= 1
+   just means certain - and dividing by an unclamped 1.24 reports a next level
+   CHEAPER than the copy going into it, which cannot happen. getUpgradeChance
+   already clamps; this does not rely on that staying true.
+
+   Returns { stop } instead of a step when the cheapest move wants an offering
+   or a scroll no NPC sells. Neither is an error: both are the hand-over point
+   the user asked for, where UpgradeCompound.js or a manual roll takes over. */
+function pickBestValueStep(item, mode, carriedValue) {
+	const level = item.level || 0;
+	const grade = item_grade(item);
+	const names = mode === 'compound' ? SCROLL_NAMES.compound : SCROLL_NAMES.upgrade;
+	if (grade > NPC_MAX_SCROLL_GRADE) {
+		return { stop: 'scroll_not_npc_buyable: +' + level + ' is grade ' + grade + ', needs ' + names[grade] };
+	}
+	const costs = mode === 'compound' ? COSTS.cscroll : COSTS.scroll;
+	const chanceOf = mode === 'compound' ? getCompoundChance : getUpgradeChance;
+	const inputs = (mode === 'compound' ? 3 : 1) * carriedValue;
+
+	let best = null;
+	for (let s = grade; s <= Math.min(grade + 1, NPC_MAX_SCROLL_GRADE); s++) {
+		for (const o of BUYABLE_OFFERING_INDICES) {
+			const { chance } = chanceOf(item, s, o);
+			if (!chance) continue;
+			const p = Math.min(chance, 1);
+			const cost = costs[s] + COSTS.offering[o];
+			const next = (inputs + cost) / p;
+			if (!best || next < best.next) {
+				best = {
+					scrollIdx: s, offeringIdx: o, chance: p, cost: cost, next: next, inputs: inputs,
+					expectedCost: cost / p,
+					scrollName: names[s], offeringName: OFFERING_NAMES[o],
+				};
+			}
+		}
+	}
+	if (!best) return { stop: 'no NPC-buyable ' + mode + ' scroll is legal at +' + level };
+	if (best.offeringIdx > 0) {
+		return {
+			stop: 'wants_offering: cheapest move at +' + level + ' is ' + best.scrollName + ' + '
+				+ best.offeringName + ' at ' + (best.chance * 100).toFixed(1) + '%',
+			step: best,
+		};
+	}
+	return { step: best };
+}
+
+/* The held list repeats every pass while nothing changes, so it logs once per
+   distinct set and then stays quiet. Unthrottled this is the same few lines
+   every 30 seconds, forever. */
+const gearHold = { key: '', at: 0 };
+const GEAR_HOLD_LOG_MS = 10 * 60 * 1000;
+function gearHoldLog(held) {
+	const key = held.map((h) => h.key + ' ' + h.why).sort().join(' | ');
+	if (!key) return;
+	if (key === gearHold.key && Date.now() - gearHold.at < GEAR_HOLD_LOG_MS) return;
+	gearHold.key = key;
+	gearHold.at = Date.now();
+	game_log('Gear plan handing ' + held.length + ' item(s) over for manual upgrade:', '#FFD700');
+	for (const h of held) game_log('  ' + h.key.replace('|', ' +') + ' - ' + h.why, '#8b98ab');
 }
 
 
@@ -2910,7 +3168,10 @@ async function bankFullyProgressedItems() {
 	character.items.forEach((item, idx) => {
 		if (!item || !item.name) return;
 		if (!isKnownGearItem(item.name)) return; // not part of any tracked plan at all
-		if (findCandidacy(item)) return; // still has room to improve somewhere - keep it in play
+		/* Held items are banked even though they still have plan room: the value
+		   planner has handed them over, and leaving them in inventory means
+		   re-deciding the same dead end every pass. */
+		if (findCandidacy(item) && !gearHeldKeys.has(gearHeldKey(item))) return;
 		toBank.push(idx);
 	});
 	if (!toBank.length) return false;
@@ -3234,15 +3495,52 @@ async function attemptBestPlanStep(currentGold) {
 	const candidates = gatherPlanCandidates();
 	if (!candidates.length) return false;
 
+	/* One market read serves every valuation in this pass, and only when
+	   something actually needs one. gtMarket caches across the visit and
+	   fails open, so a dead market means no value and therefore a hand-over,
+	   never a blind roll. */
+	let vpRows = null;
+	if (candidates.some((c) => usesValuePlanning(c.item.name, c.item.level || 0))) {
+		vpRows = await gtMarket();
+	}
+
 	let best = null;
+	const held = [];
 	for (const c of candidates) {
+		const level = c.item.level || 0;
 		let step = null, group = null;
 		if (c.method === 'compound') {
-			group = findCompoundGroup(character.items, c.item.name, c.item.level || 0);
-			step = pickBestCompoundStep(c.item);
-		} else {
-			step = pickBestUpgradeStep(c.item);
+			group = findCompoundGroup(character.items, c.item.name, level);
 		}
+
+		/* Tier-2/3 items - and any level at or above a tier-1 target - are
+		   planned with the copy's own value counted, and hand over rather
+		   than gamble once the cheapest move needs something this script
+		   cannot buy from an NPC.
+
+		   Deliberately independent of CONFIG.gearTripwire.mode. This gate is
+		   the operator's banking rule; the tripwire's four reasons are a
+		   separate judgement that is still off by default, and turning one
+		   on must not quietly turn on the other. */
+		if (usesValuePlanning(c.item.name, level)) {
+			const mode = c.method === 'compound' ? 'compound' : 'upgrade';
+			const val = gvBaseValue(c.item.name, vpRows);
+			if (val.value == null) {
+				held.push({ key: gearHeldKey(c.item), why: 'value_unknown: ' + val.src });
+				continue;
+			}
+			/* The stake is the copy in hand, not a fresh one. */
+			const carried = gvCarriedValue(c.item.name, level, vpRows, val.value, mode);
+			const plan = pickBestValueStep(c.item, mode, carried.value);
+			if (plan.stop) {
+				held.push({ key: gearHeldKey(c.item), why: plan.stop });
+				continue;
+			}
+			step = plan.step;
+		} else {
+			step = c.method === 'compound' ? pickBestCompoundStep(c.item) : pickBestUpgradeStep(c.item);
+		}
+
 		if (!step || !canAffordStep(currentGold, step.cost)) {
 			// Still judge an unbuildable compound: "no 3 copies AND none for
 			// sale" is exactly the permanently-stalled case worth reporting.
@@ -3259,16 +3557,25 @@ async function attemptBestPlanStep(currentGold) {
 			const enforcing = gtMode() === 'enforce';
 			gtLog((enforcing ? 'BLOCKED: ' : 'would block: ') + v.blocks.join(', '),
 				{ blocks: v.blocks, detail: v.detail, acted: enforcing });
-			game_log(`Gear tripwire ${enforcing ? 'blocked' : 'flagged'} ${c.item.name} +${c.item.level || 0}: ${v.blocks.join(', ')}`, enforcing ? 'orange' : '#8b98ab');
+			game_log('Gear tripwire ' + (enforcing ? 'blocked' : 'flagged') + ' ' + c.item.name
+				+ ' +' + level + ': ' + v.blocks.join(', '), enforcing ? 'orange' : '#8b98ab');
 			if (enforcing) continue;
 		}
 
-		if (c.method === 'compound') {
-			if (!best || step.expectedCost < best.step.expectedCost) best = { candidate: c, step, group };
-		} else {
-			if (!best || step.expectedCost < best.step.expectedCost) best = { candidate: c, step };
-		}
+		/* Ranked on expected gold for THIS attempt, which is the one figure
+		   comparable across both paths. The value-inclusive arithmetic picks
+		   the scroll and decides go/hand-over; it does not set the ordering
+		   between candidates, where a next-level value and a materials-only
+		   expected cost would be different units. */
+		if (!best || step.expectedCost < best.step.expectedCost) best = { candidate: c, step: step, group: group };
 	}
+
+	/* Rebuilt from scratch every pass, so an item that becomes priceable or
+	   affordable again simply stops being held. The bank pass is what moves
+	   them out of inventory. */
+	gearHeldKeys = new Set(held.map((h) => h.key));
+	if (held.length) gearHoldLog(held);
+
 	if (!best) return false;
 
 	try {
@@ -3294,7 +3601,8 @@ async function attemptBestPlanStep(currentGold) {
 async function gearProgressionLoop() {
 	try {
 		if (CONFIG.gearProgression.enabled && !state.busy && !PROBE.hold) {
-			const hasBankable = character.items.some(item => item && item.name && isKnownGearItem(item.name) && !findCandidacy(item));
+			const hasBankable = character.items.some(item => item && item.name && isKnownGearItem(item.name)
+				&& (!findCandidacy(item) || gearHeldKeys.has(gearHeldKey(item))));
 			// Gated behind canStartSpending: without this, a plan candidate or
 			// -> MerchantComments.md#canSpend
 			const canSpend = canStartSpending(character.gold);
