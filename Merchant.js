@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v79
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v80
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -780,6 +780,36 @@ const CONFIG = {
 		// -> MerchantComments.md#gearPacing
 		intervalMs: 30000,
 		maxStepsPerVisit: 12,
+
+		/* SURPLUS COMPOUNDING - compound a constantly-arriving item up to a set
+		   level, then stop and bank it.
+
+		   WHY THIS EXISTS: findBaseDuplicateGroup used to gate on
+		   "item.level !== 0 && item.level !== 1", i.e. combine at +0 and at +1 and
+		   stop at +2. Anything arriving in bulk therefore piled up at +2 forever.
+		   Measured in the bank 2026-10-04: 9x jacko+0, 2x jacko+1, 1x jacko+2,
+		   1x jacko+3 - exactly the signature of a pipeline that halts at +2.
+
+		   surplusTargets is the ONLY thing that changes behaviour. An item not
+		   named here uses the default ceiling of 2, which reproduces the old gate
+		   exactly, so nothing else on the account moves. jacko is listed at 3
+		   because it arrives constantly from the candy exchanges.
+
+		   The ceiling is both the stop point for compounding AND the level
+		   bankSurplusCompounded banks at - they are deliberately the same number,
+		   so a finished item is never fed back into another roll. */
+		surplusTargets: { jacko: 3 },
+
+		/* Kept in inventory rather than banked, per name. 1 leaves the gear
+		   planner an orb to satisfy MageofOz's slot with, and leaves the door open
+		   to 3x +3 -> +4 later, without a trip to fetch one back. 0 banks every
+		   finished one. */
+		surplusReserve: 1,
+
+		/* Bank the finished surplus only once free slots drop to this or below.
+		   A bank trip closes the stand and walks there and back, so it is not
+		   worth making one every time a single jacko finishes. */
+		surplusBankAtFreeSlots: 2,
 	},
 
 	// ANNIVERSARY KISS HUNTER - works on Mainframe (primary source is
@@ -3253,6 +3283,88 @@ async function bankFullyProgressedItems() {
 	return true;
 }
 
+/* Free slots, COUNTED rather than read from character.esize. arbProbeInv logs a
+   "DISAGREE - esize does not mean free slots" warning whenever
+   character.esize !== the counted free slots, so esize is not a trustworthy
+   answer to "is the bag full". Count the nulls instead. */
+function countFreeSlots() {
+	let free = 0;
+	for (let i = 0; i < character.items.length; i++) if (!character.items[i]) free++;
+	return free;
+}
+
+/* The indices this pass would bank, or [] - shared by the loop's cheap predicate
+   and by the executor below so the two can never disagree about what is due.
+   Side-effect free. */
+function planSurplusBank() {
+	const cfg = CONFIG.gearProgression || {};
+	const targets = cfg.surplusTargets || {};
+	if (!Object.keys(targets).length) return [];
+
+	const threshold = (typeof cfg.surplusBankAtFreeSlots === 'number') ? cfg.surplusBankAtFreeSlots : 2;
+	if (countFreeSlots() > threshold) return [];
+
+	// Only names explicitly listed, and only at exactly their ceiling.
+	const byName = {};
+	character.items.forEach((item, idx) => {
+		if (!item || !item.name) return;
+		if (item.l) return;                                   // operator is protecting it
+		if (!(item.name in targets)) return;
+		if ((item.level || 0) !== targets[item.name]) return;
+		(byName[item.name] = byName[item.name] || []).push(idx);
+	});
+
+	const reserve = (typeof cfg.surplusReserve === 'number') ? cfg.surplusReserve : 1;
+	const out = [];
+	for (const n in byName) {
+		const keep = Math.min(reserve, byName[n].length);
+		for (const idx of byName[n].slice(keep)) out.push(idx);
+	}
+	return out;
+}
+
+/* Banks ONLY the finished surplus - a jacko at its ceiling - and nothing else,
+   which is the whole requirement. Everything that is not at a configured
+   ceiling stays in the bag.
+
+   ONE SIDE EFFECT WORTH KNOWING: travelToBank() runs bankExchangeables() on
+   arrival by design, so any trip - including this one - also banks loose
+   exchangeables. That is pre-existing behaviour of every bank visit in this
+   script, not something this path introduces; lock an exchangeable if you want
+   it left alone. */
+async function bankSurplusCompounded() {
+	const toBank = planSurplusBank();
+	if (!toBank.length) return false;
+
+	const arrived = await travelToBank();
+	if (!arrived) {
+		game_log('surplus: could not reach the bank - keeping them on hand', 'orange');
+		return false;
+	}
+
+	/* Highest index first. bank_store nulls the slot in place rather than
+	   shifting, so this is belt-and-braces for the same reason it is in
+	   bankFullyProgressedItems - and re-reading the slot each time guards against
+	   the sweep on arrival having already taken something. */
+	let stored = 0;
+	for (const idx of toBank.sort((a, b) => b - a)) {
+		const it = character.items[idx];
+		if (!it || !it.name) continue;
+		const tag = it.name + '+' + (it.level || 0);
+		try {
+			await bank_store(idx);
+			stored++;
+			game_log('Banked surplus ' + tag, '#00FF00');
+			await sleep(300);
+		} catch (e) {
+			const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+			game_log('bank_store failed for ' + tag + ' - ' + why, 'red');
+			if (why === 'storage_full') break;   // nothing later will fit either
+		}
+	}
+	return stored > 0;
+}
+
 // True if this item is compoundable per G.items (authoritative), falling
 // back to the gear plan's own 'compound'/'upgrade' method if G is unavailable.
 function isCompoundableItem(itemName) {
@@ -3277,11 +3389,37 @@ function isCompoundableItem(itemName) {
 
 // Finds the first group of 3+ identical (name, level) items at level 0/1,
 // -> MerchantComments.md#findBaseDuplicateGroup
+/* The level a surplus item is compounded UP TO and then left alone.
+
+   The default of 2 is not arbitrary: the gate below used to read
+   "item.level !== 0 && item.level !== 1", which permits +0 and +1 and stops at
+   +2. Returning 2 for every unlisted name therefore reproduces the previous
+   behaviour exactly - this change is additive, and only the names in
+   CONFIG.gearProgression.surplusTargets behave differently. */
+function surplusCeiling(itemName) {
+	const t = (CONFIG.gearProgression && CONFIG.gearProgression.surplusTargets) || {};
+	const v = t[itemName];
+	return (typeof v === 'number' && v > 0) ? v : 2;
+}
+
 function findBaseDuplicateGroup() {
 	const groups = new Map();
 	character.items.forEach((item, idx) => {
 		if (!item || !item.name) return;
-		if (item.level !== 0 && item.level !== 1) return;
+		/* Combine strictly BELOW the ceiling. At the ceiling the item is finished
+		   and is what bankSurplusCompounded banks, so rolling it again would undo
+		   the point of the ceiling and spend a scroll doing it.
+		   One deliberate difference from the old gate: an item whose level is
+		   undefined is treated as +0 and so is eligible, where the old
+		   "!== 0 && !== 1" test skipped it. Undefined means +0 for a compoundable,
+		   so this is a fix, but it is a behaviour change and worth knowing. */
+		if ((item.level || 0) >= surplusCeiling(item.name)) return;
+		/* Locked items are the operator's hands-off marker and the server refuses
+		   compound() on them outright - excluding them here turns a guaranteed
+		   failed attempt into a skip. Deliberately broader than the it.l === 'l'
+		   test in bankExchangeables, because for a protective skip either marker
+		   should count. */
+		if (item.l) return;
 		if (!isCompoundableItem(item.name)) return; // e.g. "coat" - meant to be upgraded individually, not merged 3-for-1
 		const key = `${item.name}|${item.level}`;
 		if (!groups.has(key)) groups.set(key, []);
@@ -3670,8 +3808,12 @@ async function gearProgressionLoop() {
 			const canSpend = canStartSpending(character.gold);
 			const hasDuplicateGroup = canSpend && !!findBaseDuplicateGroup();
 			const hasPlanCandidate = canSpend && gatherPlanCandidates().length > 0;
+			/* Not gated behind canSpend: banking finished surplus costs no gold,
+			   and a bag too full to work in is exactly the state where spending is
+			   most likely to be held. */
+			const hasSurplusToBank = planSurplusBank().length > 0;
 
-			if ((hasBankable || hasDuplicateGroup || hasPlanCandidate) && !standDwellHeld()) {
+			if ((hasBankable || hasDuplicateGroup || hasPlanCandidate || hasSurplusToBank) && !standDwellHeld()) {
 				state.busy = true;
 				const wasStandOpen = state.standOpen;
 				if (wasStandOpen) {
@@ -3679,6 +3821,11 @@ async function gearProgressionLoop() {
 				}
 
 				if (hasBankable) await bankFullyProgressedItems();
+				/* After the general sweep: that one may already have travelled, in
+				   which case travelToBank() returns immediately and this is just the
+				   stores. Re-planned inside, so anything the sweep took is gone from
+				   the list by now. */
+				if (hasSurplusToBank) await bankSurplusCompounded();
 
 				// One walk, then everything. The bank pass above is its own
 				// -> MerchantComments.md#combined
