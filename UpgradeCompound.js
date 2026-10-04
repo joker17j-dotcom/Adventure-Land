@@ -111,7 +111,7 @@ const UC_CONFIG = {
 		mpxgloves: 34000000,
 		fury: 6400000,
 		zapper: 6400000,
-		sparkstaff: 6400000,
+		sparkstaff: 12227542,
 	},
 
 	DRY_RUN: true,            // print the plan and the exact chance, roll nothing
