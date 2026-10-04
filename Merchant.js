@@ -2810,14 +2810,25 @@ const GEAR_VALUE_OVERRIDES = {
 //                          market cannot price it - the three live anchors
 //                          back-solve to 1, 548,887 and 29,473,137.
 const GEAR_VALUE_FALLBACK = {
-	gcape: 2000000000,
-	sbelt: 2000000000,
-	tshirt9: 2000000000,
-	starkillers: 100000000,
-	mshield: 720001,
-	rabbitsfoot: 126000000,
-	mmhat: 10500000,
-	ecape: 126000,
+		gcape: 2000000000,
+		sbelt: 2000000000,
+		tshirt9: 2000000000,
+		starkillers: 100000000,
+		mshield: 720001,
+		rabbitsfoot: 126000000,
+		mmhat: 10500000,
+		ecape: 126000,
+		suckerpunch: 2000000,
+		firestaff: 500000,
+		firebow: 100000,
+		mshield: 720000,
+		frankypants: 936000,
+		harmor: 576000,
+		mpxamulet: 56000000,
+		mpxgloves: 34000000,
+		fury: 6400000,
+		zapper: 6400000,
+		sparkstaff: 12227542,
 };
 
 // Two independent anchors disagreeing by more than this factor means at least
