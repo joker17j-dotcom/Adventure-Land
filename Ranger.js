@@ -3368,7 +3368,6 @@ const PERMANENT_BLACKLIST = new Set([
 	'gscorpion@desertland',
 	'mrpumpkin@halloween',
 	'mummy@level3',
-	'ghost@halloween',
 	'mummy@level4',
 ]);
 
