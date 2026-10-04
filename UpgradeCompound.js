@@ -1,5 +1,5 @@
 // ============================================================================
-// UpgradeCompound.js - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
+// UpgradeCompound.js - v5 (2026-10-04) the planner no longer divides by a probability the game allows to exceed 1, no longer plans on the retired offeringp/offeringx, and falls back to a shared price table instead of giving up - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
@@ -88,6 +88,21 @@ const UC_CONFIG = {
 		// frankypants: 950000,
 	},
 
+	/* Last resort, consulted only after Ponty, the fresh ask, the historical
+	   ask and the NPC price have all come up empty. An override above beats
+	   these; a live price beats them too. Kept in step with Merchant.js's
+	   GEAR_VALUE_FALLBACK - if you change one, change the other. */
+	PRICE_FALLBACK: {
+		gcape: 2000000000,
+		sbelt: 2000000000,
+		tshirt9: 2000000000,
+		starkillers: 100000000,
+		mshield: 720001,
+		rabbitsfoot: 126000000,
+		mmhat: 10500000,
+		ecape: 126000,
+	},
+
 	DRY_RUN: true,            // print the plan and the exact chance, roll nothing
 	MIN_GOLD_TO_BUY: 1000000, // never spend NPC gold below this (as the original)
 	MIN_CHANCE: 0.0,          // refuse a roll whose EXACT chance is below this
@@ -145,6 +160,16 @@ function ucWhere(id) { const s = UC_SPOTS[id]; return s ? s.who + ' at main (' +
 const UC_USCROLLS = ['scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4'];
 const UC_CSCROLLS = ['cscroll0', 'cscroll1', 'cscroll2', 'cscroll3'];
 const UC_OFFERINGS = [null, 'offeringp', 'offering', 'offeringx'];   // index = grade
+
+/* What the PLANNER is allowed to choose. offeringp and offeringx carry
+   "ignore": true in design/items.js - they are RETIRED, obtainable by no route
+   at all, which is the measured reason no NPC stocks them. Left in UC_OFFERINGS
+   above because that array is indexed by grade and the chance maths still needs
+   the entries; removed from the planner so a plan is never built on an item
+   that cannot be bought. Without this the cheapest path routinely picked
+   offeringp, ucAcquire failed at the market branch, and the run stopped partway
+   up the ladder having printed a plan it could never execute. */
+const UC_PLANNABLE_OFFERINGS = [null, 'offering'];
 
 // --------------------------------------------------------------- state
 const UC = {
@@ -359,6 +384,8 @@ function ucBaseValue(name) {
 	if (h) return { value: h.price, src: h.src + ' (historical, ' + ucAgeStr(h.age) + ')' };
 	const npc = ucNpcGold()[name];
 	if (npc) return { value: npc.g, src: 'npc ' + npc.npc };
+	const fb = UC_CONFIG.PRICE_FALLBACK[name];
+	if (typeof fb === 'number' && fb > 0) return { value: fb, src: 'fallback ' + fb };
 	return { value: null, src: 'none' };
 }
 
@@ -383,13 +410,19 @@ function ucPlan(name, target) {
 		for (const s of scrolls) {
 			const ss = ucSource(s);
 			if (ss.cost == null) continue;
-			for (const o of UC_OFFERINGS) {
+			for (const o of UC_PLANNABLE_OFFERINGS) {
 				const os = o ? ucSource(o) : { cost: 0, how: 'none' };
 				if (o && os.cost == null) continue;
 				const p = mode === 'upgrade' ? ucUpgradeChance(def, L, s, o) : ucCompoundChance(def, L, s, o);
 				if (!p) continue;
 				const inputs = (mode === 'upgrade' ? 1 : 3) * C;
-				const next = (inputs + ss.cost + os.cost) / p;
+				/* min(p, 1) is load-bearing. The server's cap is
+				   min(base + 0.36, base * 3) with NO clamp to 1, and the roll is
+				   Math.random() < probability, so anything at or above 1 simply
+				   means certain. Dividing by an unclamped 1.24 reports a next
+				   level CHEAPER than the copy going into it, and biases the
+				   choice toward offerings, which are exactly what inflate p. */
+				const next = (inputs + ss.cost + os.cost) / Math.min(p, 1);
 				if (!best || next < best.next) best = { level: L, scroll: s, offering: o, p: p, next: next, inputs: inputs, scrollCost: ss.cost, offeringCost: os.cost };
 			}
 		}
