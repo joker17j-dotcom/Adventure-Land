@@ -125,10 +125,14 @@ through Chrome" would stop a session that *can* push from ever trying.
 
 **Browser-driven session only.** The Claude Code session has no tabs.
 
-- **Keep one tab parked on `https://adventure.land/` and never close it.** This
-  is a deliberate exception to the habit of closing every tab you open. The MCP
-  tab group auto-removes when its last tab closes, and that ejects every other
-  tab in it, live character tabs included.
+- **Keep one tab parked on `https://adventure.land/hub` and never close it.**
+  This is a deliberate exception to the habit of closing every tab you open. The
+  MCP tab group auto-removes when its last tab closes, and that ejects every
+  other tab in it, live character tabs included. The OPERATOR owns this choice -
+  /hub is the current keeper, set by them on 2026-10-04 - and Claude may move it
+  when a task needs a different page, saying so when it does. Tabs leaving the
+  group is not automatically a fault: twice on 2026-10-04 Claude read its own
+  disappearing tabs as a bug when the operator was simply managing them.
 - **Never navigate the keeper.** `navigate` without an explicit `tabId` takes
   the group's FIRST tab - that is how a live Meltymerch tab was sent to GitHub
   mid-session and disconnected him.
@@ -137,6 +141,28 @@ through Chrome" would stop a session that *can* push from ever trying.
   no CORS headers, and `credentials: 'omit'` fails even same-origin), read
   `cstore_*` CODE storage, or call `api_call('save_code')`. The bridge on
   `127.0.0.1:8787`, ALData and the GitHub API are all reachable from it.
+- **Why /hub rather than the bare origin.** Same origin, so everything above
+  holds, plus a BANK button no character tab has - see the next section.
+- **/hub is NOT a full game page.** `calculate_item_value` and
+  `calculate_item_properties` exist only on a CHARACTER tab. Read item values and
+  stats there; read the bank and the bridge from /hub. Measured 2026-10-04:
+  probing /hub for those functions returns an empty candidate list.
+
+## Reading the bank without travelling
+
+**Browser-driven session only.**
+
+- **`character.bank` is null anywhere but inside the bank map.** That is why a
+  bank read has meant walking a character there and back - `arbProbeBank()` in
+  Merchant.js exists to time that round trip, and it reports free slots and gold
+  only, never contents.
+- **The /hub BANK button sidesteps it completely.** Click it, then read
+  `window.comm_items.bank`: an object of `items0..itemsN` arrays covering every
+  pack, each entry `{name, level, q}`. Measured 2026-10-04: 109 distinct
+  name+level lines, 14,964 items, with no character moved and no farming
+  interrupted.
+- **`bank_packs` is NOT the contents.** It is the pack-name table (48 entries).
+  The contents are `comm_items.bank`, which has 4.
 
 ## Diagnosing a running character
 
