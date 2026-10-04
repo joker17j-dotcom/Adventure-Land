@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v77
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v78
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2784,10 +2784,32 @@ const NPC_MAX_SCROLL_GRADE = 2;
 // paid, a 12.8x gap.
 const PONTY_PRICED_ITEMS = new Set(['harmor', 'firebow', 'dexearring', 'frankypants', 'wbook0', 'coat', 'dexbelt']);
 
-// Flat +0 values set directly by the user, checked before any market read so a
-// parking price on the day cannot move them. An item absent from here and not
-// in PONTY_PRICED_ITEMS is valued from the live market below.
+// YOUR values, checked FIRST and beating every other source, a live market read
+// included. Deliberately EMPTY: this table is the operator's lever, so anything
+// in it is a decision rather than a leftover. The derived numbers live in
+// GEAR_VALUE_FALLBACK below and are overridden by whatever you put here.
 const GEAR_VALUE_OVERRIDES = {
+	// gcape: 2000000000,
+};
+
+// Last resort, consulted ONLY when there is no override, no Ponty price, and no
+// pair of agreeing market anchors. A live anchor BEATS these, which is the
+// point: they keep the planner working while the market is silent, they are not
+// a claim about what an item is worth today.
+//
+// Provenance, so a later reader can argue with them instead of guessing:
+//   gcape, sbelt, tshirt9  operator's flat value, 2026-10-03
+//   starkillers            just under 100,000,000 actually paid
+//   mshield                720,001 market bid, which beat the 10-funtoken route
+//   rabbitsfoot            120 funtokens x 1,050,000 bid
+//   mmhat                  7 monstertokens x 1,500,000 ask
+//   ecape                  exactly 1/1000 of rabbitsfoot: both drop from
+//                          basketofeggs at weights 1 and 0.001 of 5.721, so the
+//                          ratio holds whatever a basket costs. Cross-checks to
+//                          within 9% of the basket's own Ponty price, and the
+//                          market cannot price it - the three live anchors
+//                          back-solve to 1, 548,887 and 29,473,137.
+const GEAR_VALUE_FALLBACK = {
 	gcape: 2000000000,
 	sbelt: 2000000000,
 	tshirt9: 2000000000,
@@ -2795,6 +2817,7 @@ const GEAR_VALUE_OVERRIDES = {
 	mshield: 720001,
 	rabbitsfoot: 126000000,
 	mmhat: 10500000,
+	ecape: 126000,
 };
 
 // Two independent anchors disagreeing by more than this factor means at least
@@ -2809,6 +2832,15 @@ const VALUE_DIVERGENCE_LIMIT = 3;
    later simply drops the item from the set instead of needing an un-bank. */
 let gearHeldKeys = new Set();
 const gearHeldKey = (item) => item.name + '|' + (item.level || 0);
+
+/* The last stop before handing an item over. Reached only once every live
+   source has failed, so 'why' carries the reason the market could not answer
+   and stays in the log line whether or not a fallback exists. */
+function gvFallback(name, why) {
+	const fb = GEAR_VALUE_FALLBACK[name];
+	if (fb != null) return { value: fb, src: 'fallback ' + fb + ' (' + why + ')' };
+	return { value: null, src: why };
+}
 
 /* What losing one +0 copy actually costs - the number the old path omitted.
    Order: user override, then Ponty for the items he reliably carries, then the
@@ -2827,7 +2859,7 @@ function gvBaseValue(name, rows) {
 
 	if (PONTY_PRICED_ITEMS.has(name)) {
 		if (ponty != null) return { value: ponty, src: 'ponty ' + ponty };
-		return { value: null, src: 'ponty price unavailable' };
+		return gvFallback(name, 'ponty price unavailable');
 	}
 
 	const q = rows ? gtQuote(rows, name, 0) : null;
@@ -2835,13 +2867,13 @@ function gvBaseValue(name, rows) {
 	if (q && q.ask != null) anchors.push(['ask', q.ask]);
 	if (q && q.bid != null) anchors.push(['bid', q.bid]);
 	if (ponty != null) anchors.push(['ponty', ponty]);
-	if (!anchors.length) return { value: null, src: 'no anchor' };
+	if (!anchors.length) return gvFallback(name, 'no anchor');
 
 	let lo = anchors[0][1], hi = anchors[0][1];
 	for (const a of anchors) { if (a[1] < lo) lo = a[1]; if (a[1] > hi) hi = a[1]; }
 	const detail = anchors.map((a) => a[0] + ' ' + a[1]).join(' vs ');
 	if (lo > 0 && hi / lo > VALUE_DIVERGENCE_LIMIT) {
-		return { value: null, src: 'anchors disagree (' + detail + ')' };
+		return gvFallback(name, 'anchors disagree (' + detail + ')');
 	}
 	// Replacement cost, so the dearest credible anchor is the right one.
 	return { value: hi, src: 'max of ' + detail };
