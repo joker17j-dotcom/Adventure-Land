@@ -101,6 +101,17 @@ const UC_CONFIG = {
 		rabbitsfoot: 126000000,
 		mmhat: 10500000,
 		ecape: 126000,
+		suckerpunch: 2000000,
+		firestaff: 500000,
+		firebow: 100000,
+		mshield: 720000,
+		frankypants: 936000,
+		harmor: 576000,
+		mpxamulet: 56000000,
+		mpxgloves: 34000000,
+		fury: 6400000,
+		zapper: 6400000,
+		sparkstaff: 6400000,
 	},
 
 	DRY_RUN: true,            // print the plan and the exact chance, roll nothing
