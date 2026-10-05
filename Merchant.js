@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v79
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v80
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2460,13 +2460,49 @@ const GEAR_PROGRESSION = {
 		{
 			// Pants are plain, not starkillers - that item is
 			// class-restricted to mage/priest and a ranger can't equip it.
+			/* CHEST IS mrnarmor+7, NOT coat+9, as of 2026-10-05. Measured stats:
+			     coat+9       armor 13  resistance 11  stat 15
+			     mrnarmor+7   armor 62  resistance 51  stat 10  frequency 1
+			   so the swap buys +49 armor and +40 resistance for -5 dex. At Dexon's
+			   311 armor that is about 6.3% less damage taken.
+
+			   mrnarmor IS TOKEN-ONLY and the planner can never acquire one: 12
+			   monstertokens from the monsterhunter, no NPC gold price, no Ponty entry,
+			   and zero market asks across all 76 merchants on the feed. That is safe
+			   rather than a stall, because gatherPlanCandidates only ever walks
+			   character.items - a plan target is the goal for a copy already in hand,
+			   never a shopping list. Supplied by hand.
+
+			   grades are [0,7,10,12], so +7 is exactly where it crosses into grade 2
+			   and the cost per level jumps. Do not raise this target to +8 or +9
+			   casually: from +7 the next two steps are 19.6% then 12.5% and run to
+			   roughly a billion gold-equivalent. -> MerchantComments.md#mrnarmor */
 			earring1: { item: 'dexearring', level: 4, method: 'compound' }, helmet: { item: 'fury', level: 4, method: 'upgrade' }, earring2: { item: 'dexearring', level: 4, method: 'compound' }, amulet: { item: 'dexamulet', level: 4, method: 'compound' },
-			mainhand: { item: 'firebow', level: 9, method: 'upgrade' }, chest: { item: 'coat', level: 9, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
+			mainhand: { item: 'firebow', level: 9, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 0, method: 'compound' }, belt: { item: 'dexbelt', level: 3, method: 'compound' },
 			orb: { item: 'orbofdex', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
 		},
 		{
 			// Pants are plain, not starkillers - same class-restriction as tier2.
+			/* CHEST STAYS tshirt9 HERE, DELIBERATELY - it is not an oversight and not
+			   a worse mrnarmor. tshirt9 is a manasteal shirt with zero armor, zero
+			   resistance and zero stat, and manasteal is a DPS stat on this character:
+			   server.js applies ceil(min(attack, target.hp) * manasteal / 100) PER HIT,
+			   so 5shot triggers it five times. Dexon is MP-capped - 5shot costs 320 MP
+			   at frequency 1.29, which is 414 MP/s against a 1,760 pool, i.e. 4.3
+			   seconds of fire - so MP returned converts straight into uptime.
+			   Measured 2026-10-05: tshirt9+4 refunds ~10.9% of a 5shot and ~15% of a
+			   3shot; at +6 that is 12.5% and 18%.
+
+			   Two caveats on the stat. It DRAINS the target's MP and returns exactly
+			   zero against a target with no mp field (the seven cave_* monsters), and
+			   it is capped by min(target.mp, ...) with monster mp running at hp/50 -
+			   so it is worth full value from roughly 1,000 target HP upward and is
+			   clipped to a couple of MP on genuine trash like goo and crab.
+
+			   The operator holds an mrnarmor+7 as well and swaps by target: this slot
+			   for sustained fights where MP is the limiter, mrnarmor when incoming
+			   damage is. Tier 2 above is the armor one. */
 			earring1: { item: 'dexearring', level: 5, method: 'compound' }, helmet: { item: 'fury', level: 8, method: 'upgrade' }, earring2: { item: 'dexearring', level: 5, method: 'compound' }, amulet: { item: 'dexamulet', level: 5, method: 'compound' },
 			mainhand: { item: 'firebow', level: 10, method: 'upgrade' }, chest: { item: 'tshirt9', level: 4, method: 'upgrade' }, offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' }, cape: { item: 'ecape', level: 9, method: 'upgrade' },
 			ring1: { item: 'suckerpunch', level: 2, method: 'compound' }, pants: { item: 'frankypants', level: 7, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 2, method: 'compound' }, belt: { item: 'dexbelt', level: 5, method: 'compound' },
