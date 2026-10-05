@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v80
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v81
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -2535,7 +2535,41 @@ const GEAR_PROGRESSION = {
 		},
 		{
 			earring1: { item: 'cearring', level: 3, method: 'compound' }, helmet: { item: 'mmhat', level: 7, method: 'upgrade' }, earring2: { item: 'cearring', level: 3, method: 'compound' }, amulet: { item: 'intamulet', level: 4, method: 'compound' },
-			mainhand: { item: 'firestaff', level: 9, method: 'upgrade' }, chest: { item: 'coat', level: 9, method: 'upgrade' }, offhand: { item: 'wbook0', level: 4, method: 'compound' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
+			/* CHEST IS mmarmor+7, NOT coat+9, as of 2026-10-05. Measured stats:
+			     coat+9      armor 13  resistance 11  stat 15
+			     mmarmor+7   armor 62  resistance 51  stat 10
+			   so on the item alone the swap is +49 armor and +40 resistance for -5 int.
+
+			   THE SET BONUS IS THE REST OF THE REASON. mmhat and mmarmor are both
+			   set:'mmage', and the helmet in this same row is already mmhat+7, so this
+			   lands a TWO-PIECE bonus of int 2 - which pulls the net cost of the swap
+			   down to -3 int. G.sets.mmage, measured:
+			     2 pieces  int 2
+			     3 pieces  speed 2, int 3
+			     4 pieces  rpiercing 40
+			     5 pieces  crit 2, phresistance 25, stresistance 20
+			   Those are the RAW design numbers the client is served. The server
+			   accumulates them at load (server_functions.js:247 walks i=2..n adding
+			   set[i-1] into set[i]), so what is actually worn at 3 pieces is int 5 and
+			   speed 2, and at 4 pieces int 5, speed 2 AND rpiercing 40. The 2-piece
+			   value is the same either way, because tier 1 is empty.
+
+			   rpiercing at 4 pieces is worth noting for later: the mage is a magical
+			   class, so rpiercing is its LIVE piercing stat (server.js zeroes
+			   apiercing on a magical hit), and 40 of it is roughly +4 points on the
+			   damage multiplier. mmgloves (8 tokens) and mmpants (11) are the cheapest
+			   route to it if that becomes worth chasing.
+
+			   mmarmor IS TOKEN-ONLY - 12 monstertokens from the monsterhunter, no NPC
+			   gold price, no Ponty entry, zero market asks. Safe rather than a stall:
+			   gatherPlanCandidates only walks character.items, so a plan target is the
+			   goal for a copy already in hand, never a shopping list.
+
+			   grades are [0,7,10,12] - identical to mrnarmor and mmhat - so +7 is the
+			   crossing into grade 2. Expected cost to +7 at live prices is 6.9 copies
+			   (83 tokens); do not raise this casually, since +8 and +9 run to about a
+			   billion gold-equivalent. -> MerchantComments.md#mmarmor */
+			mainhand: { item: 'firestaff', level: 9, method: 'upgrade' }, chest: { item: 'mmarmor', level: 7, method: 'upgrade' }, offhand: { item: 'wbook0', level: 4, method: 'compound' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'cring', level: 3, method: 'compound' }, belt: { item: 'intbelt', level: 4, method: 'compound' },
 			orb: { item: 'jacko', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
 		},
