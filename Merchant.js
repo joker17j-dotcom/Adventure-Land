@@ -683,7 +683,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'bcape', 'mpxamulet',
 			'mpxgloves', 'sbelt', 'rabbitsfoot',
 			// mage
-			'sparkstaff', 'mmhat', 'jacko',
+			'sparkstaff', 'mmhat', //'jacko', too many durring halloween event
 			// shared by two or three of the three classes
 			'cearring', 'cring', 'ecape', 'starkillers', 'supermittens', 'tshirt9',
 			'wingedboots', 'zapper',
