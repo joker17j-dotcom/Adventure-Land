@@ -1,5 +1,5 @@
 // ============================================================================
-// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v4 (compounds jacko to +3 after the box run and banks the finished ones. Jacko is the commonest thing the candy exchanges produce, so it accumulates faster than anything else here. THE HUB ALREADY MADE THIS FREE: hubAnchors() has always included G.maps.main.compound and requireMerchants is ['scrolls'], so the standing spot is already within range of the compound NPC AND of Lucas, who sells the cscrolls - the compound phase needs no movement at all, and neither does restocking. Only the bank trip moves. THE SCROLL GRADE STEPS UP MID-LADDER AND THIS IS THE EASY THING TO GET WRONG: jacko's grades are [2,4,6,7], so a +0 and a +1 are grade 0 and take cscroll0 at 6,400, but a +2 is grade 1 and needs cscroll1 at 240,000 - the server refuses the cheap scroll with compound_incompatible_scroll, because it checks grade > scroll_def.grade. jackoScrollFor() derives the scroll from the item's own grade rather than hardcoding one. COST, so the defaults can be argued with: the chances are igrade 0 from G.compounds, 0.99 / 0.75 / 0.40 for +1 / +2 / +3, and a failure destroys all three inputs - so a finished +3 costs about 91 jacko+0, not the 27 that 3^3 suggests, plus roughly 858,000 in scrolls. Grace makes the real figure better than that; it is a floor, not a forecast. Banking is gated on a nearly-full bag and takes ONLY jackos at the target level, which is what was asked for.) - v3 (opens EVERYTHING Xyn takes, not just the three anniversary boxes. boxes goes from 3 to 33, derived by listing G.items entries with an "e" and no "quest" - def.quest is what routes an exchange away from G.maps.main.exchange, and these have none, so one standing position covers all 33. sixcake and 5bucks are excluded on purpose: they carry an "e" but have NO entry in design/drops.js, and the handler gates on !D.drops[dropId], so they fail as "invalid" - an unhandled reason that would burn three consecutive-failure slots and stop the run. Found by parsing drops.js rather than by trying it. findBox now skips a stack smaller than the item's e, because candypop (10) and ornament (20) consume a whole stack and the server refuses a short one with "exchange_notenough", also unhandled. autoSell goes from 7 entries to 45, built from the 148 distinct rewards across those 32 tables and filtered on gear plan, exchangeability, type, live market price >= 50,000 and vendor >= 100,000. THE MARKET TEST IS WHAT MAKES IT SAFE: cxjar vendors for 1 and sells for 1,000,000, tshirt3 vendors for 72 and sells for 200,000,000, and both sort to the top of a cheapest-first vendor list. ftrinket keeps 2 alongside poker's 3 - FatherToken wears ftrinket+2. angelwings, puppyer, tshirt7, talkingskull and tristone were removed from the sell list by the operator after review; the classifier will keep proposing them, so do not re-add them from a fresh run) - v2
+// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v5 (the jacko compound now runs DURING the box loop, any time three jackos share a level below the target, instead of once after it. v4 had it as an end-of-run phase, which was the wrong shape for what it is for: three jackos become one, so a compound is a net +2 slots, and the whole reason it exists is to stop the run stalling on a full bag. Running it only at the end meant the stall happened first and the fix arrived after the run had already given up. Three places now trigger it: after every box opened, on the slot-pressure check at the top of the loop, and in the inventory_full refusal path. The last two used to sell and then give up; they now try the whole ladder - sell for gold, compound for two slots per three jackos, bank the finished +3s - and only stop when none of the three can free anything. Banking is the last resort there because it is the only step that walks off the hub. compoundJackos(quiet) suppresses the phase header when called from inside the loop, so the log stays readable; the end-of-run pass still prints in full and still does the banking.) - v4 (compounds jacko to +3 after the box run and banks the finished ones. Jacko is the commonest thing the candy exchanges produce, so it accumulates faster than anything else here. THE HUB ALREADY MADE THIS FREE: hubAnchors() has always included G.maps.main.compound and requireMerchants is ['scrolls'], so the standing spot is already within range of the compound NPC AND of Lucas, who sells the cscrolls - the compound phase needs no movement at all, and neither does restocking. Only the bank trip moves. THE SCROLL GRADE STEPS UP MID-LADDER AND THIS IS THE EASY THING TO GET WRONG: jacko's grades are [2,4,6,7], so a +0 and a +1 are grade 0 and take cscroll0 at 6,400, but a +2 is grade 1 and needs cscroll1 at 240,000 - the server refuses the cheap scroll with compound_incompatible_scroll, because it checks grade > scroll_def.grade. jackoScrollFor() derives the scroll from the item's own grade rather than hardcoding one. COST, so the defaults can be argued with: the chances are igrade 0 from G.compounds, 0.99 / 0.75 / 0.40 for +1 / +2 / +3, and a failure destroys all three inputs - so a finished +3 costs about 91 jacko+0, not the 27 that 3^3 suggests, plus roughly 858,000 in scrolls. Grace makes the real figure better than that; it is a floor, not a forecast. Banking is gated on a nearly-full bag and takes ONLY jackos at the target level, which is what was asked for.) - v3 (opens EVERYTHING Xyn takes, not just the three anniversary boxes. boxes goes from 3 to 33, derived by listing G.items entries with an "e" and no "quest" - def.quest is what routes an exchange away from G.maps.main.exchange, and these have none, so one standing position covers all 33. sixcake and 5bucks are excluded on purpose: they carry an "e" but have NO entry in design/drops.js, and the handler gates on !D.drops[dropId], so they fail as "invalid" - an unhandled reason that would burn three consecutive-failure slots and stop the run. Found by parsing drops.js rather than by trying it. findBox now skips a stack smaller than the item's e, because candypop (10) and ornament (20) consume a whole stack and the server refuses a short one with "exchange_notenough", also unhandled. autoSell goes from 7 entries to 45, built from the 148 distinct rewards across those 32 tables and filtered on gear plan, exchangeability, type, live market price >= 50,000 and vendor >= 100,000. THE MARKET TEST IS WHAT MAKES IT SAFE: cxjar vendors for 1 and sells for 1,000,000, tshirt3 vendors for 72 and sells for 200,000,000, and both sort to the top of a cheapest-first vendor list. ftrinket keeps 2 alongside poker's 3 - FatherToken wears ftrinket+2. angelwings, puppyer, tshirt7, talkingskull and tristone were removed from the sell list by the operator after review; the classifier will keep proposing them, so do not re-add them from a fresh run) - v2
 // ============================================================================
 // Everything below is read from the game's own data at runtime, or was read
 // out of the server source rather than remembered. The numbers that matter:
@@ -487,13 +487,18 @@ async function ensureScroll(scrollName) {
    takes 10s server-side (len = 10000) and parent.compound resolves when the
    server answers, so this awaits rather than polls - but it is bounded, because
    an await that never settles would end the run silently. */
-async function compoundJackos() {
+async function compoundJackos(quiet) {
 	if (!CONFIG.jacko.enabled) return { attempts: 0, made: {} };
 	if (typeof compound !== 'function') { log('compound() not available in this context', 'orange'); return { attempts: 0, made: {} }; }
 
 	const before = jackoCount();
-	const have = Object.keys(before).map(function (L) { return before[L] + 'x+' + L; }).join(', ');
-	log('jacko phase: ' + (have || 'none on hand'), '#55BDF0');
+	/* quiet is for the in-loop calls: they fire whenever a triple appears, which
+	   is often, and a phase header each time would bury the box log. The
+	   per-compound lines still print - those are the ones worth seeing. */
+	if (!quiet) {
+		const have = Object.keys(before).map(function (L) { return before[L] + 'x+' + L; }).join(', ');
+		log('jacko phase: ' + (have || 'none on hand'), '#55BDF0');
+	}
 
 	let attempts = 0, failures = 0;
 	const made = {}, lost = {};
@@ -567,8 +572,10 @@ async function compoundJackos() {
 	}
 
 	const after = jackoCount();
-	const now = Object.keys(after).map(function (L) { return after[L] + 'x+' + L; }).join(', ');
-	log('jacko phase done: ' + attempts + ' compound(s), now ' + (now || 'none'), '#55BDF0');
+	if (!quiet || attempts) {
+		const now = Object.keys(after).map(function (L) { return after[L] + 'x+' + L; }).join(', ');
+		log('jacko: ' + attempts + ' compound(s), now ' + (now || 'none'), '#55BDF0');
+	}
 	return { attempts: attempts, made: made, lost: lost, after: after };
 }
 
@@ -656,18 +663,39 @@ async function openGifts() {
 	}
 
 	const rewards = {}, soldTally = {};
+	/* Compounds done DURING the loop, kept apart from the end-of-run pass so the
+	   summary shows which did the slot reclaiming. */
+	const jackoDuring = { attempts: 0, made: {} };
 	let opened = 0, failures = 0, goldFromSales = 0;
 	const started = Date.now();
 	log('starting with ' + countBoxes() + ' box(es) and ' + character.esize + ' free slot(s)', '#55BDF0');
 
 	while (true) {
 		if (character.esize <= CONFIG.minFreeSlots) {
-			// Try to make room before giving up - that is the whole point of
-			// selling during the run rather than after it.
+			/* THE ANTI-STALL LADDER, cheapest first. Until v5 this sold and then
+			   gave up, which IS the stall. Each rung frees slots a different way:
+			     sell     - gold, no movement
+			     compound - three jackos become one, a net +2 slots, and it is
+			                progress we want anyway
+			     bank     - the finished +3s, and the only rung that walks off the
+			                hub, so it goes last
+			   Each is re-checked against esize so no rung runs that is not needed. */
 			const r = await sellChaff(soldTally);
 			goldFromSales += r.gold;
+
+			if (character.esize <= CONFIG.minFreeSlots && CONFIG.jacko.enabled && jackoGroup()) {
+				log('slots tight - compounding jackos to reclaim some', '#E9C46A');
+				const j = await compoundJackos(true);
+				jackoDuring.attempts += j.attempts;
+				for (const L in (j.made || {})) jackoDuring.made[L] = (jackoDuring.made[L] || 0) + j.made[L];
+			}
+			if (character.esize <= CONFIG.minFreeSlots && CONFIG.jacko.enabled && jackoToBank().length) {
+				log('still tight - banking the finished jackos', '#E9C46A');
+				await bankJackos(spot);
+			}
 			if (character.esize <= CONFIG.minFreeSlots) {
-				log('down to ' + character.esize + ' free slot(s) with nothing left to sell - stopping', '#E9C46A');
+				log('down to ' + character.esize + ' free slot(s) with nothing left to sell, '
+					+ 'compound or bank - stopping', '#E9C46A');
 				break;
 			}
 		}
@@ -689,6 +717,18 @@ async function openGifts() {
 				const s = await sellChaff(soldTally);
 				goldFromSales += s.gold;
 			}
+
+			/* THE TRIGGER. Any time three jackos share a level below target - so
+			   3x+0, 3x+1 or 3x+2 - compound them, right here, mid-run. Checked
+			   after every box because a box is what produces a jacko, so this is
+			   the first moment a new triple can exist. jackoGroup() is a cheap
+			   inventory scan; the compound itself only happens when it returns
+			   something. */
+			if (CONFIG.jacko.enabled && jackoGroup()) {
+				const j = await compoundJackos(true);
+				jackoDuring.attempts += j.attempts;
+				for (const L in (j.made || {})) jackoDuring.made[L] = (jackoDuring.made[L] || 0) + j.made[L];
+			}
 		} catch (e) {
 			const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
 			failures++;
@@ -698,6 +738,18 @@ async function openGifts() {
 				const s = await sellChaff(soldTally);
 				goldFromSales += s.gold;
 				if (s.sold) { failures = 0; continue; }
+				/* Selling found nothing, so try the other two rungs before giving
+				   up - this is the precise stall the jacko work was added for. */
+				if (CONFIG.jacko.enabled && jackoGroup()) {
+					const j = await compoundJackos(true);
+					jackoDuring.attempts += j.attempts;
+					for (const L in (j.made || {})) jackoDuring.made[L] = (jackoDuring.made[L] || 0) + j.made[L];
+					if (j.attempts) { failures = 0; continue; }
+				}
+				if (CONFIG.jacko.enabled && jackoToBank().length) {
+					const n = await bankJackos(spot);
+					if (n) { failures = 0; continue; }
+				}
 				break;
 			}
 			if (why === 'distance') {
@@ -729,8 +781,13 @@ async function openGifts() {
 	/* AFTER the boxes, not during: the boxes are what produce the jackos, so
 	   running the ladder first would work on a smaller pile for no reason. */
 	let jacko = null;
+	if (jackoDuring.attempts) {
+		log('reclaimed slots during the run: ' + jackoDuring.attempts + ' compound(s)', '#8b98ab');
+	}
 	if (CONFIG.jacko.enabled) {
 		try {
+			/* Not quiet: this is the summary pass, and it is also what does the
+			   banking when the bag never got tight enough to trigger it in-loop. */
 			jacko = await compoundJackos();
 			/* Gated on a nearly-full bag, as asked - a bank trip is not worth
 			   making for one finished jacko while there is still room to work. */
