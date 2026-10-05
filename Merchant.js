@@ -636,7 +636,7 @@ const CONFIG = {
 			'lmace', 'mshield', 'xhelmet', 'vattire', 'starkillers', 'mpxgloves', 'bcape',
 			'mpxamulet', 'sbelt', 'rabbitsfoot', 'cearring', 'zapper',
 			// mage
-			'sparkstaff', 'mmhat', 'jacko', 'cring',
+			'sparkstaff', 'mmhat', 'cring', //'jacko', too many durring halloween event
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
