@@ -133,6 +133,9 @@ const CONFIG = {
 		gloves1: 0, mittens: 0,
 		hpamulet: 0, hpbelt: 0, skullamulet: 0,
 		cupid: 0, snowflakes: 0, ornamentstaff: 0, bataxe: 0, pinkie: 0,
+		throwingstars: 0, swordofthedead: 0, daggerofthedead: 0,
+		maceofthedead: 0, hbow: 0, hgloves: 0, bowofthedead: 0, staffofthedead:0,
+		pmaceofthedead: 0, phelmet: 0,
 
 		// carried over from the slot-8 build
 		pants: 0, shoes: 0, gloves: 0, coat: 0, helmet: 0, wbreeches: 0,
