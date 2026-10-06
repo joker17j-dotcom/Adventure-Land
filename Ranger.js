@@ -3463,10 +3463,11 @@ const PERMANENT_WHITELIST = new Set([
 // override) and it cannot be undone by removeFromBlacklist() the way a stored
 // entry can - to change it, edit this list.
 const PERMANENT_BLACKLIST = new Set([
-	'gscorpion@desertland',
-	'mrpumpkin@halloween',
-	'mummy@level3',
-	'mummy@level4',
+	//testing if no longer needed as characters have advanced significantly since this was implmented
+	//'gscorpion@desertland',
+	//'mrpumpkin@halloween',
+	//'mummy@level3',
+	//'mummy@level4',
 ]);
 
 // TASK - come back to this. The lists above are a stopgap; the real bug is the
