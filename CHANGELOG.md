@@ -28,6 +28,51 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v82
+
+The merchant kept walking to Ponty for items that were not there, hopping away
+and asking again about twenty seconds later.
+
+`arbNoteFailure` returns before writing for any NPC target, and `arbFailBlocked`
+returns false for one. That rule is correct and stays: Ponty carries 300+ rows
+per shard, so shelving HIM would close most of the pipeline, and an NPC listing
+going is a fact about the listing rather than about the vendor. The gap was that
+nothing recorded the LISTING either, so the flip finder re-proposed the identical
+row from the same cached scan on its very next pass.
+
+Measured 2026-10-06 from the bridge ledger: 187 Ponty abandons in 24h across
+SEVEN distinct items - `ftrinket+0` 63 times, `ololipop+0` 51, `cryptkey+0` 34,
+`snakeoil+0` 32 - a 96.3% repeat rate, median 22 seconds between retries of the
+same item (min 12, p90 31). Roughly 68 minutes of the day spent hopping for
+absent stock, and because only one trade runs at a time it blocked every other
+candidate while it did. Those same items are also the window's top three profit
+earners, so these are real flips being lost to a race, not phantoms.
+
+The other half is the feed: `/ponty` rows measured 363-941s old (median 440s)
+against stock that rotates faster, so planning off a seven-minute-old snapshot is
+the normal case. Neither fault alone loops - stale data without the memory gap
+fails once and moves on.
+
+Adds `arb_gone`, keyed `shard|vendor|item+level` with a TTL of
+`CONFIG.arbitrage.goneForgetMs` (12 minutes, chosen to outlast the scan that
+produced the dead row). Written on the `item_gone` path, checked in the flip
+filter beside the two existing suppression tests. Keyed by VENDOR as well as
+shard, so the same item from a player stand on that shard remains available -
+keying on the item alone would have suppressed good offers.
+
+Abandon records now also carry `buyShard`, `item` and `level`. Without them the
+ledger could not say which shard a Ponty failure happened on, which is why the
+repeat loop stayed invisible until it was counted by item name alone.
+
+Also corrects stale figures in the mage tier-3 comment, deferred by the operator
+on 2026-10-05: gstaff+9 is 153 attack / 140 range against sparkstaff+9's 140 /
+130. Both numbers in the old text were low and the gap is 13, not 12.5. Measured
+with `calculate_item_properties`. The comment's conclusions are unaffected.
+
+NOTE: v80 and v81 have no entries here. v80 moved Dexon's tier-2 chest to
+`mrnarmor+7` and v81 the mage's to `mmarmor+7`; both are described in comments at
+those rows but were never written up here.
+
 ## v79
 
 Six fallback prices had been set to the item's vendor `g`, and two of those sat
