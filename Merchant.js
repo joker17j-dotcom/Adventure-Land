@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v81
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v82
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -425,6 +425,12 @@ const CONFIG = {
 		   trade is refused. The plan comes from a cached scan and his price is a
 		   function of the item, so any drift means a different listing. */
 		npcPriceDrift: 0.02,
+		/* How long a vanished NPC listing is remembered, keyed by shard+vendor+
+		   item+level. Sized against the bridge's own staleness: /ponty rows
+		   measured 2026-10-06 at 363-941s old (median 440s), so a window under
+		   ~8 min would expire before the scan that produced the dead row did.
+		   -> arbNoteGone */
+		goneForgetMs: 12 * 60 * 1000,
 		maxSellAttempts: 4,
 		/* And a wall clock over the top of it, because an attempt counter only
 		   bounds the paths that increment it. Goods held longer than this are
@@ -2576,8 +2582,8 @@ const GEAR_PROGRESSION = {
 		{
 			/* Mainhand is the Spark Staff, a two-handed great_staff - hence no offhand.
 			   CORRECTED 2026-10-02: this row said gstaff (Blaster) by mistake. Blaster is
-			   stronger at the same level (139 attack / 131 range at +9 against sparkstaff's
-			   126.5 / 122.5) but its grade thresholds are [0,0,9,10] against sparkstaff's
+			   stronger at the same level (153 attack / 140 range at +9 against sparkstaff's
+			   140 / 130) but its grade thresholds are [0,0,9,10] against sparkstaff's
 			   [0,5,10,12], so it sits in an expensive band from level zero, and it costs
 			   1,240,000 against 224,000. MageofOz is already on sparkstaff+6, which beats a
 			   fully upgraded tier-2 firestaff+9 on both attack and range. */
@@ -5110,6 +5116,7 @@ const ARB_KEY = 'arb_trade';
 const ARB_BUF_KEY = 'arb_ledger_buffer';
 const ARB_USED_KEY = 'arb_used';
 const ARB_FAIL_KEY = 'arb_fails';
+const ARB_GONE_KEY = 'arb_gone';
 const ARB_STRAND_KEY = 'arb_strandings';
 const ARB_HALT_KEY = 'arb_halt';
 
@@ -5224,6 +5231,53 @@ function arbFailBlocked(shard, target, fails) {
 	if (arbIsNpcTarget(target)) return false;   // -> AN NPC IS NEVER SHELVED
 	const m = fails || arbLoadFails();
 	const e = m[arbFailKey(shard, target)];
+	return !!(e && e.until > Date.now());
+}
+
+/* A LISTING that has gone, as opposed to a counterparty that keeps failing.
+   arbNoteFailure deliberately refuses to shelve an NPC and that is right: Ponty
+   carries 300+ rows per shard, so shelving him would shut most of the pipeline.
+   But the early return meant nothing remembered the ROW either, and the finder
+   re-proposed it from the same stale scan on the very next pass.
+
+   Measured 2026-10-06: 187 Ponty abandons in 24h across SEVEN distinct items -
+   ftrinket+0 alone 63 times - with a median gap between retries of 22 seconds.
+   That is ~68 minutes of the day spent hopping for items that were not there,
+   and because only one trade runs at a time it blocked every other candidate
+   while it did so.
+
+   Keyed by shard AND vendor, not by item alone: the same item from a player
+   stand on that shard is a different offer and must stay available. */
+function arbGoneKey(shard, target, item, level) {
+	return String(shard) + '|' + String(target) + '|' + String(item) + '+' + String(level || 0);
+}
+
+function arbLoadGone() {
+	let m = {};
+	try { m = get(ARB_GONE_KEY) || {}; } catch (e) { m = {}; }
+	const now = Date.now();
+	let changed = false;
+	for (const k in m) {
+		if (!(m[k] && m[k].until > now)) { delete m[k]; changed = true; }
+	}
+	if (changed) { try { set(ARB_GONE_KEY, m); } catch (e) { } }
+	return m;
+}
+
+function arbNoteGone(shard, target, item, level) {
+	if (!shard || !target || !item) return;
+	const ms = CONFIG.arbitrage.goneForgetMs || 12 * 60 * 1000;
+	const m = arbLoadGone();
+	m[arbGoneKey(shard, target, item, level)] = { until: Date.now() + ms };
+	try { set(ARB_GONE_KEY, m); } catch (e) { }
+	arbLog(target + ' ' + item + '+' + (level || 0) + ' gone on ' + shard
+		+ ' - not re-offering it for ' + Math.round(ms / 60000) + ' min', '#8b98ab');
+}
+
+function arbGoneBlocked(shard, target, item, level, gone) {
+	if (!shard || !target || !item) return false;
+	const m = gone || arbLoadGone();
+	const e = m[arbGoneKey(shard, target, item, level)];
 	return !!(e && e.until > Date.now());
 }
 
@@ -5639,7 +5693,12 @@ async function arbPontyBuy(t) {
 				const out = !pr.retry || t.attempts >= 3;
 				arbLog('Ponty buy: ' + pr.reason + (out ? ' - giving up on this attempt' : ' - retrying'),
 					out ? 'orange' : '#8b98ab');
-				if (out) arbFinish(t, 'abandoned', { reason: 'Ponty: ' + pr.reason, disposition: 'nothing_spent' });
+				/* Remember the ROW, not the vendor. -> arbNoteGone */
+				if (pr.reason && pr.reason.indexOf('item_gone') === 0) arbNoteGone(t.buyShard, t.buyFrom, t.item, t.level);
+				/* buyShard on the abandon record too: without it the ledger cannot say
+				   WHICH shard a Ponty failure happened on, which made the repeat loop
+				   invisible until it was counted by item alone. */
+				if (out) arbFinish(t, 'abandoned', { reason: 'Ponty: ' + pr.reason, disposition: 'nothing_spent', buyShard: t.buyShard, item: t.item, level: t.level });
 				else arbSaveTrade(t);
 				return;
 			}
@@ -6029,6 +6088,7 @@ async function arbLookForWork() {
 	if (!flips || !flips.length) { await arbTryStock(); return; }
 	const used = arbLoadUsed();
 	const fails = arbLoadFails();
+	const gone = arbLoadGone();
 	let suppressed = 0, capped = 0;
 	const pick = flips.find(function (f) {
 		if (!f.affordable || !arbAffordable(f.spend, character.gold)) return false;
@@ -6045,6 +6105,10 @@ async function arbLookForWork() {
 		// different question: not "did we consume this" but "do we keep losing".
 		if (arbFailBlocked(f.buyShard, f.buyFrom, fails)
 			|| arbFailBlocked(f.sellShard, f.sellTo, fails)) { suppressed++; return false; }
+		// That listing was gone last time we walked to it and his stock has not
+		// rotated since. A different question again from the two above, because
+		// an NPC is never shelved. -> arbNoteGone
+		if (arbGoneBlocked(f.buyShard, f.buyFrom, f.item, f.level, gone)) { suppressed++; return false; }
 		// Ingestion drops these, but a flip list built before a name was added is
 		// still in memory. -> NEVER_TRADE_NAMES
 		if (arbNeverBlocked(f.buyFrom) || arbNeverBlocked(f.sellTo)) { suppressed++; return false; }
