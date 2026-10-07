@@ -3489,7 +3489,7 @@ const PERMANENT_WHITELIST = new Set([
 const PERMANENT_BLACKLIST = new Set([
 	//testing if no longer needed as characters have advanced significantly since this was implmented
 	//'gscorpion@desertland',
-	//'mrpumpkin@halloween',
+	'mrpumpkin@halloween',//boss not valid farm
 	//'mummy@level3',
 	//'mummy@level4',
 ]);
