@@ -1,5 +1,5 @@
 // ============================================================================
-// UpgradeCompound.js - v6 (2026-10-04) fallback prices that were copied from vendor g are replaced with live market anchors - a fallback below the real value tells the planner the copy is cheap and it rolls on instead of handing over; also drops a duplicate mshield key that silently shadowed the first - v5 (2026-10-04) the planner no longer divides by a probability the game allows to exceed 1, no longer plans on the retired offeringp/offeringx, and falls back to a shared price table instead of giving up - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
+// UpgradeCompound.js - v7 (2026-10-07) TARGET_LEVELS gains bowofthedead +7 and talkingskull +3, and PRICE_FALLBACK gains both - from LIVE anchors, not vendor g. Measured 2026-10-07 off the bridge and aldata: bowofthedead+0 is on Ponty at 273,600 (USIV, 186s old; a fresh bridge ask agrees to the gold, and 273,600 is exactly 1.2x its g of 228,000), and talkingskull+0 has an aldata row at 464,868 - 4.8x its g of 96,000. The v6 warning below is why that matters: the first draft of this entry set 228,000 and 57,600 from g and 0.6xg, which would have under-priced the skull by eight times, in the one direction that loses items. WHY +7 FOR THE BOW: igrade is the grade at +0 and bowofthedead's grades are [0,5,10,12], so row 1 governs the whole ladder - scroll0 is REFUSED from +0, the path is scroll1 x5 then scroll2 x2, and +7 costs 30.5 expected bows / ~38.0M against +8 at 218 bows / 273M and +10 at 53,280 bows / 85.4bn. WHY talkingskull IS HERE AND NOT IN OpenGifts: its grades are [1,2,6,7], so a +2 is grade 2 and the last step needs cscroll2 at 9,200,000 - 23M of the ~67.9M total. jacko's grades are [2,4,6,7], so a jacko +2 is grade 1, and OpenGifts' CONFIG.jacko.maxScrollGrade of 1 is right for jacko but would have stalled talkingskull at +2 by returning null from jackoScrollFor, with nothing logged. DRY_RUN is still true - this version changes what would be PLANNED, not what is rolled. - v6 (2026-10-04) fallback prices that were copied from vendor g are replaced with live market anchors - a fallback below the real value tells the planner the copy is cheap and it rolls on instead of handing over; also drops a duplicate mshield key that silently shadowed the first - v5 (2026-10-04) the planner no longer divides by a probability the game allows to exceed 1, no longer plans on the retired offeringp/offeringx, and falls back to a shared price table instead of giving up - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
@@ -80,6 +80,16 @@ const UC_CONFIG = {
 	TARGET_LEVEL: 7,
 	TARGET_LEVELS: {
 		// frankypants: 7,
+
+		/* +7 is also TARGET_LEVEL, so this line is documentation as much as
+		   configuration - it keeps the bow at +7 if TARGET_LEVEL is ever moved
+		   for something else. -> the v7 header for why +7 and not +8. */
+		bowofthedead: 7,
+
+		/* Needs cscroll2 (9,200,000) for +2 -> +3 and there is no way round it:
+		   grades [1,2,6,7] put a +2 at grade 2. ucPlan picks it on its own; the
+		   operator approved the spend 2026-10-07. -> the v7 header. */
+		talkingskull: 3,
 	},
 
 	/* Set a value here to override every other source for that item at +0.
@@ -102,6 +112,14 @@ const UC_CONFIG = {
 	     suckerpunch             +0 ask 2,000,000,000, against a 30-deep bid at
 	                             1,100,000,000 - 1.8x apart, so both are credible
 	     fury 300,000,000        +0 buy order, 10 deep
+	     bowofthedead 273,600    Ponty USIV, 2026-10-07, 186s old - and a fresh
+	                             bridge ask at the same gold. This is the
+	                             Halloween-event price while he is plentiful, so
+	                             re-check it once the event ends. NOT his g of
+	                             228,000, though it lands at 1.2x it.
+	     talkingskull 464,868    aldata +0 row, 2026-10-07, 14 min old. His g is
+	                             96,000 - this is 4.8x that, and writing the g
+	                             number here is the mistake v6 was made to undo.
 	     mpxamulet 300,000,000   +0 buy order
 	     starkillers             just under 100,000,000 actually paid
 	     sparkstaff 12,227,542   +7 ask 320,000,000 back-solved through the
@@ -143,6 +161,8 @@ const UC_CONFIG = {
 		mshield:     720000,
 		harmor:      576000,
 		firestaff:   500000,
+		talkingskull: 464868,
+		bowofthedead: 273600,
 		firebow:     267000,
 		ecape:       126000,
 	},
