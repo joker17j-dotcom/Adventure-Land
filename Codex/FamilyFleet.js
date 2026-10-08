@@ -11,6 +11,18 @@
 // that feeds pontyBuy. Town trips still happen for potions, compounding and the
 // bank window, which is what they were always for besides the scan.
 //
+// A SWAPPED-OUT PIECE IS BANKED ON THE SPOT, added 2026-10-08 at the owner's
+// request. equip() is a swap: when the slot was already filled, the piece
+// coming off lands in the bag. It used to land there too late to be banked -
+// bankDepositSpares has already run by then - and sellSurplus, on the way out
+// of the window, vendored it whenever bankWantsMore said the bank had enough
+// copies. That is the wrong verdict for this item in particular: a piece a
+// ranger has just outgrown is either an upgrade for a sibling or the interim
+// one somebody wears until their own catches up. Neither is surplus. It is now
+// stored in the same breath as the equip, the copy limit gets no vote, and
+// shouldSell refuses anything displaced this window even if that store failed -
+// a full bank must not quietly become a sale.
+//
 // There is deliberately NO messaging between characters. They live on separate
 // shards, so send_cm cannot reach them and there is no bridge relay on this
 // account. Every schedule below is therefore derived from the wall clock and
@@ -2468,6 +2480,10 @@ function shouldBank(item) {
 function shouldSell(item) {
 	if (KEEP_ITEMS.has(item.name)) return false;
 	if (NEVER_SELL.has(item.name)) return false;
+	// Taken off this window - see displacedThisWindow. Ahead of the plan checks
+	// because it does not matter what the plan or the copy count think: nobody
+	// sells the piece a character was wearing twenty seconds ago.
+	if (displacedThisWindow.has(item.name + '+' + itemLevel(item))) return false;
 	// -> EXCHANGEABLE ITEMS. A Mystery Box is 12,000,000 to the right NPC and
 	// nothing at all to the plan, so the plan must not be the one deciding.
 	if (isExchangeable(item.name)) return false;
@@ -2895,6 +2911,17 @@ async function compoundPass(maxAttempts) {
    stops it asking forever when the answer never changes. */
 const BANK_MAX_OPS = 30;
 
+/* name+level of everything a swap pushed into the bag this window.
+
+   The belt to bankDisplaced's braces. If the store succeeds the item is out of
+   the bag and unsellable anyway, so this only matters when it failed - a full
+   bank, a closed window, a refusal. That is exactly when the old behaviour did
+   the damage, so the guarantee should not depend on the store working. Keyed by
+   name AND level so a farmed duplicate of the same name is still fair game.
+   Reset at the top of every bank run: it is a within-window fact, not a
+   standing one. */
+let displacedThisWindow = new Set();
+
 function bankWindowOpen() {
 	return isMyBankWindow();
 }
@@ -2918,7 +2945,11 @@ async function bankDepositGold() {
    touched at all, because what we are wearing decides what the bank is asked
    for - ask first and we would withdraw a second copy of something already in
    our hand. */
-async function bankEquipFromInventory() {
+/* `displaced` is an out-parameter: push each piece this pass takes OFF, so the
+   caller can bank it. Read from character.slots immediately before the equip,
+   because that is the only moment the outgoing item is still identifiable - a
+   swap puts it in the bag and the slot now reads as the new one. */
+async function bankEquipFromInventory(displaced) {
 	const would = inventoryItems().map((it) => ({ it, slot: slotToEquip(it) })).filter((x) => x.slot);
 	if (!would.length) return 0;
 	if (blocked(`equip ` + would.map((x) => `${x.it.name}${itemLevel(x.it) ? '+' + itemLevel(x.it) : ''} -> ${x.slot}`).join(', '))) return 0;
@@ -2931,10 +2962,16 @@ async function bankEquipFromInventory() {
 			if (slot) { found = { it, slot }; break; }
 		}
 		if (!found) break;
+		const was = (character.slots && character.slots[found.slot]) || null;
 		try {
 			await equip(found.it.idx, found.slot);
 			log(`equipped ${found.it.name}${itemLevel(found.it) ? '+' + itemLevel(found.it) : ''} to ${found.slot}`, '#7FD98A');
 			done++;
+			if (was && was.name) {
+				const key = was.name + '+' + itemLevel(was);
+				displacedThisWindow.add(key);
+				if (displaced) displaced.push({ name: was.name, level: itemLevel(was) });
+			}
 		} catch (e) {
 			log(`equip ${found.it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
 			break;             // a refusal will just repeat; stop rather than spin
@@ -2964,6 +3001,41 @@ async function bankDepositSpares() {
 		}
 	}
 	return done;
+}
+
+/* Put away what a swap just took off, before anything can sell it.
+
+   The copy limit deliberately does NOT apply: bankWantsMore exists to stop the
+   bank filling with farmed duplicates, not to discard gear that was being worn.
+
+   Anything still equippable is skipped rather than banked, and that costs
+   nothing - bankEquipFromInventory loops until no item in the bag is an upgrade
+   for any slot, so a displaced ring that still beats the OTHER ring slot has
+   already gone back on by the time this runs. The check is here for the case
+   where it has not: better to leave it in the bag and bank it next window than
+   to put away something the character should be wearing. */
+async function bankDisplaced(displaced) {
+	if (!displaced || !displaced.length) return 0;
+	let stored = 0;
+	for (const d of displaced) {
+		if (!bankWindowOpen()) break;
+		const tag = d.name + (d.level ? '+' + d.level : '');
+		const it = inventoryItems().find((x) => x.name === d.name && itemLevel(x) === d.level);
+		if (!it) continue;                 // re-equipped, or already gone
+		if (slotToEquip(it)) continue;     // still an upgrade somewhere - keep it on
+		if (blocked(`bank the displaced ${tag}`)) continue;
+		try {
+			await bank_store(it.idx);
+			log(`banked the displaced ${tag}`, '#7FD98A');
+			stored++;
+		} catch (e) {
+			const why = e && e.reason ? e.reason : e;
+			log(`bank_store of the displaced ${tag} failed: ${why}`
+				+ ` - keeping it, and shouldSell will not sell it`, 'orange');
+			break;
+		}
+	}
+	return stored;
 }
 
 /* Take out anything the others left that beats what we are wearing.
@@ -3004,7 +3076,12 @@ async function bankWithdrawUpgrades() {
 			log(`bank_retrieve ${it.name} failed: ${e && e.reason ? e.reason : e}`, 'orange');
 			break;
 		}
-		await bankEquipFromInventory();
+		/* Wear it, then put away whatever came off - both inside the loop, so
+		   the swap never leaves a worn piece sitting in the bag where the sell
+		   pass on the way out could reach it. */
+		const displaced = [];
+		await bankEquipFromInventory(displaced);
+		await bankDisplaced(displaced);
 	}
 	return done;
 }
@@ -3074,11 +3151,21 @@ async function bankRun() {
 	if (!character.bank) {
 		log('in the bank map but character.bank is not readable - gold only this window', 'orange');
 	} else {
-		const worn = await bankEquipFromInventory();
+		/* Within-window record, so it cannot leak into a later run. */
+		displacedThisWindow = new Set();
+		/* The first pass displaces things too - it wears whatever the farm loop
+		   picked up - and those land BEFORE the deposit pass, so that pass would
+		   catch them while bankWantsMore allowed and sellSurplus would take the
+		   rest. Banked here for the same reason as the ones inside the withdraw
+		   loop. */
+		const displaced = [];
+		const worn = await bankEquipFromInventory(displaced);
+		const putAway = await bankDisplaced(displaced);
 		const given = await bankDepositSpares();
 		const taken = await bankWithdrawUpgrades();
-		if (worn || given || taken) {
-			log(`gear pass: equipped ${worn}, banked ${given}, withdrew ${taken}`, '#7FD98A');
+		if (worn || given || taken || putAway) {
+			log(`gear pass: equipped ${worn}, banked ${putAway} displaced, `
+				+ `banked ${given} spare, withdrew ${taken}`, '#7FD98A');
 		}
 	}
 
