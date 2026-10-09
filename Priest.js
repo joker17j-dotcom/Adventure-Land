@@ -1,5 +1,5 @@
 // ============================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v42 (The out-of-potions fallback walks to a vendor now instead of firing the town teleport. town() is parent.socket.emit('town') and nothing else, and the server answers it by applying the use_town skill, which lands you on the CURRENT map's town point - measured 2026-10-09 in the live CODE context, and there is no map argument to give it. Observed live on desertland: he ran dry, fired use_town, landed at desertland's town point, buy() had no vendor to talk to, the counts stayed at zero, the finally cleared state.restocking, and the next 250ms main tick fired the skill again - indefinitely, with Alia standing unused at -14,-477 on the same map. The five potion vendors in live G are main/fancypots -35,-162, halloween/fancypots 201,-180, winter_inn/wbartender -143,-220, and the legacy old_main and original_main pots; desertland's whole NPC list is transporter / locksmith / scrollsmith / citizen17, so the old path could not have worked there however many times it ran. restockTrip() now takes the vendor on this map if there is one - halloween has one, which matters during the event - and main's otherwise, and smart_move routes it through Alia. find_npc is deliberately NOT how the vendor is found: find_npc('transporter') from desertland answers { map: 'test', x: -50, y: -50 }, the first match in G rather than the one on your own map, so a vendor located that way could have sent the walk to the test map. It is resolved out of G.maps instead. Three new bounds in CONFIG.potions - restockTripMs 180s on the walk, restockBuyMs 15s on the purchase, restockRetryMs 60s before a failed trip is retried - and that last one is what replaces the per-tick retry. The trip is DETACHED from checkPotionEmergency on purpose: mainLoop wraps that call in the 10s HANG_GUARD.defaultMs, so awaiting a cross-map walk there would fire the hang guard on every healthy restock and bury the real failures in 'did not settle'. state.restocking is the stand-down flag instead, same shape as a Daisy trip, and restockTrip's finally always clears it. Success is tested by the potion count after buying, not by whether buy() threw, because a rejection is not the only way a socket call fails. autoBuyPotions' two buy() calls are gated on atPotionVendor() as well - off-vendor they were two doomed socket calls every 2s. New operator handles: restockStatus() and restockNow(). NOT CHANGED, both deliberately: travelTo()'s own town() call, which is documented as a way out of a dead end and retries the real route straight afterwards, and the post-respawn top-up in maintenanceLoop, which fails quietly and costs nothing. NOT CHANGED here either: this file's autoBuyPotions still plSends low_potions to Meltymerch with no cooldown and no reach gate, where Ranger.js routes the same request through askForPotions, which has both. That is a separate defect - a bridge message every 2s while stock is under 500 - and it is left for its own change rather than folded in here. Ranger v73 and Mage v65 carry the identical change) - v41 (Blacklist false positives, three causes. Arrival is now a RANGE (TRAVEL.arrivalRadius 200) because kiting preempts smart_move and the rejection was counted as a failed route against a spot we were standing on. Unreachable is never reported while get_nearest_monster({type:home}) is in range. The xp clock re-baselines off the farm map, so boss and vendor trips stop reading as net-negative xp. Travel now outranks cohesion in the movement chain, and holdCohesion stands down when the leader is not in the centroid - the two followers were homing on each other and never pathfinding) - v40 (Slenderman excluded from the boss rotation. His spawn broadcast is the only one in the game carrying no x/y - server_functions.js sends { name, map } where every other boss also sends x and y - so bossWalkTarget() returns null and the trip latched open to the 20 min maxTripMs cap. Measured 2026-10-04: this character picked the trip up via fromLeader within 56ms of Dexon opening it, and stood in winterland for the duration. He cannot be chased either: event_loop warps him to a random walkable node on a random one of cave/halloween/spookytown every second that a non-invisible player is within 600 units, on any projectile targeting him, or every 2 minutes regardless. Only s.invis suppresses the proximity check, and step_out_of_invis() sits in the shared attack path, so even a rogue drops invis on its first swing. NO opportunistic attack path here, unlike Ranger.js, and deliberately so: reflection:96 is gated on defense == 'resistance' (server.js:3682), i.e. MAGICAL damage only, so this character would reflect 96% of every cast back into their own face. Physical classes only. maxTripMs already enforced a hard 20 min expiry, so nothing was changed there) - v39 (mhGoDaisy() now takes the wheel from a trip already in flight instead of racing it. A farm or hunt trip started by mainLoop keeps running inside its own travelTo() after mainLoop stands down on mhBusy - standing down stops NEW movement, it does not cancel movement under way - so both owned the single smart_move the client provides, and Daisy always lost: travelTo's recovery path calls town(), which TELEPORTS, then re-issues smart_move(dest). MEASURED 2026-10-04 on Dexon: the game log repeated 'Path found!' then '[mh] could not reach Daisy: interrupted' without end, and a state sample caught both owners live at once - he stood on main at (35,-109), 317 units from Daisy and INSIDE the 340 radius so mhAtDaisy() was already true, while travelState.inFlight was true against mansion|-8|-148 with an 8-step plotted route to mansion. The pathfinder was never at fault; he was driven by two destinations at once. The cure is orphaning, and travelTo was already built for it: its catch opens with 'if (!mine()) return false', so bumping travelState.attemptId makes the interrupted travelTo return before it reaches town() or the retry, and its finally leaves our state alone. Same trick as travelWatchdog, applied deliberately rather than on a timeout. Left alone the cycle died at mhTick's 180-second 'cannot reach Daisy' giveup, discarding a hunt already paid for in kills. Follower half, byte-identical to the block in Mage.js. The followers reach Daisy on mh_accept and mh_turnin and run the same travelTo, so the race is the same one) - v38 (Cohesion no longer spams an impossible move. Byte-identical to the Mage.js change, same defect, same three fixes: can_move_to() consulted across seven bearings before any emit, the xmove rejection caught instead of escaping into mainLoop's tick through noHang(holdCohesion()), and a terrain handoff to handleReturnHome() alongside v57's distance handoff. Measured on DESERTLAND on 2026-10-04, and FatherToken was the worse of the two: wedged at (373,-2121), 14 xmove calls in 25.6 seconds, every one to the unreachable (316,-2015), all 14 rejected, one distinct position, zero drift, can_move_to a function in his context too. He and MageofOz sat 330 units apart homing on EACH OTHER because Dexon was a map away on main at (-87,673), inside the 400 handoff so v57's distance escalation never fired. Also: a priest wedged out of heal range is the more expensive version of this bug: heal carries use_range true, so being stuck 400 units from the party means healing nobody at all, which is the v56 finding. Fixed here at the same time rather than waiting for it to happen) - v37 (Monster Hunt follower half, byte-identical to the block in Mage.js. Purely message-driven with no triggers of its own, so it is inert until Ranger.js ships - a follower deployed alone cannot accept a hunt and so cannot burn a roll onto a 30-minute clock nobody is watching. It exists because accepting and turning in are emits on THIS character's socket and character.s.monsterhunt is readable only here: a party-member payload carries no 's' field at all (measured 2026-10-03), so Dexon cannot see our target and we report it) - v36 (Cooperative bosses are engaged only once somebody else is on them, and six of them were not recognised as bosses at all. findBestTarget's boss branch took any BOSS_SET member in range UNCONDITIONALLY, which is the opposite failure from Ranger v64: there the gate was so strict the boss was never shot at, here there was no gate. It is `boss.target` now, mirroring the ranger's attackIfTargeted, which resolves to the same mob.target != null - credit on a cooperative boss is shared by damage dealt, so joining a fight in progress pays and opening one alone does not. BOSS_SET also gains pinkgoo, rharpy, rimedjinn, slenderman, snowman and tiger, derived from G.monsters[x].cooperative on 2026-10-02: 19 cooperative monsters exist and allBosses names 13. allBosses itself is deliberately NOT widened - it also feeds zapperMobs, and the priest would start cursing and zapping six more monster types - so that stays a separate decision. Why only Dexon stalled at the snowman on 2026-10-02 and these two did not: they attack from actionLoop, which carries no type filter, so handleEvents() diverting mainLoop to the boss trip never stops them. focusFireTarget() above already copies Dexon's target when he has one, so following the leader was always covered; this governs only what happens before he opens. Consequence, and it is the stated rule rather than an oversight: a boss nobody else has touched is now attacked by nobody, so such a trip ends on the maxTripMs cap having dealt no damage. findNearestBoss/cache.nearestBoss is left ungated - it only drives bossLuckSwitch equipment swapping, not attacking. rimedjinn is in the set but has range 200 against this party's 165/197/201, so only MageofOz can outrange it; a candidate for CONFIG.bossEvents.exclude rather than something this change addresses.) - v35 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-30. Change: BOSS EVENTS. The operator's rule, given 2026-09-30: cooperative bosses only, fought from maximum range, never expecting the kill. Cooperative is the game's own G.monsters[x].cooperative - credit shared by damage dealt - so a trip pays even when somebody else lands the finishing blow, and it is the only class of boss where chipping from range is a strategy rather than a wasted evening. An unknown monster is NOT treated as cooperative. THE OLD BEHAVIOUR WAS NOT A POLICY AT ALL, in three ways. First, shouldHandleEvents() asked only "is anything in getDynamicEvents() live", and EVENT_LOCATIONS lists dragold, mrgreen and mrpumpkin UNCONDITIONALLY - so the party dropped the farm for any of the three the moment it spawned, whatever the odds, with no cap and nothing to bring it home. Measured the same day against this party (Dexon 75, FatherToken 69, MageofOz 70, single-target party DPS about 2,400): mrgreen is 36M hp behind resistance 900, which is 6.6 HOURS, and its attack range is 620 against our 158/197/201 - there is no standing position it cannot reach. dragold is 4.1h, mrpumpkin 4.1h, franky 120M hp and 13.8h at range 948. Second, all three files ran the SAME most-damaged-event scan independently, so two live bosses could send the ranger to one and the priest to the other; the tie-break is now by name, the leader broadcasts its pick, and a follower believes that call for leaderTrustMs before deciding for itself. Third, crabxx was in the ranger's getDynamicEvents alone (v55), so he joined it while the other two kept farming - the boss side of a 960,000 hp fight with no healer, and its 11,706 per hit takes MageofOz down in 1.6 seconds. MAX RANGE IS TWO POSTURES and bossHoldDistance computes both from the live entity: outside the boss's own reach when ours is longer, which costs nothing (crabxx range 45, icegolem 64), and otherwise the far edge of ours, which is merely the best available (franky 948, mrgreen 620). JOINING is measured from adventureland_mongodb node/server.js socket.on('join'), not inferred: exactly four events teleport - goobrawl, crabxx to main (-1000,1700), franky to level2w (-300,150), icegolem to winterland (820,425) - and every other boss must be walked to. The same handler refuses with no_merchants (so never Meltymerch), cant_when_sick (hopsickness, i.e. just after a shard hop, which is now reported rather than retried blindly), cant_in_bank and cant_join for any name not listed, and it ignores the emit when we are already within 200 units - which is why repeating it is free. RETURN was left to my judgement, and it is: boss dead, event expired, maxDeaths 2, or a maxTripMs cap of 20 minutes, whichever comes first, then handleReturnHome(). A trip we GAVE UP on cools that event down for 30 minutes; one that simply ended does not, because those are different facts and cooling the second would refuse a boss the party could have finished. COMMANDS, asked for by name: bossJoin('franky') goes now whatever the gate thinks, clears that cooldown, and broadcasts to the other two from ANY character rather than only the leader - "go now" has to mean the party, not whichever console happened to be open; bossHome() abandons and returns; bossStatus() prints what is live, the gate's verdict on each with its reason, and where we would stand against each. The trip is persisted in CODE storage so a redeploy mid-event cannot hand the party another fresh 20 minutes at a boss it had already abandoned. handleSpecificEvent is now unreachable and marked for deletion next time the file is touched, the way Merchant.js retired heldScanMs. Verified with a 36-case node harness over the extracted block rather than by reading it: the gate, the name tie-break, both hold postures at all three ranges, join versus walk, hopsickness, the death and time caps, cooldown only on giving up, every command, a forced pick that is not live, follower precedence, and the persisted trip. CORRECTION to the v34 entry that follows: it says NOT DEPLOYED as of 2026-09-29, and that is stale - measured 2026-09-30 in FatherToken's live CODE context, typeof unstickWatchdog is "function" and CONFIG.party.cohesion.handoff is 400, so v34 IS deployed.) v34 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-29. The followers could strand themselves permanently, and the function meant to prevent it was the thing preventing the cure. MEASURED on MageofOz, wedged at (-336,1007) on main: 995 units from his own destination, 953 from Dexon, ZERO position change across 55 consecutive one-second samples, smart {moving:true, searching:true, found:false, plot:0}, travelState.inFlight FALSE, failures 1, lastError "still no route after town(): interrupted", and the last travel attempt started 2,567 seconds - 43 minutes - earlier. Dexon appeared in parent.entities on 0 of those 55 samples. Three defects that only bite together. (1) holdCohesion() returns true whenever the worst gap exceeds leash 150, and mainLoop reads a true as 'movement handled', so handleReturnHome() - the only path that pathfinds, counts failures and arms travelWatchdog - was never reached. The further out he drifted, the more certain it became that the one function able to fetch him would not run. (2) Its move is xmove, a straight line, which over that distance stops at the first wall AND interrupts any smart_move already in flight; lastError is that interruption, recorded in the file. So cohesion was not merely failing to help, it was cancelling the rescue. (3) It read member positions from parent.entities, which holds only what is ON SCREEN - so the member we have drifted away from is exactly the one that disappears from it, and the leader left the centroid at the moment cohesion existed to close on him. Both followers were left homing on each other: their worst gap of 480 units was the distance to EACH OTHER, not to Dexon. Fixes: positions now fall back to parent.party, which carries x/y/map for every member regardless of visibility (verified present live); past cohesion.handoff (400) the function stops nudging and calls handleReturnHome() so the pathfinder owns the trip; and unstickWatchdog() clears a wedged smart_move. That last one is not covered by travelWatchdog, which only orphans an attempt while inFlight is true - it was false here - and it matters because handleReturnHome() itself returns early while smart.moving is true, so the wedge blocked its own repair. Not diagnosed from reading: a one-second sampler over 55-60 samples on both followers is what separated 'cohesion never fires' (false - it fired on every sample) from 'cohesion fires and the move does not land' (true).) v33 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Priest changes. (1) holdCohesion() closes on the party whenever the worst distance to another member exceeds leash 150, which leaves margin inside his 197 heal range. It moves toward the CENTROID of the others rather than at the leader, so he settles between the two he has to reach instead of hugging one and losing the other, and it runs ahead of kiting and farming in mainLoop because being in heal range outranks both. Leader-exempt, so Dexon still drives the spot. (2) findBestTarget now takes Dexon's target first via focusFireTarget(), refusing it when out of range or dead. (3) The whole-field weight in avoidMobs subtracts kitePathPenalty instead of the v59 veto. Note scare() is still inert - no jacko anywhere on the account, and it drops only from Halloween candy0 at weight 1 of ~6.5 - so cohesion and focus fire are carrying this round.) v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v44 (Rage boxes. G.maps[map].monsters[i] can carry a `rage` rectangle beside its `boundary`, and stepping inside aggros the whole pack AND applies the monster's own rage multiplier. Measured 2026-10-09 in the live client on spookytown: mummy boundary [31,-1571,480,-1293] with rage [-124,-1631,614,-1130], a halo 130-165 units larger; both booboo packs with rage IDENTICAL to their boundary; stoneworm, mrgreen and jr with no rage field at all. Both monsters carry rage 1.5, which is why booboo's listed attack of 220 was measured landing for ~352 - the earlier prediction of 264 and the measurement of 352 were both right, un-enraged and enraged. This was not theory: scoreAllFarmSpots returns the spawn-boundary CENTRE, so an override on booboo resolved to (415,-702), dead centre of the rage box, and the measured result was three deaths, zero kills, the spawn never reached, and travelState stuck inFlight with failures: 0 because death kept interrupting the route. The monster was never the problem; the standing point was. Four things are new. rageHit/rageClips/rageEscape read the rectangles straight out of G. safeMove replaces every xmove call site, refusing to enter a rectangle and routing around one rather than through it - it falls straight through to xmove on a map with no rage boxes, which is every map but spookytown today, so this costs nothing anywhere else. rageRoute is a BFS on a 25-unit grid with the rectangles treated as solid, greedily simplified so EVERY leg is verified straight-line can_move-clear, which is the whole point: the legs are walked with xmove, so smart_move's pathfinder - which knows nothing about rage boxes and would happily cut the corner through one, the interior being ordinary open ground (can_move(415,-702) is true) - is taken out of the loop. Measured at 4 ms on spookytown. safeSmartMove wraps travelTo and bossApproach so the trip OUT to a boss event is protected as well as the trip in, and a blocked route THROWS rather than falling back, because surfacing the failure is the house rule and silently crossing the box is the one outcome worth failing to avoid. rageGuard runs first in mainLoop as the net for a respawn somewhere unexpected, knockback, or being dragged - the failed test respawned Dexon on level1 at (1376,500), none of spookytown's three spawn points, which is why the route is recomputed from wherever the character actually is rather than hardcoded. Nothing here restricts movement OUTSIDE a rectangle: closing, backing off and regrouping are untouched, and the rectangle is the only thing that is solid. ragePullTick adds one-at-a-time discipline, with CONFIG.achievements.pull.concurrent as the knob - how many targets may be in flight at once, 1 to start, raised as the farm earns trust. ragePuller picks who pulls deterministically by range so three characters decide alike without a message: a booboo at its box edge costs margin+2, while a mummy at its spawn edge needs 193 because of the rage halo, which is past the ranger's 163 and inside the priest's 201 and the mage's 235. ragePullTick is fire-and-forget behind a busy flag because a pull is two round trips and mainLoop is wrapped in the 10s HANG_GUARD - the same trap restockTrip was detached to avoid. NOT established: whether an un-enraged booboo outside the rectangle opens fire at its 420 range at all (aggro 1.5 is a multiplier whose base is unmeasured), and whether booboo's phresistance 50 halves the ranger's contribution as modelled. Both are answerable by watching the first run, and neither changes the geometry. Ranger v77 carries the achievement wiring; this file has the safety half) - v43 (Goo Brawl is a boss event now, which it was not, and the cause is worth recording: it is the ONLY one of the four joinable events whose parent.S key is an EVENT name rather than a monster name. Measured 2026-10-09 in the live client - G.monsters.crabxx, .franky and .icegolem all exist and all carry cooperative: true, while G.monsters.goobrawl does not exist at all. bossCooperative('goobrawl') therefore read undefined and answered false, and with cooperativeOnly true and include empty, bossEligible rejected it as 'not cooperative' every time it went live. The gate was right about the data and wrong about the event. Two call sites broke on the same gap and only one of them would ever have been visible: bossApproach asked get_nearest_monster({ type: 'goobrawl' }) and got null on every tick, so even a forced bossJoin('goobrawl') would have teleported in and then stood on the arrival point without ever taking a firing posture - inside rgoo's reach, which is the one thing bossPosture exists to prevent. BOSS_FIGHT_TYPE maps the event name to the monster and bossMonsterType() is used at all three resolution sites (bossCooperative, bossApproach, bossStatus). No policy was relaxed: goobrawl now passes the cooperative test for the same reason the other three do, rather than being admitted by hand through include - which would have hidden the real defect and left bossApproach still asking for a monster type that does not exist. The brawl's monsters are rgoo (hp 1,000,000, attack 320, frequency 1.2, range 64, armor 300, resistance 300, xp 48,000,000, damage_type physical, cooperative true, aggro 0.1, rage 0) and bgoo (hp 100,000, attack 5, frequency 0.4, range 15, xp 100,000, cooperative true, aggro 0); both were ALREADY in allBosses, so the attack side needed no change - the ranger admits them through attackIfTargeted and the priest and mage through BOSS_SET, all three resolving to the same 'only once somebody else is on it' rule that shared cooperative credit makes correct. rgoo's range 64 against our ~163 puts this in the free-shot band with crabxx at 45 and icegolem at 64, not the hopeless band with franky at 948, and attack 320 physical is heavily mitigated by the party's armor - this is a far safer trip than the booboo farm measured the same day. G.events.goobrawl gives duration 540 and type 'daily', so the event ends on its own well inside the 20 min maxTripMs and bossEnd records no cooldown; G.maps.goobrawl carries no pvp flag, and on_death is ['goobrawl', 0], so a death respawns inside the brawl rather than ejecting - maxDeaths 2 still bounds it. BOSS_JOIN_SPOTS.goobrawl keeps x/y null deliberately: that map is reachable by the join emit alone, so bossWalkTarget answering null is the correct answer and not a hole to fill. NOT ESTABLISHED - the reward. The operator reports funtoken as a large drop from the event and that is the reason for this change; game data does not corroborate the mechanism, and the gap is recorded rather than papered over. rgoo.drops and bgoo.drops are both null, G.drops has no goobrawl table at all, and the only two drop tables containing funtoken are glitch and lglitch at weight 1 each. G.items.funtoken is g 12,000, stack 9,999, type token, and its own text reads 'Collect them from Daily events' - which goo brawl is, G.events.goobrawl.type being exactly 'daily'. So the payout is server-side event logic that G does not publish, and its size is unverified from here. Ranger v76 and Mage v66 carry the identical change) - v42 (The out-of-potions fallback walks to a vendor now instead of firing the town teleport. town() is parent.socket.emit('town') and nothing else, and the server answers it by applying the use_town skill, which lands you on the CURRENT map's town point - measured 2026-10-09 in the live CODE context, and there is no map argument to give it. Observed live on desertland: he ran dry, fired use_town, landed at desertland's town point, buy() had no vendor to talk to, the counts stayed at zero, the finally cleared state.restocking, and the next 250ms main tick fired the skill again - indefinitely, with Alia standing unused at -14,-477 on the same map. The five potion vendors in live G are main/fancypots -35,-162, halloween/fancypots 201,-180, winter_inn/wbartender -143,-220, and the legacy old_main and original_main pots; desertland's whole NPC list is transporter / locksmith / scrollsmith / citizen17, so the old path could not have worked there however many times it ran. restockTrip() now takes the vendor on this map if there is one - halloween has one, which matters during the event - and main's otherwise, and smart_move routes it through Alia. find_npc is deliberately NOT how the vendor is found: find_npc('transporter') from desertland answers { map: 'test', x: -50, y: -50 }, the first match in G rather than the one on your own map, so a vendor located that way could have sent the walk to the test map. It is resolved out of G.maps instead. Three new bounds in CONFIG.potions - restockTripMs 180s on the walk, restockBuyMs 15s on the purchase, restockRetryMs 60s before a failed trip is retried - and that last one is what replaces the per-tick retry. The trip is DETACHED from checkPotionEmergency on purpose: mainLoop wraps that call in the 10s HANG_GUARD.defaultMs, so awaiting a cross-map walk there would fire the hang guard on every healthy restock and bury the real failures in 'did not settle'. state.restocking is the stand-down flag instead, same shape as a Daisy trip, and restockTrip's finally always clears it. Success is tested by the potion count after buying, not by whether buy() threw, because a rejection is not the only way a socket call fails. autoBuyPotions' two buy() calls are gated on atPotionVendor() as well - off-vendor they were two doomed socket calls every 2s. New operator handles: restockStatus() and restockNow(). NOT CHANGED, both deliberately: travelTo()'s own town() call, which is documented as a way out of a dead end and retries the real route straight afterwards, and the post-respawn top-up in maintenanceLoop, which fails quietly and costs nothing. NOT CHANGED here either: this file's autoBuyPotions still plSends low_potions to Meltymerch with no cooldown and no reach gate, where Ranger.js routes the same request through askForPotions, which has both. That is a separate defect - a bridge message every 2s while stock is under 500 - and it is left for its own change rather than folded in here. Ranger v73 and Mage v65 carry the identical change) - v41 (Blacklist false positives, three causes. Arrival is now a RANGE (TRAVEL.arrivalRadius 200) because kiting preempts smart_move and the rejection was counted as a failed route against a spot we were standing on. Unreachable is never reported while get_nearest_monster({type:home}) is in range. The xp clock re-baselines off the farm map, so boss and vendor trips stop reading as net-negative xp. Travel now outranks cohesion in the movement chain, and holdCohesion stands down when the leader is not in the centroid - the two followers were homing on each other and never pathfinding) - v40 (Slenderman excluded from the boss rotation. His spawn broadcast is the only one in the game carrying no x/y - server_functions.js sends { name, map } where every other boss also sends x and y - so bossWalkTarget() returns null and the trip latched open to the 20 min maxTripMs cap. Measured 2026-10-04: this character picked the trip up via fromLeader within 56ms of Dexon opening it, and stood in winterland for the duration. He cannot be chased either: event_loop warps him to a random walkable node on a random one of cave/halloween/spookytown every second that a non-invisible player is within 600 units, on any projectile targeting him, or every 2 minutes regardless. Only s.invis suppresses the proximity check, and step_out_of_invis() sits in the shared attack path, so even a rogue drops invis on its first swing. NO opportunistic attack path here, unlike Ranger.js, and deliberately so: reflection:96 is gated on defense == 'resistance' (server.js:3682), i.e. MAGICAL damage only, so this character would reflect 96% of every cast back into their own face. Physical classes only. maxTripMs already enforced a hard 20 min expiry, so nothing was changed there) - v39 (mhGoDaisy() now takes the wheel from a trip already in flight instead of racing it. A farm or hunt trip started by mainLoop keeps running inside its own travelTo() after mainLoop stands down on mhBusy - standing down stops NEW movement, it does not cancel movement under way - so both owned the single smart_move the client provides, and Daisy always lost: travelTo's recovery path calls town(), which TELEPORTS, then re-issues smart_move(dest). MEASURED 2026-10-04 on Dexon: the game log repeated 'Path found!' then '[mh] could not reach Daisy: interrupted' without end, and a state sample caught both owners live at once - he stood on main at (35,-109), 317 units from Daisy and INSIDE the 340 radius so mhAtDaisy() was already true, while travelState.inFlight was true against mansion|-8|-148 with an 8-step plotted route to mansion. The pathfinder was never at fault; he was driven by two destinations at once. The cure is orphaning, and travelTo was already built for it: its catch opens with 'if (!mine()) return false', so bumping travelState.attemptId makes the interrupted travelTo return before it reaches town() or the retry, and its finally leaves our state alone. Same trick as travelWatchdog, applied deliberately rather than on a timeout. Left alone the cycle died at mhTick's 180-second 'cannot reach Daisy' giveup, discarding a hunt already paid for in kills. Follower half, byte-identical to the block in Mage.js. The followers reach Daisy on mh_accept and mh_turnin and run the same travelTo, so the race is the same one) - v38 (Cohesion no longer spams an impossible move. Byte-identical to the Mage.js change, same defect, same three fixes: can_move_to() consulted across seven bearings before any emit, the xmove rejection caught instead of escaping into mainLoop's tick through noHang(holdCohesion()), and a terrain handoff to handleReturnHome() alongside v57's distance handoff. Measured on DESERTLAND on 2026-10-04, and FatherToken was the worse of the two: wedged at (373,-2121), 14 xmove calls in 25.6 seconds, every one to the unreachable (316,-2015), all 14 rejected, one distinct position, zero drift, can_move_to a function in his context too. He and MageofOz sat 330 units apart homing on EACH OTHER because Dexon was a map away on main at (-87,673), inside the 400 handoff so v57's distance escalation never fired. Also: a priest wedged out of heal range is the more expensive version of this bug: heal carries use_range true, so being stuck 400 units from the party means healing nobody at all, which is the v56 finding. Fixed here at the same time rather than waiting for it to happen) - v37 (Monster Hunt follower half, byte-identical to the block in Mage.js. Purely message-driven with no triggers of its own, so it is inert until Ranger.js ships - a follower deployed alone cannot accept a hunt and so cannot burn a roll onto a 30-minute clock nobody is watching. It exists because accepting and turning in are emits on THIS character's socket and character.s.monsterhunt is readable only here: a party-member payload carries no 's' field at all (measured 2026-10-03), so Dexon cannot see our target and we report it) - v36 (Cooperative bosses are engaged only once somebody else is on them, and six of them were not recognised as bosses at all. findBestTarget's boss branch took any BOSS_SET member in range UNCONDITIONALLY, which is the opposite failure from Ranger v64: there the gate was so strict the boss was never shot at, here there was no gate. It is `boss.target` now, mirroring the ranger's attackIfTargeted, which resolves to the same mob.target != null - credit on a cooperative boss is shared by damage dealt, so joining a fight in progress pays and opening one alone does not. BOSS_SET also gains pinkgoo, rharpy, rimedjinn, slenderman, snowman and tiger, derived from G.monsters[x].cooperative on 2026-10-02: 19 cooperative monsters exist and allBosses names 13. allBosses itself is deliberately NOT widened - it also feeds zapperMobs, and the priest would start cursing and zapping six more monster types - so that stays a separate decision. Why only Dexon stalled at the snowman on 2026-10-02 and these two did not: they attack from actionLoop, which carries no type filter, so handleEvents() diverting mainLoop to the boss trip never stops them. focusFireTarget() above already copies Dexon's target when he has one, so following the leader was always covered; this governs only what happens before he opens. Consequence, and it is the stated rule rather than an oversight: a boss nobody else has touched is now attacked by nobody, so such a trip ends on the maxTripMs cap having dealt no damage. findNearestBoss/cache.nearestBoss is left ungated - it only drives bossLuckSwitch equipment swapping, not attacking. rimedjinn is in the set but has range 200 against this party's 165/197/201, so only MageofOz can outrange it; a candidate for CONFIG.bossEvents.exclude rather than something this change addresses.) - v35 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-30. Change: BOSS EVENTS. The operator's rule, given 2026-09-30: cooperative bosses only, fought from maximum range, never expecting the kill. Cooperative is the game's own G.monsters[x].cooperative - credit shared by damage dealt - so a trip pays even when somebody else lands the finishing blow, and it is the only class of boss where chipping from range is a strategy rather than a wasted evening. An unknown monster is NOT treated as cooperative. THE OLD BEHAVIOUR WAS NOT A POLICY AT ALL, in three ways. First, shouldHandleEvents() asked only "is anything in getDynamicEvents() live", and EVENT_LOCATIONS lists dragold, mrgreen and mrpumpkin UNCONDITIONALLY - so the party dropped the farm for any of the three the moment it spawned, whatever the odds, with no cap and nothing to bring it home. Measured the same day against this party (Dexon 75, FatherToken 69, MageofOz 70, single-target party DPS about 2,400): mrgreen is 36M hp behind resistance 900, which is 6.6 HOURS, and its attack range is 620 against our 158/197/201 - there is no standing position it cannot reach. dragold is 4.1h, mrpumpkin 4.1h, franky 120M hp and 13.8h at range 948. Second, all three files ran the SAME most-damaged-event scan independently, so two live bosses could send the ranger to one and the priest to the other; the tie-break is now by name, the leader broadcasts its pick, and a follower believes that call for leaderTrustMs before deciding for itself. Third, crabxx was in the ranger's getDynamicEvents alone (v55), so he joined it while the other two kept farming - the boss side of a 960,000 hp fight with no healer, and its 11,706 per hit takes MageofOz down in 1.6 seconds. MAX RANGE IS TWO POSTURES and bossHoldDistance computes both from the live entity: outside the boss's own reach when ours is longer, which costs nothing (crabxx range 45, icegolem 64), and otherwise the far edge of ours, which is merely the best available (franky 948, mrgreen 620). JOINING is measured from adventureland_mongodb node/server.js socket.on('join'), not inferred: exactly four events teleport - goobrawl, crabxx to main (-1000,1700), franky to level2w (-300,150), icegolem to winterland (820,425) - and every other boss must be walked to. The same handler refuses with no_merchants (so never Meltymerch), cant_when_sick (hopsickness, i.e. just after a shard hop, which is now reported rather than retried blindly), cant_in_bank and cant_join for any name not listed, and it ignores the emit when we are already within 200 units - which is why repeating it is free. RETURN was left to my judgement, and it is: boss dead, event expired, maxDeaths 2, or a maxTripMs cap of 20 minutes, whichever comes first, then handleReturnHome(). A trip we GAVE UP on cools that event down for 30 minutes; one that simply ended does not, because those are different facts and cooling the second would refuse a boss the party could have finished. COMMANDS, asked for by name: bossJoin('franky') goes now whatever the gate thinks, clears that cooldown, and broadcasts to the other two from ANY character rather than only the leader - "go now" has to mean the party, not whichever console happened to be open; bossHome() abandons and returns; bossStatus() prints what is live, the gate's verdict on each with its reason, and where we would stand against each. The trip is persisted in CODE storage so a redeploy mid-event cannot hand the party another fresh 20 minutes at a boss it had already abandoned. handleSpecificEvent is now unreachable and marked for deletion next time the file is touched, the way Merchant.js retired heldScanMs. Verified with a 36-case node harness over the extracted block rather than by reading it: the gate, the name tie-break, both hold postures at all three ranges, join versus walk, hopsickness, the death and time caps, cooldown only on giving up, every command, a forced pick that is not live, follower precedence, and the persisted trip. CORRECTION to the v34 entry that follows: it says NOT DEPLOYED as of 2026-09-29, and that is stale - measured 2026-09-30 in FatherToken's live CODE context, typeof unstickWatchdog is "function" and CONFIG.party.cohesion.handoff is 400, so v34 IS deployed.) v34 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-09-29. The followers could strand themselves permanently, and the function meant to prevent it was the thing preventing the cure. MEASURED on MageofOz, wedged at (-336,1007) on main: 995 units from his own destination, 953 from Dexon, ZERO position change across 55 consecutive one-second samples, smart {moving:true, searching:true, found:false, plot:0}, travelState.inFlight FALSE, failures 1, lastError "still no route after town(): interrupted", and the last travel attempt started 2,567 seconds - 43 minutes - earlier. Dexon appeared in parent.entities on 0 of those 55 samples. Three defects that only bite together. (1) holdCohesion() returns true whenever the worst gap exceeds leash 150, and mainLoop reads a true as 'movement handled', so handleReturnHome() - the only path that pathfinds, counts failures and arms travelWatchdog - was never reached. The further out he drifted, the more certain it became that the one function able to fetch him would not run. (2) Its move is xmove, a straight line, which over that distance stops at the first wall AND interrupts any smart_move already in flight; lastError is that interruption, recorded in the file. So cohesion was not merely failing to help, it was cancelling the rescue. (3) It read member positions from parent.entities, which holds only what is ON SCREEN - so the member we have drifted away from is exactly the one that disappears from it, and the leader left the centroid at the moment cohesion existed to close on him. Both followers were left homing on each other: their worst gap of 480 units was the distance to EACH OTHER, not to Dexon. Fixes: positions now fall back to parent.party, which carries x/y/map for every member regardless of visibility (verified present live); past cohesion.handoff (400) the function stops nudging and calls handleReturnHome() so the pathfinder owns the trip; and unstickWatchdog() clears a wedged smart_move. That last one is not covered by travelWatchdog, which only orphans an attempt while inFlight is true - it was false here - and it matters because handleReturnHome() itself returns early while smart.moving is true, so the wedge blocked its own repair. Not diagnosed from reading: a one-second sampler over 55-60 samples on both followers is what separated 'cohesion never fires' (false - it fired on every sample) from 'cohesion fires and the move does not land' (true).) v33 (v59 shipped and measured no better: at cgoo/level2s incoming hits per second AT the spot went 0.34 to 0.45 (Dexon), 0.59 to 0.66 (FatherToken) and 0.09 to 0.23 (MageofOz), one death each again, 8.9M xp lost. Two findings from that window explain it, and neither is about movement. FIRST: heal carries use_range: true, so it reaches character.range - 197 for FatherToken - and mid-fight he was at (-6,280) with Dexon at (181,637). That is 403 units, 2.05x outside heal range. He was not failing to heal because he was feared; he could not heal at all, and the 'feared priest stops healing' story was only half right. SECOND: the party was not focus firing - two distinct targets across three characters - and no focus-fire mechanism existed in any of the three files. targetPriority looks like one but means 'prefer monsters already targeting the priest'. Party.js had real focus fire via followers copying leader.target; these files had lost it. Also measured offline against the real G.geometry.level2s with 24 sampled directions: within 120 units of the cgoo spawn centre the average open approach-lane count is 23.9 of 24 - a fully open field, which is what nine simultaneous attackers looks like. Priest changes. (1) holdCohesion() closes on the party whenever the worst distance to another member exceeds leash 150, which leaves margin inside his 197 heal range. It moves toward the CENTROID of the others rather than at the leader, so he settles between the two he has to reach instead of hugging one and losing the other, and it runs ahead of kiting and farming in mainLoop because being in heal range outranks both. Leader-exempt, so Dexon still drives the spot. (2) findBestTarget now takes Dexon's target first via focusFireTarget(), refusing it when out of range or dead. (3) The whole-field weight in avoidMobs subtracts kitePathPenalty instead of the v59 veto. Note scare() is still inert - no jacko anywhere on the account, and it drops only from Halloween candy0 at weight 1 of ~6.5 - so cohesion and focus fire are carrying this round.) v32 (Measured 2026-09-26 with v58/v31/v54 live at cgoo/level2s: the derived hold band was honoured in the steady state - median nearest 134/129/134 against designed bands of 84-155, 129-192 and 84-196 - and incoming hits fell 27-50% (Dexon 54 to 37, FatherToken 190 to 138, MageofOz 50 to 25). The party still wiped. Dexon's last six seconds ran 92 to 72 to 47 to 27 to 10 units while attackers went 3 to 9, then he sat at 10 - inside his own 84 retreat threshold - and died; MageofOz bled 1,995 to 0 with ONE attacker while holding 59-95 against a 176 hold, unhealed because the other two were already down. So the band arithmetic was right and the DIRECTION was wrong: the scorer maximised distance from the single nearest monster, which inside an 11-cgoo pack means retreating into the other ten. XP went backwards 5.6M across the party in five minutes. His engine already scored the whole field, which is why it moved 164 times in that window where Dexon's moved 56 - so this is smaller. The gain-only weight sum became the shared signed, urgency-weighted kiteMultiWeight, so fleeing one monster into another now costs rather than merely failing to help. Step-length retry at 1, 1/2, 1/4. An ordered ladder plus a courage-gated pathfinder before giving up, instead of returning false straight away. Disengage mode acts BEFORE anything is in reach once attackers reach courage, and suspends the arena boundaryBox while escaping, because a fence that traps him mid-flight is worse than leaving it. Disengage matters most for him: he held 122-181 units, safely outside cgoo's 64 reach, and was still over courage for 53 of 297 samples, because fear counts who TARGETS you rather than who can reach you - and a feared priest stops healing, which is what killed all three. Note scare() is deployed but inert: no jacko on any character or in any bank pack, and it is a Halloween candy drop (candy0, weight 1 of ~6.5), so distance is doing all the work until one is acquired.) v31 (Kiting on, scare added, arena fence scoped. The jacko was already in two equipment loadouts and the skill was never cast once - he carried a 5-second aggro wipe through every fight unused, and he is the member it mattered most for: measured 2026-09-26 at cgoo he absorbed 190 of the party's 294 incoming hits and spent 49 of 239 one-second samples above courage 2, and a feared priest stops HEALING, which is what killed all three. scare() counts attackers and fires at courage, polled from maintenanceLoop - one tick of latency, ~1,500 damage into a 5,111 pool at the measured rate, which buys a cheap call site. kiting.enabled was false; it is on, with kiteCandidateTypes() adding anything we outrun by 1.3x to the hand-tuned avoidTypes list. The danger radius now comes from kiteThreatRadius(), so auras count and an unknown mtype no longer throws on .range of undefined. boundaryBox - the bscorpion arena rectangle - was rejecting every candidate position anywhere else on the map, so enabling kiting without scoping it would have silently done nothing outside that box; it applies only while a hand-listed threat is the one in danger range. cfg.moveDistance was dead config with the step hardcoded to 75; it is wired up. debug was true and drew the fence and every tangent line each tick. kiter() returns a boolean and the call site chains to walkInCircle() rather than replacing it.) v30 (The inventory sorter is gone, for the reasons in Ranger v57. It pinned tracker/computer/hpot1/mpot1/luckbooster/elixirluck/xptome to slots 0-6 from maintenanceLoop, and since swap() is an EXCHANGE it evicted whatever the operator dragged into one of those slots rather than just holding its own items there. Measured 2026-09-26 on Dexon: a hand move out of a pinned slot was undone within 500ms of landing. Nothing here depends on those positions - no numeric index into character.items exists in this file, and the only hp/mp-giving items held are hpot1 and mpot1, so the backwards scan in use('hp'/'mp') has nothing to mis-pick. The tracker stays protected by muling.excludeItems; the pin was never what protected it.) v29 (Tracktrix is no longer muled away. The item's name is tracker - Tracktrix is only its display label - and it was absent from muling.excludeItems, so clearInventory() handed it to Dexon, who passes everything on to Meltymerch, who vendors at seven gold. inventorySorter here already spelled it correctly as tracker: 0, and comparing the two files is what exposed Ranger's dead 'tracktrix' entry. Protected now on the same footing as tier-1 potions.) v28 (Chest looting starved. handleLooting() looted the first chestThreshold * 5 = 5 keys of the persisted chest map per pass and NEVER removed them, so it re-looted the same five ids forever while everything behind them was unreachable - the map was 9,465 entries deep on Dexon when this was measured 2026-09-25, with ~5,500 chests sitting within 800 units. Looted ids are now collected and deleted in one write per pass, loot() is wrapped per chest so one throw cannot abort the rest, and maxPerPass replaces the 5-per-pass cap. This file never had the performance.now() stamp bug that Ranger v54 and Mage v52 fix, because it has no timestamp gate at all. Looting costs no exp: loot is not a skill and shares no cooldown with attack.) v27 (Tier-0 potions are no longer protected. Measured 2026-09-25: the fleet holds zero hpot0 and zero mpot0 - all four characters and all three bank packs - and nothing acquires them, since every buy path is hpot1/mpot1 only. The 3,354 hpot0 that had piled up on FatherToken were cleared manually. Protection was never what kept tier 0 in use anyway: use_skill('use_hp'/'use_mp') resolves to use('hp'/'mp'), which scans character.items from the LAST slot BACKWARDS (adventureland_mongodb js/functions.js:4593) and drinks the first item whose gives matches, so tier is never consulted - slot position alone decides. That is why the priest's pile sat undrinkable at slot 0 underneath hpot1 at slot 2, and why unprotecting tier 0 on its own would have muled and vendored it rather than drawn it down. The stock COUNTS deliberately still read hpot0+hpot1 and mpot0+mpot1, so a stray tier-0 stack cannot mask an empty tier-1 bag and suppress a restock. Removed from muling.excludeItems.) v26 (Loop hang guard. Every loop here is an async function that schedules its next tick only after its body resolves, so an awaited call that never settles does not slow the loop down - it ends it, permanently and silently. Throws were already handled; hangs were not. Measured 2026-09-22 on Dexon: actionLoop 0 iterations in 20s where ~1300 were due, mainLoop dead in the same window (is_disabled, called every 250ms, not called once). He stood in range of crabs casting nothing and the party earned 0 xp until the page was reloaded - which is why a reload 'fixed' it each time. setInterval work (buffs, loot, keepalives) kept running throughout, so /hub showed a live, idle character. New noHang() bounds every await that appears directly in a loop body and rejects on timeout, landing in that loop's existing catch: the tick is lost, the chain is not. Same intent as travelWatchdog. It logs, throttled - a silent guard makes 'hung' and 'idle' indistinguishable.)
 // ============================================================================
 // ============================================================================
 // FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v25 (party frames brought in line with Dexon's: the block left-aligns on the left edge of the code-button row, re-measured every render rather than cached, which is where Dexon's R&M sits and where this character's kpm button lands once something dies - anchoring on the kpm text itself left the frames unanchored, and a thousand pixels wide off the right edge, between a reload and the first kill - measured by accumulating offsetLeft rather than getBoundingClientRect, since the UI is scaled 0.7502 and rects are device pixels while left/width are CSS pixels. The row is sized with max-content plus nowrap so no member count can wrap it, the merchant gets no frame (excluded by class, not name), the xp rate drops its XP/HR label and carries its own unit, and time-to-next-level moves to its own row. Also the DPS 'hit' listener is replaced rather than added to, with a guard so an orphan from a destroyed CODE frame cannot throw into socket.io's emit loop and abort the listeners behind it. Game log filter brought up to Dexon's: tabs wrap onto rows of four instead of being squeezed into one line, 'Upgr.' is written out as 'Upgrades', and a Noise tab (off by default) collects 'get closer', achievement-progress AP[...] lines and the courage messages. The filter rule is now one shouldShowEntry() shared by all three callers, and a MutationObserver watches #gamelog so entries the client writes through add_log - which never pass through addLogEntry, and which is how 'Get closer' was slipping past - are filtered on arrival rather than only when a tab is toggled.)
@@ -946,6 +946,13 @@ function noHang(p, label, ms) {
 
 async function mainLoop() {
 	try {
+		/* Containment first, and the pull owns movement while it runs - the same
+		   stand-down shape as sellingOff and mhBusy below. ragePullTick is NOT
+		   awaited: a pull is two round trips and mainLoop is wrapped in the 10s
+		   HANG_GUARD, which is exactly the trap restockTrip was detached to avoid. */
+		if (await rageGuard()) return setTimeout(mainLoop, 250);
+		if (ragePull.busy) return setTimeout(mainLoop, 250);
+		if (ragePullActive()) ragePullTick().catch(e => rageLog('pull tick threw: ' + (e && e.message || e), 'red'));
 		if (is_disabled(character)) {
 			return setTimeout(mainLoop, 250);
 		}
@@ -1343,6 +1350,509 @@ const BOSS_JOIN_SPOTS = {
 	icegolem: { map: 'winterland', x: 820, y: 425 },
 };
 
+/* goobrawl is the ONE joinable event whose parent.S key is an EVENT name and not
+   a monster name. Measured 2026-10-09 in the live client: G.monsters.crabxx,
+   .franky and .icegolem all exist and all carry cooperative: true, while
+   G.monsters.goobrawl does not exist at all. So bossCooperative('goobrawl') read
+   undefined, answered false, and bossEligible rejected it as "not cooperative"
+   every time it went live - the gate was right about the data and wrong about the
+   event. A second site failed on the same gap and showed nothing: bossApproach
+   asked get_nearest_monster({ type: 'goobrawl' }) and got null on every tick, so
+   even a forced bossJoin('goobrawl') would have teleported in and then stood on
+   the arrival point without ever taking a firing posture - inside rgoo's reach,
+   which is the one thing bossPosture exists to prevent.
+
+   Mapping the event name to the monster fixes both, and relaxes no policy:
+   goobrawl now passes the cooperative test for the same reason the other three
+   do, rather than being admitted by hand through cfg.include.
+
+   The brawl's monsters are rgoo (hp 1,000,000, attack 320, frequency 1.2, range
+   64, armor 300, resistance 300, xp 48,000,000, physical, cooperative, aggro 0.1,
+   rage 0) and bgoo (hp 100,000, attack 5, range 15, xp 100,000, cooperative,
+   aggro 0). Both are ALREADY in allBosses, so the attack side needs no change.
+   Range 64 against our ~163 is the free-shot band - crabxx 45, icegolem 64 - not
+   franky's hopeless 948. */
+const BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' };
+function bossMonsterType(name) { return BOSS_FIGHT_TYPE[name] || name; }
+
+// ============================================================================
+// RAGE BOXES - the geometry the farm scorer did not know about
+//
+// G.maps[map].monsters[i] can carry a `rage` rectangle beside its `boundary`.
+// Measured 2026-10-09 in the live client, on spookytown:
+//   mummy  boundary [31,-1571,480,-1293]  rage [-124,-1631,614,-1130]  (a halo
+//          130-165 units larger than the spawn)
+//   booboo boundary [286,-842,544,-562]   rage IDENTICAL to the boundary
+//   booboo boundary [-820,-940,-570,-630] rage IDENTICAL to the boundary
+//   stoneworm, mrgreen, jr - no rage field at all.
+// Stepping inside one aggros the whole pack AND applies the monster's own
+// `rage` multiplier, 1.5 for both: booboo's listed attack of 220 lands for
+// ~352, and nine at once is ~3,800 dps into a 7,263 hp ranger.
+//
+// This is not theory. scoreAllFarmSpots() returns the spawn-boundary CENTRE, so
+// an override on booboo resolved to (415,-702) - dead centre of the rage box.
+// Measured the same day: three deaths, zero kills, the spawn never reached, and
+// travelState left inFlight with failures: 0 because death kept interrupting
+// the route. The monster was never the problem; the standing point was.
+//
+// Nothing here restricts movement OUTSIDE a rectangle. Closing, backing off and
+// regrouping are all untouched - the rectangle is the only thing that is solid.
+// ============================================================================
+
+/* Dexon owns the knob. The followers have no CONFIG.achievements of their own,
+   so without this, raising concurrent in Ranger.js would leave the priest and
+   mage still gated at 1 - and the mage is the only one who can pull a mummy, so
+   the throttle would land exactly where it hurts. Broadcast with the farm spot;
+   null everywhere it has not arrived, which leaves the local default alone. */
+let ragePullShared = null;
+
+function rageCfg() {
+	const a = (typeof CONFIG !== 'undefined' && CONFIG.achievements && CONFIG.achievements.pull) || {};
+	return {
+		enabled: a.enabled !== false,
+		/* THE KNOB. How many of the target monsters may be in flight at once.
+		   1 is the proven-safe start. Raise it as the farm earns trust: the only
+		   other gate is courage, which stops a pull when this character already
+		   has its own limit of attackers. Nothing else in here assumes 1. */
+		concurrent: Math.max(1, ragePullShared || a.concurrent || 1),
+		margin: (typeof a.margin === 'number') ? a.margin : 30,
+		step: a.step || 25,
+		maxCells: a.maxCells || 24000,
+		parkWithin: a.parkWithin || 45,
+		pullTimeoutMs: a.pullTimeoutMs || 20000,
+		repullGapMs: (typeof a.repullGapMs === 'number') ? a.repullGapMs : 1200,
+		respectCourage: a.respectCourage !== false,
+	};
+}
+
+function rageLog(m, c) {
+	try { game_log('[rage] ' + m, c || '#FF9F6B'); } catch (e) { }
+	console.log('[rage] ' + m);
+}
+
+/* Every rage rectangle on a map. Returns [] for a map with none, which is what
+   makes all of this free everywhere else. */
+function rageBoxes(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+	const m = g && g.maps && g.maps[map];
+	if (!m || !Array.isArray(m.monsters)) return [];
+	const out = [];
+	for (const s of m.monsters) {
+		const r = s && s.rage;
+		if (Array.isArray(r) && r.length === 4) out.push({ type: s.type, r: r, boundary: s.boundary || null });
+	}
+	return out;
+}
+
+/* The box this point is in, inflated by margin, or null. */
+function rageHit(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	const boxes = rageBoxes(map);
+	for (let i = 0; i < boxes.length; i++) {
+		const r = boxes[i].r;
+		if (x >= r[0] - m && x <= r[2] + m && y >= r[1] - m && y <= r[3] + m) return boxes[i];
+	}
+	return null;
+}
+
+/* Does the straight line a->b clip any rectangle? Sampled, not analytic: the
+   sample spacing is 15 units against rectangles 250 units on a side, so it
+   cannot step over one. */
+function rageClips(map, ax, ay, bx, by, margin) {
+	if (!rageBoxes(map).length) return null;
+	const n = Math.max(8, Math.min(160, Math.ceil(Math.hypot(bx - ax, by - ay) / 15)));
+	for (let i = 0; i <= n; i++) {
+		const t = i / n;
+		const hit = rageHit(map, ax + (bx - ax) * t, ay + (by - ay) * t, margin);
+		if (hit) return hit;
+	}
+	return null;
+}
+
+/* Nearest point outside every rectangle. Re-checks after each push, because
+   leaving one box can put you inside another. */
+function rageEscape(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	let px = x, py = y;
+	for (let guard = 0; guard < 5; guard++) {
+		const b = rageHit(map, px, py, m);
+		if (!b) return { x: px, y: py };
+		const r = b.r;
+		const outs = [
+			{ x: r[0] - m - 2, y: py }, { x: r[2] + m + 2, y: py },
+			{ x: px, y: r[1] - m - 2 }, { x: px, y: r[3] + m + 2 },
+		];
+		outs.sort((p, q) => Math.hypot(p.x - px, p.y - py) - Math.hypot(q.x - px, q.y - py));
+		px = outs[0].x; py = outs[0].y;
+	}
+	return { x: px, y: py };
+}
+
+/* A walkable route from->to that never enters a rectangle. BFS on a coarse grid
+   with the rectangles treated as solid, then greedily simplified so EVERY leg
+   is verified straight-line can_move-clear. That last property is the point:
+   the legs get walked with xmove, so smart_move's pathfinder - which knows
+   nothing about rage boxes and would happily cut the corner through one, the
+   interior being ordinary open ground - is taken out of the loop entirely.
+   Measured on spookytown: 4 ms. Returns null when there is no safe route, which
+   is a refusal to travel rather than a licence to walk through. */
+function rageRoute(map, from, to, margin) {
+	if (typeof can_move !== 'function') return null;
+	const cfg = rageCfg();
+	const m = (typeof margin === 'number') ? margin : cfg.margin;
+	const boxes = rageBoxes(map);
+	if (!boxes.length) return null;
+
+	let x0 = Math.min(from.x, to.x), x1 = Math.max(from.x, to.x);
+	let y0 = Math.min(from.y, to.y), y1 = Math.max(from.y, to.y);
+	for (const b of boxes) {
+		x0 = Math.min(x0, b.r[0]); x1 = Math.max(x1, b.r[2]);
+		y0 = Math.min(y0, b.r[1]); y1 = Math.max(y1, b.r[3]);
+	}
+	const PAD = 280;
+	x0 -= PAD; x1 += PAD; y0 -= PAD; y1 += PAD;
+
+	let step = cfg.step;
+	while (((x1 - x0) / step + 1) * ((y1 - y0) / step + 1) > cfg.maxCells) step *= 2;
+	const W = Math.floor((x1 - x0) / step) + 1, H = Math.floor((y1 - y0) / step) + 1;
+	const base = character.base;
+	const stand = (x, y) => { try { return !!can_move({ map: map, x: x, y: y, going_x: x, going_y: y, base: base }); } catch (e) { return false; } };
+	const seg = (a, b) => { try { return !!can_move({ map: map, x: a[0], y: a[1], going_x: b[0], going_y: b[1], base: base }); } catch (e) { return false; } };
+
+	/* The grid is tested at cell CENTRES, so two adjacent open centres can still
+	   have a segment between them that clips a corner of the rectangle - both
+	   endpoints outside a convex shape does not put the line outside it. Caught
+	   by the harness: a leg into (550,-886) grazed the booboo box. Rejecting
+	   cells within m + step of a rectangle buys a full cell of clearance, which
+	   is more than any single 8-connected step can cross. The CLIP checks below
+	   still use the configured margin, so the route is verified against the real
+	   boundary rather than the padded one. */
+	const gm = m + step;
+	const grid = new Uint8Array(W * H);
+	for (let i = 0; i < W; i++) for (let j = 0; j < H; j++) {
+		const x = x0 + i * step, y = y0 + j * step;
+		grid[j * W + i] = (!rageHit(map, x, y, gm) && stand(x, y)) ? 1 : 0;
+	}
+	const clamp = (v, hi) => Math.max(0, Math.min(hi, v));
+	const cellOf = (p) => [clamp(Math.round((p.x - x0) / step), W - 1), clamp(Math.round((p.y - y0) / step), H - 1)];
+	/* The start may be blocked - we could be standing in a box right now, which
+	   is exactly the case this has to recover from - so seed from the nearest
+	   open cell instead of giving up. */
+	const nearestOpen = (c) => {
+		if (grid[c[1] * W + c[0]]) return c;
+		for (let rad = 1; rad < 14; rad++) {
+			for (let di = -rad; di <= rad; di++) for (let dj = -rad; dj <= rad; dj++) {
+				if (Math.max(Math.abs(di), Math.abs(dj)) !== rad) continue;
+				const ni = c[0] + di, nj = c[1] + dj;
+				if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+				if (grid[nj * W + ni]) return [ni, nj];
+			}
+		}
+		return null;
+	};
+	const S = nearestOpen(cellOf(from)), Gl = nearestOpen(cellOf(to));
+	if (!S || !Gl) return null;
+
+	const prev = new Int32Array(W * H).fill(-1);
+	const seen = new Uint8Array(W * H);
+	const q = [S[1] * W + S[0]];
+	seen[q[0]] = 1;
+	const goal = Gl[1] * W + Gl[0];
+	const D = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+	let found = false, head = 0;
+	while (head < q.length) {
+		const cur = q[head++];
+		if (cur === goal) { found = true; break; }
+		const ci = cur % W, cj = (cur - ci) / W;
+		for (let d = 0; d < 8; d++) {
+			const ni = ci + D[d][0], nj = cj + D[d][1];
+			if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+			const nk = nj * W + ni;
+			if (seen[nk] || !grid[nk]) continue;
+			seen[nk] = 1; prev[nk] = cur; q.push(nk);
+		}
+	}
+	if (!found) return null;
+
+	const raw = [];
+	for (let k = goal; k !== -1; k = prev[k]) {
+		const ci = k % W, cj = (k - ci) / W;
+		raw.push([x0 + ci * step, y0 + cj * step]);
+	}
+	raw.reverse();
+
+	const out = [raw[0]];
+	let i = 0;
+	while (i < raw.length - 1) {
+		let best = i + 1;
+		for (let j = raw.length - 1; j > i; j--) {
+			if (seg(raw[i], raw[j]) && !rageClips(map, raw[i][0], raw[i][1], raw[j][0], raw[j][1], m)) { best = j; break; }
+		}
+		if (best === i + 1 && rageClips(map, raw[i][0], raw[i][1], raw[best][0], raw[best][1], m))
+			rageLog('route leg ' + i + ' grazes a rectangle - the grid clearance should have prevented this', 'red');
+		out.push(raw[best]); i = best;
+	}
+	return out;
+}
+
+/* Walk a safe route leg by leg. Every leg is straight-line clear by
+   construction, so xmove is enough and no pathfinder gets a say. */
+async function rageWalk(map, to, margin) {
+	if (typeof xmove !== 'function') { rageLog('xmove is not a function here - cannot walk a safe route', 'red'); return false; }
+	const wp = rageRoute(map, { x: character.x, y: character.y }, to, margin);
+	if (!wp || !wp.length) return false;
+	for (let i = 1; i < wp.length; i++) {
+		try { await xmove(wp[i][0], wp[i][1]); }
+		catch (e) { rageLog('safe route leg ' + i + ' failed: ' + (e && e.message || e), 'orange'); return false; }
+	}
+	return true;
+}
+
+/* The one mover everything else calls. Refuses to enter a rectangle, and routes
+   around one rather than through it. Falls straight through to xmove on a map
+   with no rage boxes, which is every map but spookytown today. */
+async function safeMove(x, y) {
+	if (typeof xmove !== 'function') return;
+	const map = character.map;
+	const cfg = rageCfg();
+	if (!cfg.enabled || !rageBoxes(map).length) return xmove(x, y);
+
+	if (rageHit(map, x, y, cfg.margin)) {
+		const e = rageEscape(map, x, y, cfg.margin);
+		x = e.x; y = e.y;
+	}
+	if (rageClips(map, character.x, character.y, x, y, cfg.margin)) {
+		const ok = await rageWalk(map, { x: x, y: y }, cfg.margin);
+		if (!ok) rageLog('no safe route to ' + Math.round(x) + ',' + Math.round(y) + ' - staying put', 'orange');
+		return;
+	}
+	return xmove(x, y);
+}
+
+/* Containment. The net for everything no route planning can cover: a respawn
+   somewhere unexpected, knockback, being dragged by a pull, or any routine that
+   moved us before this existed. Runs first in mainLoop. */
+async function rageGuard() {
+	const cfg = rageCfg();
+	if (!cfg.enabled) return false;
+	let hit = null;
+	try { hit = rageHit(character.map, character.x, character.y, cfg.margin); } catch (e) { return false; }
+	if (!hit) return false;
+	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' - leaving now', 'red');
+	try { if (typeof stop === 'function') stop(); } catch (e) { }
+	const e2 = rageEscape(character.map, character.x, character.y, cfg.margin);
+	if (typeof xmove === 'function') {
+		try { await xmove(e2.x, e2.y); } catch (err) { rageLog('escape move failed: ' + (err && err.message || err), 'red'); }
+	}
+	return true;
+}
+
+// ---- one-at-a-time pulling -------------------------------------------------
+/* Dexon sets this from the achievement entry's `also`; the followers get it on
+   the farm_spot message. Empty everywhere else, which leaves `home` alone. */
+let rageAlso = [];
+const ragePull = { openedAt: {}, lastPull: 0, busy: false };
+
+function ragePullTypes() {
+	const out = [];
+	if (typeof home === 'string' && home) out.push(home);
+	for (const t of rageAlso) if (out.indexOf(t) < 0) out.push(t);
+	return out;
+}
+
+/* Active only where it is needed: the spot we are farming has to be one with a
+   rage box on this map. Everywhere else the ordinary farm loop is untouched. */
+function ragePullActive() {
+	const cfg = rageCfg();
+	if (!cfg.enabled) return false;
+	if (!destination || destination.map !== character.map) return false;
+	const types = ragePullTypes();
+	if (!types.length) return false;
+	const boxes = rageBoxes(character.map);
+	for (const b of boxes) if (types.indexOf(b.type) >= 0) return true;
+	return false;
+}
+
+function rageParty() {
+	const names = (typeof CONFIG !== 'undefined' && CONFIG.party && CONFIG.party.groupMembers) || [];
+	const out = [];
+	for (const n of names) {
+		if (n === character.name) { out.push({ name: n, range: character.range || 0, rip: !!character.rip, x: character.x, y: character.y }); continue; }
+		const e = (typeof parent !== 'undefined' && parent.entities) ? parent.entities[n] : null;
+		if (e && !e.rip) out.push({ name: n, range: e.range || 0, rip: false, x: e.x, y: e.y });
+	}
+	return out;
+}
+
+/* How far out a shooter has to be able to reach to hit this monster from the
+   nearest point OUTSIDE its box. For booboo, whose rage equals its boundary,
+   one at the near edge costs margin+2. For a mummy at its spawn edge the rage
+   halo adds 163 on top, which is what puts it beyond the ranger's 163 and in
+   reach of the priest at 201 and the mage at 235. */
+function rageRequiredRange(map, mon, margin) {
+	const cfg = rageCfg();
+	const m = (typeof margin === 'number') ? margin : cfg.margin;
+	const b = rageHit(map, mon.x, mon.y, 0);
+	if (!b) return 0;
+	const r = b.r;
+	const d = Math.min(mon.x - r[0], r[2] - mon.x, mon.y - r[1], r[3] - mon.y);
+	return d + m + 2;
+}
+
+/* Deterministic, so three characters deciding independently land on the same
+   answer without a message: the longest range that can actually reach it, ties
+   broken by name. */
+function ragePuller(map, mon) {
+	const need = rageRequiredRange(map, mon);
+	let best = null;
+	for (const p of rageParty()) {
+		if (p.range < need) continue;
+		if (!best || p.range > best.range || (p.range === best.range && p.name < best.name)) best = p;
+	}
+	return best;
+}
+
+function rageEngagedCount(types) {
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	const names = (typeof CONFIG !== 'undefined' && CONFIG.party && CONFIG.party.groupMembers) || [];
+	const now = Date.now(), cfg = rageCfg();
+	let n = 0;
+	const counted = {};
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (types.indexOf(e.mtype) < 0) continue;
+		if (e.target && names.indexOf(e.target) >= 0) { counted[id] = 1; n++; }
+	}
+	/* One we have opened on but which has not registered a target yet still
+	   counts, or the gate lets a second pull through in the gap. */
+	for (const id in ragePull.openedAt) {
+		if (now - ragePull.openedAt[id] > cfg.pullTimeoutMs) { delete ragePull.openedAt[id]; continue; }
+		if (!counted[id] && E[id] && !E[id].dead) n++;
+	}
+	return n;
+}
+
+/* Picks one monster still inside its box and brings it out. Returns true when
+   it owns this tick. */
+async function ragePullTick() {
+	if (ragePull.busy) return true;
+	if (!ragePullActive()) return false;
+	const cfg = rageCfg();
+	const map = character.map;
+	const types = ragePullTypes();
+
+	if (rageEngagedCount(types) >= cfg.concurrent) return false;
+	if (Date.now() - ragePull.lastPull < cfg.repullGapMs) return false;
+	if (cfg.respectCourage) {
+		const courage = character.courage || 2;
+		let onMe = 0;
+		const E = (typeof parent !== 'undefined' && parent.entities) || {};
+		for (const id in E) if (E[id] && E[id].target === character.name) onMe++;
+		if (onMe >= courage) return false;
+	}
+
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	let pick = null, pickD = Infinity;
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (types.indexOf(e.mtype) < 0) continue;
+		if (e.target) continue;                       // already somebody's problem
+		if (ragePull.openedAt[id]) continue;
+		if (!rageHit(map, e.x, e.y, 0)) continue;     // already outside - the loop will take it
+		const d = Math.hypot(e.x - character.x, e.y - character.y);
+		if (d < pickD) { pick = e; pickD = d; }
+	}
+	if (!pick) return false;
+
+	const puller = ragePuller(map, pick);
+	if (!puller || puller.name !== character.name) return false;
+
+	const need = rageRequiredRange(map, pick);
+	const reach = Math.max(20, (character.range || 0) - 6);
+	const b = rageHit(map, pick.x, pick.y, 0);
+	if (!b) return false;
+	/* Stand off the nearest edge, on the monster's side, as far back as our own
+	   reach allows - never closer to the rectangle than the margin. */
+	const r = b.r;
+	const edges = [
+		{ x: r[0] - cfg.margin - 2, y: pick.y }, { x: r[2] + cfg.margin + 2, y: pick.y },
+		{ x: pick.x, y: r[1] - cfg.margin - 2 }, { x: pick.x, y: r[3] + cfg.margin + 2 },
+	];
+	edges.sort((p, q) => Math.hypot(p.x - pick.x, p.y - pick.y) - Math.hypot(q.x - pick.x, q.y - pick.y));
+	const spot = edges[0];
+	if (Math.hypot(spot.x - pick.x, spot.y - pick.y) > reach) return false;
+
+	const park = destination ? { x: destination.x, y: destination.y } : { x: character.x, y: character.y };
+	ragePull.busy = true;
+	try {
+		rageLog('pulling ' + pick.mtype + ' (need ' + Math.round(need) + ', reach ' + Math.round(reach) + ')', '#FFD700');
+		await safeMove(spot.x, spot.y);
+		if (typeof attack === 'function' && typeof is_in_range === 'function' && is_in_range(pick)) {
+			try { await attack(pick); ragePull.openedAt[pick.id] = Date.now(); ragePull.lastPull = Date.now(); }
+			catch (e) { rageLog('open shot failed: ' + (e && e.reason || e && e.message || e), 'orange'); }
+		}
+		await safeMove(park.x, park.y);
+	} finally {
+		ragePull.busy = false;
+	}
+	return true;
+}
+
+function rageStatus() {
+	const map = character.map;
+	const boxes = rageBoxes(map);
+	rageLog(map + ': ' + (boxes.length ? boxes.map(b => b.type + ' [' + b.r.join(',') + ']').join('  ') : 'no rage boxes'), '#8b98ab');
+	rageLog('pull ' + (ragePullActive() ? 'ACTIVE' : 'idle') + ' | types ' + ragePullTypes().join(',')
+		+ ' | concurrent ' + rageCfg().concurrent + ' | margin ' + rageCfg().margin
+		+ ' | engaged ' + rageEngagedCount(ragePullTypes()), '#8b98ab');
+	return { boxes: boxes, types: ragePullTypes(), cfg: rageCfg() };
+}
+
+/* A map spawn point known to be outside every rectangle, used as the landing
+   spot for a cross-map trip so the arrival itself cannot be inside a box.
+   spookytown's first spawn is (0,0), clear of all three. */
+function rageStaging(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const sp = g && g.maps && g.maps[map] && g.maps[map].spawns;
+	if (!Array.isArray(sp)) return null;
+	for (const s of sp) {
+		if (!Array.isArray(s) || typeof s[0] !== 'number' || typeof s[1] !== 'number') continue;
+		if (!rageHit(map, s[0], s[1], rageCfg().margin)) return { x: s[0], y: s[1] };
+	}
+	return null;
+}
+
+/* smart_move, but it is never allowed to route through a rage rectangle. Used
+   for BOTH directions - the trip in and, just as importantly, the trip back out
+   when a boss event takes the party. bossApproach's smart_move was the obvious
+   way to die on the way to a boss with the farm parked next to a box.
+   A blocked route THROWS rather than falling back to smart_move: surfacing the
+   failure is the house rule, and silently crossing the box is the one outcome
+   worth failing to avoid. */
+async function safeSmartMove(dest) {
+	if (typeof smart_move !== 'function') throw new Error('smart_move is not a function');
+	const cfg = rageCfg();
+	const map = (dest && dest.map) || character.map;
+	if (!cfg.enabled || !rageBoxes(map).length) return smart_move(dest);
+
+	if (map !== character.map) {
+		const stage = rageStaging(map);
+		if (stage) await smart_move({ map: map, x: stage.x, y: stage.y });
+		else await smart_move(dest);
+	}
+	if (character.map !== map || typeof dest.x !== 'number') return true;
+	if (!rageClips(map, character.x, character.y, dest.x, dest.y, cfg.margin)) return smart_move(dest);
+	const ok = await rageWalk(map, { x: dest.x, y: dest.y }, cfg.margin);
+	if (!ok) {
+		rageLog('no safe route to ' + Math.round(dest.x) + ',' + Math.round(dest.y) + ' on ' + map
+			+ ' - refusing to let the pathfinder cut through a rage box', 'red');
+		throw new Error('rage_route_blocked');
+	}
+	return true;
+}
+
 const BOSS_KEY = 'boss_trip';
 const bossState = {
 	trip: null,         // { name, startedAt, deaths, wasRip, src }
@@ -1373,7 +1883,7 @@ function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName
 
 function bossCooperative(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
-	const m = g && g.monsters && g.monsters[name];
+	const m = g && g.monsters && g.monsters[bossMonsterType(name)];
 	return !!(m && m.cooperative);
 }
 
@@ -1453,7 +1963,7 @@ async function bossPosture(mon) {
 	if (Math.abs(dist - hold) <= CONFIG.bossEvents.holdTolerance) return;
 	if (smart.moving) return;
 	const f = hold / dist;
-	await xmove(mon.x - dx * f, mon.y - dy * f);
+	await safeMove(mon.x - dx * f, mon.y - dy * f);
 }
 
 function bossWalkTarget(name) {
@@ -1466,7 +1976,7 @@ function bossWalkTarget(name) {
 }
 
 async function bossApproach(name) {
-	const mon = get_nearest_monster({ type: name });
+	const mon = get_nearest_monster({ type: bossMonsterType(name) });
 	if (mon) { await bossPosture(mon); return; }
 	if (BOSS_JOIN_SPOTS[name]) {
 		// hopsickness is the one refusal worth naming: it is temporary, and the
@@ -1481,7 +1991,8 @@ async function bossApproach(name) {
 	const where = bossWalkTarget(name);
 	if (!where) { bossNote('no position known for ' + name + ' - cannot travel'); return; }
 	bossNote('walking to ' + name + ' on ' + where.map);
-	smart_move({ map: where.map, x: where.x, y: where.y });
+	safeSmartMove({ map: where.map, x: where.x, y: where.y })
+		.catch(e => rageLog('boss approach blocked: ' + (e && e.message || e), 'orange'));
 }
 
 /* forced marks an operator command, which outranks the gate on every character
@@ -1604,7 +2115,7 @@ function bossStatus() {
 	for (const n of live) {
 		const g = bossEligible(n);
 		const d = parent.S[n];
-		const mon = get_nearest_monster({ type: n });
+		const mon = get_nearest_monster({ type: bossMonsterType(n) });
 		const hold = mon ? Math.round(bossHoldDistance(mon)) : null;
 		bossLog('  ' + n + ': ' + (g.ok ? 'ELIGIBLE' : 'skip') + ' (' + g.why + ')'
 			+ (d && d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
@@ -1669,7 +2180,7 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
 			const dy = monster.y - character.y;
 			const dist = Math.hypot(dx, dy);
 			const targetDist = character.range * 0.8;
-			await xmove(
+			await safeMove(
 				character.x + dx * (1 - targetDist / dist),
 				character.y + dy * (1 - targetDist / dist)
 			);
@@ -1680,7 +2191,7 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
 	const halfway_x = character.x + (monster.x - character.x) / 2;
 	const halfway_y = character.y + (monster.y - character.y) / 2;
 	if (!is_in_range(monster, 'attack') && !smart.moving) {
-		await xmove(halfway_x, halfway_y);
+		await safeMove(halfway_x, halfway_y);
 	}
 }
 
@@ -1820,7 +2331,7 @@ async function travelTo(dest) {
 	let closest = null;   // how near we got before town() relocated us
 	try {
 		try {
-			await smart_move(dest);
+			await safeSmartMove(dest);
 			if (mine()) travelArrived();
 			return true;
 		} catch (e) {
@@ -1841,7 +2352,7 @@ async function travelTo(dest) {
 		if (!mine()) return false;
 
 		try {
-			await smart_move(dest);
+			await safeSmartMove(dest);
 			if (mine()) travelArrived();
 			return true;
 		} catch (e) {
@@ -1923,7 +2434,7 @@ async function walkInCircle() {
 	const dt = Math.min((now - state.lastAngleUpdate) / 1000, 0.5);
 	state.lastAngleUpdate = now;
 	state.angle = (state.angle + (character.speed / r) * dt) % (2 * Math.PI);
-	if (!character.moving) await xmove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
+	if (!character.moving) await safeMove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
 }
 
 // ============================================================================
@@ -2451,7 +2962,7 @@ async function holdCohesion() {
 	   because a silent default leaves "the move is impossible" and "the move
 	   worked" indistinguishable. */
 	try {
-		await xmove(picked[0], picked[1]);
+		await safeMove(picked[0], picked[1]);
 	} catch (e) {
 		game_log('Cohesion: xmove to ' + Math.round(picked[0]) + ',' + Math.round(picked[1])
 			+ ' failed (' + ((e && (e.reason || e.message)) || e) + ') - leaving the trip to travel', 'orange');
@@ -2557,7 +3068,7 @@ function avoidMobs(cfg) {
 		const away = kiteRepulsionAngle(threats);
 		if (attackers < courage && away != null) {
 			const far = Math.max(stepDist, 60);
-			xmove(cx + Math.cos(away) * far, cy + Math.sin(away) * far);
+			safeMove(cx + Math.cos(away) * far, cy + Math.sin(away) * far);
 			lastMove = performance.now();
 			return true;
 		}
@@ -3466,6 +3977,8 @@ function on_cm(name, data) {
 			home = data.home;
 			mobMap = data.mobMap;
 			destination = { map: data.mobMap, x: data.x, y: data.y };
+			rageAlso = Array.isArray(data.also) ? data.also.slice() : [];
+			ragePullShared = (typeof data.pullConcurrent === 'number') ? data.pullConcurrent : null;
 			if (changed) {
 				updateHomeDependentSets();
 				game_log(`Farm spot set: ${data.home} @ ${data.mobMap} (${data.x}, ${data.y})`, '#00FF00');
