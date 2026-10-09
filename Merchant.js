@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v82
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v83
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -596,6 +596,22 @@ const CONFIG = {
 	// Selling junk to an NPC merchant (not the player stand). Start with a
 	// short, clearly-low-value whitelist - review/expand based on what
 	// actually accumulates from the other three's muling.
+	/* Materials that are never vendored and are banked on sight.
+	   essenceofether is the reason this exists: it gates EIGHT craft recipes
+	   (windbelt, scribeorb, moonshardearring and reunionbow at 4 each,
+	   gloampendant 6, stormquiver 8, thundergrips 12, starcloak 40) and the
+	   party has no reliable source - booboo drop it at 0.5% behind a rage box,
+	   cutebee at 0.3709% but one spawn per 480,000 bees, and glitch/lglitch are
+	   not in the deployed client data at all. rgoo in Goo Brawl at 1-in-10,784
+	   is the only tap the party can currently reach. Vendoring one is throwing
+	   away a gate, not a material.
+	   It was never on selling.whitelist, so sellTrash was already safe - the
+	   exposure was sellAggressivelyIfLowOnSpace, which vendors nearly anything
+	   not explicitly protected. */
+	materials: {
+		keepAndBank: ['essenceofether'],
+	},
+
 	selling: {
 		enabled: true,
 		// slice_blueberry was on this list until 2026-09-22. Arbitrage pays up to
@@ -944,12 +960,383 @@ function moveLockHeld() {
 	return true;
 }
 
+
+// ============================================================================
+// RAGE BOXES - the geometry the farm scorer did not know about
+//
+// G.maps[map].monsters[i] can carry a `rage` rectangle beside its `boundary`.
+// Measured 2026-10-09 in the live client, on spookytown:
+//   mummy  boundary [31,-1571,480,-1293]  rage [-124,-1631,614,-1130]  (a halo
+//          130-165 units larger than the spawn)
+//   booboo boundary [286,-842,544,-562]   rage IDENTICAL to the boundary
+//   booboo boundary [-820,-940,-570,-630] rage IDENTICAL to the boundary
+//   stoneworm, mrgreen, jr - no rage field at all.
+// Stepping inside one aggros the whole pack AND applies the monster's own
+// `rage` multiplier, 1.5 for both: booboo's listed attack of 220 lands for
+// ~352, and nine at once is ~3,800 dps into a 7,263 hp ranger.
+//
+// This is not theory. scoreAllFarmSpots() returns the spawn-boundary CENTRE, so
+// an override on booboo resolved to (415,-702) - dead centre of the rage box.
+// Measured the same day: three deaths, zero kills, the spawn never reached, and
+// travelState left inFlight with failures: 0 because death kept interrupting
+// the route. The monster was never the problem; the standing point was.
+//
+// Nothing here restricts movement OUTSIDE a rectangle. Closing, backing off and
+// regrouping are all untouched - the rectangle is the only thing that is solid.
+// ============================================================================
+
+/* Dexon owns the knob. The followers have no CONFIG.achievements of their own,
+   so without this, raising concurrent in Ranger.js would leave the priest and
+   mage still gated at 1 - and the mage is the only one who can pull a mummy, so
+   the throttle would land exactly where it hurts. Broadcast with the farm spot;
+   null everywhere it has not arrived, which leaves the local default alone. */
+
+let ragePullShared = null;
+
+function rageCfg() {
+	const a = (typeof CONFIG !== 'undefined' && CONFIG.achievements && CONFIG.achievements.pull) || {};
+	return {
+		enabled: a.enabled !== false,
+		/* THE KNOB. How many of the target monsters may be in flight at once.
+		   1 is the proven-safe start. Raise it as the farm earns trust: the only
+		   other gate is courage, which stops a pull when this character already
+		   has its own limit of attackers. Nothing else in here assumes 1. */
+		concurrent: Math.max(1, ragePullShared || a.concurrent || 1),
+		margin: (typeof a.margin === 'number') ? a.margin : 30,
+		step: a.step || 25,
+		maxCells: a.maxCells || 24000,
+		parkWithin: a.parkWithin || 45,
+		pullTimeoutMs: a.pullTimeoutMs || 20000,
+		repullGapMs: (typeof a.repullGapMs === 'number') ? a.repullGapMs : 1200,
+		respectCourage: a.respectCourage !== false,
+	};
+}
+
+function rageLog(m, c) {
+	try { game_log('[rage] ' + m, c || '#FF9F6B'); } catch (e) { }
+	console.log('[rage] ' + m);
+}
+
+/* Every rage rectangle on a map. Returns [] for a map with none, which is what
+   makes all of this free everywhere else. */
+function rageBoxes(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+	const m = g && g.maps && g.maps[map];
+	if (!m || !Array.isArray(m.monsters)) return [];
+	const out = [];
+	for (const s of m.monsters) {
+		const r = s && s.rage;
+		if (Array.isArray(r) && r.length === 4) out.push({ type: s.type, r: r, boundary: s.boundary || null });
+	}
+	return out;
+}
+
+/* The box this point is in, inflated by margin, or null. */
+function rageHit(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	const boxes = rageBoxes(map);
+	for (let i = 0; i < boxes.length; i++) {
+		const r = boxes[i].r;
+		if (x >= r[0] - m && x <= r[2] + m && y >= r[1] - m && y <= r[3] + m) return boxes[i];
+	}
+	return null;
+}
+
+/* Does the straight line a->b clip any rectangle? Sampled, not analytic: the
+   sample spacing is 15 units against rectangles 250 units on a side, so it
+   cannot step over one. */
+function rageClips(map, ax, ay, bx, by, margin) {
+	if (!rageBoxes(map).length) return null;
+	const n = Math.max(8, Math.min(160, Math.ceil(Math.hypot(bx - ax, by - ay) / 15)));
+	for (let i = 0; i <= n; i++) {
+		const t = i / n;
+		const hit = rageHit(map, ax + (bx - ax) * t, ay + (by - ay) * t, margin);
+		if (hit) return hit;
+	}
+	return null;
+}
+
+/* Nearest point outside every rectangle. Re-checks after each push, because
+   leaving one box can put you inside another. */
+function rageEscape(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	let px = x, py = y;
+	for (let guard = 0; guard < 5; guard++) {
+		const b = rageHit(map, px, py, m);
+		if (!b) return { x: px, y: py };
+		const r = b.r;
+		const outs = [
+			{ x: r[0] - m - 2, y: py }, { x: r[2] + m + 2, y: py },
+			{ x: px, y: r[1] - m - 2 }, { x: px, y: r[3] + m + 2 },
+		];
+		outs.sort((p, q) => Math.hypot(p.x - px, p.y - py) - Math.hypot(q.x - px, q.y - py));
+		px = outs[0].x; py = outs[0].y;
+	}
+	return { x: px, y: py };
+}
+
+/* A walkable route from->to that never enters a rectangle. BFS on a coarse grid
+   with the rectangles treated as solid, then greedily simplified so EVERY leg
+   is verified straight-line can_move-clear. That last property is the point:
+   the legs get walked with xmove, so smart_move's pathfinder - which knows
+   nothing about rage boxes and would happily cut the corner through one, the
+   interior being ordinary open ground - is taken out of the loop entirely.
+   Measured on spookytown: 4 ms. Returns null when there is no safe route, which
+   is a refusal to travel rather than a licence to walk through. */
+function rageRoute(map, from, to, margin) {
+	if (typeof can_move !== 'function') return null;
+	const cfg = rageCfg();
+	const m = (typeof margin === 'number') ? margin : cfg.margin;
+	const boxes = rageBoxes(map);
+	if (!boxes.length) return null;
+
+	let x0 = Math.min(from.x, to.x), x1 = Math.max(from.x, to.x);
+	let y0 = Math.min(from.y, to.y), y1 = Math.max(from.y, to.y);
+	for (const b of boxes) {
+		x0 = Math.min(x0, b.r[0]); x1 = Math.max(x1, b.r[2]);
+		y0 = Math.min(y0, b.r[1]); y1 = Math.max(y1, b.r[3]);
+	}
+	const PAD = 280;
+	x0 -= PAD; x1 += PAD; y0 -= PAD; y1 += PAD;
+
+	let step = cfg.step;
+	while (((x1 - x0) / step + 1) * ((y1 - y0) / step + 1) > cfg.maxCells) step *= 2;
+	const W = Math.floor((x1 - x0) / step) + 1, H = Math.floor((y1 - y0) / step) + 1;
+	const base = character.base;
+	const stand = (x, y) => { try { return !!can_move({ map: map, x: x, y: y, going_x: x, going_y: y, base: base }); } catch (e) { return false; } };
+	const seg = (a, b) => { try { return !!can_move({ map: map, x: a[0], y: a[1], going_x: b[0], going_y: b[1], base: base }); } catch (e) { return false; } };
+
+	/* The grid is tested at cell CENTRES, so two adjacent open centres can still
+	   have a segment between them that clips a corner of the rectangle - both
+	   endpoints outside a convex shape does not put the line outside it. Caught
+	   by the harness: a leg into (550,-886) grazed the booboo box. Rejecting
+	   cells within m + step of a rectangle buys a full cell of clearance, which
+	   is more than any single 8-connected step can cross. The CLIP checks below
+	   still use the configured margin, so the route is verified against the real
+	   boundary rather than the padded one. */
+	const gm = m + step;
+	const grid = new Uint8Array(W * H);
+	for (let i = 0; i < W; i++) for (let j = 0; j < H; j++) {
+		const x = x0 + i * step, y = y0 + j * step;
+		grid[j * W + i] = (!rageHit(map, x, y, gm) && stand(x, y)) ? 1 : 0;
+	}
+	const clamp = (v, hi) => Math.max(0, Math.min(hi, v));
+	const cellOf = (p) => [clamp(Math.round((p.x - x0) / step), W - 1), clamp(Math.round((p.y - y0) / step), H - 1)];
+	/* The start may be blocked - we could be standing in a box right now, which
+	   is exactly the case this has to recover from - so seed from the nearest
+	   open cell instead of giving up. */
+	const nearestOpen = (c) => {
+		if (grid[c[1] * W + c[0]]) return c;
+		for (let rad = 1; rad < 14; rad++) {
+			for (let di = -rad; di <= rad; di++) for (let dj = -rad; dj <= rad; dj++) {
+				if (Math.max(Math.abs(di), Math.abs(dj)) !== rad) continue;
+				const ni = c[0] + di, nj = c[1] + dj;
+				if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+				if (grid[nj * W + ni]) return [ni, nj];
+			}
+		}
+		return null;
+	};
+	const S = nearestOpen(cellOf(from)), Gl = nearestOpen(cellOf(to));
+	if (!S || !Gl) return null;
+
+	const prev = new Int32Array(W * H).fill(-1);
+	const seen = new Uint8Array(W * H);
+	const q = [S[1] * W + S[0]];
+	seen[q[0]] = 1;
+	const goal = Gl[1] * W + Gl[0];
+	/* FOUR-connected, and every EDGE is verified with can_move before it is
+	   accepted. The first version checked only NODES and allowed diagonals, and
+	   it produced a route whose own first leg was unwalkable: measured live on
+	   spookytown, [225,-586] -> [200,-611] with can_move false on the segment.
+	   Both cells are individually standable; the diagonal between them cuts a
+	   wall corner that the character's bounding box (h 8, v 7) cannot fit
+	   through. Dropping diagonals removes corner-cutting by construction and
+	   verifying edges removes the rest, which together make the simplifier's
+	   `best = i + 1` fallback safe - previously it could emit a leg nothing had
+	   ever checked. The cost is one can_move per explored edge; the simplifier
+	   straightens the result afterwards, so losing diagonals costs nothing in
+	   the final path. */
+	const D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+	let found = false, head = 0;
+	while (head < q.length) {
+		const cur = q[head++];
+		if (cur === goal) { found = true; break; }
+		const ci = cur % W, cj = (cur - ci) / W;
+		const cx = x0 + ci * step, cy = y0 + cj * step;
+		for (let d = 0; d < 4; d++) {
+			const ni = ci + D[d][0], nj = cj + D[d][1];
+			if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+			const nk = nj * W + ni;
+			if (seen[nk] || !grid[nk]) continue;
+			if (!seg([cx, cy], [x0 + ni * step, y0 + nj * step])) { seen[nk] = 1; continue; }
+			seen[nk] = 1; prev[nk] = cur; q.push(nk);
+		}
+	}
+	if (!found) return null;
+
+	const raw = [];
+	for (let k = goal; k !== -1; k = prev[k]) {
+		const ci = k % W, cj = (k - ci) / W;
+		raw.push([x0 + ci * step, y0 + cj * step]);
+	}
+	raw.reverse();
+
+	const out = [raw[0]];
+	let i = 0;
+	while (i < raw.length - 1) {
+		let best = i + 1;
+		for (let j = raw.length - 1; j > i; j--) {
+			if (seg(raw[i], raw[j]) && !rageClips(map, raw[i][0], raw[i][1], raw[j][0], raw[j][1], m)) { best = j; break; }
+		}
+		if (best === i + 1 && rageClips(map, raw[i][0], raw[i][1], raw[best][0], raw[best][1], m))
+			rageLog('route leg ' + i + ' grazes a rectangle - the grid clearance should have prevented this', 'red');
+		out.push(raw[best]); i = best;
+	}
+	return out;
+}
+
+async function rageWalk(map, to, margin, attempts) {
+	if (typeof xmove !== 'function') { rageLog('xmove is not a function here - cannot walk a safe route', 'red'); return false; }
+	const max = attempts || 4;
+	const near = (p) => Math.hypot(character.x - p[0], character.y - p[1]) < 12;
+	/* Anything else steering us is a second driver on the same wheel: smart.moving
+	   was measured true throughout the stranded trip. */
+	try { if (typeof stop === 'function') stop(); } catch (e) { }
+	rageNav.busy = true;
+	try {
+		for (let a = 0; a < max; a++) {
+			if (near([to.x, to.y])) return true;
+			const wp = rageRoute(map, { x: character.x, y: character.y }, to, margin);
+			if (!wp || !wp.length) return false;          // genuinely no route
+			let blocked = false;
+			const was = [character.x, character.y];
+			for (let i = 0; i < wp.length; i++) {
+				if (near(wp[i])) continue;
+				try { await xmove(wp[i][0], wp[i][1]); }
+				catch (e) { blocked = true; rageLog('leg ' + (i + 1) + '/' + wp.length + ' refused (' + (e && (e.reason || e.message) || e) + ') - re-planning', '#8b98ab'); break; }
+			}
+			if (!blocked) return true;
+			/* Gaining no ground is worth saying, but it is NOT a reason to stop:
+			   an obstruction can be another character or a monster standing in the
+			   way for a moment. The attempt cap is what bounds this - an earlier
+			   version returned false the first time a leg failed before any had
+			   succeeded, which made every transient block permanent. */
+			if (Math.hypot(character.x - was[0], character.y - was[1]) < 1)
+				rageLog('no ground gained on attempt ' + (a + 1) + ' of ' + max, '#8b98ab');
+		}
+		if (!near([to.x, to.y]))
+			rageLog('gave up after ' + max + ' attempts, ' + Math.round(Math.hypot(character.x - to.x, character.y - to.y)) + ' units short', 'orange');
+		return near([to.x, to.y]);
+	} finally {
+		rageNav.busy = false;
+	}
+}
+
+const rageNav = { busy: false };
+
+/* The one mover everything else calls. Refuses to enter a rectangle, and routes
+   around one rather than through it. Falls straight through to xmove on a map
+   with no rage boxes, which is every map but spookytown today. */
+async function safeMove(x, y) {
+	if (typeof xmove !== 'function') return;
+	const map = character.map;
+	const cfg = rageCfg();
+	if (!cfg.enabled || !rageBoxes(map).length) return xmove(x, y);
+
+	if (rageHit(map, x, y, cfg.margin)) {
+		const e = rageEscape(map, x, y, cfg.margin);
+		x = e.x; y = e.y;
+	}
+	if (rageClips(map, character.x, character.y, x, y, cfg.margin)) {
+		const ok = await rageWalk(map, { x: x, y: y }, cfg.margin);
+		if (!ok) rageLog('no safe route to ' + Math.round(x) + ',' + Math.round(y) + ' - staying put', 'orange');
+		return;
+	}
+	return xmove(x, y);
+}
+
+/* Containment. The net for everything no route planning can cover: a respawn
+   somewhere unexpected, knockback, being dragged by a pull, or any routine that
+   moved us before this existed. Runs first in mainLoop. */
+async function rageGuard() {
+	const cfg = rageCfg();
+	if (!cfg.enabled) return false;
+	let hit = null;
+	try { hit = rageHit(character.map, character.x, character.y, cfg.margin); } catch (e) { return false; }
+	if (!hit) return false;
+	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' - leaving now', 'red');
+	try { if (typeof stop === 'function') stop(); } catch (e) { }
+	const e2 = rageEscape(character.map, character.x, character.y, cfg.margin);
+	if (typeof xmove === 'function') {
+		try { await xmove(e2.x, e2.y); } catch (err) { rageLog('escape move failed: ' + (err && err.message || err), 'red'); }
+	}
+	return true;
+}
+
+/* A map spawn point known to be outside every rectangle, used as the landing
+   spot for a cross-map trip so the arrival itself cannot be inside a box.
+   spookytown's first spawn is (0,0), clear of all three. */
+function rageStaging(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const sp = g && g.maps && g.maps[map] && g.maps[map].spawns;
+	if (!Array.isArray(sp)) return null;
+	for (const s of sp) {
+		if (!Array.isArray(s) || typeof s[0] !== 'number' || typeof s[1] !== 'number') continue;
+		if (!rageHit(map, s[0], s[1], rageCfg().margin)) return { x: s[0], y: s[1] };
+	}
+	return null;
+}
+
+/* smart_move, but it is never allowed to route through a rage rectangle. Used
+   for BOTH directions - the trip in and, just as importantly, the trip back out
+   when a boss event takes the party. bossApproach's smart_move was the obvious
+   way to die on the way to a boss with the farm parked next to a box.
+   A blocked route THROWS rather than falling back to smart_move: surfacing the
+   failure is the house rule, and silently crossing the box is the one outcome
+   worth failing to avoid. */
+async function safeSmartMove(dest) {
+	if (typeof smart_move !== 'function') throw new Error('smart_move is not a function');
+	const cfg = rageCfg();
+	const map = (dest && dest.map) || character.map;
+	if (!cfg.enabled || !rageBoxes(map).length) return smart_move(dest);
+
+	if (map !== character.map) {
+		const stage = rageStaging(map);
+		if (stage) await smart_move({ map: map, x: stage.x, y: stage.y });
+		else await smart_move(dest);
+	}
+	if (character.map !== map || typeof dest.x !== 'number') return true;
+	if (!rageClips(map, character.x, character.y, dest.x, dest.y, cfg.margin)) return smart_move(dest);
+	const ok = await rageWalk(map, { x: dest.x, y: dest.y }, cfg.margin);
+	if (!ok) {
+		rageLog('no safe route to ' + Math.round(dest.x) + ',' + Math.round(dest.y) + ' on ' + map
+			+ ' - refusing to let the pathfinder cut through a rage box', 'red');
+		throw new Error('rage_route_blocked');
+	}
+	return true;
+}
+
+/* The merchant never pulls, so only the navigation half of the module ships
+   here: the geometry, the route search, and the two movers. rageStatus is
+   trimmed to match - there is no farm spot or pull state to report. */
+function rageStatus() {
+	const map = character.map;
+	const boxes = rageBoxes(map);
+	rageLog(map + ': ' + (boxes.length ? boxes.map(b => b.type + ' [' + b.r.join(',') + ']').join('  ') : 'no rage boxes'), '#8b98ab');
+	rageLog('margin ' + rageCfg().margin + ' | standing ' + (rageHit(map, character.x, character.y, rageCfg().margin) ? 'INSIDE a rectangle' : 'clear'), '#8b98ab');
+	return { boxes: boxes, cfg: rageCfg() };
+}
+
 // A real move. Closes the stand, holds the lock, propagates failure unchanged
 // so every existing catch keeps working.
 async function moveTo(spec) {
 	if (moveLockHeld()) throw moveBusy();
 	travelBegin();
-	try { await ensureStandClosed(); return await smart_move(spec); }
+	/* Every trip in the file funnels through here - pickup, mluck, potion
+	   delivery, the bank runs, the scout hops - so one guard covers them all.
+	   -> RAGE BOXES */
+	try { await ensureStandClosed(); return await safeSmartMove(spec); }
 	finally { travelEnd(); }
 }
 
@@ -1616,7 +2003,10 @@ async function travelToRecipient(job) {
 	target = get_player(job.recipient);
 	if (target && !is_in_range(target, 'attack')) {
 		try {
-			await moveNudge(function () { return xmove(target.x, target.y); });
+			/* The recipient may be parked beside a rage rectangle - the combat party
+			   farms booboo from its edge - so this short hop needs the same guard as
+			   a full trip. -> RAGE BOXES */
+			await moveNudge(function () { return safeMove(target.x, target.y); });
 		} catch (e) {
 			// Best effort - proceed to the delivery attempt regardless.
 		}
@@ -1921,6 +2311,14 @@ function exchangeableNames() {
 }
 
 function isExchangeable(name) { return !!name && exchangeableNames().has(String(name)); }
+
+/* Never sold, always banked. -> CONFIG.materials.keepAndBank */
+let keptMaterialCache = null;
+function keptMaterialNames() {
+	if (!keptMaterialCache) keptMaterialCache = new Set((CONFIG.materials && CONFIG.materials.keepAndBank) || []);
+	return keptMaterialCache;
+}
+function isKeptMaterial(name) { return !!name && keptMaterialNames().has(String(name)); }
 
 /* What the rule is costing or saving, on demand. */
 function exchangeableReport() {
@@ -2413,6 +2811,7 @@ function sellAggressivelyIfLowOnSpace() {
 		if (item.p !== undefined || item.l === 'l') continue; // already listed for sale, or locked - can't sell either way
 		if (PROTECTED_ITEM_NAMES.has(item.name)) continue;
 		if (isExchangeable(item.name)) continue;   // -> EXCHANGEABLE ITEMS ARE NEVER SOLD
+		if (isKeptMaterial(item.name)) continue;   // -> CONFIG.materials.keepAndBank
 		if (isTier2OrTier3GearItem(item.name)) continue;
 		if (held[item.name]) continue;   // arbitrage stock - vendoring it realises the loss
 
@@ -2438,6 +2837,9 @@ async function maintenanceLoop() {
 			sellAggressivelyIfLowOnSpace();
 		}
 		if (character.rip) respawn();
+		/* Containment. The merchant has no mainLoop, and this is the housekeeping
+		   tick - 2s is fast enough to leave a rectangle before a pack commits. */
+		try { await rageGuard(); } catch (e) { }
 	} catch (e) {
 		console.error('maintenanceLoop error:', e);
 	}
@@ -3235,7 +3637,7 @@ async function bankExchangeables() {
 	let locked = 0;
 	for (let i = character.items.length - 1; i >= 0; i--) {
 		const it = character.items[i];
-		if (!it || !it.name || !names.has(it.name)) continue;
+		if (!it || !it.name || !(names.has(it.name) || isKeptMaterial(it.name))) continue;
 		if (it.b) continue;                        // blocked - the server refuses it
 		if (it.l === 'l') { locked++; continue; }  // the operator's own hands-off marker
 		if (arbHeldNames()[it.name]) continue;     // arbitrage owns this exit (arbBankItem)
@@ -6168,6 +6570,7 @@ function ssVendorBound(item) {
 	if (item.p !== undefined) return false;
 	if (PROTECTED_ITEM_NAMES.has(item.name)) return false;
 	if (isExchangeable(item.name)) return false;   // -> EXCHANGEABLE ITEMS ARE NEVER SOLD
+	if (isKeptMaterial(item.name)) return false;   // -> CONFIG.materials.keepAndBank
 	if (isTier2OrTier3GearItem(item.name)) return false;
 	if (arbHeldNames()[item.name]) return false;   // arbitrage owns this exit
 	return true;
