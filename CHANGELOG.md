@@ -28,6 +28,64 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v83
+
+Two unrelated things the merchant did not know about.
+
+**Rage boxes.** `G.maps[map].monsters[i]` can carry a `rage` rectangle beside its
+`boundary`; stepping inside aggros the whole pack AND applies the monster's own
+rage multiplier, 1.5 on spookytown. Measured 2026-10-09 in the live client: mummy
+boundary `[31,-1571,480,-1293]` with rage `[-124,-1631,614,-1130]`, a halo 130-165
+units larger, and both booboo packs with rage identical to their boundary.
+stoneworm, mrgreen and jr carry no rage field at all.
+
+This matters to a merchant because of where the combat party now stands. The
+booboo/mummy achievement farm parks on the corridor BETWEEN the two rectangles,
+so every errand that walks to a party member - item pickup, mluck, potion
+delivery - is a walk toward a character sitting beside a rage box. The nudge in
+`travelToRecipient` was the sharp edge: it moves to the recipient's own
+coordinates, which can be inside one.
+
+Only the navigation half of the rage module ships here - the merchant never
+pulls, so `ragePullTick`, `rageHoldFire` and the rest are deliberately absent
+rather than merely unused. That is not tidiness: referencing an undeclared
+identifier THROWS in this CODE context rather than evaluating to undefined (see
+CLAUDE.md, "Helpers that may not exist"), and the pull half reads `home` and
+`destination`, neither of which exists in this file. The trimmed module is
+exercised by a harness in a merchant-shaped sandbox with no `home`, no
+`destination`, no `CONFIG.party` and no `CONFIG.achievements`, for exactly that
+reason.
+
+Three guards, and the first covers almost everything because the movement layer
+is already well factored: `moveTo` is the single choke point every trip funnels
+through, so `smart_move` there became `safeSmartMove`. The `travelToRecipient`
+nudge became `safeMove`. `rageGuard` runs in `maintenanceLoop` as the net for
+arriving inside one some other way. Routes come from a four-connected BFS with
+the rectangles treated as solid and every explored EDGE verified by `can_move`,
+simplified so each leg is straight-line clear and then walked with `xmove` -
+`smart_move`'s pathfinder knows nothing about rage boxes and the interior is
+ordinary open ground, so it will cut the corner through one. All of it no-ops on
+a map with no rage boxes, which is every map but spookytown today.
+
+**essenceofether is kept and banked.** It gates EIGHT craft recipes - windbelt,
+scribeorb, moonshardearring and reunionbow at 4 each, gloampendant 6, stormquiver
+8, thundergrips 12, starcloak 40 - and the party has no reliable source: booboo
+drop it at 0.5% behind a rage box, cutebee at 0.3709% but one spawn per 480,000
+bees, and glitch and lglitch are not in the deployed client data at all, only
+their drop tables. rgoo in Goo Brawl at 1-in-10,784 is the only tap currently
+reachable. Vendoring one throws away a gate, not a material.
+
+`sellTrash` was already safe - it only vendors `CONFIG.selling.whitelist`, which
+essenceofether was never on. The exposure was `sellAggressivelyIfLowOnSpace`,
+which vendors nearly anything not explicitly protected. New
+`CONFIG.materials.keepAndBank` with `isKeptMaterial()`, checked at BOTH disposal
+sites beside the existing `isExchangeable` guard, and folded into
+`bankExchangeables` so it is banked on every bank arrival - that function is
+already hooked on `travelToBank`, which is the one choke point every bank visit
+in the file passes through, so it needs no trip of its own.
+
+14 assertions green.
+
 ## v82
 
 The merchant kept walking to Ponty for items that were not there, hopping away
