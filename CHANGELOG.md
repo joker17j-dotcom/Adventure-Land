@@ -28,6 +28,69 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v92
+
+Ranger plan targets changed, craft materials protected and banked.
+
+**THE RANGER MAINHAND IS bowofthedead, NOT firebow.** Measured 2026-10-10:
+
+| | attack | range | crit |
+|---|---|---|---|
+| firebow+9 (was tier 2) | 97 | 135 | 0 |
+| firebow+10 (was tier 3) | 115 | 160 | 0 |
+| **bowofthedead+7** (now tier 2) | 82 | 121 | 2.45 |
+| **bowofthedead+9** (now tier 3) | 104 | 151 | 3.15 |
+
+Two things in there are easy to miss and are recorded on the table itself. The
+grade break is at 5 for bowofthedead against 8 for firebow, so +7 and +9 both
+sit inside grade 1 where cost per level is already raised - this is not the
+cheap end of the curve firebow+7 would have been. And bowofthedead carries
+speed -12, which firebow does not.
+
+**GLOVES ARE thundergrips+7 FOR NOW.** supermittens remains the tier-3 target
+and remains the better item under the DAMAGE-FIRST rule - at +5 it is
+apiercing 47 / frequency 3 against thundergrips' 0 / 2 - but it is DROP-ONLY:
+no craft recipe, no token price, no NPC source. thundergrips is craftable, so
+it is the reachable item in that slot, exactly as frankypants is in pants
+rather than an off-plan substitute. Tier 3 was deliberately left alone.
+
+**CONFIG.materials.keepAndBank NOW ACTUALLY BANKS.** It has been documented
+since it was created as "never vendored and banked on sight", but
+isKeptMaterial() was only ever read by the two sell guards - nothing banked
+anything, so essenceofether has been protected-but-never-banked the whole
+time. This adds the missing half.
+
+Kept materials RIDE an existing bank trip and never cause one: they are
+collected after the `!toBank.length` early return, so a pile of stormfeather
+cannot pull the merchant off arbitrage for a walk of its own.
+
+**AND THEY GO IN ONE COMBINED, DESCENDING PASS.** The first cut of this stored
+materials first and gear second, from two lists captured beforehand - which
+silently breaks the guarantee the original loop's "highest index first" comment
+exists to provide, because bank_store nulls a slot and every index behind it
+shifts. The second list would have been pointing at the wrong items. One list,
+sorted once.
+
+New names: stormfeather, ashleaf, embercore, essenceoffire, joining
+essenceofether. They cover the inputs for both pieces being chased -
+thundergrips (mrngloves+6, 80 stormfeather, 12 essenceofether) and emberhood
+(mmhat+5, embercore, 8 essenceoffire, 20 ashleaf).
+
+**WHAT WAS DELIBERATELY NOT DONE.** ashleaf, embercore and essenceoffire go on
+pontyBuy ONLY - not standBuy, so they are never chased on a player stand.
+stormfeather is protected but NOT bought at all: the operator holds 1,963 and
+farms them easily. And none of the four went into NO_TRADE_ITEM_NAMES, which
+would have been the stricter protection: that set is applied at flip ingestion
+and forbids BUYING as well as selling, which would have killed the Ponty buys
+in the same stroke. The residual exposure - arbitrage flipping one - was
+weighed and accepted rather than overlooked.
+
+20 assertions. The load-bearing ones are that materials alone never trigger a
+trip, that every item still lands when gear and materials are interleaved in
+the inventory, and that the priest table was untouched by the gloves edit -
+`supermittens` at level 5 appeared in both tables, so a careless anchor would
+have changed both.
+
 ## v91
 
 A pasted buy now freezes the rotation, and will cross a shard to reach the
