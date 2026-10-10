@@ -569,6 +569,22 @@ function marketRows(list) {
       out.push({
         item: s.name, price: s.price, buying: !!s.b, qty: s.q || 1,
         level: s.level || 0, special: s.p || null, statType: s.stat_type || null,
+        /* ITEM-FOR-ITEM TRADE. `want` is {name, q} - the goods asked for in
+           place of gold - and it is the authoritative marker for a barter
+           slot. Measured live 2026-10-10: ALData carries it on 62 of 2,223
+           slots and the game's own pull_merchants on 23 of 643, in both cases
+           on exactly the slots that have no price. An earlier read of this
+           went wrong by inventorying only the BRIDGE copy, which is fed by
+           Meltymerch and arrives stripped of both `want` and `rid` - so the
+           field looked absent everywhere when it was only absent there.
+
+           The no-price fallback stays so a bridge-sourced row is still
+           recognised as barter; it just cannot say what is wanted. NPC rows
+           are excluded deliberately - Ponty stock can arrive priceless too,
+           and that is a missing quote rather than a barter offer. */
+        want: s.want || null,
+        barter: !!s.want
+          || (!m.npc && !(typeof s.price === "number" && isFinite(s.price))),
         merchant: m.id, server: `${m.serverRegion} ${m.serverIdentifier}`,
         map: m.map, x: m.x, y: m.y, lastSeen: m.lastSeen, slot, npc: !!m.npc,
       });
@@ -817,6 +833,48 @@ function sortableTable(host, rows, cols, opts) {
     }
   }
   draw();
+}
+
+/* Clipboard, with the fallback that actually matters here. The page is usually
+   opened straight off disk, and navigator.clipboard is unavailable on a file://
+   origin in some builds - so a hidden textarea plus execCommand is the path that
+   works everywhere. Returns a promise of true/false so the caller can say which
+   happened rather than claiming success. */
+function copyText(s) {
+  const viaExec = () => {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = s;
+      ta.setAttribute("readonly", "");
+      ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+      document.body.append(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch (e) { return false; }
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(s).then(() => true, () => viaExec());
+  }
+  return Promise.resolve(viaExec());
+}
+
+/* The merchant-side call for one listing. PROBE_API.buyNow walks to the stand,
+   re-verifies the slot and buys it; see sbBuyNow in Merchant.js for what it
+   refuses. The shard is included so the merchant can say "wrong shard" instead
+   of buying nothing and leaving you guessing. */
+function buyCommand(r) {
+  const q = (s) => JSON.stringify(String(s));
+  return "PROBE_API.buyNow({shard:" + q(String(r.server).replace(/\s+/g, ""))
+    + ",seller:" + q(r.merchant)
+    + ",map:" + q(r.map)
+    + ",x:" + Math.round(r.x) + ",y:" + Math.round(r.y)
+    + ",slot:" + q(r.slot)
+    + ",name:" + q(r.item)
+    + ",level:" + (r.level || 0)
+    + ",price:" + r.price
+    + ",q:1})";
 }
 
 /* =========================================================== MARKET TAB   */
@@ -1107,7 +1165,12 @@ function renderMarket(host, opts) {
   function draw() {
     out.innerHTML = "";
     if (!MERCHANTS) { out.append(el("div", { class: "dim" }, "No data loaded.")); return; }
-    const rows = marketRows(MERCHANTS);
+    /* Barter listings have no price, so they cannot be compared, targeted or
+       alerted on - they are noise in a price table. The watchlist page sends
+       them to their own tab; the explorer still shows everything. */
+    const allRows = marketRows(MERCHANTS);
+    const heldBack = opts.excludeBarter ? allRows.filter((r) => r.barter).length : 0;
+    const rows = opts.excludeBarter ? allRows.filter((r) => !r.barter) : allRows;
     const want = parseTerms(ta.value);
     const match = makeMatcher(want, rows);
     const sideV = side.value, serverV = server.value;
@@ -1118,6 +1181,13 @@ function renderMarket(host, opts) {
       if (!want.length) return true;
       return match(r.item, itemName(r.item));
     });
+
+    if (heldBack) {
+      out.append(el("div", { class: "src", style: "margin-bottom:10px" },
+        heldBack + " item-for-item ", heldBack === 1 ? "trade is" : "trades are",
+        " not shown here — they carry no gold price. See the ",
+        el("b", {}, "Item Trades"), " tab."));
+    }
 
     if (want.length) {
       /* Only exact item keys can be "not listed" — a fuzzy term such as
@@ -1156,6 +1226,22 @@ function renderMarket(host, opts) {
           return el("span", { class: "dim" }, "≤ " + fmt(th));
         } },
       { key: "qty", label: "Qty", num: true, get: (r) => r.qty },
+      ...(opts.buyCommands ? [{ key: "buy", label: "", get: () => "", render: (r) => {
+        /* Only a real player SELL listing can be bought this way. A buy order is
+           someone wanting to buy FROM you, Ponty has its own NPC path, and a
+           barter slot has no price to pay. */
+        if (r.buying || r.npc || r.barter || typeof r.price !== "number") {
+          return el("span", { class: "dim" }, "");
+        }
+        const b = el("button", { class: "mini", title: "copy the merchant command that walks to this stand and buys it" }, "copy buy");
+        b.addEventListener("click", () => {
+          copyText(buyCommand(r)).then((ok) => {
+            b.textContent = ok ? "copied ✓" : "copy failed";
+            setTimeout(() => { b.textContent = "copy buy"; }, 1400);
+          });
+        });
+        return b;
+      } }] : []),
       { key: "merchant", label: "Merchant", get: (r) => r.merchant },
       { key: "server", label: "Server", get: (r) => r.server },
       { key: "map", label: "Where", get: (r) => r.map,
