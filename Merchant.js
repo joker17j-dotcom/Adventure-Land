@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v85
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v87
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -565,6 +565,10 @@ const CONFIG = {
 	   reason a blanket smart.use_town is worse. margin is how many units the hop
 	   must beat walking by before it is taken. */
 	town: { enabled: true, margin: 40 },
+	/* The summon wait. Meltymerch holds the move lock for waitMs so nothing
+	   else walks him off the spot he just published; driftUnits is how far he
+	   may be shifted by anything that bypasses the lock before he re-publishes. */
+	summon: { waitMs: 60000, pollMs: 1000, driftUnits: 60 },
 	townSpot: { name: 'town spot', map: 'main', x: -179, y: -72, radius: 60 },
 
 	// A move lock older than this is abandoned, not busy - see moveLockHeld().
@@ -1466,7 +1470,14 @@ function townCfg() {
 	return {
 		enabled: a.enabled !== false,
 		channelMs: a.channelMs || TOWN_CHANNEL_MS,
-		margin: (typeof a.margin === 'number') ? a.margin : 40,
+		/* A FLOOR IN SECONDS, not units. v85 shipped 40 units - 0.6 s at speed
+		   67 - and the merchant promptly took a hop the log priced at "about
+		   2.3s better than walking", mid-route, and lost the path. Straight-line
+		   distance to the goal is not monotonic along a real route: the
+		   pathfinder walks AWAY from the goal to get around terrain, so small
+		   positive readings are noise. 5 s cleanly separates the two legs worth
+		   taking (17.5 s and 21.5 s) from everything else. */
+		minSaveSec: (typeof a.minSaveSec === 'number') ? a.minSaveSec : 5,
 		stepUnits: a.stepUnits || 120,
 		pollMs: a.pollMs || 150,
 		/* How often the watcher re-prices the hop while smart_move drives. */
@@ -1496,46 +1507,22 @@ function townSpawn(map) {
 	return { x: s[0], y: s[1] };
 }
 
-/* The next door to take from `fromMap` towards `targetMap`, as a point on
-   fromMap plus where it lands. BFS over the door graph - the same walk that
-   found spookytown -> halloween -> main. */
-function townNextDoor(fromMap, targetMap) {
-	const g = townG();
-	if (!g || !g.maps[fromMap] || fromMap === targetMap) return null;
-	const prev = {}; prev[fromMap] = null;
-	const q = [fromMap];
-	while (q.length) {
-		const m = q.shift();
-		if (m === targetMap) break;
-		for (const d of ((g.maps[m] && g.maps[m].doors) || [])) {
-			const to = d[4];
-			if (!to || !g.maps[to] || prev[to] !== undefined) continue;
-			prev[to] = { from: m, at: [d[0], d[1]], toSpawn: d[5] };
-			q.push(to);
-		}
-	}
-	if (prev[targetMap] === undefined) return null;
-	let c = targetMap;
-	while (prev[c] && prev[c].from !== fromMap) c = prev[c].from;
-	const step = prev[c];
-	if (!step) return null;
-	const land = g.maps[c].spawns && g.maps[c].spawns[step.toSpawn];
-	return {
-		x: step.at[0], y: step.at[1], toMap: c,
-		landX: Array.isArray(land) ? land[0] : 0,
-		landY: Array.isArray(land) ? land[1] : 0,
-	};
-}
 
-/* What we are heading for ON THIS MAP: the destination when we are already on
-   its map, otherwise the door we leave through. */
+/* SAME MAP ONLY. v85 also priced a leg we were not on yet, using a BFS of the
+   door graph to guess which door we would leave by. Two things went wrong with
+   that and both are visible in the live log. The BFS chain need not match the
+   one smart_move picks - main alone has three separate mtunnel doors - and the
+   walk-along then drives raw move() toward a door the route was never going to
+   use, which is how the merchant ended up stuck on mtunnel. Pricing against the
+   real destination is unambiguous, and it still catches the two legs that
+   matter: arriving on main 1,836 units from the town spot (+21.5 s) and
+   arriving on spookytown 2,408 units from the corridor (+17.5 s). The forgone
+   case is the corridor -> halloween-door leg on the way home, worth 12 s, which
+   is not worth guessing a door chain for. */
 function townGoal(targetMap, tx, ty) {
-	if (character.map === targetMap) {
-		if (typeof tx !== 'number' || typeof ty !== 'number') return null;
-		return { x: tx, y: ty };
-	}
-	const d = townNextDoor(character.map, targetMap);
-	return d ? { x: d.x, y: d.y } : null;
+	if (character.map !== targetMap) return null;
+	if (typeof tx !== 'number' || typeof ty !== 'number') return null;
+	return { x: tx, y: ty };
 }
 
 /* Is the recall actually faster from here? Returns the numbers so the log can
@@ -1553,12 +1540,16 @@ function townWorthIt(targetMap, tx, ty) {
 	if (!sp || !goal) return null;
 	// Never recall INTO a rectangle - the spawn is a fixed point, so this is cheap.
 	if (rageHit(character.map, sp.x, sp.y, rageCfg().margin)) return null;
+	/* A rage-managed walk is deliberately heading away from the goal to get
+	   round a rectangle - the western approach to the corridor is the extreme
+	   case - so its straight-line distance is meaningless to this comparison. */
+	if (typeof rageNav !== 'undefined' && rageNav && rageNav.busy) return null;
 	const speed = character.speed || 55;
 	const here = Math.hypot(character.x - goal.x, character.y - goal.y);
 	const after = Math.hypot(sp.x - goal.x, sp.y - goal.y);
 	const channel = (cfg.channelMs / 1000) * speed;  // the 3 s, priced in units
 	const saves = here - (after + channel);
-	if (saves <= cfg.margin) return null;
+	if (saves <= cfg.minSaveSec * speed) return null;
 	return { goal: goal, sp: sp, here: here, after: after, channel: channel, saves: saves, speed: speed };
 }
 
@@ -1630,8 +1621,11 @@ async function townHop(w) {
    drives, and takes it whenever the gate turns true - before departure, and
    again on each new map as it is entered. This keeps smart_move's own route
    choice, which the staging version was overriding with a door BFS for no
-   good reason. townNextDoor survives only to PRICE a leg we are not yet on,
-   never to route one. */
+   good reason.
+
+   v86: the hop is now priced ONLY against the real destination on the map we
+   are standing on, and only once per map arrival. v85 did neither, and the
+   merchant ended up stuck on mtunnel - see townGoal and townTravel. */
 async function townTravel(spec) {
 	const cfg = townCfg();
 	if (!cfg.enabled || !spec || typeof spec !== 'object') return safeSmartMove(spec);
@@ -1639,11 +1633,22 @@ async function townTravel(spec) {
 	const targetMap = spec.map || character.map;
 	for (const k in townTries) delete townTries[k];
 	let done = false;
+	/* ON ARRIVAL, NEVER MID-WALK. v85 re-priced every watchMs while smart_move
+	   drove, and took any hop that read positive. Straight-line distance to the
+	   goal rises and falls along a real route, so that fires on noise - measured
+	   live at "about 2.3s better than walking" - and a teleport mid-route forces
+	   a path_lost re-plan that can land somewhere else entirely. The poll now
+	   only watches for the map to CHANGE; the decision is made once per map,
+	   which is what the straight-line comparison is actually valid for. */
+	let priced = null;
 	const watcher = (async () => {
 		while (!done) {
 			try {
-				const w = townWorthIt(targetMap, spec.x, spec.y);
-				if (w) await townHop(w);
+				if (character.map !== priced) {
+					priced = character.map;
+					const w = townWorthIt(targetMap, spec.x, spec.y);
+					if (w) await townHop(w);
+				}
 			} catch (e) { townLog('watcher: ' + ((e && e.message) || e), 'orange'); }
 			if (done) break;
 			await sleep(cfg.watchMs);
@@ -2216,31 +2221,69 @@ async function attemptActions(recipientName, remaining) {
 	return { deliveries: stillDeliveries, pickup: stillPickup, mluck: stillMluck };
 }
 
-// Asks the recipient to come to Meltymerch's current spot, then polls for
-// their arrival up to a timeout.
+/* Asks the recipient to come to Meltymerch's current spot, then STANDS STILL
+   and polls for their arrival.
+
+   Standing still is the whole point and v86 did not do it. summonAndWait
+   published a position and then waited 60 s without taking the move lock, so
+   every other loop in the file - the scout, the stand, gear progression,
+   arbitrage, the maintenance beat - was free to walk him off while the
+   recipient was still on its way to the coordinates he had just sent. The
+   recipient arrives, finds nobody, and the trip ends in
+   "<name> never arrived - giving up on remaining actions this trip", which
+   reads like the recipient's fault and is not.
+
+   Two defences, because the lock alone is not quite enough. The lock stops
+   anything that routes through moveTo(); the drift check below catches
+   everything else - a raw move() somewhere, knockback, a move already in
+   flight when we were called - by noticing we are no longer where we said we
+   would be and re-publishing rather than letting them walk to an empty spot.
+
+   The lock ceiling is 180 s (CONFIG.moveLockMaxMs) and the wait is 60 s, so
+   holding it for the whole wait is well inside the break-open threshold. */
 async function summonAndWait(recipientName) {
-	plSend(recipientName, {
-		message: 'come_to_merchant',
-		x: character.x,
-		y: character.y,
-		map: character.map,
-	});
-	game_log(`${recipientName} wasn't in range - asked them to come to Meltymerch`, '#FFD700');
+	const cfg = (typeof CONFIG !== 'undefined' && CONFIG.summon) || {};
+	const timeoutMs = cfg.waitMs || 60000;
+	const pollMs = cfg.pollMs || 1000;
+	const drift = cfg.driftUnits || 60;
 
-	const timeoutMs = 60000;
-	const pollMs = 1000;
-	const start = Date.now();
+	travelBegin();
+	try {
+		/* Anything already walking us has to be cancelled before we can promise
+		   to be here. Its caller sees an interrupted move and backs off; a retry
+		   then fails fast on the lock we are holding. */
+		try { if (typeof stop === 'function') stop(); } catch (e) { }
+		await sleep(250);
 
-	while (Date.now() - start < timeoutMs) {
-		await sleep(pollMs);
-		if (character.rip) {
-			game_log('Meltymerch died while waiting - abandoning this summon', 'red');
-			return false;
+		const spot = { x: character.x, y: character.y, map: character.map };
+		const publish = () => plSend(recipientName, {
+			message: 'come_to_merchant', x: spot.x, y: spot.y, map: spot.map,
+		});
+		publish();
+		game_log(`${recipientName} wasn't in range - asked them to come to Meltymerch, holding position at `
+			+ `${Math.round(spot.x)},${Math.round(spot.y)}`, '#FFD700');
+
+		const start = Date.now();
+		while (Date.now() - start < timeoutMs) {
+			await sleep(pollMs);
+			if (character.rip) {
+				game_log('Meltymerch died while waiting - abandoning this summon', 'red');
+				return false;
+			}
+			if (character.map !== spot.map || Math.hypot(character.x - spot.x, character.y - spot.y) > drift) {
+				spot.x = character.x; spot.y = character.y; spot.map = character.map;
+				publish();
+				game_log(`Moved while waiting for ${recipientName} - re-sent position `
+					+ `${Math.round(spot.x)},${Math.round(spot.y)}`, 'orange');
+			}
+			const target = get_player(recipientName);
+			if (target && is_in_range(target, 'attack')) return true;
 		}
-		const target = get_player(recipientName);
-		if (target && is_in_range(target, 'attack')) return true;
+		game_log(`${recipientName} did not reach Meltymerch within ${Math.round(timeoutMs / 1000)}s`, 'orange');
+		return false;
+	} finally {
+		travelEnd();
 	}
-	return false;
 }
 
 async function tryCastMluck(targetName) {
