@@ -28,6 +28,58 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v88
+
+The scout now reports what a barter stand wants.
+
+Stands can be posted for goods instead of gold. Those slots carry `want` -
+`{name, q, level?}` - and no price. The scout was dropping it, so the whole
+Codex watchlist believed the information did not exist.
+
+**A FIXED WHITELIST IS A SLOW LEAK.** `scoutScanStands()` rebuilt every slot
+from seven named fields:
+
+```js
+slots[k] = { name, price, b, q, level, p, stat_type };
+```
+
+Anything the game adds afterwards is silently dropped on the way through, and
+barter listings are exactly that. The symptom was a perfectly uniform field
+census on the bridge - all seven fields present on all 741 slots - against a
+ragged one from the game feed, which is what a rebuild looks like next to a
+pass-through. `want` now rides along; a slot without one reports null, which is
+what every slot looked like before.
+
+MEASURED 2026-10-10, and the measurement is the point:
+
+| source | slots | unpriced | carrying `want` |
+|---|---|---|---|
+| ALData | 2,223 | 62 | **62** |
+| game `pull_merchants` | 643 | 23 | **23** |
+| bridge (before this) | 632 | 632 | **0** |
+
+Both upstream sources carry it on precisely the unpriced slots. Only our own
+copy lacked it. Real asks from the live feed: a vhammer for 66 cave_amber, a
+vhammer+3 for one scroll3, 50 slice_strawberry for 30 slice_honey.
+
+**HOW THE WRONG CONCLUSION GOT DRAWN**, because it is the reusable part. The
+watchlist's Item Trades tab shipped saying "pull_merchants does not publish what
+the owner wants in exchange". That came from inventorying the BRIDGE copy and
+generalising to every source - the one source that had been through this
+whitelist. Checking either upstream feed would have shown it in a single call.
+A field census taken downstream of your own normaliser measures the normaliser,
+not the feed.
+
+`cache_item(item, true)` strips only grace/o/oo/src, so `want` reaches
+`entities[].slots` intact; nothing else was in the way. The bridge stores
+`slots` verbatim and needed no change.
+
+7 assertions over scoutScanStands: want preserved with and without a level,
+quantity defaulting to 1, a malformed or absent want reported as null rather
+than throwing, an ordinary gold listing unchanged, equipment slots and NPCs
+still excluded, and the result surviving a JSON round trip - which is what the
+POST to /scan actually does to it.
+
 ## v87
 
 The summon wait now actually waits. Observed: Meltymerch asks a party member to
