@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v92
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v93
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -675,12 +675,64 @@ const CONFIG = {
 	// -> MerchantComments.md#mluck
 	mluck: {
 		minLevel: 40,
+		/* WHO MAY PULL A TRIP. Deliberately just the ranger. A name here can send
+		   a `location` message and make the merchant move, divert and wait for it
+		   (-> summonAndWait). The opportunistic pass below buffs the whole party
+		   without any of that, which is why the other two are NOT listed here:
+		   adding them would let them interrupt the merchant's route, and the
+		   operator asked for the opposite. */
 		targets: ['Dexon'],
 		/* How close to expiry our own cast has to be before a location message
 		   that says nothing about the buff is worth a trip. Only reached when the
 		   sender predates v62 and sends no needsMluck; a recipient that states its
 		   need is believed either way. */
 		refreshWithinMs: 10 * 60 * 1000,
+
+		/* OPPORTUNISTIC PASS (v93) -----------------------------------------
+		   mluck is cooldown 100ms, mp 10, range 320, duration 60min (measured
+		   from G.skills.mluck 2026-10-10, game version 17665). At that price a
+		   cast is free, so the only real question is ever "is someone in range".
+		   This pass answers it from maintenanceLoop, which never moves the
+		   character - so the buff can NEVER stop, divert or delay a trip. If a
+		   party member is out of range, the pass does nothing and tries again on
+		   the next tick. It does not walk to them and it does not summon. */
+		opportunistic: true,
+
+		/* null => CONFIG.partyMembers. Set an array to narrow it. */
+		opportunisticTargets: null,
+
+		/* Refreshing a buff that is already ours. Our own cast on Dexon read
+		   strong:true with 52 min left on 2026-10-10, and tryCastMluck has always
+		   refused to touch its own buff at any remaining time - which is why the
+		   ranger still had to ask for a trip as the hour ran out. Topping up below
+		   this mark is what removes that ask.
+		   WHETHER A RECAST ACTUALLY RESETS `ms` IS NOT YET MEASURED on this
+		   account: the server's apply path could not be read. So the pass logs the
+		   before and after `ms` of every refresh (-> mluckOppDump().verified). If
+		   refresh turns out to be a no-op, set this to 0 and the pass goes back to
+		   "only buff what is not already ours" with no other change. */
+		refreshOursBelowMs: 30 * 60 * 1000,
+
+		/* Casting over another merchant's buff. FatherToken and MageofOz were
+		   both carrying earthMer's mluck (strong:false) on 2026-10-10, which is
+		   the case this pass exists to fix. Whether a strong buff from a stranger
+		   can be overwritten is NOT asserted here - the cast is attempted and the
+		   server decides. A refusal parks that one name for retryAfterFailMs
+		   instead of being retried every 2s. */
+		takeOverOthers: true,
+		retryAfterFailMs: 5 * 60 * 1000,
+
+		/* Short cooloff after ANY attempt on a name, win or lose. Two jobs.
+		   First, the server does not apply the buff instantly, so without this the
+		   pass re-reads an unbuffed target and casts again - and because it casts
+		   one per tick starting from the top of the list, the first party member
+		   would be recast forever and the other two would NEVER be reached. That
+		   starvation was caught by the harness, not by reading. Second, it spaces
+		   the party out across ticks, which is all the 100ms cooldown needs. */
+		castCooloffMs: 10 * 1000,
+
+		// One throttle for all of this pass's chatter.
+		logThrottleMs: 60 * 1000,
 	},
 
 	/* PONTY BUY LIST - the tier-3 gear the operator wants picked up whenever it
@@ -2334,6 +2386,209 @@ async function tryCastMluck(targetName) {
 	}
 }
 
+/* OPPORTUNISTIC MLUCK (v93) =================================================
+   The operator's ask, verbatim in intent: buff any party member who happens to
+   be in reach on any trip, but never stop, divert or wait to do it. The one
+   exception is the ranger's own requested trip, which still moves the merchant -
+   that path is untouched and lives in CONFIG.mluck.targets / summonAndWait.
+
+   WHY IT LIVES IN maintenanceLoop. That loop is the only thing in this file that
+   runs on a timer without ever moving the character. Hanging the pass there
+   means it physically cannot divert a route: it looks at who is in range right
+   now, casts if so, and otherwise does nothing until the next tick. There is no
+   pathing, no summon, no await on travel.
+
+   MEASURED 2026-10-10 (G.skills.mluck, game version 17665): level 40, mp 10,
+   range 320, cooldown 100ms, duration 3,600,000ms. At 10 mp and a 100ms cooldown
+   against Meltymerch's 1,578 mp, cost is not a consideration - presence is.
+
+   WHY IT WAS NEEDED. CONFIG.mluck.targets was ['Dexon'], and that list gated
+   BOTH who could pull a trip and who ever got buffed. So the priest and mage
+   were never candidates: both were carrying earthMer's mluck (strong:false) when
+   this was written, i.e. a passing stranger's merchant was doing the job.
+   -> MerchantComments.md#mluck */
+
+const mluckOpp = {
+	attempts: 0, casts: 0, unbuffed: 0, refreshed: 0, tookOver: 0,
+	denied: 0, outOfRange: 0, notVisible: 0, skipped: 0,
+	failUntil: {},   // name -> ms timestamp; set when the server refuses a cast
+	triedAt: {},     // name -> ms timestamp of the last attempt, win or lose
+	pending: {},     // name -> { beforeMs, at, why } awaiting a free `ms` re-read
+	verified: [],    // resolved before/after rows - the refresh evidence
+	lastWhy: {},     // name -> last refusal reason
+	lastLog: 0,
+};
+
+/* One throttle for the noisy half. A successful cast is rare and interesting, so
+   it logs unthrottled; refusals and housekeeping go through here. */
+function mluckOppLog(msg, colour) {
+	const now = Date.now();
+	if (now - mluckOpp.lastLog < (Number(CONFIG.mluck.logThrottleMs) || 60000)) return;
+	mluckOpp.lastLog = now;
+	game_log(msg, colour || '#8b98ab');
+}
+
+/* PURE - no game calls at all, so it is testable off-client. `buff` is
+   target.s.mluck or null. */
+function mluckOpportunityNeed(buff, myName, cfg) {
+	if (!buff || !buff.f) return { cast: true, why: 'unbuffed' };
+	if (buff.f === myName) {
+		const left = Number(buff.ms) || 0;
+		const floor = Number(cfg.refreshOursBelowMs) || 0;
+		/* floor 0 disables refreshing entirely and restores the pre-v93 rule of
+		   never touching our own buff. */
+		if (floor > 0 && left < floor) return { cast: true, why: 'refresh' };
+		return { cast: false, why: 'ours-fresh' };
+	}
+	if (!cfg.takeOverOthers) return { cast: false, why: 'theirs-left-alone' };
+	/* Deliberately NOT gated on buff.strong. Whether a strong buff from another
+	   merchant can be overwritten is not measured on this account, so the cast is
+	   attempted and the server is left to decide; a refusal parks the name. */
+	return { cast: true, why: 'takeover' };
+}
+
+/* Did a refresh actually reset `ms`? Uses the buff record the pass already holds
+   on a later tick, so the answer costs nothing. This is the instrumentation that
+   settles CONFIG.mluck.refreshOursBelowMs one way or the other. */
+function mluckOppResolve(name, buff, now) {
+	const p = mluckOpp.pending[name];
+	if (!p) return;
+	if (now - p.at < 3000) return;            // give the server time to apply it
+	delete mluckOpp.pending[name];
+	if (!buff || buff.f !== character.name) return;
+	const afterMs = Number(buff.ms) || 0;
+	const row = {
+		name: name, why: p.why,
+		beforeMin: Math.round(p.beforeMs / 60000),
+		afterMin: Math.round(afterMs / 60000),
+		gained: afterMs > p.beforeMs,
+	};
+	mluckOpp.verified.push(row);
+	if (mluckOpp.verified.length > 20) mluckOpp.verified.shift();
+	if (p.why === 'refresh') {
+		game_log('mluck refresh on ' + name + ': ' + row.beforeMin + ' min -> '
+			+ row.afterMin + ' min (' + (row.gained ? 'RESET WORKS' : 'NO RESET') + ')',
+			row.gained ? '#00FF00' : 'orange');
+	}
+}
+
+async function mluckOpportunityPass() {
+	const cfg = CONFIG.mluck;
+	if (!cfg || !cfg.opportunistic) return;
+	if (character.level < cfg.minLevel) return;
+	if (character.rip) return;
+	// Form A guard: a ternary on a missing identifier is what explodes, so typeof.
+	if (typeof is_on_cooldown === 'function' && is_on_cooldown('mluck')) return;
+
+	const names = (Array.isArray(cfg.opportunisticTargets) && cfg.opportunisticTargets.length)
+		? cfg.opportunisticTargets
+		: (CONFIG.partyMembers || []);
+	const now = Date.now();
+
+	for (const name of names) {
+		if (!name || name === character.name) continue;
+
+		let target = null;
+		try { target = get_player(name); } catch (e) { target = null; }
+		if (!target) { mluckOpp.notVisible++; continue; }
+
+		const buff = (target.s && target.s.mluck) ? target.s.mluck : null;
+		mluckOppResolve(name, buff, now);
+
+		if (now < (mluckOpp.failUntil[name] || 0)) { mluckOpp.skipped++; continue; }
+		/* Just tried this one - let the server apply it, and give the rest of the
+		   party their turn. -> CONFIG.mluck.castCooloffMs */
+		if (now - (mluckOpp.triedAt[name] || 0) < (Number(cfg.castCooloffMs) || 0)) {
+			mluckOpp.skipped++; continue;
+		}
+		/* THE WHOLE CONTRACT IS HERE. Out of range is not a problem to be solved,
+		   it is simply "not this tick" - no move, no summon, no wait. */
+		if (!is_in_range(target, 'mluck')) { mluckOpp.outOfRange++; continue; }
+
+		const need = mluckOpportunityNeed(buff, character.name, cfg);
+		if (!need.cast) { mluckOpp.skipped++; continue; }
+
+		mluckOpp.attempts++;
+		mluckOpp.triedAt[name] = Date.now();
+		const beforeMs = buff ? (Number(buff.ms) || 0) : 0;
+		try {
+			/* Bounded with THIS FILE'S OWN idiom. Merchant.js has no noHang() -
+			   see the note above arbNoHang - and an unbounded await here sits
+			   inside maintenanceLoop's self-chain, where a hang ends the chain
+			   permanently and silently. */
+			await arbNoHang(use_skill('mluck', target), 'mluck ' + name, 5000);
+			mluckOpp.casts++;
+			if (need.why === 'refresh') mluckOpp.refreshed++;
+			else if (need.why === 'takeover') mluckOpp.tookOver++;
+			else mluckOpp.unbuffed++;
+			plMarkMlucked(name, Date.now());
+			mluckOpp.pending[name] = { beforeMs: beforeMs, at: Date.now(), why: need.why };
+			game_log('mluck -> ' + name + ' (' + need.why
+				+ ((need.why === 'takeover' && buff && buff.f) ? ', was ' + buff.f : '')
+				+ ')', '#00FF00');
+		} catch (e) {
+			mluckOpp.denied++;
+			const parkMs = Number(cfg.retryAfterFailMs) || 300000;
+			mluckOpp.failUntil[name] = Date.now() + parkMs;
+			const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+			mluckOpp.lastWhy[name] = why;
+			mluckOppLog('mluck on ' + name + ' refused (' + why + ') - leaving it for '
+				+ Math.round(parkMs / 60000) + ' min', 'orange');
+		}
+		/* ONE cast per tick, deliberately. The cooldown is 100ms, so a parked
+		   merchant covers the whole party within a few ticks anyway, and capping
+		   it bounds the worst case this pass can add to a maintenanceLoop tick to
+		   a single arbNoHang timeout instead of one per party member. */
+		return;
+	}
+}
+
+/* Read from the console as parent.MLUCK_OPP(). Published onto parent for the
+   reason v90 had to learn the hard way: these declarations are lexical inside
+   this file's IIFE, so a `parent.`-prefixed eval cannot see the bare name. */
+function mluckOppDump() {
+	const cfg = CONFIG.mluck;
+	const names = (Array.isArray(cfg.opportunisticTargets) && cfg.opportunisticTargets.length)
+		? cfg.opportunisticTargets
+		: (CONFIG.partyMembers || []);
+	const live = names.map(function (n) {
+		let p = null;
+		try { p = get_player(n); } catch (e) { p = null; }
+		const b = (p && p.s && p.s.mluck) ? p.s.mluck : null;
+		return {
+			name: n,
+			visible: !!p,
+			inRange: !!(p && is_in_range(p, 'mluck')),
+			from: b ? (b.f || null) : null,
+			minLeft: b ? Math.round((Number(b.ms) || 0) / 60000) : null,
+			strong: b ? !!b.strong : null,
+			need: mluckOpportunityNeed(b, character.name, cfg),
+			parkedForSec: Math.max(0, Math.round(((mluckOpp.failUntil[n] || 0) - Date.now()) / 1000)),
+			cooloffSec: Math.max(0, Math.round((((mluckOpp.triedAt[n] || 0)
+				+ (Number(cfg.castCooloffMs) || 0)) - Date.now()) / 1000)),
+			lastRefusal: mluckOpp.lastWhy[n] || null,
+		};
+	});
+	return {
+		ver: 93,
+		enabled: !!cfg.opportunistic,
+		eligible: character.level >= cfg.minLevel,
+		refreshOursBelowMin: Math.round((Number(cfg.refreshOursBelowMs) || 0) / 60000),
+		takeOverOthers: !!cfg.takeOverOthers,
+		tripTargets: cfg.targets.slice(),
+		counters: {
+			attempts: mluckOpp.attempts, casts: mluckOpp.casts,
+			unbuffed: mluckOpp.unbuffed, refreshed: mluckOpp.refreshed,
+			tookOver: mluckOpp.tookOver, denied: mluckOpp.denied,
+			outOfRange: mluckOpp.outOfRange, notVisible: mluckOpp.notVisible,
+			skipped: mluckOpp.skipped,
+		},
+		verified: mluckOpp.verified.slice(),
+		live: live,
+	};
+}
+try { parent.MLUCK_OPP = mluckOppDump; } catch (e) { }
+
 async function pickupItemsFrom(recipientName) {
 	// The fighters' own clearInventory()/muling logic already auto-sends
 	// items to Meltymerch whenever he's within range - no pull mechanism
@@ -3275,6 +3530,10 @@ async function maintenanceLoop() {
 		/* Containment. The merchant has no mainLoop, and this is the housekeeping
 		   tick - 2s is fast enough to leave a rectangle before a pack commits. */
 		try { await rageGuard(); } catch (e) { }
+		/* Opportunistic mluck. Here precisely because this loop never moves the
+		   character, so the buff can never divert or delay a trip. Its own catch:
+		   a refusal must not cost the rest of the housekeeping tick. */
+		try { await mluckOpportunityPass(); } catch (e) { }
 	} catch (e) {
 		console.error('maintenanceLoop error:', e);
 	}
