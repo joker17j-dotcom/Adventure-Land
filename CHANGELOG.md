@@ -28,6 +28,111 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v91
+
+A pasted buy now freezes the rotation, and will cross a shard to reach the
+listing.
+
+**THE RACE, WHICH WAS REAL AND SILENT.** v89 and v90 took only the move lock -
+and only indirectly, by way of `moveTo`. That stops other MOVEMENT. It does not
+stop the scout, whose shard hop is gated on `state.busy` and `PROBE.hold`,
+neither of which a buy ever touched. So the rotation could fire
+`change_server` while the merchant was walking to a stand, reload the page, and
+destroy an in-flight purchase with nothing logged anywhere. The gate's own
+comment already spelled out the consequence: "A probe is measuring. Never hop -
+a hop reloads the page."
+
+`sbBuyNow` now takes `PROBE.hold` for the whole walk and releases it in a
+`finally`, so a throw, a refusal at the stand or a death cannot leave the
+merchant frozen off its rotation for the rest of the session. An operator hold
+that was already on is left on rather than cleared.
+
+**CROSSING A SHARD, WHICH v90 REFUSED TO DO.** It refused for a good reason -
+`arbProbeGo()` calls `change_server`, the page reloads, and the pasted command
+dies with it. The fix is to stop treating the buy as a single call: the row is
+stashed in CODE storage, which survives the reload (the same mechanism
+`probe_hold` already leans on for exactly this reason), the hop fires, and
+`sbPendingResume()` picks it up on the other side.
+
+Four rules keep a stored purchase from becoming a liability:
+
+- **The record is cleared BEFORE it is acted on, never after.** A buy that
+  throws must not leave something armed that fires again on the next load. A
+  stored purchase that retries forever is worse than one quietly dropped.
+- **It will not hop twice** chasing one listing (`pendingMaxHops`).
+- **Landing on the wrong shard drops it** instead of hopping again, which is how
+  a merchant would otherwise bounce between shards indefinitely.
+- **Ten minutes and it expires.** By then the listing has very likely moved, and
+  `sbVerify` would refuse it at the stand anyway.
+
+One more, less obvious: if the stash cannot be WRITTEN, it does not hop at all.
+Hopping with nowhere to record the intent is how you lose the command and the
+knowledge of what it was for.
+
+New knobs under `CONFIG.standBuy`: `pendingMs` 600000, `pendingResumeMs` 9000,
+`pendingMaxHops` 1.
+
+Built on top of commit `30cfcc2` rather than beside it - see the note under v90
+about the version number.
+
+16 assertions. The load-bearing ones are the two that are easy not to think of:
+that the hold is taken BEFORE the approach rather than on arrival, and that a
+failed resume leaves nothing armed behind it.
+
+## v90
+
+PROBE_API is now bound in the CODE scope too, which is where it gets pasted.
+
+v89 published the API on `parent` alone. Inside the maincode iframe
+`window !== parent`, and the eval box - the one place these commands are meant
+to be typed - runs there. So every single pasted command answered:
+
+```
+eval ReferenceError: PROBE_API is not defined
+```
+
+including every `copy buy` string the watchlist page produced. The feature
+shipped unusable in its intended spot and the tests did not catch it, because
+they exercised `sbBuyNow` directly and never the name it is reached by.
+
+MEASURED 2026-10-10 in Meltymerch's live context, which is what settled it:
+
+| expression | result |
+|---|---|
+| `typeof PROBE_API` | **undefined** |
+| `typeof window.PROBE_API` | **undefined** |
+| `typeof parent.PROBE_API` | object, with `buyNow` on it |
+| `window === parent` | **false** |
+
+The parent assignment STAYS - /hub and any top-window console reach it there,
+and dropping it would break the other direction. This adds
+`window.PROBE_API = parent.PROBE_API` so the short name resolves in the CODE
+scope as well. Both names are the same object, so there is no second copy to
+drift.
+
+**A NOTE ON THIS VERSION NUMBER.** v90 names two separate things. The operator
+committed `30cfcc2` independently, bumping the header to v90 and adding
+`voidthread` and `essenceofether` to `pontyBuy.items`; the PROBE_API fix
+described above was built against v89 at the same time and also called itself
+v90. Both are in the file. v91 was then rebased onto `30cfcc2` so the two
+pontyBuy items survive - a straight overwrite would have reverted them
+silently, which is exactly the stale-base failure CLAUDE.md warns about under
+"Handing code to the other chat".
+
+The page half is fixed in the same pass: `buyCommand()` in
+`Codex/_al_template.html` now emits the **parent-prefixed** form. That is
+deliberate and should not be tidied back - `parent.PROBE_API` resolves in both
+scopes, because where `window` is already the top, `parent === window`. One
+string therefore works against a merchant that only published to parent and
+one that also binds the short name.
+
+THE REUSABLE PART: a feature can be fully tested and still be unreachable. Nine
+assertions covered what `sbBuyNow` does and none covered how it is named, so
+the gap sat exactly where the tests were not looking. 8 new assertions now
+cover the publish block itself, in a fixture where `window !== parent` - and
+one of them exists only to prove the fixture has not collapsed the two scopes,
+since that is the entire bug.
+
 ## v89
 
 A per-row buy override, pasted from the watchlist page.
