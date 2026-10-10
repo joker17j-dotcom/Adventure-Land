@@ -1,4 +1,5 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v9 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v10 (TEST BUILD)
+// v10 2026-10-10 loot: pause guard, cooldown, per-chest backoff, shape recon
 // v9 2026-10-10 heal cooldown gate; friendly_target forensics; objective and
 //               objective-button reconnaissance (both read-only)
 // v8 2026-10-10 restock phase before the gather, respawn backoff, two more
@@ -83,6 +84,14 @@ const CFG = {
 	respawnMs: 4000,        // first retry delay; doubles on cant_respawn
 	respawnMaxMs: 30000,
 
+	/* LOOT. v9 called loot() on every 250ms tick with no pause guard and no
+	   cooldown; see lootTick for the measurements. */
+	lootMs: 900,
+	lootPerPass: 3,         // chests attempted per pass, newest first
+	lootMaxTries: 3,        // attempts before a chest is rested
+	lootDeadMs: 15000,      // how long a rested chest is left alone
+	lootRange: 400,         // ONLY applied when the chest record exposes a position
+
 	/* RESTOCK. Each character buys its own - there is no shared pool, and a
 	   priest that runs dry heals nobody. 2000 of each at 100g is 200k per
 	   character fully empty, which is affordable at current balances. */
@@ -121,6 +130,9 @@ let lastLog = 0;
 let lastDoorTry = 0;
 let lastPot = 0;
 let deadDoors = {};        // a locked door is not retried every three seconds
+let lastLoot = 0;
+let chestTries = {};       // id -> attempts in this life
+let deadChests = {};       // id -> when it was rested
 
 /* COHESION RECOVERY IS LATCHED AND UNINTERRUPTIBLE. Past closeAt the follower
    commits to reaching the leader and nothing else may move it - no kiting, no
@@ -835,15 +847,88 @@ function hookPartyInvite() {
 }
 
 // ------------------------------------------------------------------ loot ---
+/* MEASURED OVER THE 2026-10-10 CAVE RUN, which is what every number here is for:
+
+     character      loot() calls   loot_failed   cave_paused
+     FatherToken          3,047         1,068            77
+     Dexon                1,627           611            60
+     MageofOz             1,562           572            63
+
+   6,236 calls, 2,451 refusals - and more than half the calls drew no response
+   at all, which is what firing faster than the server will answer looks like.
+
+   THE PAUSE GUARD IS THE OPERATOR'S CATCH and it was a real omission: this was
+   the ONLY loop in the file without one. moveTick has pausedMoveSkipped,
+   combatTick has pausedAttackSkipped, loot had nothing, so the priest kept
+   hammering open_chest through all 556 of its paused ticks. It is worth saying
+   that it only explains about 7% of the volume, though - the other 93% is rate.
+
+   THE RATE WAS THE REAL FAULT. v9 called the blanket loot() every 250ms for as
+   long as get_chests() was non-empty, so a chest that could not be opened was
+   re-attempted four times a second for its entire life. Now: a cooldown, a few
+   chests per pass, and a chest that has refused lootMaxTries times is rested
+   for lootDeadMs - the same shape as deadDoors, for the same reason.
+
+   WHY THIS MATTERS MORE THAN ITS SIZE: the spam filled 75 of the event ring's
+   80 slots and evicted every door, vote and phase event from the run. v9's
+   friendly_target forensics live outside the ring precisely to survive that.
+   Fix the source and the ring becomes worth reading again.
+
+   THE RANGE FILTER IS CONDITIONAL ON PURPOSE. get_chests() returns
+   parent.chests keyed by id, but it was empty everywhere it could be probed
+   outside a cave, so whether a chest record carries x/y is UNVERIFIED. The
+   filter applies only when the fields are actually numbers - typeof, never
+   truthiness - and tel.chestFields records the real shape the first time one
+   is seen, so the next run settles it. */
 function lootTick() {
 	if (stopped || character.rip) return;
-	try {
-		const chests = (typeof get_chests === 'function') ? get_chests() : null;
-		if (!chests) return;
-		if (!Object.keys(chests).length) return;
-		loot();
-		bump('lootCalls');
-	} catch (e) { bump('lootErr'); }
+	if (cavePaused()) { bump('pausedLootSkipped'); return; }
+	const now = Date.now();
+	if (now - lastLoot < CFG.lootMs) return;
+
+	let chests = null;
+	try { chests = (typeof get_chests === 'function') ? get_chests() : null; } catch (e) { bump('lootErr'); return; }
+	if (!chests) return;
+	const ids = Object.keys(chests);
+	if (!ids.length) { chestTries = {}; deadChests = {}; return; }
+
+	/* Recorded once: the one field list that decides whether a range filter is
+	   possible at all. */
+	if (!tel.chestFields) {
+		try { tel.chestFields = Object.keys(chests[ids[0]] || {}); ev('chestShape', tel.chestFields); } catch (e) { }
+	}
+
+	/* A chest that is gone has been looted or expired; forget it rather than
+	   letting the two maps grow for the length of the run. */
+	for (const k in chestTries) if (!chests[k]) delete chestTries[k];
+	for (const k in deadChests) if (!chests[k]) delete deadChests[k];
+
+	lastLoot = now;
+	let tried = 0;
+	for (const id of ids) {
+		if (tried >= CFG.lootPerPass) break;
+		if (deadChests[id] && now - deadChests[id] < CFG.lootDeadMs) { bump('lootRested'); continue; }
+		if (deadChests[id]) { delete deadChests[id]; chestTries[id] = 0; }
+
+		const c = chests[id];
+		const cx = (c && typeof c.x === 'number') ? c.x : null;
+		const cy = (c && typeof c.y === 'number') ? c.y : null;
+		if (cx !== null && cy !== null
+			&& Math.hypot(cx - character.real_x, cy - character.real_y) > CFG.lootRange) {
+			bump('lootOutOfRange'); continue;
+		}
+
+		chestTries[id] = (chestTries[id] || 0) + 1;
+		if (chestTries[id] > CFG.lootMaxTries) { deadChests[id] = now; bump('lootGaveUp'); continue; }
+
+		tried++;
+		/* loot() carries its own per-chest last_loot safety, so this is a
+		   second gate rather than the only one. Nothing throws here in
+		   practice - lootErr was 0 across all three characters - the refusal
+		   arrives as loot_failed on game_response, which is why the backoff
+		   counts ATTEMPTS rather than waiting for an error. */
+		try { loot(id); bump('lootCalls'); } catch (e) { bump('lootErr'); deadChests[id] = now; }
+	}
 }
 
 // ----------------------------------------------------- objective recon -----
@@ -943,7 +1028,7 @@ function objButtonRecon() {
    telemetry - measured 2026-10-06. */
 const TEL_KEY = 'cave_tel_' + character.ctype;
 const tel = {
-	ver: 9, runId: 'r' + Date.now().toString(36), name: character.name, ctype: character.ctype,
+	ver: 10, runId: 'r' + Date.now().toString(36), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -955,7 +1040,8 @@ const tel = {
 		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
 		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
-		buys: 0, buyErr: 0, restockBroke: 0, restockGaveUp: 0, restockMoveFail: 0 },
+		buys: 0, buyErr: 0, restockBroke: 0, restockGaveUp: 0, restockMoveFail: 0,
+		pausedLootSkipped: 0, lootRested: 0, lootGaveUp: 0, lootOutOfRange: 0 },
 	skills: {}, skillFail: {}, skillFailWhy: {},
 	/* EVERY response reason, counted. v6 filtered them through TEL_REASONS
 	   before recording, so distance / not_ready / no_mp / cooldown never
@@ -964,6 +1050,7 @@ const tel = {
 	reasons: {},
 	friendly: {},          // v9 forensics: distinct friendly_target victims
 	objectives: null,      // v9 recon: what an objective record looks like
+	chestFields: null,     // v10 recon: does a chest record carry a position?
 	objButtons: null,      // v9 recon: the top-bar buttons, read-only
 	objFns: null,
 	maxDistLeader: 0, msBeyondLeash: 0, msRecovering: 0, helpers: {}, events: [],
@@ -1159,12 +1246,12 @@ async function tick() {
 }
 function voteLoop() { try { voteTick(); } catch (e) { clog('vote: ' + e, 'red'); } if (alive()) setTimeout(voteLoop, CFG.voteTickMs); }
 
-clog('v9 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
+clog('v10 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
 	+ '). Leader ' + leaderName() + '. caveDry() to rehearse on-map, caveGo() for a real run, caveLead(name) to retarget.', '#7FD98A');
 telCensus();
 telHook();
 hookPartyInvite();
-ev('load', { ver: 9, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
+ev('load', { ver: 10, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 tick();
 voteLoop();
