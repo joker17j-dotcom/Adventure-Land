@@ -14,11 +14,28 @@ const WATCHLIST = [
 tab("market", "Watchlist Market", (host) => {
   renderMarket(host, {
     defaultFilter: WATCHLIST.join(", "),
+    excludeBarter: true,
+    buyCommands: true,
     blurb: el("span", {}, "Pre-filtered to the ",
       el("b", {}, String(WATCHLIST.length) + " tracked items"),
-      ". Clear the box to browse the whole market."),
+      ". Clear the box to browse the whole market. Item-for-item trades are in ",
+      el("b", {}, "Item Trades"), ". ",
+      el("b", {}, "copy buy"), " on a selling row copies a command for Meltymerch's ",
+      "console that walks to that stand and buys that slot — it re-checks the ",
+      "listing on arrival and refuses if the price has moved up."),
   });
 });
+
+/* The filter box persists under this key, which is how the summary below
+   follows it. Same key renderMarket saves to - if that changes, change both. */
+function marketFilterKey() { return "al_market_filter_" + (CONFIG.mode || "x"); }
+function currentMarketFilter() {
+  try {
+    const v = localStorage.getItem(marketFilterKey());
+    if (v != null) return v;
+  } catch (e) {}
+  return WATCHLIST.join(", ");
+}
 
 /* ======================================================= SUMMARY ENGINE  */
 /* Shared by the two summary tabs below so their numbers cannot drift apart:
@@ -33,13 +50,18 @@ function summaryGroupKey(r) {
   return [String(r.item).toLowerCase(), r.level || 0, r.special || ""].join("|");
 }
 
-/* rows -> one record per group. `keep` is a Set of item keys to restrict to,
-   or null for every item currently on the market. */
+/* rows -> one record per group. `keep` restricts which items are counted: a
+   Set of item keys, a predicate (key) => boolean, or null for every item on
+   the market. The predicate form is what lets the summary follow the market
+   tab's filter, which supports fuzzy terms and wildcards that no Set can
+   express. */
 function summarizeMarket(rows, keep) {
+  const keepFn = typeof keep === "function" ? keep
+    : (keep ? (k) => keep.has(k) : null);
   const by = new Map();
   for (const r of rows) {
     const key = String(r.item).toLowerCase();
-    if (keep && !keep.has(key)) continue;
+    if (keepFn && !keepFn(key)) continue;
     const gk = summaryGroupKey(r);
     let g = by.get(gk);
     if (!g) {
@@ -170,33 +192,96 @@ function summaryColumns() {
 /* opts: {items: [keys]|null, positiveOnly: bool, blurb} */
 function renderSummary(host, opts) {
   opts = opts || {};
-  const keep = opts.items ? new Set(opts.items) : null;
   const positiveOnly = !!opts.positiveOnly;
 
   const ctl = el("div", { class: "panel" });
   const status = el("span", { class: "dim" }, "loading…");
-  ctl.append(
-    el("div", { class: "src", style: "margin-bottom:8px" }, opts.blurb || ""),
-    el("div", { class: "row" },
-      el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA"),
-      sourceSelect(() => go(true)), pontyToggle(() => go(true)), status));
+  const filterNote = el("span", { class: "dim" }, "");
+
+  /* FOLLOWS THE MARKET TAB. The summary used to be pinned to the WATCHLIST
+     constant, so narrowing the market filter to one item still produced a
+     table of all 37 - the two views disagreed about what was being looked at.
+     It now reads the same localStorage key renderMarket writes, so whatever is
+     in the filter box is what gets summarised. Unticking falls back to the
+     full tracked list. */
+  const followBox = el("input", { type: "checkbox" });
+  followBox.checked = true;
+  const followLabel = el("label", { class: "row", style: "gap:6px;cursor:pointer" },
+    followBox, el("span", {}, "Follow the Watchlist Market filter"));
+
+  const row = el("div", { class: "row" },
+    el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA"),
+    sourceSelect(() => go(true)), pontyToggle(() => go(true)), status);
+  if (opts.followFilter) row.append(followLabel);
+  ctl.append(el("div", { class: "src", style: "margin-bottom:8px" }, opts.blurb || ""), row);
+  if (opts.followFilter) ctl.append(el("div", { class: "src", style: "margin-top:6px" }, filterNote));
   const out = el("div", { class: "panel" });
   host.append(ctl, out);
 
+  if (opts.followFilter) {
+    followBox.addEventListener("change", draw);
+    /* Another window editing the filter fires this; the same window does not,
+       but switching tabs re-renders this one from scratch, so both routes are
+       covered. */
+    window.addEventListener("storage", (e) => {
+      if (!e || e.key === marketFilterKey()) { try { draw(); } catch (err) {} }
+    });
+  }
+
+  /* What this summary is scoped to, resolved fresh on every draw.
+       keep   - predicate or Set handed to summarizeMarket
+       always - exact item keys that get a row even with nothing listed
+       label  - what to tell the reader is being summarised */
+  function resolveScope(rows) {
+    if (!opts.followFilter) {
+      return opts.items
+        ? { keep: new Set(opts.items), always: opts.items, label: null }
+        : { keep: null, always: null, label: null };
+    }
+    const text = followBox.checked ? currentMarketFilter() : WATCHLIST.join(", ");
+    const terms = parseTerms(text);
+    if (!terms.length) {
+      return { keep: null, always: null, label: "filter is empty — summarising the whole market" };
+    }
+    const match = makeMatcher(terms, rows);
+    const always = [...match.exact];
+    return {
+      /* The matcher, not a Set: the filter box takes fuzzy terms and wildcards
+         ("cape", "pants*") that no list of keys can represent. */
+      keep: (k) => !!match(k, itemName(k)),
+      always: always.length ? always : null,
+      label: (followBox.checked ? "following the market filter" : "full tracked list")
+        + " — " + terms.map((t) => t.term).join(", "),
+    };
+  }
+
   function draw() {
     out.innerHTML = "";
-    const rows = marketRows(MERCHANTS);
-    let summary = summarizeMarket(rows, keep);
+    if (!MERCHANTS) return;
+    /* Item-for-item trades have no price, so they can neither be a cheapest
+       sell nor a best buy. Leaving them in would inflate the listing count
+       with rows that can never produce a spread. */
+    const allRows = marketRows(MERCHANTS);
+    const rows = allRows.filter((r) => !r.barter);
+    /* Scope is resolved against ALL rows, barter included. makeMatcher decides
+       whether a term is an exact item key by looking at what is on the market,
+       so resolving against the filtered set would quietly demote a term whose
+       only listing happens to be a barter one into a fuzzy name search - and
+       the table would stop reporting it as "not listed". Caught by the page
+       test: a filter of "coat" against a barter-only coat. */
+    const scope = resolveScope(allRows);
+    if (opts.followFilter) filterNote.textContent = scope.label || "";
+    let summary = summarizeMarket(rows, scope.keep);
     const groupsScanned = summary.length;
     const present = new Set(summary.map((s) => s.item));
     const positives = summary.filter((s) => s.spread != null && s.spread > 0).length;
 
     if (positiveOnly) {
       summary = summary.filter((s) => s.spread != null && s.spread > 0);
-    } else if (keep) {
+    } else if (scope.always) {
       /* A tracked item nobody is trading at any level still gets a row, so the
-         table always accounts for the whole watchlist. */
-      for (const k of opts.items) {
+         table always accounts for the whole scope. */
+      for (const k of scope.always) {
         if (present.has(k)) continue;
         summary.push({
           item: k, level: null, special: null, nSell: 0, nBuy: 0,
@@ -207,8 +292,8 @@ function renderSummary(host, opts) {
       }
     }
 
-    const pills = keep
-      ? [`${present.size} of ${opts.items.length} tracked items listed right now`]
+    const pills = scope.always
+      ? [`${present.size} of ${scope.always.length} filtered items listed right now`]
       : [`${fmt(present.size)} distinct items on the market`];
     const npcBacked = summary.filter((x) => x.cheapestNpc && x.spread != null && x.spread > 0).length;
     const staleSpreads = summary.filter((x) => x.spreadStale).length;
@@ -256,12 +341,15 @@ function renderSummary(host, opts) {
 tab("summary", "Watchlist Summary", (host) => renderSummary(host, {
   items: WATCHLIST,
   positiveOnly: false,
+  followFilter: true,
   blurb: el("span", {}, "Best current prices for each tracked item, across every server. ",
     el("b", {}, "Cheapest sell"), " is what you'd pay to buy it; ",
     el("b", {}, "best buy"), " is the most anyone is currently paying. ",
     "One row per item AND upgrade level: a spread only means something between identical goods. ",
     el("b", {}, "Sell seen"), " and ", el("b", {}, "buy seen"),
-    " are when each side's merchant was last confirmed; anything over an hour old is flagged."),
+    " are when each side's merchant was last confirmed; anything over an hour old is flagged. ",
+    "This table follows whatever is in the ", el("b", {}, "Watchlist Market"),
+    " filter box — narrow that and this narrows with it."),
 }));
 
 /* The same table over the WHOLE market rather than the watchlist, kept to the
@@ -278,6 +366,127 @@ tab("arbitrage", "Arbitrage · All Items", (host) => renderSummary(host, {
     el("b", {}, "sell seen"), " and ", el("b", {}, "buy seen"),
     " before acting on a row, and treat a flagged one as probably gone."),
 }));
+
+/* ============================================================ ITEM TRADES */
+/* Stands can now ask for goods instead of gold. Those slots come through the
+   merchant feed looking almost exactly like a normal listing - same seven
+   fields - except `price` is absent, which is the only thing that marks them.
+   Measured live 2026-10-10 off the bridge: 29 of 741 slots.
+
+   WHAT IS ASKED FOR IS IN `want`, {name, q}. Measured live 2026-10-10: ALData
+   publishes it on 62 of 2,223 slots and the game's own pull_merchants on 23 of
+   643, both times on exactly the slots with no price. Real examples: a vhammer
+   for 66 cave_amber, a vhammer+3 for one scroll3, 50 slice_strawberry for 30
+   slice_honey.
+
+   THE ONE SOURCE THAT LACKS IT is the bridge, which is fed by Meltymerch and
+   arrives stripped of `want` and `rid`. Those rows still show here - the
+   no-price fallback catches them - but their Asking cell says so rather than
+   sitting empty. Switch the source selector to ALData to see the asks. */
+tab("barter", "Item Trades", (host) => {
+  const ctl = el("div", { class: "panel" });
+  const status = el("span", { class: "dim" }, "loading…");
+  const q = el("input", { type: "search", placeholder: "filter by item…", style: "min-width:220px" });
+  const side = el("select", {},
+    el("option", { value: "" }, "Offered + wanted"),
+    el("option", { value: "sell" }, "Offered only"),
+    el("option", { value: "buy" }, "Wanted only"));
+  const out = el("div", { class: "panel" });
+
+  ctl.append(
+    el("div", { class: "src", style: "margin-bottom:8px" },
+      "Stand slots posted for ", el("b", {}, "item-for-item trade"), " rather than gold. ",
+      "These are held out of ", el("b", {}, "Watchlist Market"), " and the summaries, ",
+      "because a listing with no price cannot be compared, targeted or alerted on."),
+    el("div", { class: "row" },
+      el("button", { class: "act", onclick: () => go(true) }, "REFRESH DATA"),
+      sourceSelect(() => go(true)), pontyToggle(() => go(true)), side, q, status));
+  host.append(ctl, out);
+
+  function draw() {
+    out.innerHTML = "";
+    if (!MERCHANTS) { out.append(el("div", { class: "dim" }, "No data loaded.")); return; }
+    const all = marketRows(MERCHANTS);
+    const needle = q.value.trim().toLowerCase();
+    const sideV = side.value;
+    const rows = all.filter((r) => {
+      if (!r.barter) return false;
+      if (sideV === "buy" && !r.buying) return false;
+      if (sideV === "sell" && r.buying) return false;
+      if (!needle) return true;
+      return String(r.item).toLowerCase().includes(needle)
+        || String(itemName(r.item)).toLowerCase().includes(needle);
+    });
+
+    out.append(el("div", { class: "row", style: "margin-bottom:10px" },
+      el("span", { class: "pill" }, `${fmt(rows.length)} item-for-item listings`),
+      el("span", { class: "pill" }, `${fmt(all.length)} slots scanned`),
+      el("span", { class: "pill" },
+        `${new Set(rows.map((r) => r.merchant)).size} stands offering them`)));
+
+    const noAsk = rows.filter((r) => !r.want).length;
+    if (noAsk) {
+      out.append(el("div", { class: "src", style: "margin-bottom:10px" },
+        noAsk + " of these came from the ", el("b", {}, "bridge"),
+        ", which does not carry the ", el("code", {}, "want"),
+        " field — switch the source to ", el("b", {}, "ALData"), " to see what they ask for."));
+    }
+
+    if (!rows.length) {
+      out.append(el("div", { class: "dim" },
+        all.length
+          ? "No item-for-item trades on the market right now."
+          : "No merchant data loaded."));
+      return;
+    }
+
+    sortableTable(out, rows, [
+      { key: "icon", label: "", get: (r) => r.item, render: (r) => icon(r.item, 1.6) },
+      { key: "item", label: "Item", get: (r) => itemName(r.item),
+        render: (r) => el("span", {}, el("span", {}, itemName(r.item)),
+          el("span", { class: "dim" }, " " + r.item)) },
+      { key: "level", label: "Lv", num: true, get: (r) => r.level },
+      { key: "side", label: "Side", get: (r) => (r.buying ? "wanted" : "offered"),
+        render: (r) => el("span", { class: "tag " + (r.buying ? "buy" : "sell") },
+          r.buying ? "WANTED" : "OFFERED") },
+      { key: "qty", label: "Qty", num: true, get: (r) => r.qty },
+      { key: "ask", label: "Asking", get: (r) => (r.want ? itemName(r.want.name) : null),
+        render: (r) => r.want
+          ? el("span", { class: "row", style: "gap:6px" },
+              icon(r.want.name, 1.4),
+              el("span", {}, (r.want.q && r.want.q > 1 ? fmt(r.want.q) + " × " : "")
+                + itemName(r.want.name)),
+              el("span", { class: "dim" }, " " + r.want.name))
+          /* A bridge-sourced row reaches here without `want`. Saying so is
+             better than an empty cell that reads as "wants nothing". */
+          : el("span", { class: "dim", title: "this row came from the bridge, which does not carry `want`" },
+              "not in this source — ask at the stand") },
+      { key: "merchant", label: "Merchant", get: (r) => r.merchant },
+      { key: "server", label: "Server", get: (r) => r.server },
+      { key: "where", label: "Where", get: (r) => r.map,
+        render: (r) => el("span", { class: "dim" }, `${r.map} ${Math.round(r.x)},${Math.round(r.y)}`) },
+      { key: "seen", label: "Seen", get: (r) => seenSort(r.lastSeen), num: true,
+        render: (r) => seenCell(r.lastSeen) },
+    ], { noun: " listings", sortKey: "seen" });
+  }
+
+  async function go(force) {
+    status.textContent = "loading…";
+    try {
+      await loadMerchants(force);
+      status.textContent = `${fmt(MERCHANTS.length)} merchants`;
+      draw();
+    } catch (e) {
+      status.textContent = "";
+      out.innerHTML = "";
+      out.append(el("div", { class: "err" }, "Could not load merchant data: " + e.message));
+    }
+  }
+
+  q.addEventListener("input", draw);
+  side.addEventListener("change", draw);
+  go(false);
+});
 
 /* ================================================================ PONTY TAB */
 /* Ponty (the "secondhands" NPC) resells what other players have sold to NPCs.
