@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v88
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v89
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -5432,6 +5432,86 @@ async function sbBuyOne(row) {
 		+ (spent > 0 ? ' but ' + sbFmt(spent) + ' gold left - CHECK THIS' : '') };
 }
 
+/* MANUAL OVERRIDE - buy ONE named listing, now. The Codex watchlist page builds
+   the call for each selling row and the operator pastes it here.
+
+   WHAT IT KEEPS AND WHAT IT DROPS. It keeps sbVerify, so a listing that changed
+   under us is refused: a different item, a closed stand, a slot that turned into
+   a buy order, or a price that moved UP are all still "no". Paying more than the
+   page quoted is never what the operator asked for. It DROPS sbCap and sbGate,
+   which encode the automatic pass's own policy - a hand-picked buy is the
+   operator overriding that policy on purpose, and a refusal citing a config
+   ceiling they did not consult would be noise. Both skips are logged.
+
+   CONFIG.standBuy.dryRun is still honoured. It is the operator's own switch and
+   silently spending real gold while it is on would be the worst kind of
+   surprise.
+
+   The shard is checked first and never crossed automatically: arbProbeGo()
+   reloads the page, which would destroy the pasted command mid-flight. */
+async function sbBuyNow(row) {
+	if (!row || !row.seller || !row.slot || !row.name) {
+		sbLog('buyNow needs at least {seller, slot, name} - copy the command from the watchlist page', 'red');
+		return { ok: false, why: 'incomplete row' };
+	}
+	const want = String(row.shard || '').replace(/\s+/g, '');
+	if (want && mShardKey() !== want) {
+		sbLog(row.name + ' is on ' + want + ' and Meltymerch is on ' + mShardKey()
+			+ ' - run arbProbeGo("' + want + '") first (it RELOADS the page), then paste this again', 'orange');
+		return { ok: false, why: 'wrong shard' };
+	}
+
+	const qty = Math.max(1, parseInt(row.q || 1) || 1);
+	sbLog('override: ' + row.name + '+' + (row.level || 0) + ' x' + qty + ' from ' + row.seller
+		+ ' slot ' + row.slot + ' at ' + sbFmt(row.price) + ' - walking', '#FFD700');
+
+	const ap = await arbApproach(row.seller, { map: row.map, x: row.x, y: row.y });
+	if (!ap.ok) {
+		sbLog('could not reach ' + row.seller + ': ' + ap.reason, 'red');
+		return { ok: false, why: 'could not reach ' + row.seller + ': ' + ap.reason };
+	}
+
+	const v = sbVerify(row);
+	if (!v.ok) { sbLog('refused: ' + v.why, 'red'); return { ok: false, why: v.why }; }
+
+	/* Said out loud, because these are the two guards the automatic pass would
+	   have applied and this call is deliberately ignoring. */
+	try {
+		const cap = sbCap(row.name);
+		if (v.price > cap) sbLog('override: ' + sbFmt(v.price) + ' is over the ' + sbFmt(cap)
+			+ ' cap for ' + row.name + ' - buying anyway', 'orange');
+		const gate = sbGate(v.price);
+		if (!gate.ok) sbLog('override: the automatic pass would have stopped here (' + gate.why
+			+ ') - buying anyway', 'orange');
+	} catch (e) { }
+
+	if (CONFIG.standBuy && CONFIG.standBuy.dryRun) {
+		sbLog('DRY RUN is on: would have bought ' + row.name + '+' + (row.level || 0)
+			+ ' x' + qty + ' for ' + sbFmt(v.price) + ' - set CONFIG.standBuy.dryRun = false to buy', '#FFD700');
+		return { ok: false, why: 'dry run' };
+	}
+
+	const had = pontyCount(row.name, row.level || 0);
+	const before = character.gold;
+	let refused = null;
+	try { await trade_buy(pEntity(row.seller), row.slot, qty); }
+	catch (e) { refused = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e); }
+	await sleep(1200);           // the gold change lands on a socket round trip
+
+	const spent = before - character.gold;
+	const got = pontyCount(row.name, row.level || 0) - had;
+	/* Judged by the inventory, not the call: trade_buy has been seen to report a
+	   refusal for a purchase that landed. -> sbBuyOne */
+	if (got > 0) {
+		sbLog('bought ' + got + ' x ' + row.name + '+' + (row.level || 0) + ' for ' + sbFmt(spent), '#5ED6A8');
+		if (refused) sbLog('(it reported "' + refused + '" but the item arrived - trusting the inventory)', 'orange');
+		return { ok: true, got: got, spent: spent };
+	}
+	sbLog('nothing arrived' + (refused ? ' - ' + refused : '')
+		+ (spent > 0 ? ' BUT ' + sbFmt(spent) + ' gold left - CHECK THIS' : ''), 'red');
+	return { ok: false, why: refused || 'nothing arrived', spent: spent };
+}
+
 function sbRemember(bought) {
 	try {
 		const log = get(SB_LOG_KEY) || [];
@@ -8602,6 +8682,7 @@ function arbProbeHelp() {
 		'arbProbeDistanceCheck("N") does the game distance() agree with arithmetic?',
 		'arbProbeStep("Name", 400)  walk to 400 units away - REPORTS IF IT DID NOT',
 		'arbProbeCall({...})        player trade - see the source before using',
+		'PROBE_API.buyNow({...})    buy ONE listing - copy it from the watchlist page',
 		'arbProbeNpcSell(idx,"YES") does calculate_item_value predict the payout?',
 		'arbProbeDump()             everything recorded, survives a reload',
 		'arbProbeClear()            wipe the record',
@@ -8625,6 +8706,8 @@ try {
 		inv: arbProbeInv, bank: arbProbeBank, step: arbProbeStep, call: arbProbeCall,
 		range: arbProbeRange, distanceCheck: arbProbeDistanceCheck, verify: arbProbeVerify,
 		npcSell: arbProbeNpcSell,
+		/* The watchlist page's per-row buy command lands here. */
+		buyNow: sbBuyNow,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
 } catch (e) { }
