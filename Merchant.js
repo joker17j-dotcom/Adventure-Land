@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v90
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v91
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -716,6 +716,12 @@ const CONFIG = {
 	   stand when they are cheap enough. -> STAND BUY */
 	standBuy: {
 		enabled: true,
+
+		/* A pasted buy freezes the rotation while it runs, and may cross a shard
+		   to reach the listing. Both are v91; see sbBuyNow. */
+		pendingMs: 600000,        // a stashed cross-shard buy older than this is dropped
+		pendingResumeMs: 9000,    // settle time after the reload before resuming
+		pendingMaxHops: 1,        // never hop twice chasing one listing
 
 		/* EDIT THIS, exactly like pontyBuy.items above - ids, any order,
 		   duplicates harmless, rebuilt on every pass so a console change takes
@@ -5449,22 +5455,125 @@ async function sbBuyOne(row) {
 
    The shard is checked first and never crossed automatically: arbProbeGo()
    reloads the page, which would destroy the pasted command mid-flight. */
-async function sbBuyNow(row) {
+/* A BUY THAT OUTLIVES THE PAGE.
+
+   change_server RELOADS the page, so a cross-shard buy cannot be a single call -
+   the hop destroys the very command that asked for it. v90 refused instead and
+   told the operator to hop by hand, which works but means pasting twice and
+   remembering what you were doing.
+
+   This stashes the row in CODE storage (which survives the reload - the same
+   mechanism probe_hold already relies on for exactly this reason), hops, and
+   resumes on the other side.
+
+   THE RECORD IS CLEARED BEFORE IT IS ACTED ON, never after. A buy that throws,
+   or a shard the hop never reached, must not leave something behind that fires
+   again on the next load - a stored purchase that retries forever is a worse
+   failure than one that is quietly dropped. `hops` caps the chase at one, and
+   `expiresAt` drops anything stale: ten minutes on, the listing has very likely
+   moved, and sbVerify would refuse it at the stand anyway. */
+const SB_PENDING = 'pending_buy';
+function sbPendingRead() {
+	try { const r = get(SB_PENDING); return (r && r.row) ? r : null; } catch (e) { return null; }
+}
+function sbPendingClear() { try { set(SB_PENDING, null); } catch (e) { } }
+function sbPendingWrite(row, hops) {
+	const cfg = CONFIG.standBuy || {};
+	const rec = { row: row, at: Date.now(),
+		expiresAt: Date.now() + (cfg.pendingMs || 600000),
+		hops: hops || 0, shard: String(row.shard || '').replace(/\s+/g, '') };
+	try { set(SB_PENDING, rec); } catch (e) { return false; }
+	return true;
+}
+
+/* Called once from STARTUP. Deliberately not awaited there: the character has
+   only just reconnected and the seller will not be in vision yet. */
+function sbPendingResume() {
+	const rec = sbPendingRead();
+	if (!rec) return;
+	const cfg = CONFIG.standBuy || {};
+	if (Date.now() > (rec.expiresAt || 0)) {
+		sbPendingClear();
+		sbLog('a stashed cross-shard buy for ' + (rec.row.name || '?') + ' expired before the hop landed - dropped', 'orange');
+		return;
+	}
+	const here = mShardKey();
+	if (rec.shard && here !== rec.shard) {
+		/* The hop did not land where it was aimed. Chasing it again is how a
+		   merchant ends up bouncing between shards forever. */
+		sbPendingClear();
+		sbLog('stashed buy wanted ' + rec.shard + ' but the hop landed on ' + here
+			+ ' - dropped rather than hopping again', 'red');
+		return;
+	}
+	sbLog('resuming the stashed buy: ' + rec.row.name + ' from ' + rec.row.seller
+		+ ' on ' + here + ' in ' + Math.round((cfg.pendingResumeMs || 9000) / 1000) + 's', '#FFD700');
+	setTimeout(function () {
+		/* cleared FIRST - see the note above */
+		sbPendingClear();
+		try { sbBuyNow(rec.row, { resumed: true }); } catch (e) { sbLog('resume threw: ' + e, 'red'); }
+	}, cfg.pendingResumeMs || 9000);
+}
+
+async function sbBuyNow(row, opts) {
 	if (!row || !row.seller || !row.slot || !row.name) {
 		sbLog('buyNow needs at least {seller, slot, name} - copy the command from the watchlist page', 'red');
 		return { ok: false, why: 'incomplete row' };
 	}
 	const want = String(row.shard || '').replace(/\s+/g, '');
 	if (want && mShardKey() !== want) {
-		sbLog(row.name + ' is on ' + want + ' and Meltymerch is on ' + mShardKey()
-			+ ' - run arbProbeGo("' + want + '") first (it RELOADS the page), then paste this again', 'orange');
-		return { ok: false, why: 'wrong shard' };
+		/* v90 stopped here and asked the operator to hop by hand. It now stashes
+		   the row and hops itself - arbProbeGo sets the hold and calls
+		   change_server, so THE PAGE RELOADS and nothing after this line runs.
+		   The buy continues from sbPendingResume() on the other side. */
+		const hops = ((opts && opts.hops) || 0) + 1;
+		if (hops > (CONFIG.standBuy.pendingMaxHops || 1)) {
+			sbLog('already hopped once chasing ' + row.name + ' - not hopping again', 'red');
+			return { ok: false, why: 'hop limit' };
+		}
+		if (!sbPendingWrite(row, hops)) {
+			sbLog('could not stash the buy, so the hop would lose it - staying put. '
+				+ 'Run arbProbeGo("' + want + '") and paste again.', 'red');
+			return { ok: false, why: 'could not stash' };
+		}
+		sbLog(row.name + ' is on ' + want + ', Meltymerch is on ' + mShardKey()
+			+ ' - stashed and hopping; the page reloads and the buy resumes there', '#FFD700');
+		try { await arbProbeGo(want); }
+		catch (e) {
+			sbPendingClear();
+			sbLog('the hop to ' + want + ' failed: ' + ((e && (e.reason || e.message)) || e)
+				+ ' - stash dropped', 'red');
+			return { ok: false, why: 'hop failed' };
+		}
+		return { ok: false, why: 'hopping to ' + want };
 	}
 
 	const qty = Math.max(1, parseInt(row.q || 1) || 1);
 	sbLog('override: ' + row.name + '+' + (row.level || 0) + ' x' + qty + ' from ' + row.seller
 		+ ' slot ' + row.slot + ' at ' + sbFmt(row.price) + ' - walking', '#FFD700');
 
+	/* THE ROTATION IS FROZEN FOR THE WHOLE WALK, and this is not optional.
+	   v89/v90 took only the move lock, by way of moveTo - that stops other
+	   MOVEMENT, but the scout's shard hop is gated on state.busy and PROBE.hold,
+	   neither of which a buy touched. So the rotation could fire change_server
+	   mid-walk, reload the page, and destroy an in-flight purchase with nothing
+	   logged. The gate's own comment already said it: "A probe is measuring.
+	   Never hop - a hop reloads the page."
+
+	   Restored, not cleared: an operator who was already holding stays holding
+	   when this finishes. */
+	const heldBefore = !!PROBE.hold;
+	if (!heldBefore) arbProbeHold(true);
+	try {
+		return await sbBuyNowInner(row, qty);
+	} finally {
+		/* in a finally so a throw, a refusal or a death cannot leave the
+		   merchant frozen off its rotation for the rest of the session */
+		if (!heldBefore) arbProbeHold(false);
+	}
+}
+
+async function sbBuyNowInner(row, qty) {
 	const ap = await arbApproach(row.seller, { map: row.map, x: row.x, y: row.y });
 	if (!ap.ok) {
 		sbLog('could not reach ' + row.seller + ': ' + ap.reason, 'red');
@@ -8683,6 +8792,7 @@ function arbProbeHelp() {
 		'arbProbeStep("Name", 400)  walk to 400 units away - REPORTS IF IT DID NOT',
 		'arbProbeCall({...})        player trade - see the source before using',
 		'PROBE_API.buyNow({...})    buy ONE listing - copy it from the watchlist page',
+		'                           (the page emits parent.PROBE_API...; both work)',
 		'arbProbeNpcSell(idx,"YES") does calculate_item_value predict the payout?',
 		'arbProbeDump()             everything recorded, survives a reload',
 		'arbProbeClear()            wipe the record',
@@ -8692,9 +8802,9 @@ function arbProbeHelp() {
 	return lines;
 }
 
-/* Reachable from the code console and from other scripts on this tab. The
-   functions are also in the runner scope, but only if the console evaluates
-   there, which is not worth depending on. */
+/* Reachable from the code console and from other scripts on this tab, under
+   BOTH names - see the note on the window binding at the end of this block for
+   why one of them was not enough. */
 try {
 	parent.PROBE_API = {
 		build: arbProbeBuild,
@@ -8710,6 +8820,19 @@ try {
 		buyNow: sbBuyNow,
 		dump: arbProbeDump, clear: arbProbeClear, help: arbProbeHelp, state: PROBE,
 	};
+	/* AND BOUND INTO THE CODE SCOPE, WHICH IS WHERE IT ACTUALLY GETS PASTED.
+	   v89 published this on `parent` only. Inside the maincode iframe
+	   `window !== parent`, so the eval box - the one place these commands are
+	   meant to be typed - answered every one of them with
+	   "ReferenceError: PROBE_API is not defined". Measured 2026-10-10 in
+	   Meltymerch's live context: bare PROBE_API undefined, parent.PROBE_API an
+	   object with buyNow on it.
+
+	   The parent assignment STAYS: it is what /hub and any top-window console
+	   reach, and the watchlist page emits the parent-prefixed form so that one
+	   string works against v89 and v90 alike. This line only adds the short
+	   form for the eval box. */
+	try { window.PROBE_API = parent.PROBE_API; } catch (e) { }
 } catch (e) { }
 
 // ============================================================================
@@ -8972,6 +9095,8 @@ try {
 	// the scout would resume rotating on the next tick and carry the merchant
 	// straight back off the shard the operator just travelled to.
 	PROBE.hold = !!get('probe_hold');
+	// A cross-shard buy stashed before the hop picks itself up here.
+	try { sbPendingResume(); } catch (e) { }
 	game_log('[probe] ' + MERCHANT_BUILD + ' loaded (' + PROBE.log.length + ' stored entries'
 		+ (PROBE.hold ? ', HOLD STILL ON' : '') + ') - arbProbeHelp() for commands',
 		PROBE.hold ? '#FFD700' : '#8b98ab');
