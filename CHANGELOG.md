@@ -28,6 +28,59 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v84
+
+The pathing the combat party needed, and the merchant was a version behind on
+all of it. v83 shipped the rage module as it stood BEFORE the trio's v79/v80
+fixes, so every fault those found was still live here - including the one that
+would have stopped him reaching the party at all.
+
+**He still had the v78 per-edge `can_move` check in the BFS.** The trio dropped
+it in v79; the merchant never got that commit. Its comment in this file asserted
+that verifying every edge was correct, which is the stale-documentation trap:
+the text read as a finding and was actually a bug with a rationale attached.
+
+**The guard had no hysteresis.** `rageGuard` tested `rageHit(x, y, cfg.margin)`
+- the same margin the planner aims for - so arriving at a correctly-planned
+destination counted as a breach: stop, shove out, travel walks back, forever.
+Measured on the combat party before it was fixed there: 11 stop/xmove pairs in
+5 seconds, hp full and `targets` 0, twenty consecutive `smart_move` calls dying
+as `{"reason":"interrupted"}` with the character never moving. Now `guardMargin`,
+default 0 - detect on the real rectangle, escape out to margin.
+
+**The effective clearance was 55, not 30.** `rageRoute` excludes cells within
+`margin + step`, and 30 + 25 = 55. The corridor's entrance is a pinch measured at
+14-18 units wide, so "no safe route" was literally true every time. Now
+margin 4 + step 5 = 9, and step 25 -> 5 because a 10-unit grid cannot resolve a
+14-unit gap at any margin. `maxCells` 24,000 -> 200,000 so the doubling loop
+cannot quietly push the step back up and undo it.
+
+**The search ran off the map.** `can_move` answers for points outside the
+geometry, so the flood walked into the void and spent its budget there: 400,000
+expansions on a map holding ~19,000 cells. Clamped to `G.geometry` the same
+search exhausts honestly in 12,164. That one was wrong on every map, not just
+spookytown.
+
+Also added: `rageWaypoints` and `CONFIG.movement.approaches`, carrying the
+operator's hand-drawn western approach to the corridor, tried before the search
+and refused if any of its own points sit inside a rectangle.
+
+WHY HE NEEDS ANY OF IT. The combat party now farms booboo parked at (290,-990),
+inside the corridor between the mummy and booboo rectangles, and the corridor is
+reachable only through that pinch. `travelToRecipient` goes to the recipient's
+live position and then closes to attack range for `send_item`, so potion
+delivery and item pickup both put him in there. mluck reaches 320 and would
+often not need the trip, but the deliveries do.
+
+All twelve shared nav functions - `rageCfg`, `rageBoxes`, `rageHit`,
+`rageClips`, `rageEscape`, `rageRoute`, `rageWaypoints`, `rageWalk`,
+`rageGuard`, `safeMove`, `safeSmartMove`, `rageStaging` - are now byte-identical
+to Ranger v80, checked by hash rather than by eye. The divergence found here is
+the argument for doing that check every time this module is touched in one file.
+
+12 assertions green against the merchant's own extracted module, the same suite
+the trio runs minus the two that are specific to the ranger's pull queue.
+
 ## v83
 
 Two unrelated things the merchant did not know about.
