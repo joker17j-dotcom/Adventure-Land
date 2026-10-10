@@ -28,6 +28,95 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v85
+
+The 3 second town recall, taken on the legs where it beats walking. About
+33.5 s off every trip home from the combat party's corridor.
+
+**It was never used as a shortcut.** v84 called `town()` in three places, all of
+them failure fallbacks after a walk had already thrown. Nothing ever chose it.
+
+**The numbers.** spookytown has no door to main - the chain is
+spookytown -> halloween -> main, entering main at spawn 15, `(1600,-524)`,
+almost diagonally opposite the town spot. Meltymerch at speed 67:
+
+| leg | walk | town() | saving |
+|---|---|---|---|
+| spookytown corridor -> halloween door | 2,452u / 36.6s | 24.6s | **+12.0s** |
+| halloween entry -> main door | 1,283u / 19.1s | 21.2s | **-2.1s** |
+| main entry -> town spot | 1,836u / 27.4s | 5.9s | **+21.5s** |
+| whole trip home | **83.1s** | **49.7s** | **+33.5s** |
+
+Straight-line, so those are floors: the walking legs curve around terrain and
+the recall leg does not.
+
+**Gated per leg, not by `smart.use_town`.** smart_move does support a town edge,
+but it pushes it into the pathfinder as a single graph step with no cost
+attached, so the planner cannot see that it costs 3 s - it would take the
+halloween leg too and hand back 2.1 s. (It is also a persistent global on the
+`smart` object, not an argument; smart_move reads only x, y, map and to from
+what it is passed.) `townWorthIt()` compares real distances instead: recall when
+`here > spawn_to_goal + 3s*speed + margin`. On main that breakeven is 394 units,
+which rules out every in-town errand hop - Ponty at 116, Ernis at 166, the town
+spot at 193 from spawn.
+
+**Two things the server source settled, both load-bearing.**
+
+A SINGLE monster hit cancels the channel: in the monster-attacks-player branch
+`target.c = {}` sits OUTSIDE the lethal-damage check. And the client cannot tell
+- `town()` waits only for `character.c.town` to clear, which happens on
+cancellation too, then returns `{success:true}` either way. Arrival is decided
+by looking at where the character actually is, never by that promise.
+
+The server LETS YOU WALK while channeling - its move handler gates on
+`can_walk()`, which tests `is_disabled()` and not `c.town` - but smart_move will
+not, because its step loop requires `!is_transporting(character)`. So the
+walk-along is driven with raw `move()`. The operator's design, and it makes a
+cancelled channel free: instead of 3 s standing still the merchant is
+3 s * speed further along the road it was going to walk anyway. It does not
+change the success case - the teleport still fires at 3 s and discards the
+walking - which is why the gate still earns its keep.
+
+**THE DESIGN WAS WRONG FIRST TIME, and the correction is the useful part.** The
+first build staged the trip leg by leg over a BFS of the door graph, on my
+belief that one cross-map smart_move would walk straight past the main-entry
+hop because it only becomes visible after arriving on main. The operator said
+that firing the skill should not cancel a smart_move already in flight. He was
+right, on three counts checked in the client source:
+
+- `town()` and `use("town")` reach `request("town","town")` and touch nothing on
+  the `smart` object; `smart.moving` and `smart.plot` are untouched.
+- the step loop gates on `!is_transporting(character)`, so it merely PAUSES for
+  the channel rather than failing.
+- after the teleport the next plot point fails `can_move_to()` from the spawn,
+  so the loop takes its `path_lost` branch and re-issues `smart_move` to the
+  same destination with the same `on_done` - it re-plans itself and the original
+  promise still resolves.
+
+So `townTravel` now lets ONE smart_move own the route and runs a watcher
+alongside it that re-prices the hop every `watchMs` and takes it when the gate
+turns true - before departure, and again on each map as it is entered. That
+keeps smart_move's own route choice, which the staging version was overriding
+with a door BFS for no good reason. `townNextDoor` survives only to PRICE a leg
+we are not yet standing on, never to route one. A cancelled hop leaves the
+character still worth-it, so attempts are bounded by `minGapMs` and
+`maxPerMap`. `CONFIG.town.enabled = false` restores v84 behaviour exactly, with
+a test asserting it.
+
+18 assertions, plus the 12 rage ones re-run. They check against the measured
+savings rather than just truthiness, assert the hop reports false while `town()`
+reports success, assert a cancelled attempt still gained ground, and assert
+smart_move is called exactly ONCE for the whole trip - which is what would have
+caught the staging design had it been written first.
+
+Two harness faults worth recording, both of which produced green or misleading
+runs over code that was wrong. The first set `channelMs` to 60 to keep tests
+fast, which also made the gate price the channel at 4 units instead of 201 and
+bless the losing leg: the stub's duration and the gate's cost have to be
+separate numbers. The second simulated the whole cross-map trip in ~10 ms, so
+the 400 ms watcher never observed main and only one recall fired - a stub has to
+take long enough for the thing being tested to get a turn.
+
 ## v84
 
 The pathing the combat party needed, and the merchant was a version behind on
