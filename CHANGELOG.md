@@ -28,6 +28,95 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v87
+
+The summon wait now actually waits. Observed: Meltymerch asks a party member to
+come to him, publishes his coordinates, and then wanders off before they get
+there - ending in "<name> never arrived - giving up on remaining actions this
+trip", which reads like the recipient's fault and is not.
+
+**summonAndWait never took the move lock.** It published a position and polled
+for 60 s without holding `state.travelling`, so every other loop in the file -
+the scout, the stand, gear progression, arbitrage, the maintenance beat - was
+free to walk him off the spot he had just sent. It now holds the lock for the
+whole wait and releases it in a `finally`, so a death or an early arrival
+cannot wedge it. The lock ceiling is 180 s against a 60 s wait, comfortably
+inside the break-open threshold.
+
+**It also cancels whatever was already walking him**, with a `stop()` before
+reading the position - otherwise the coordinates published are a point he is
+still moving away from. The loser of that race sees an interrupted move and
+backs off; its retry fails fast on the lock, which travelTo already treats as
+"not a broken trip".
+
+**And a drift check, because the lock is not quite enough.** The lock stops
+anything routing through `moveTo()`; it cannot stop a raw `move()` elsewhere,
+knockback, or a move that was already in flight. So the poll notices when he is
+more than `driftUnits` (60) from the spot he published, or on another map, and
+re-publishes rather than letting them walk to an empty patch of ground.
+
+New knobs under `CONFIG.summon`: `waitMs` 60000, `pollMs` 1000, `driftUnits` 60.
+
+9 assertions. The load-bearing one samples `moveLockHeld()` on a timer DURING
+the wait rather than checking it before and after - the bug was entirely about
+what is true in the middle, and a before/after assertion would have passed over
+v86 unchanged. The others cover the lock being released afterwards and after a
+death, the stop, publishing once from where he actually stands, re-publishing
+on drift but not on a 20-unit shuffle, and both outcomes.
+
+## v86
+
+v85's recall was actively harmful and is fixed here. Observed live: the merchant
+left main for the party and ended up stuck on **mtunnel**, nowhere near the
+route.
+
+```
+[town] recall on main from 294,-347 - about 2.3s better than walking
+[town] recall cancelled - already walking, carrying on
+Searching for a path...   Path found!   Lost the path...
+Still can't reach spookytown after town() - Meltymerch is stuck on mtunnel
+```
+
+Three faults, all mine, all in the gating rather than the mechanism.
+
+**The floor was far too low.** `margin: 40` units is 0.6 s at speed 67, so a hop
+worth 2.3 s passed. It is now `minSaveSec`, a floor in SECONDS, default 5. That
+cleanly separates the two legs worth taking (17.5 s and 21.5 s) from noise.
+
+**It priced mid-route, where the comparison is invalid.** Straight-line distance
+to the goal is not monotonic along a real route - the pathfinder walks AWAY from
+the goal to get round terrain, and the western approach to the corridor is the
+extreme case - so small positive readings are noise, not savings. Worse, a
+teleport mid-route forces a `path_lost` re-plan, and main has THREE separate
+mtunnel doors for a confused re-plan to wander into. The watcher now only
+watches for the map to CHANGE and decides once per map, which is the only moment
+the straight-line comparison is actually valid for. `rageNav.busy` is a hard
+interlock on top of that.
+
+**It priced legs it was not standing on**, using a BFS of the door graph to
+guess which door we would leave by. That chain need not match smart_move's, and
+the walk-along then drove raw `move()` toward a door the route was never going
+to use. `townGoal` is now same-map only and `townNextDoor` is deleted.
+
+What survives is the part that was right: 3 s channel, cancelled by a single
+monster hit, `town()` reporting success either way so arrival is judged by
+position, and the walk-along making a cancelled attempt free. The two legs still
+caught are the two biggest - arriving on main 1,836 units from the town spot
+(+21.5 s) and arriving on spookytown 2,408 units from the corridor (+17.5 s).
+The forgone case is the corridor -> halloween-door leg on the way home, worth
+12 s, which is not worth guessing a door chain for.
+
+18 assertions, plus the 12 rage ones. New: the gate declines off-map, the
+outbound spookytown hop is priced at 17.5 s, a hop during `rageNav.busy` is
+refused, exactly ONE recall fires on the whole trip home, and a regression for
+the precise 2.3 s hop that caused this - 548 units from the town spot, which
+v85 took and v86 must refuse.
+
+The lesson worth keeping: v85 shipped with 18 green assertions and was wrong in
+production within the hour. Every one of them tested the hop in isolation, at a
+standing start. None simulated a route whose distance-to-goal went UP on the way
+- which is the normal case, not the exotic one.
+
 ## v85
 
 The 3 second town recall, taken on the legs where it beats walking. About
