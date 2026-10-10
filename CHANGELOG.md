@@ -28,6 +28,88 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v93
+
+Opportunistic mluck on the whole party.
+
+The merchant now buffs any party member who happens to be within range 320,
+on any trip, without ever stopping, diverting or waiting to do it. The ranger's
+own requested mluck trip is unchanged and still moves the merchant.
+
+**The old list did two jobs and that was the bug.** `CONFIG.mluck.targets` was
+`['Dexon']`, and it gated BOTH who could pull a trip and who ever got buffed. So
+the priest and mage were never candidates at all. Measured on Dexon's client
+2026-10-10, before the change:
+
+| | mluck from | min left | strong |
+|---|---|---|---|
+| Dexon | **Meltymerch** | 52 | true |
+| FatherToken | `earthMer` | 41 | false |
+| MageofOz | `earthMer` | 40 | false |
+
+A passing stranger's merchant was doing the job for two thirds of the party.
+`tryCastMluck` would already have cast on them - `needsRefresh` is true whenever
+`s.mluck.f` is not our name - so nothing but that one list stood in the way.
+
+`targets` keeps its original job and its original value. A name in it can send a
+`location` message and make the merchant move, divert and wait (-> summonAndWait),
+which is exactly what the operator asked NOT to happen for the other two. The new
+pass reads `CONFIG.partyMembers` instead.
+
+**Why it hangs off maintenanceLoop.** That loop is the only timer in this file
+that never moves the character. Putting the pass there makes "must not divert a
+trip" structural rather than a rule to be remembered: the pass looks at who is in
+range right now, casts if so, and otherwise does nothing until the next tick.
+Out of range is not a problem to be solved, it is "not this tick" - there is no
+pathing, no summon and no wait anywhere in it.
+
+Measured from `G.skills.mluck`, game version 17665, 2026-10-10: level 40, mp 10,
+range 320, cooldown 100ms, duration 3,600,000ms. Against Meltymerch's level 66
+and 1,578 mp, cost is not a consideration - presence is the only variable.
+
+**One cast per tick, and a 10s per-name cooloff.** The cooloff is not politeness,
+it is the fix for a starvation bug the harness caught and reading did not. The
+server does not apply the buff instantly, so a pass that casts one per tick
+starting from the top of the list would re-read the first member as still
+unbuffed, cast again, and NEVER reach the other two. `castCooloffMs` stamps every
+attempt, win or lose, so the party rotates. Set it to 0 and the old behaviour
+comes back.
+
+**Refreshing our own buff is new, and deliberately instrumented rather than
+asserted.** `tryCastMluck` has always refused to touch a buff that is already
+ours at any remaining time, which is why the ranger still had to ask for a trip
+as the hour ran out - and removing that ask is the point of this change. But
+WHETHER A RECAST ACTUALLY RESETS `ms` IS NOT MEASURED on this account: the
+server's apply path could not be read. So `refreshOursBelowMs` (30 min) drives
+the refresh and the pass logs the before and after `ms` of every one, in-game and
+in `parent.MLUCK_OPP().verified`, as `RESET WORKS` or `NO RESET`. If it turns out
+to be a no-op, set `refreshOursBelowMs: 0` and the pass reverts to buffing only
+what is not already ours, with no other change. Do not quote the refresh as
+working until a `verified` row says so.
+
+**Taking over a stranger's buff is attempted, not predicted.** The pass is
+deliberately NOT gated on `buff.strong`. Whether a strong buff from another
+merchant can be overwritten is unmeasured, so the cast goes out and the server
+decides; a refusal parks that one name for `retryAfterFailMs` (5 min) and logs
+the reason rather than retrying every 2s.
+
+The one await is bounded with `arbNoHang`, this file's own idiom. **Merchant.js
+still has no `noHang()`** - the pass sits inside maintenanceLoop's self-chain,
+where an unbounded await that never settles would end the chain permanently and
+silently, which is exactly what v71 did with `noHang` itself.
+
+Read it with `parent.MLUCK_OPP()`: per-target visibility, range, buff source,
+minutes left, the decision and why, plus counters and the refresh evidence.
+Published onto `parent` because these declarations are lexical inside the file's
+IIFE and a `parent.`-prefixed eval cannot see the bare name - the v90 lesson.
+
+Harness: 61 assertions, including that no movement helper is reachable from the
+pass, that an unsettled cast resolves in ~5s instead of hanging, that six ticks
+reach all three members, and the live 2026-10-10 snapshot above resolving to
+"skip Dexon, take over both strangers". The harness derives its config from
+Merchant.js rather than restating it, after an earlier version of it omitted
+`castCooloffMs` and reported a bug the shipped code did not have.
+
 ## v92
 
 Ranger plan targets changed, craft materials protected and banked.
