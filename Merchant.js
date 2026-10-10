@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v83
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v84
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -318,6 +318,24 @@ const CONFIG = {
 	// homeServer. A cross-shard trip always comes back here, and opening a stand
 	// somewhere else never changes where "here" is.
 	homeServer: 'USIV',
+	movement: {
+		/* Hand-pinned approach chains, keyed 'map|x|y' of the DESTINATION, tried
+		   by rageWaypoints before the search and refused if any of their own
+		   points sit inside a rectangle. This one is the measured margin-12 route
+		   from the spookytown spawn to the corridor park point: out west, down the
+		   far side, then back east along y -1075..-1115. It is the operator's own
+		   route - drawn on the map by hand before it was ever derived - and the
+		   search now produces the same shape on its own, so this is insurance and
+		   a saving of ~22,000 node expansions, not a crutch. */
+		approaches: {
+			'spookytown|290|-990': [
+				[-450, -30], [-585, -45], [-715, -105], [-715, -115],
+				[-585, -455], [-465, -670], [-465, -765], [-440, -910],
+				[-295, -955], [115, -1075], [120, -1115], [270, -1115],
+				[270, -1060]
+			]
+		},
+	},
 	scout: {
 		// ON. The operator's standing preference, 2026-10-01: keep scouting
 		// enabled and keep `parked` true. This REPLACES the earlier arrangement,
@@ -1002,13 +1020,45 @@ function rageCfg() {
 		   other gate is courage, which stops a pull when this character already
 		   has its own limit of attackers. Nothing else in here assumes 1. */
 		concurrent: Math.max(1, ragePullShared || a.concurrent || 1),
-		margin: (typeof a.margin === 'number') ? a.margin : 30,
-		step: a.step || 25,
-		maxCells: a.maxCells || 24000,
+		/* MEASURED 2026-10-09, and the single reason the party never arrived.
+		   rageRoute excludes cells within margin + step of a rectangle, so 30
+		   with a step of 25 was really demanding 55 units of clearance. The
+		   corridor's entrance is a PINCH: an A* at step 5 from the spawn reaches
+		   (290,-990) at margin 14 and fails at 18, so the gap is 14-18 wide and
+		   55 never had a chance. 4 + 5 = 9 does, with 5 units of headroom.
+		   8 + 5 = 13 was tried first and FAILED against the live map: the grid is
+		   anchored at the search window's corner, not at the origin, so with only
+		   13..18 of usable band no lattice point landed inside it. Verified live
+		   at the shipped anchoring: gm 13 does not reach the park point, gm 9
+		   does, in 29,443 expansions. Keep margin + step at or below 9 for this
+		   corridor. The operator proved the route by hand first, walking MageofOz
+		   through the pinch with about 5 units to spare. */
+		margin: (typeof a.margin === 'number') ? a.margin : 4,
+		/* 5, not 25. A 10-unit grid cannot resolve a 14-unit gap: the same search
+		   that succeeds at step 5 reports NO ROUTE at step 10 at every margin,
+		   which is what made a passable corridor look like a sealed pocket and
+		   sent me hunting for standoff spots that were never needed. */
+		step: a.step || 5,
+		/* Big enough that step 5 survives. The budget is spent BEFORE the grid is
+		   built - too small and the doubling loop below pushes the step back to 20
+		   and silently undoes the fix. Spookytown at step 5 is ~131,000 cells. */
+		maxCells: a.maxCells || 200000,
+		/* HYSTERESIS, and the reason nothing could move even when the route was
+		   fine. The guard used to trip on the same margin the planner aims for,
+		   so arriving at a correctly-planned spot WAS a breach: it stopped and
+		   shoved the character out, travel walked back, forever. Measured on the
+		   stuck party: 11 stop/xmove pairs in 5 seconds out of rageGuard, every
+		   smart_move dying as "interrupted", hp full and targets 0 - no attacker
+		   anywhere near it. The guard now fires only on a real breach of the
+		   rectangle and escapes out to margin, leaving a full margin of slack
+		   between "safe to stand here" and "get out now". */
+		guardMargin: (typeof a.guardMargin === 'number') ? a.guardMargin : 0,
 		parkWithin: a.parkWithin || 45,
 		pullTimeoutMs: a.pullTimeoutMs || 20000,
 		repullGapMs: (typeof a.repullGapMs === 'number') ? a.repullGapMs : 1200,
 		respectCourage: a.respectCourage !== false,
+		/* Interruptions are combat, not routing, so they get their own budget. */
+		maxInterrupts: (typeof a.maxInterrupts === 'number') ? a.maxInterrupts : 12,
 	};
 }
 
@@ -1098,6 +1148,18 @@ function rageRoute(map, from, to, margin) {
 	}
 	const PAD = 280;
 	x0 -= PAD; x1 += PAD; y0 -= PAD; y1 += PAD;
+	/* Clamp to the map. Without this the flood walks off the edge - can_move is
+	   perfectly happy to answer for points outside the geometry - and spends the
+	   whole cell budget in the void. Measured: an unclamped A* to the park point
+	   expanded 400,000 nodes on a map holding only ~19,000 at step 20 and found
+	   nothing; clamped, the same search exhausts honestly in 12,164. */
+	try {
+		const geo = G.geometry[map];
+		if (geo) {
+			x0 = Math.max(x0, geo.min_x); x1 = Math.min(x1, geo.max_x);
+			y0 = Math.max(y0, geo.min_y); y1 = Math.min(y1, geo.max_y);
+		}
+	} catch (e) { }
 
 	let step = cfg.step;
 	while (((x1 - x0) / step + 1) * ((y1 - y0) / step + 1) > cfg.maxCells) step *= 2;
@@ -1145,31 +1207,35 @@ function rageRoute(map, from, to, margin) {
 	const q = [S[1] * W + S[0]];
 	seen[q[0]] = 1;
 	const goal = Gl[1] * W + Gl[0];
-	/* FOUR-connected, and every EDGE is verified with can_move before it is
-	   accepted. The first version checked only NODES and allowed diagonals, and
-	   it produced a route whose own first leg was unwalkable: measured live on
-	   spookytown, [225,-586] -> [200,-611] with can_move false on the segment.
-	   Both cells are individually standable; the diagonal between them cuts a
-	   wall corner that the character's bounding box (h 8, v 7) cannot fit
-	   through. Dropping diagonals removes corner-cutting by construction and
-	   verifying edges removes the rest, which together make the simplifier's
-	   `best = i + 1` fallback safe - previously it could emit a leg nothing had
-	   ever checked. The cost is one can_move per explored edge; the simplifier
-	   straightens the result afterwards, so losing diagonals costs nothing in
-	   the final path. */
+	/* FOUR-connected, on NODES only.
+	   An earlier version also verified every EDGE with can_move, to stop the
+	   simplifier emitting a leg nothing had checked. That was the right worry
+	   and the wrong tool: can_move's SEGMENT test is far stricter than its POINT
+	   test, so checking every 25-unit edge fragments the graph. Measured live on
+	   spookytown, from the (0,0) spawn to the corridor park point:
+	     4-connected + edge checks   1,030 cells reachable   park point NOT reached
+	     8-connected + edge checks     999                   NOT reached
+	     4-connected, nodes only     5,301                   reached
+	     8-connected, nodes only     5,504                   reached
+	   Connectivity and margin made no difference; the edge check alone did it.
+	   rageRoute returned null, safeSmartMove threw, and the party sat at the
+	   spawn through 41 consecutive travel failures. Walkability is now settled
+	   per LEG in rageWalk, which is where the legs are actually walked: a leg
+	   can_move clears goes to xmove, and one it does not goes to smart_move,
+	   whose pathfinder handles terrain. Dropping diagonals stays, because it
+	   removes corner-cutting by construction and the simplifier straightens the
+	   path afterwards. */
 	const D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 	let found = false, head = 0;
 	while (head < q.length) {
 		const cur = q[head++];
 		if (cur === goal) { found = true; break; }
 		const ci = cur % W, cj = (cur - ci) / W;
-		const cx = x0 + ci * step, cy = y0 + cj * step;
 		for (let d = 0; d < 4; d++) {
 			const ni = ci + D[d][0], nj = cj + D[d][1];
 			if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
 			const nk = nj * W + ni;
 			if (seen[nk] || !grid[nk]) continue;
-			if (!seg([cx, cy], [x0 + ni * step, y0 + nj * step])) { seen[nk] = 1; continue; }
 			seen[nk] = 1; prev[nk] = cur; q.push(nk);
 		}
 	}
@@ -1196,25 +1262,72 @@ function rageRoute(map, from, to, margin) {
 	return out;
 }
 
+function rageWaypoints(map, to, margin) {
+	const mv = (typeof CONFIG !== 'undefined' && CONFIG.movement) || {};
+	const key = map + '|' + Math.round(to.x) + '|' + Math.round(to.y);
+	const hand = (mv.approaches || {})[key];
+	if (Array.isArray(hand) && hand.length) {
+		const bad = hand.filter((p) => rageHit(map, p[0], p[1], margin));
+		if (!bad.length) return hand.concat([[to.x, to.y]]);
+		rageLog('ignoring the hand-pinned approach for ' + key + ' - ' + bad.length + ' of its points sit inside a rectangle', 'orange');
+	}
+	return rageRoute(map, { x: character.x, y: character.y }, to, margin);
+}
+
 async function rageWalk(map, to, margin, attempts) {
 	if (typeof xmove !== 'function') { rageLog('xmove is not a function here - cannot walk a safe route', 'red'); return false; }
+	const cfg = rageCfg();
 	const max = attempts || 4;
+	const maxInterrupts = cfg.maxInterrupts;
 	const near = (p) => Math.hypot(character.x - p[0], character.y - p[1]) < 12;
+	const base = character.base;
+	const legClear = (a, b) => {
+		if (typeof can_move !== 'function') return false;
+		try { return !!can_move({ map: map, x: a[0], y: a[1], going_x: b[0], going_y: b[1], base: base }); }
+		catch (e) { return false; }
+	};
+	const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 	/* Anything else steering us is a second driver on the same wheel: smart.moving
 	   was measured true throughout the stranded trip. */
 	try { if (typeof stop === 'function') stop(); } catch (e) { }
 	rageNav.busy = true;
+	let interrupts = 0;
 	try {
 		for (let a = 0; a < max; a++) {
 			if (near([to.x, to.y])) return true;
-			const wp = rageRoute(map, { x: character.x, y: character.y }, to, margin);
+			const wp = rageWaypoints(map, to, margin);
 			if (!wp || !wp.length) return false;          // genuinely no route
 			let blocked = false;
 			const was = [character.x, character.y];
 			for (let i = 0; i < wp.length; i++) {
 				if (near(wp[i])) continue;
-				try { await xmove(wp[i][0], wp[i][1]); }
-				catch (e) { blocked = true; rageLog('leg ' + (i + 1) + '/' + wp.length + ' refused (' + (e && (e.reason || e.message) || e) + ') - re-planning', '#8b98ab'); break; }
+				const from = [character.x, character.y];
+				try {
+					/* A leg can_move clears is walked directly, which keeps the
+					   pathfinder out of it. One it does not clear is handed to
+					   smart_move: both ends are already margin-clear of every
+					   rectangle and the leg is short, so there is nowhere for it to
+					   wander, and rageGuard is still watching. */
+					if (legClear(from, wp[i])) await xmove(wp[i][0], wp[i][1]);
+					else await smart_move({ map: map, x: wp[i][0], y: wp[i][1] });
+				} catch (e) {
+					const why = String((e && (e.reason || e.message)) || e);
+					/* An interruption is COMBAT, not a bad route. Measured on the
+					   desertland leg: 4 attackers against courage 2, the move
+					   rejected as "interrupted", and the character pinned in place.
+					   Spending a route attempt on that is how a walk through
+					   contested ground exhausts its budget without ever being
+					   wrong about the route. */
+					if (/interrupt/i.test(why) && interrupts < maxInterrupts) {
+						interrupts++;
+						await pause(500);
+						i--;
+						continue;
+					}
+					blocked = true;
+					rageLog('leg ' + (i + 1) + '/' + wp.length + ' refused (' + why + ') - re-planning', '#8b98ab');
+					break;
+				}
 			}
 			if (!blocked) return true;
 			/* Gaining no ground is worth saying, but it is NOT a reason to stop:
@@ -1226,7 +1339,8 @@ async function rageWalk(map, to, margin, attempts) {
 				rageLog('no ground gained on attempt ' + (a + 1) + ' of ' + max, '#8b98ab');
 		}
 		if (!near([to.x, to.y]))
-			rageLog('gave up after ' + max + ' attempts, ' + Math.round(Math.hypot(character.x - to.x, character.y - to.y)) + ' units short', 'orange');
+			rageLog('gave up after ' + max + ' attempts' + (interrupts ? ' and ' + interrupts + ' interruptions' : '')
+				+ ', ' + Math.round(Math.hypot(character.x - to.x, character.y - to.y)) + ' units short', 'orange');
 		return near([to.x, to.y]);
 	} finally {
 		rageNav.busy = false;
@@ -1263,7 +1377,10 @@ async function rageGuard() {
 	const cfg = rageCfg();
 	if (!cfg.enabled) return false;
 	let hit = null;
-	try { hit = rageHit(character.map, character.x, character.y, cfg.margin); } catch (e) { return false; }
+	/* cfg.guardMargin, NOT cfg.margin - see the note on guardMargin in rageCfg.
+	   Detect on the real rectangle; escape out to the planner's margin. Using
+	   one number for both is what pinned the party in place for a whole run. */
+	try { hit = rageHit(character.map, character.x, character.y, cfg.guardMargin); } catch (e) { return false; }
 	if (!hit) return false;
 	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' - leaving now', 'red');
 	try { if (typeof stop === 'function') stop(); } catch (e) { }
