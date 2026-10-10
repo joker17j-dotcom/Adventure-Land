@@ -1,4 +1,8 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v7 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v9 (TEST BUILD)
+// v9 2026-10-10 heal cooldown gate; friendly_target forensics; objective and
+//               objective-button reconnaissance (both read-only)
+// v8 2026-10-10 restock phase before the gather, respawn backoff, two more
+//               gate pre-checks (cave_closed, home server)
 // v7 2026-10-06 dry-run mode, configurable leader, latched cohesion recovery,
 //               potions, skill range gating, scare, reason-counter telemetry
 // v6 2026-10-06 auto-party with retry, looting
@@ -15,7 +19,7 @@
 // -19 u/s and 11-12 minutes per character outside the leash. Drive the priest.
 //
 // COMMANDS   caveDry()   on-map rehearsal - never enters, no staging, no votes
-//            caveGo()    gather at Dorr for a real run
+//            caveGo()    restock potions, THEN gather at Dorr for a real run
 //            caveEnter() leader only, cave mode only
 //            caveLead(name) caveStatus() caveStop() caveDump()
 //
@@ -76,6 +80,18 @@ const CFG = {
 	scareAt: 2,             // attackers on me before the jacko comes out
 	scareHpAt: 0.60,        // or one attacker while this hurt
 	autoRespawn: true,      // bare respawn() - the only parameterless one that exists
+	respawnMs: 4000,        // first retry delay; doubles on cant_respawn
+	respawnMaxMs: 30000,
+
+	/* RESTOCK. Each character buys its own - there is no shared pool, and a
+	   priest that runs dry heals nobody. 2000 of each at 100g is 200k per
+	   character fully empty, which is affordable at current balances. */
+	restock: { hpot1: 2000, mpot1: 2000 },
+	restockChunk: 500,      // buy() calls are chunked and re-counted between
+	restockRounds: 14,
+	restockMaxMs: 240000,
+	restockNear: 200,       // close enough to the counter to trade
+	vendorFallback: { map: 'main', x: -35, y: -162 },   // fancypots, measured
 };
 
 /* MOVEMENT. closeAt/releaseAt are a latch, not a threshold - v6 compared gap
@@ -97,7 +113,7 @@ const MOVE = {
 };
 
 let mode = 'cave';         // cave | dry
-let phase = 'idle';        // idle | gather | staged | inside | active (dry)
+let phase = 'idle';        // idle | restock | gather | staged | inside | active (dry)
 let stopped = false;
 let engagedUntil = 0;
 let votedFor = {};
@@ -244,7 +260,58 @@ async function telUse(name, a, b) {
 	try {
 		const r = b !== undefined ? await use_skill(name, a, b) : (a !== undefined ? await use_skill(name, a) : await use_skill(name));
 		tel.skills[name] = (tel.skills[name] || 0) + 1; return r;
-	} catch (e) { noteWhy(name, e); throw e; }
+	} catch (e) { noteWhy(name, e, a && typeof a === 'object' ? a : undefined); throw e; }
+}
+/* FRIENDLY_TARGET FORENSICS - read-only, and deliberately NOT in the event ring.
+   The 2026-10-10 run produced 1,779 attack/curse refusals reading
+   "friendly_target": 578 on the priest, 613 on Dexon, 588 on MageofOz, against
+   735 swings that landed. Roughly 70% of the party's damage never left the
+   ground, and nothing in game said so - the catch swallows it and only the v7
+   reason tally revealed it at all.
+
+   TWO EXPLANATIONS SURVIVE READING, WHICH IS WHY THIS MEASURES INSTEAD.
+     a) an encounter NPC that was fought - the operator chose a fight option
+     b) an encounter that ATTACHES friendly monsters to the party - several
+        exist (monster_handler: wolves/lure/trade, pact_broker: hire). Those
+        would be type "monster" client-side, so threats() and the
+        get_nearest_monster() fallback would both return them happily and every
+        attack would be refused.
+   The shape of the numbers leans to (b): ~1/second per character sustained
+   across 10.5 minutes is not the burst a single encounter produces. But that
+   is an argument, not a measurement.
+
+   WHAT DISTINGUISHES THEM is the time spread per target. One entity seen for
+   ten minutes is an attached ally; several entities inside one short window is
+   the encounter. So this records first/last/count per distinct target rather
+   than a running total.
+
+   It is NOT put in tel.events on purpose. That ring is 80 entries and the loot
+   loop filled 75 of them with identical open_chest refusals in the last run,
+   evicting everything else - so anything that matters has to live outside it. */
+const FRIENDLY_CAP = 16;
+function noteFriendly(skill, target) {
+	try {
+		if (!target) return;
+		const key = String(target.id || target.name || '?') + '/' + skill;
+		const f = tel.friendly;
+		if (!f[key]) {
+			if (Object.keys(f).length >= FRIENDLY_CAP) { tel.friendlyOverflow = (tel.friendlyOverflow || 0) + 1; return; }
+			f[key] = {
+				n: 0, first: Date.now(), last: 0, skill: skill,
+				id: target.id || null, name: target.name || null,
+				type: target.type || null, mtype: target.mtype || null,
+				ctype: target.ctype || null, npc: target.npc || null,
+				owner: target.owner || null, team: target.team || null,
+				/* the client-side check the attack path already consults - if it
+				   says yes while the server says friendly, that disagreement is
+				   the whole bug */
+				canAttack: (function () { try { return isFn(can_attack) ? !!can_attack(target) : null; } catch (e) { return 'threw'; } })(),
+				inParty: partyNames().indexOf(target.name) >= 0,
+				map: character.map, floor: (caveState() || {}).floor,
+			};
+		}
+		f[key].n++; f[key].last = Date.now();
+	} catch (e) {}
 }
 function noteWhy(name, e) {
 	tel.skillFail[name] = (tel.skillFail[name] || 0) + 1;
@@ -252,13 +319,25 @@ function noteWhy(name, e) {
 	try { r = String((e && (e.reason || e.response || e.message)) || e).slice(0, 48); } catch (x) {}
 	if (!tel.skillFailWhy[name]) tel.skillFailWhy[name] = {};
 	tel.skillFailWhy[name][r] = (tel.skillFailWhy[name][r] || 0) + 1;
+	if (r === 'friendly_target' && arguments.length > 2) { try { noteFriendly(name, arguments[2]); } catch (x) {} }
 }
 
 async function priestSkills(target) {
 	const hurtCount = allies().filter((a) => a.hp / a.max_hp < CFG.partyHealAt).length;
 	if (hurtCount >= 2 && haveSkill('partyheal')) { try { await telUse('partyheal'); return true; } catch (e) {} }
 	const ally = hurtAlly(CFG.healAt);
-	if (ally && inRangeFor(ally, 'heal')) { try { await heal(ally); tel.skills.heal = (tel.skills.heal || 0) + 1; return true; } catch (e) { noteWhy('heal', e); } }
+	/* HEAL WAS THE ONE SKILL THAT SKIPPED haveSkill(). Every other call in this
+	   file is gated by it - and haveSkill is where is_on_cooldown lives - so
+	   heal alone fired every tick an ally was hurt, cooldown or not. Measured
+	   in the 2026-10-10 cave run: 145 heal failures, 142 of them purely
+	   "cooldown". Nothing broke, because the catch swallows it, which is
+	   exactly why it survived two versions.
+	   Safe to gate: G.skills.heal declares class ["priest"] and NOTHING else -
+	   no level, no mp, no slot - so haveSkill('heal') reduces to the class test
+	   plus the cooldown, and cannot refuse a heal the server would have taken.
+	   Note heal carries `share`, so its cooldown is not its own; the gate stops
+	   the wasted call either way. */
+	if (ally && haveSkill('heal') && inRangeFor(ally, 'heal')) { try { await heal(ally); tel.skills.heal = (tel.skills.heal || 0) + 1; return true; } catch (e) { noteWhy('heal', e); } }
 	if (target && haveSkill('curse') && inRangeFor(target, 'curse') && !(target.s && target.s.cursed)) {
 		try { await telUse('curse', target); return true; } catch (e) {}
 	}
@@ -309,7 +388,7 @@ async function combatTick() {
 		if (!isLeader()) change_target(target);
 		await attack(target);
 		bump('attacks');
-	} catch (e) { bump('attackFail'); noteWhy('attack', e); }
+	} catch (e) { bump('attackFail'); noteWhy('attack', e, target); }
 }
 
 // ------------------------------------------------------------ movement -----
@@ -399,6 +478,8 @@ async function moveTick() {
 	if (stopped || character.rip) return;
 	if (cavePaused()) { bump('pausedMoveSkipped'); return; }
 
+	if (phase === 'restock') { await restockTick(); return; }
+
 	if (phase === 'gather') {
 		if (character.map !== CFG.keeper.map || dist(character, CFG.keeper) > CFG.stageWithin) {
 			try { await smart_move({ map: CFG.keeper.map, x: CFG.keeper.x, y: CFG.keeper.y }); } catch (e) {}
@@ -443,6 +524,125 @@ function warnOutrun() {
 	} catch (e) {}
 }
 
+// ------------------------------------------------------------- restock -----
+/* EVERY FACT BELOW WAS MEASURED IN THE LIVE CODE CONTEXT 2026-10-10, because
+   three of them would otherwise have been guesses and two would have thrown:
+
+     item_count  is UNDEFINED here. The count is done by hand over
+                 character.items, summing q.
+     can_buy     is an OBJECT, not a function. Calling it is the Form A hazard
+                 from CLAUDE.md - a throw on the first line of a phase handler
+                 takes the whole phase with it and looks like dead code. So
+                 nothing below calls it, and affordability is checked against
+                 G.items[name].g instead.
+     fancypots   is the ONLY hpot1 seller placed on main, at -35,-162. `pots`
+                 and `wbartender` sell them too but are not on this map. The
+                 position is still resolved at runtime; the constant in CFG is
+                 only a fallback.
+
+   hpot1 and mpot1 are 100g each. Starting stock when this was written:
+   Dexon 1679/922, FatherToken 584/362, MageofOz 1806/40. */
+function countItem(name) {
+	let t = 0;
+	try { for (const it of (character.items || [])) if (it && it.name === name) t += (it.q || 1); } catch (e) {}
+	return t;
+}
+function restockShortfall() {
+	const out = {};
+	try {
+		for (const nm in CFG.restock) {
+			const have = countItem(nm);
+			if (have < CFG.restock[nm]) out[nm] = CFG.restock[nm] - have;
+		}
+	} catch (e) {}
+	return out;
+}
+function potVendor() {
+	try {
+		const sellers = [];
+		for (const k in G.npcs) {
+			const n = G.npcs[k];
+			if (n && n.items && n.items.indexOf && n.items.indexOf('hpot1') >= 0) sellers.push(k);
+		}
+		for (const n of ((G.maps[CFG.keeper.map] || {}).npcs || [])) {
+			if (n && n.position && sellers.indexOf(n.id) >= 0) {
+				return { map: CFG.keeper.map, x: Math.round(n.position[0]), y: Math.round(n.position[1]), id: n.id };
+			}
+		}
+	} catch (e) {}
+	const f = CFG.vendorFallback;
+	return { map: f.map, x: f.x, y: f.y, id: 'fallback' };
+}
+function pause(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+let restockStarted = 0, restockRound = 0;
+function restockReset() { restockStarted = 0; restockRound = 0; }
+
+/* Returns nothing; it drives `phase` itself. Called only from moveTick, so it
+   inherits that function's rip / paused guards. */
+async function restockTick() {
+	if (!restockStarted) {
+		restockStarted = Date.now(); restockRound = 0;
+		const short = restockShortfall();
+		clog('restock: need ' + (Object.keys(short).length ? JSON.stringify(short) : 'nothing')
+			+ ' (have ' + CFG.restock.hpot1 + '/' + CFG.restock.mpot1 + ' targets)', '#FFD700');
+		ev('restockStart', { short: short, gold: character.gold });
+	}
+
+	const short = restockShortfall();
+	if (!Object.keys(short).length) {
+		clog('potions topped up - heading to Dorr', '#5ED6A8');
+		ev('restockDone', { rounds: restockRound });
+		phase = 'gather';
+		return;
+	}
+
+	/* NEVER DEADLOCK THE PARTY ON SHOPPING. Walking in a few hundred potions
+	   short is recoverable; three characters standing at a counter forever is
+	   not, and it is the failure the operator would be least likely to notice
+	   because everything still looks alive. */
+	if (restockRound >= CFG.restockRounds || Date.now() - restockStarted > CFG.restockMaxMs) {
+		bump('restockGaveUp');
+		clog('RESTOCK GAVE UP after ' + restockRound + ' rounds - still short '
+			+ JSON.stringify(short) + ' - going to Dorr anyway', 'orange');
+		ev('restockGaveUp', short);
+		phase = 'gather';
+		return;
+	}
+
+	const v = potVendor();
+	if (character.map !== v.map || dist(character, v) > CFG.restockNear) {
+		throttleLog('walking to ' + v.id + ' at ' + v.x + ',' + v.y + ' to restock');
+		try { await smart_move({ map: v.map, x: v.x, y: v.y }); }
+		catch (e) { bump('restockMoveFail'); ev('restockMoveFail', String((e && (e.reason || e.message)) || e)); }
+		return;
+	}
+
+	restockRound++;
+	for (const nm in short) {
+		const n = Math.min(short[nm], CFG.restockChunk);
+		const unit = ((G.items[nm] || {}).g) || 0;
+		if (unit <= 0) { clog('no price for ' + nm + ' - skipping it', 'orange'); continue; }
+		if (n * unit > character.gold) {
+			bump('restockBroke');
+			clog('cannot afford ' + n + ' x ' + nm + ' (' + (n * unit) + 'g, have ' + character.gold + ')', 'orange');
+			ev('restockBroke', { item: nm, want: n, unit: unit, gold: character.gold });
+			continue;
+		}
+		const before = countItem(nm);
+		try { await buy(nm, n); bump('buys'); }
+		catch (e) { bump('buyErr'); noteWhy('buy_' + nm, e); }
+		await pause(500);
+		/* JUDGED BY THE INVENTORY, NOT BY THE CALL - the same rule the merchant
+		   stand buys use. buy() has been seen to reject a purchase that landed,
+		   and a round that trusted the call would either double-buy or stall. */
+		const got = countItem(nm) - before;
+		if (got > 0) ev('bought', { item: nm, got: got });
+		else ev('boughtNothing', { item: nm, asked: n });
+	}
+	throttleLog('restocking, still short ' + JSON.stringify(restockShortfall()));
+}
+
 // ------------------------------------------------------------- potions -----
 /* hpot1 gives 400 against ~7000 max hp, so potions are a trickle, not a heal -
    the ladder keeps mp topped first because a dry priest heals nobody. Proven
@@ -476,7 +676,18 @@ function potionTick() {
    exactly what the cave offers at the moment of death, then calls the only
    parameterless respawn that exists. If the snapshot shows a cost dialog, the
    next run has the exact payload to use and this becomes a one-line change. */
-let lastRespawn = 0, wasRip = false;
+let lastRespawn = 0, wasRip = false, respawnWait = 0, respawnRefusals = 0;
+/* THE BACKOFF, AND WHY IT IS DRIVEN BY THE RESPONSE AND NOT BY A CATCH.
+   Measured in the 2026-10-10 rehearsal: the priest died once and the server
+   answered cant_respawn THREE times before one took. respawn() does not throw
+   on that - the refusal arrives through game_response - so a try/catch around
+   it sees nothing and a fixed 4s retry just hammers the server. bumpReason
+   calls this, which is the only place the refusal is visible. */
+function noteRespawnRefused() {
+	respawnRefusals++;
+	respawnWait = Math.min(CFG.respawnMaxMs, (respawnWait || CFG.respawnMs) * 2);
+	ev('respawnRefused', { n: respawnRefusals, nextWaitMs: respawnWait });
+}
 function deathSnapshot() {
 	const snap = {};
 	try {
@@ -506,6 +717,7 @@ function deathTick() {
 	if (!rip) {
 		if (wasRip) {
 			wasRip = false;
+			respawnWait = 0; respawnRefusals = 0;
 			/* Back on our feet somewhere other than the fight - go to the leader
 			   and keep going, which is exactly the recovery latch. */
 			recovering = true; aim = null; bump('recoveries'); ev('respawned', { map: character.map });
@@ -513,7 +725,7 @@ function deathTick() {
 		return;
 	}
 	if (!CFG.autoRespawn) return;
-	if (Date.now() - lastRespawn < 4000) return;
+	if (Date.now() - lastRespawn < (respawnWait || CFG.respawnMs)) return;
 	lastRespawn = Date.now();
 	bump('respawnCalls');
 	try { respawn(); } catch (e) { noteWhy('respawn', e); clog('respawn threw: ' + e, 'red'); }
@@ -544,9 +756,35 @@ function voteTick() {
 }
 
 // ---------------------------------------------------------------- gate -----
+/* TWO CHECKS THE SERVER MAKES THAT v7 COULD NOT SEE COMING. The enter handler
+   in node/logic/generated_maps.js throws 23 distinct reasons; gateReport only
+   ever pre-checked four conditions, so the rest arrived as a surprise AFTER
+   the one daily opening was spent. These two are the ones readable from here:
+
+     cave_closed       gated on G.events.dreams.disabled, which exists and read
+                       false on 2026-10-10.
+     cave_other_server / invalid_home_server
+                       character.home is "USIV" and the live server reports
+                       region "US" + identifier "IV", so the test is a string
+                       compare. A character whose home is another shard cannot
+                       be brought in.
+
+   Not checkable from the client, and still capable of refusing the open:
+   daily_opening_used, zone_busy, already_opening, party_changed,
+   admission_expired, cant_reenter, character_already_entering. */
+function serverKey() {
+	try {
+		const r = parent.server_region, i = parent.server_identifier;
+		if (typeof r === 'string' && typeof i === 'string') return r + i;
+	} catch (e) {}
+	return null;
+}
 function gateReport() {
 	const out = [];
 	const names = partyNames();
+	try { if (G.events && G.events.dreams && G.events.dreams.disabled) out.push('CAVE IS CLOSED (dreams event disabled)'); } catch (e) {}
+	const sk = serverKey();
+	if (sk && character.home && character.home !== sk) out.push('me: home is ' + character.home + ', this server is ' + sk);
 	if (names.length > 3) out.push('PARTY OF ' + names.length + ' - max 3');
 	for (const nm of names) {
 		const e = nm === character.name ? character : (parent.entities || {})[nm];
@@ -608,13 +846,104 @@ function lootTick() {
 	} catch (e) { bump('lootErr'); }
 }
 
+// ----------------------------------------------------- objective recon -----
+/* READ-ONLY. Nothing here clicks, moves or interacts - it only writes down what
+   the objective system looks like from inside, so the NEXT version can drive it
+   without guessing.
+
+   THE QUESTION IT ANSWERS: the operator found that the objective buttons at the
+   top of the screen walk the character to the objective. If the position is
+   reachable from `character.cave.objectives` then CaveRun can smart_move there
+   itself and never touch the DOM - which is far more robust than synthesising a
+   click. If it is NOT in the data, the button's own handler is the fallback, so
+   the button is described too.
+
+   Why both: `.click()` on a game button has already failed once in this
+   codebase - the COMMAND gamebutton on /hub does not fire its inline onclick -
+   so a DOM route is assumed broken until proven otherwise.
+
+   Objectives are sampled once per floor and only when they change, so a 10
+   minute run leaves a handful of records rather than thousands. */
+let objSeen = {}, lastObjScan = 0;
+function objRecon() {
+	try {
+		if (!inCave()) return;
+		if (Date.now() - lastObjScan < 3000) return;
+		lastObjScan = Date.now();
+		const st = caveState();
+		const objs = (st && st.objectives) || null;
+		if (!objs) return;
+		const floor = st.floor;
+		const sig = floor + ':' + objs.map((o) => (o.id || o.name || '?') + (o.done ? '1' : '0')).join(',');
+		if (objSeen[sig]) return;
+		objSeen[sig] = 1;
+		if (!tel.objectives) tel.objectives = [];
+		if (tel.objectives.length > 24) return;
+		tel.objectives.push({
+			at: Date.now(), floor: floor,
+			/* field NAMES, not prose - the text blobs are long and useless here */
+			fields: objs.map((o) => Object.keys(o).join('|')),
+			items: objs.map(function (o) {
+				const r = { id: o.id || null, kind: o.kind || o.type || null,
+					done: !!o.done, required: !!o.required };
+				/* anything position-shaped, whatever it ends up being called */
+				for (const k in o) {
+					if (/^(x|y|map|pos|position|target|at|where|loc|location|spot)$/i.test(k)) {
+						r['pos_' + k] = (o[k] && typeof o[k] === 'object') ? JSON.stringify(o[k]).slice(0, 80) : o[k];
+					}
+				}
+				return r;
+			}),
+			me: { map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y) },
+		});
+		ev('objectives', { floor: floor, n: objs.length });
+	} catch (e) {}
+}
+
+/* The buttons, described once. parent.document is the top window and this file
+   runs in the maincode iframe, so the DOM is reachable - but it is only ever
+   READ here. */
+let btnScanned = false;
+function objButtonRecon() {
+	try {
+		if (btnScanned || !inCave()) return;
+		const d = parent.document;
+		if (!d) return;
+		const out = [];
+		const nodes = d.querySelectorAll('[onclick], [id*="objective" i], [class*="objective" i], .gamebutton, [class*="quest" i]');
+		for (let i = 0; i < nodes.length && out.length < 30; i++) {
+			const n = nodes[i];
+			const txt = (n.innerText || '').trim().slice(0, 40);
+			if (!txt && !/objective|quest/i.test((n.id || '') + ' ' + (n.className || ''))) continue;
+			out.push({
+				tag: n.tagName, id: n.id || null,
+				cls: (typeof n.className === 'string' ? n.className : '').slice(0, 60) || null,
+				text: txt,
+				/* the handler NAME, which is what a future version would call
+				   directly instead of faking a click */
+				onclick: n.getAttribute ? (n.getAttribute('onclick') || '').slice(0, 120) || null : null,
+				data: (function () { const o = {}; try { for (const k in n.dataset) o[k] = String(n.dataset[k]).slice(0, 40); } catch (e) {} return Object.keys(o).length ? o : null; })(),
+				rect: (function () { try { const r = n.getBoundingClientRect(); return Math.round(r.x) + ',' + Math.round(r.y) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height); } catch (e) { return null; } })(),
+			});
+		}
+		if (!out.length) return;
+		btnScanned = true;
+		tel.objButtons = out;
+		/* and the candidate functions on the top window, by name only */
+		const fns = [];
+		try { for (const k in parent) { if (/objectiv|quest|waypoint|goto|travel_to/i.test(k) && typeof parent[k] === 'function') fns.push(k); } } catch (e) {}
+		tel.objFns = fns.slice(0, 20);
+		ev('objButtons', { n: out.length, fns: fns.length });
+	} catch (e) {}
+}
+
 // ------------------------------------------------------------ telemetry ----
 /* Keyed by CLASS, not name. A key containing "Token" is redacted by output
    filters on the reading side, which would silently blind the priest's
    telemetry - measured 2026-10-06. */
 const TEL_KEY = 'cave_tel_' + character.ctype;
 const tel = {
-	ver: 7, runId: 'r' + Date.now().toString(36), name: character.name, ctype: character.ctype,
+	ver: 9, runId: 'r' + Date.now().toString(36), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -625,19 +954,25 @@ const tel = {
 		outrunWarnTicks: 0, doorTry: 0, doorOk: 0,
 		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
-		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0 },
+		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
+		buys: 0, buyErr: 0, restockBroke: 0, restockGaveUp: 0, restockMoveFail: 0 },
 	skills: {}, skillFail: {}, skillFailWhy: {},
 	/* EVERY response reason, counted. v6 filtered them through TEL_REASONS
 	   before recording, so distance / not_ready / no_mp / cooldown never
 	   appeared at all and cave_paused looked more dominant than it was. The
 	   regex now governs only the event ring, never the tally. */
 	reasons: {},
+	friendly: {},          // v9 forensics: distinct friendly_target victims
+	objectives: null,      // v9 recon: what an objective record looks like
+	objButtons: null,      // v9 recon: the top-bar buttons, read-only
+	objFns: null,
 	maxDistLeader: 0, msBeyondLeash: 0, msRecovering: 0, helpers: {}, events: [],
 };
 function bump(k, n) { tel.counters[k] = (tel.counters[k] || 0) + (n || 1); }
 function bumpReason(r, place) {
 	tel.reasons[r] = (tel.reasons[r] || 0) + 1;
 	if (place) { const k = r + '@' + place; tel.reasons[k] = (tel.reasons[k] || 0) + 1; }
+	if (r === 'cant_respawn') { try { noteRespawnRefused(); } catch (e) {} }
 }
 let lastEvFlush = 0;
 function ev(kind, data) {
@@ -732,11 +1067,21 @@ function caveDry() {
 	ev('dry', { leader: leaderName(), role: role() });
 	return { mode: mode, role: role(), leader: leaderName() };
 }
+/* RESTOCK COMES FIRST, AND EACH CHARACTER DOES ITS OWN. caveSay('go') reaches
+   the followers, so all three start shopping at the same moment rather than
+   the leader waiting at Dorr for two characters that have not left town. The
+   phase advances itself to 'gather' from restockTick - on success, on running
+   out of gold, or on the give-up timer - so there is no path where a character
+   stays in town indefinitely. */
 function caveGo() {
 	if (mode === 'dry') { clog('in dry mode - caveStop() then re-engage for a real run', 'orange'); return null; }
-	stopped = false; phase = 'gather';
+	stopped = false;
+	restockReset();
+	phase = 'restock';
 	caveSay('go');
-	clog('gathering at Dorr' + (isLeader() ? ' - and told ' + followers().join(', ') : '') + ' - combat held until inside', '#FFD700');
+	const short = restockShortfall();
+	clog('restocking first' + (Object.keys(short).length ? ' - short ' + JSON.stringify(short) : ' - already topped up')
+		+ (isLeader() ? ' - and told ' + followers().join(', ') : '') + ' - combat held until inside', '#FFD700');
 	return phase;
 }
 function caveStop() { stopped = true; phase = 'idle'; recovering = false; aim = null; caveSay('stop'); clog('stopped', 'orange'); }
@@ -800,6 +1145,8 @@ async function tick() {
 		bump('ticks');
 		if (engaged()) bump('engagedTicks');
 		if (cavePaused()) bump('pausedTicks');
+		objRecon();             // read-only; cheap, throttled, inside only
+		objButtonRecon();       // read-only; runs once
 		deathTick();            // before anything that returns early on rip
 		potionTick();
 		partyTick();
@@ -812,12 +1159,12 @@ async function tick() {
 }
 function voteLoop() { try { voteTick(); } catch (e) { clog('vote: ' + e, 'red'); } if (alive()) setTimeout(voteLoop, CFG.voteTickMs); }
 
-clog('v7 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
+clog('v9 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
 	+ '). Leader ' + leaderName() + '. caveDry() to rehearse on-map, caveGo() for a real run, caveLead(name) to retarget.', '#7FD98A');
 telCensus();
 telHook();
 hookPartyInvite();
-ev('load', { ver: 7, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
+ev('load', { ver: 9, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 tick();
 voteLoop();
