@@ -866,7 +866,15 @@ function copyText(s) {
    of buying nothing and leaving you guessing. */
 function buyCommand(r) {
   const q = (s) => JSON.stringify(String(s));
-  return "PROBE_API.buyNow({shard:" + q(String(r.server).replace(/\s+/g, ""))
+  /* parent-PREFIXED ON PURPOSE. The merchant publishes PROBE_API on the top
+     window, but these commands get pasted into the eval box, which runs in the
+     maincode iframe where window !== parent - so the bare name threw
+     "ReferenceError: PROBE_API is not defined" on every single one. Measured
+     2026-10-10. The prefixed form resolves in BOTH scopes (where window is
+     already the top, parent === window), so one string works against the
+     merchant build that only published to parent and the one that also binds
+     the short name locally. Do not "tidy" this back to the bare name. */
+  return "parent.PROBE_API.buyNow({shard:" + q(String(r.server).replace(/\s+/g, ""))
     + ",seller:" + q(r.merchant)
     + ",map:" + q(r.map)
     + ",x:" + Math.round(r.x) + ",y:" + Math.round(r.y)
