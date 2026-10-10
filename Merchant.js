@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v91
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v92
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -635,7 +635,22 @@ const CONFIG = {
 	   exposure was sellAggressivelyIfLowOnSpace, which vendors nearly anything
 	   not explicitly protected. */
 	materials: {
-		keepAndBank: ['essenceofether'],
+		/* Added 2026-10-10. The craft inputs for the two pieces the party is
+		   actually chasing, so none of them may be vendored:
+		     thundergrips  1x mrngloves+6, 80x stormfeather, 12x essenceofether
+		     emberhood     1x mmhat+5, 1x embercore, 8x essenceoffire, 20x ashleaf
+		   stormfeather is on the list to PROTECT it, not to buy it - the operator
+		   holds 1,963 and farms them easily, so it is deliberately absent from
+		   pontyBuy. ashleaf/embercore/essenceoffire are bought from PONTY ONLY and
+		   are deliberately NOT in standBuy.items.
+
+		   NOTE ON REACH: this list is consulted by the two sell guards only
+		   (sellAggressivelyIfLowOnSpace and ssVendorBound). Arbitrage does not
+		   read it - that is NO_TRADE_ITEM_NAMES, and putting these there would
+		   also forbid BUYING them, which is the opposite of what is wanted. The
+		   exposure that leaves is arbitrage flipping one, which was weighed and
+		   accepted rather than overlooked. */
+		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire'],
 	},
 
 	selling: {
@@ -689,6 +704,8 @@ const CONFIG = {
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
 			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'tracker', 'feather0', 'monstertoken', 'candy0', 'voidthread', 'essenceofether',
+			// emberhood craft inputs - Ponty only, never from a player stand
+			'ashleaf', 'embercore', 'essenceoffire',
 			//upgrade
 			'scroll3', 'scroll4', 'cscroll3', 'cscroll4', 'offeringp', 'offering', 'offeringx',
 		],
@@ -3286,6 +3303,30 @@ const GEAR_PROGRESSION = {
 		{
 			// Pants are plain, not starkillers - that item is
 			// class-restricted to mage/priest and a ranger can't equip it.
+			/* MAINHAND IS bowofthedead, NOT firebow, from 2026-10-10. Measured:
+			     firebow+9        attack 97   range 135  crit 0
+			     bowofthedead+7   attack 82   range 121  crit 2.45
+			     bowofthedead+9   attack 104  range 151  crit 3.15
+			   so the tier-3 target beats what firebow reached on all three, and
+			   the operator already holds one at +7.
+
+			   TWO THINGS THAT ARE EASY TO MISS. The grade break is at 5 for
+			   bowofthedead against 8 for firebow, so +7 and +9 both sit inside
+			   grade 1 where the cost per level is already raised - this is not
+			   the cheap end of the curve that firebow+7 would have been. And it
+			   carries speed -12, which firebow does not; Dexon is the fastest of
+			   the three at 78, so he can absorb it, but it is a real cost on a
+			   party whose cohesion work all season has been about closing rates.
+
+			   GLOVES ARE thundergrips+7, NOT supermittens, for now. supermittens
+			   is still the tier-3 target and still the better item under the
+			   DAMAGE-FIRST rule - at +5 it is apiercing 47 and frequency 3
+			   against thundergrips' 0 and 2 - but it is DROP-ONLY: no craft
+			   recipe, no token price, no NPC source. thundergrips is craftable
+			   (mrngloves+6 + 80 stormfeather + 12 essenceofether + 800k) so it is
+			   the reachable item, exactly like frankypants in the pants slot
+			   rather than an off-plan substitute. At +7: armor 52, res 41,
+			   frequency 3, against armor 43 / res 32 / frequency 2 at +5. */
 			/* CHEST IS mrnarmor+7, NOT coat+9, as of 2026-10-05. Measured stats:
 			     coat+9       armor 13  resistance 11  stat 15
 			     mrnarmor+7   armor 62  resistance 51  stat 10  frequency 1
@@ -3304,9 +3345,9 @@ const GEAR_PROGRESSION = {
 			   casually: from +7 the next two steps are 19.6% then 12.5% and run to
 			   roughly a billion gold-equivalent. -> MerchantComments.md#mrnarmor */
 			earring1: { item: 'dexearring', level: 4, method: 'compound' }, helmet: { item: 'fury', level: 4, method: 'upgrade' }, earring2: { item: 'dexearring', level: 4, method: 'compound' }, amulet: { item: 'dexamulet', level: 4, method: 'compound' },
-			mainhand: { item: 'firebow', level: 9, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
+			mainhand: { item: 'bowofthedead', level: 7, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 0, method: 'compound' }, belt: { item: 'dexbelt', level: 3, method: 'compound' },
-			orb: { item: 'orbofdex', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
+			orb: { item: 'orbofdex', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'thundergrips', level: 7, method: 'upgrade' }, elixir: null,
 		},
 		{
 			// Pants are plain, not starkillers - same class-restriction as tier2.
@@ -3330,7 +3371,7 @@ const GEAR_PROGRESSION = {
 			   for sustained fights where MP is the limiter, mrnarmor when incoming
 			   damage is. Tier 2 above is the armor one. */
 			earring1: { item: 'dexearring', level: 5, method: 'compound' }, helmet: { item: 'fury', level: 8, method: 'upgrade' }, earring2: { item: 'dexearring', level: 5, method: 'compound' }, amulet: { item: 'dexamulet', level: 5, method: 'compound' },
-			mainhand: { item: 'firebow', level: 10, method: 'upgrade' }, chest: { item: 'tshirt9', level: 4, method: 'upgrade' }, offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' }, cape: { item: 'ecape', level: 9, method: 'upgrade' },
+			mainhand: { item: 'bowofthedead', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 4, method: 'upgrade' }, offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' }, cape: { item: 'ecape', level: 9, method: 'upgrade' },
 			ring1: { item: 'suckerpunch', level: 2, method: 'compound' }, pants: { item: 'frankypants', level: 7, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 2, method: 'compound' }, belt: { item: 'dexbelt', level: 5, method: 'compound' },
 			orb: { item: 'orbofdex', level: 5, method: 'compound' }, shoes: { item: 'wingedboots', level: 10, method: 'upgrade' }, gloves: { item: 'supermittens', level: 6, method: 'upgrade' }, elixir: null,
 		},
@@ -4132,16 +4173,41 @@ async function bankFullyProgressedItems() {
 		if (findCandidacy(item) && !gearHeldKeys.has(gearHeldKey(item))) return;
 		toBank.push(idx);
 	});
+
+	/* KEPT MATERIALS RIDE AN EXISTING TRIP; THEY NEVER CAUSE ONE.
+
+	   CONFIG.materials.keepAndBank has always been documented as "never
+	   vendored and banked on sight", but isKeptMaterial() was only ever read by
+	   the two sell guards - nothing banked anything. essenceofether has been
+	   protected-but-never-banked since the list was created. This is the
+	   missing half.
+
+	   Collected AFTER the !toBank.length check on purpose. The operator's
+	   instruction was to bank them on EXISTING bank trips, so a pile of
+	   stormfeather must not be able to pull the merchant off arbitrage for a
+	   walk of its own. If gear is already going, they go too; otherwise they
+	   wait, costing nothing but an inventory slot they were occupying anyway. */
 	if (!toBank.length) return false;
+
+	const gearSlots = new Set(toBank);
+	character.items.forEach((item, idx) => {
+		if (item && item.name && isKeptMaterial(item.name)) toBank.push(idx);
+	});
 
 	const arrived = await travelToBank();
 	if (!arrived) return false;
 
+	/* ONE combined pass, highest index first. The two lists must NOT be stored
+	   separately: bank_store nulls the slot and the indices behind it shift, so
+	   a second list captured beforehand would be pointing at the wrong items by
+	   the time it ran. That is the whole reason the original loop sorted
+	   descending, and splitting it would have quietly undone the guarantee. */
 	for (const idx of toBank.sort((a, b) => b - a)) {
 		const itemName = character.items[idx]?.name;
+		const label = gearSlots.has(idx) ? 'fully-progressed' : 'kept material';
 		try {
 			await bank_store(idx);
-			game_log(`Banked fully-progressed ${itemName ?? 'item'}`, '#00FF00');
+			game_log(`Banked ${label} ${itemName ?? 'item'}`, '#00FF00');
 		} catch (e) {
 			game_log(`bank_store failed for ${itemName ?? `slot ${idx}`}: ${e.reason || e}`, 'red');
 		}
