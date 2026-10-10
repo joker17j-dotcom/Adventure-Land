@@ -160,7 +160,7 @@ The first two cost nothing — spare items already in your bank that beat what i
 
 | # | Action | Gain | Cost |
 | --- | --- | --- | --- |
-| 1 | **Type the stat pools** with pscrolls (above) | +19–23% main stat on all three | 8,000/scroll at the scrolls NPC; copies per item still TBC |
+| 1 | **Type the stat pools** with pscrolls (above) | +19–23% main stat on all three | 8,000/scroll at the scrolls NPC; copies per item (needed = [1, 10, 100, 1000, 9999, 9999, 9999] indexed by grade — so grade 0 costs 1 scroll, grade 1 costs 10, grade 2 costs 100. Your helmet is grade 2. A grade 3 item would want 1,000.) |
 | 2 | Spare **xgloves+6** onto Dexon (lower armor/resistance than MageofOz; both wear poker+6) | +61 armor, +48 resistance for −0.5 crit | free |
 | 3 | Drive **bowofthedead to +7** | 82/121 + str 20 + crit 2.45, over firebow+7's 76/105 | 36.7M |
 | 4 | Buy **slice\_mint ×96 at 250,000** on USIV | unblocks the sixcake line — see Mechanics | 24M |
