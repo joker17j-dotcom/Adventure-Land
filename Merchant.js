@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v84
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v85
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -561,6 +561,10 @@ const CONFIG = {
 
 	// THE TOWN SPOT - one position that reaches five NPCs.
 	// -> MerchantComments.md#townSpot
+	/* The 3 s recall. Gated per leg - see the TOWN HOP block for the measured
+	   reason a blanket smart.use_town is worse. margin is how many units the hop
+	   must beat walking by before it is taken. */
+	town: { enabled: true, margin: 40 },
 	townSpot: { name: 'town spot', map: 'main', x: -179, y: -72, radius: 60 },
 
 	// A move lock older than this is abandoned, not busy - see moveLockHeld().
@@ -1405,6 +1409,254 @@ function rageStaging(map) {
 	return null;
 }
 
+// ============================================================================
+// TOWN HOP - the 3 second recall, used only on the legs where it beats walking
+// ============================================================================
+/* MEASURED 2026-10-10, from the server source and the live tables.
+
+   use_town channels for 3,000 ms and teleports to spawns[0] of the CURRENT map.
+   Cooldown 0. The server refuses to start it when targets > 5, inside a
+   generated instance, in jail, or when the character cannot walk.
+
+   TWO THINGS THAT ARE NOT OBVIOUS, AND BOTH MATTER.
+
+   One: a SINGLE monster hit cancels it. In the monster-attacks-player branch
+   `target.c = {}` sits OUTSIDE the lethal-damage check, so any hit of any size
+   ends the channel - and the client's town() cannot tell, because it waits only
+   for character.c.town to clear and that happens on cancellation too:
+       for (var i = 0; character.c.town && i < 10000; i++) await sleep(1);
+       return { success: true };
+   It reports success either way. Nothing here trusts that resolution; arrival
+   is decided by looking at where the character actually ended up.
+
+   Two: the server lets you WALK while channeling - its move handler gates on
+   can_walk(), which tests is_disabled() and not c.town - but smart_move will
+   not, because its step loop requires !is_transporting(character) and
+   is_transporting() returns true on c.town. So the walk-along below is driven
+   with raw move(). That is the operator's design, and it makes a cancelled
+   channel free: instead of 3 s standing still, the character is 3 s * speed
+   further along the road it was going to walk anyway. It does not change the
+   success case - the teleport still fires at 3 s and discards the walking - so
+   the gate below is still needed.
+
+   WHERE IT PAYS, for Meltymerch at speed 67, on the trip home from the combat
+   party's corridor. spookytown has no door to main; the chain is
+   spookytown -> halloween -> main, entering main at spawn 15 (1600,-524):
+
+     leg                                     walk     town()    saving
+     spookytown corridor -> halloween door   36.6s     24.6s    +12.0s
+     halloween entry     -> main door        19.1s     21.2s     -2.1s
+     main entry          -> town spot        27.4s      5.9s    +21.5s
+     whole trip home                         83.1s     49.7s    +33.5s
+
+   The halloween leg is why this is gated per leg instead of setting
+   smart.use_town once. That flag pushes the teleport into the pathfinder as a
+   single graph step with no cost attached, so the planner cannot see that it
+   costs 3 s and would take that leg too, handing back 2.1 s. Note also that
+   smart.use_town is a persistent global on the `smart` object, NOT an argument
+   - smart_move reads only x, y, map and to from what it is passed.
+
+   Distances are straight-line, so the savings are floors: the walking legs
+   curve around terrain and the recall leg does not. */
+
+const TOWN_CHANNEL_MS = 3000;
+
+function townCfg() {
+	const a = (typeof CONFIG !== 'undefined' && CONFIG.town) || {};
+	return {
+		enabled: a.enabled !== false,
+		channelMs: a.channelMs || TOWN_CHANNEL_MS,
+		margin: (typeof a.margin === 'number') ? a.margin : 40,
+		stepUnits: a.stepUnits || 120,
+		pollMs: a.pollMs || 150,
+		/* How often the watcher re-prices the hop while smart_move drives. */
+		watchMs: a.watchMs || 400,
+		/* A cancelled hop leaves us still worth-it, so bound the retries rather
+		   than channelling into the same monster over and over. */
+		minGapMs: (typeof a.minGapMs === 'number') ? a.minGapMs : 6000,
+		maxPerMap: a.maxPerMap || 2,
+	};
+}
+
+/* Per-map attempt bookkeeping, reset at the start of each trip. */
+const townTries = {};
+
+function townLog(m, c) {
+	try { game_log('[town] ' + m, c || '#8EC8FF'); } catch (e) { }
+	console.log('[town] ' + m);
+}
+
+function townG() { return (typeof parent !== 'undefined' && parent.G) ? parent.G : null; }
+
+/* Where the recall lands: spawns[0] of the map we are on. */
+function townSpawn(map) {
+	const g = townG();
+	const s = g && g.maps[map] && g.maps[map].spawns && g.maps[map].spawns[0];
+	if (!Array.isArray(s) || typeof s[0] !== 'number') return null;
+	return { x: s[0], y: s[1] };
+}
+
+/* The next door to take from `fromMap` towards `targetMap`, as a point on
+   fromMap plus where it lands. BFS over the door graph - the same walk that
+   found spookytown -> halloween -> main. */
+function townNextDoor(fromMap, targetMap) {
+	const g = townG();
+	if (!g || !g.maps[fromMap] || fromMap === targetMap) return null;
+	const prev = {}; prev[fromMap] = null;
+	const q = [fromMap];
+	while (q.length) {
+		const m = q.shift();
+		if (m === targetMap) break;
+		for (const d of ((g.maps[m] && g.maps[m].doors) || [])) {
+			const to = d[4];
+			if (!to || !g.maps[to] || prev[to] !== undefined) continue;
+			prev[to] = { from: m, at: [d[0], d[1]], toSpawn: d[5] };
+			q.push(to);
+		}
+	}
+	if (prev[targetMap] === undefined) return null;
+	let c = targetMap;
+	while (prev[c] && prev[c].from !== fromMap) c = prev[c].from;
+	const step = prev[c];
+	if (!step) return null;
+	const land = g.maps[c].spawns && g.maps[c].spawns[step.toSpawn];
+	return {
+		x: step.at[0], y: step.at[1], toMap: c,
+		landX: Array.isArray(land) ? land[0] : 0,
+		landY: Array.isArray(land) ? land[1] : 0,
+	};
+}
+
+/* What we are heading for ON THIS MAP: the destination when we are already on
+   its map, otherwise the door we leave through. */
+function townGoal(targetMap, tx, ty) {
+	if (character.map === targetMap) {
+		if (typeof tx !== 'number' || typeof ty !== 'number') return null;
+		return { x: tx, y: ty };
+	}
+	const d = townNextDoor(character.map, targetMap);
+	return d ? { x: d.x, y: d.y } : null;
+}
+
+/* Is the recall actually faster from here? Returns the numbers so the log can
+   say why; null when walking wins. */
+function townWorthIt(targetMap, tx, ty) {
+	const cfg = townCfg();
+	if (!cfg.enabled) return null;
+	if (typeof town !== 'function' || typeof move !== 'function') return null;
+	if (character.rip || (character.c && character.c.town)) return null;
+	if ((character.targets || 0) > 5) return null;   // the server answers cant_escape
+	const tried = townTries[character.map];
+	if (tried && (tried.n >= cfg.maxPerMap || Date.now() - tried.at < cfg.minGapMs)) return null;
+	const sp = townSpawn(character.map);
+	const goal = townGoal(targetMap, tx, ty);
+	if (!sp || !goal) return null;
+	// Never recall INTO a rectangle - the spawn is a fixed point, so this is cheap.
+	if (rageHit(character.map, sp.x, sp.y, rageCfg().margin)) return null;
+	const speed = character.speed || 55;
+	const here = Math.hypot(character.x - goal.x, character.y - goal.y);
+	const after = Math.hypot(sp.x - goal.x, sp.y - goal.y);
+	const channel = (cfg.channelMs / 1000) * speed;  // the 3 s, priced in units
+	const saves = here - (after + channel);
+	if (saves <= cfg.margin) return null;
+	return { goal: goal, sp: sp, here: here, after: after, channel: channel, saves: saves, speed: speed };
+}
+
+/* One step of the walk-along. Raw move(), because smart_move will not step
+   while is_transporting() is true. Never into a rectangle, never through one. */
+async function townWalkStep(goal) {
+	const cfg = townCfg();
+	const dx = goal.x - character.x, dy = goal.y - character.y;
+	const d = Math.hypot(dx, dy);
+	if (!d) return;
+	const step = Math.min(cfg.stepUnits, d);
+	const nx = character.x + (dx / d) * step, ny = character.y + (dy / d) * step;
+	const m = character.map, margin = rageCfg().margin;
+	if (rageHit(m, nx, ny, margin)) return;
+	if (rageClips(m, character.x, character.y, nx, ny, margin)) return;
+	if (typeof can_move === 'function') {
+		try {
+			if (!can_move({ map: m, x: character.x, y: character.y, going_x: nx, going_y: ny, base: character.base })) return;
+		} catch (e) { return; }
+	}
+	try { move(nx, ny); } catch (e) { }
+}
+
+/* Fire the recall and walk the road at the same time. Returns whether we ended
+   up at the spawn, decided by POSITION - town() resolves the same way whether
+   it landed or was cancelled. */
+async function townHop(w) {
+	const cfg = townCfg();
+	townLog('recall on ' + character.map + ' from ' + Math.round(character.x) + ',' + Math.round(character.y)
+		+ ' - about ' + (Math.round(w.saves / w.speed * 10) / 10) + 's better than walking', '#8EC8FF');
+	const tr = townTries[character.map] || (townTries[character.map] = { n: 0, at: 0 });
+	tr.n++; tr.at = Date.now();
+	try {
+		const p = town();
+		if (p && typeof p.catch === 'function') p.catch(function () { });
+	} catch (e) { return false; }
+	const deadline = Date.now() + cfg.channelMs + 2500;
+	while (Date.now() < deadline) {
+		if (!character.c || !character.c.town) break;
+		await townWalkStep(w.goal);
+		await sleep(cfg.pollMs);
+	}
+	const landed = Math.hypot(character.x - w.sp.x, character.y - w.sp.y) < 100;
+	if (!landed) townLog('recall cancelled - already walking, carrying on', 'orange');
+	return landed;
+}
+
+/* The trip is driven by ONE smart_move, exactly as before this change; the
+   recall rides alongside it.
+
+   An earlier version of this staged the trip leg by leg over a BFS of the door
+   graph, on the belief that a single cross-map smart_move would walk past the
+   main-entry hop - the biggest of the three - because it only becomes visible
+   after arriving on main. That belief was WRONG, and the operator caught it.
+   Firing the skill does not disturb a smart_move in flight, for three reasons
+   checked in the client source:
+
+     - town() and use("town") reach request("town","town") and touch nothing on
+       the `smart` object. smart.moving and smart.plot are untouched.
+     - smart_move's step loop gates on !is_transporting(character), and
+       is_transporting() is true while c.town is set, so it merely PAUSES for
+       the channel instead of failing.
+     - after the teleport the next plot point fails can_move_to() from the
+       spawn, so the loop takes its `path_lost` branch and re-issues
+       smart_move to the same destination with the same on_done - it re-plans
+       itself from the new position and the original promise still resolves.
+
+   So the watcher below just re-prices the hop every watchMs while smart_move
+   drives, and takes it whenever the gate turns true - before departure, and
+   again on each new map as it is entered. This keeps smart_move's own route
+   choice, which the staging version was overriding with a door BFS for no
+   good reason. townNextDoor survives only to PRICE a leg we are not yet on,
+   never to route one. */
+async function townTravel(spec) {
+	const cfg = townCfg();
+	if (!cfg.enabled || !spec || typeof spec !== 'object') return safeSmartMove(spec);
+	if (typeof spec.x !== 'number' || typeof spec.y !== 'number') return safeSmartMove(spec);
+	const targetMap = spec.map || character.map;
+	for (const k in townTries) delete townTries[k];
+	let done = false;
+	const watcher = (async () => {
+		while (!done) {
+			try {
+				const w = townWorthIt(targetMap, spec.x, spec.y);
+				if (w) await townHop(w);
+			} catch (e) { townLog('watcher: ' + ((e && e.message) || e), 'orange'); }
+			if (done) break;
+			await sleep(cfg.watchMs);
+		}
+	})();
+	try {
+		return await safeSmartMove(spec);
+	} finally {
+		done = true;
+		try { await watcher; } catch (e) { }
+	}
+}
+
 /* smart_move, but it is never allowed to route through a rage rectangle. Used
    for BOTH directions - the trip in and, just as importantly, the trip back out
    when a boss event takes the party. bossApproach's smart_move was the obvious
@@ -1453,7 +1705,7 @@ async function moveTo(spec) {
 	/* Every trip in the file funnels through here - pickup, mluck, potion
 	   delivery, the bank runs, the scout hops - so one guard covers them all.
 	   -> RAGE BOXES */
-	try { await ensureStandClosed(); return await safeSmartMove(spec); }
+	try { await ensureStandClosed(); return await townTravel(spec); }
 	finally { travelEnd(); }
 }
 
