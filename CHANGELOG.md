@@ -28,6 +28,59 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v89
+
+A per-row buy override, pasted from the watchlist page.
+
+The Codex market tab now renders a **copy buy** button on every ordinary gold
+listing, and the string it copies is one call:
+
+```js
+PROBE_API.buyNow({shard:"USI",seller:"Alpha",map:"main",x:13,y:-34,
+                  slot:"trade3",name:"firebow",level:2,price:1000000,q:1})
+```
+
+Paste it into Meltymerch and he walks to that stand and buys that slot. The
+point is the gap it closes: the automatic pass only ever bought what was on
+`CONFIG.standBuy.items` under `maxPrice`, so a listing the operator could see
+and wanted had no route to a purchase short of editing config and waiting for
+the next scan.
+
+**An override overrides - but it says what it is overriding.** `sbBuyNow` keeps
+`sbVerify` (the listing is re-read at the stand, and a price that moved or a
+slot that emptied is refused) and deliberately skips `sbCap` and `sbGate`,
+logging each one it walked past:
+
+- over the per-item cap -> `override: 4000000 is over the 500000 cap for
+  firebow - buying anyway`
+- a gate the automatic pass would have failed -> `override: the automatic pass
+  would have stopped here (gold floor) - buying anyway`
+
+A silent override and a buy that happened to be in policy are
+indistinguishable afterwards, which is the whole reason for those two lines.
+`CONFIG.standBuy.dryRun` is still honoured: it is the operator's own switch,
+not a safety rail this is bypassing.
+
+**It will not cross shards by itself.** The command carries `shard`, and on a
+mismatch it refuses BEFORE walking and names the hop, because `arbProbeGo()`
+reloads the page - a hop fired from a pasted command would take the paste with
+it.
+
+**Arrival is judged by the inventory, not by the reply.** `trade_buy` can
+reject and still deliver; a refusal with the item present reports the buy and
+notes the mismatch, and nothing arriving while gold left says `CHECK THIS`
+rather than a tidy failure.
+
+The page half is inert without this build - the button copies a call to
+`PROBE_API.buyNow`, which does not exist before v89.
+
+10 assertions over sbBuyNow: the happy path walks/verifies/buys the named slot,
+a wrong shard refuses before walking and names the hop, a listing that changed
+is refused, an unreachable seller is reported rather than skipped, both
+override paths buy and log, dryRun still blocks, a refusal that delivered is
+trusted, missing gold with no item is flagged, and an incomplete row is refused
+with guidance.
+
 ## v88
 
 The scout now reports what a barter stand wants.
