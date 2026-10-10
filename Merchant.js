@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v87
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v88
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -4919,6 +4919,25 @@ function scoutScanStands() {
 			slots[k] = {
 				name: s.name, price: s.price, b: !!s.b, q: s.q || 1,
 				level: s.level || 0, p: s.p || null, stat_type: s.stat_type || null,
+				/* ITEM-FOR-ITEM TRADES. A slot posted for goods instead of gold
+				   carries `want` - {name, q, level?} - and no price.
+
+				   THIS WHITELIST IS WHY THE BRIDGE NEVER HAD IT. Rebuilding
+				   every slot from seven named fields silently drops anything
+				   the game adds afterwards, and barter listings are exactly
+				   that. Measured 2026-10-10: ALData carries `want` on 62 of
+				   2,223 slots and the game's own pull_merchants on 23 of 643 -
+				   both times on precisely the unpriced slots - while the bridge
+				   had 0 of 632. The watchlist page reported "not published by
+				   the feed" on the strength of the bridge copy alone, which was
+				   wrong about the game and wrong about ALData.
+
+				   cache_item(item, true) strips only grace/o/oo/src, so `want`
+				   reaches entities[].slots intact. null here means an ordinary
+				   gold listing, which is what every slot looked like before. */
+				want: (s.want && s.want.name)
+					? { name: s.want.name, q: s.want.q || 1, level: s.want.level }
+					: null,
 			};
 		}
 		if (!Object.keys(slots).length) continue;
