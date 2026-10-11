@@ -28,6 +28,96 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v95
+
+Stop compounding dexbelt past +2. Operator's call, 2026-10-10.
+
+`CONFIG.craftInputCaps = { dexbelt: 2 }`, honoured by both compound paths.
+
+**Why a cap and not a goal.** From v94 dexbelt is not a gear goal at all - it is
+the first input to windbelt (`1x dexbelt+2 + 40x stormfeather +
+4x essenceofether + 300,000g`). A `dexbelt+3` is therefore not a better dexbelt,
+it is a spent one: the recipe asks for level 2 and nothing consumes a +3. Two
++3 copies already exist, made while `dexbelt@3` was still the ranger tier-2
+goal. The cap is there so that cannot recur.
+
+**Both paths, because they reach different levels.** Reading the code rather
+than assuming turned up two independent compounders:
+
+| Path | What it does | Reached +3? |
+|---|---|---|
+| `autoCombineOneBaseDuplicateGroup` | merges any 3 identical copies at level **0 or 1** | no - its level filter already tops out at +2 |
+| `attemptBestPlanStep` | compounds toward a `GEAR_PROGRESSION` goal | **yes, this made the +3s** |
+
+The duplicate merger would have been safe on its own, but only by accident of
+that level filter - nothing in it says +2 is the intended ceiling, and widening
+the filter later would quietly resume overshooting. It is capped explicitly.
+
+The plan-path guard is defensive today, since nothing targets dexbelt after v94.
+It is there because the failure mode is a silent one: re-adding a dexbelt goal
+would burn craft inputs with no error, which is precisely how the two +3s
+happened. The guard records `craft_input_cap@2` in the gear hold list rather
+than skipping silently, so `gearHoldLog` shows why an item is parked.
+
+Semantics: the number is the FINISHED level. `dexbelt: 2` permits `+1 -> +2` and
+refuses `+2 -> +3`. `0` would block compounding entirely; deleting the line
+uncaps the item. The guard is gated on `method === 'compound'`, so no upgrade
+path changes behaviour, and `windbelt` itself is deliberately uncapped - its own
+tier-3 goal is `@4` and must not be blocked by this.
+
+Harness: 23 assertions, config and helpers read out of the file rather than
+restated, covering the cap arithmetic at every boundary, both guards being wired
+in the right order, the upgrade path being untouched, and v94's windbelt goals
+surviving intact.
+
+## v94
+
+Ranger belt goal is windbelt, not dexbelt. Operator's call, 2026-10-10:
+tier 2 `windbelt@2`, tier 3 `windbelt@4`, replacing `dexbelt@3` / `dexbelt@5`.
+
+windbelt is the better item and not a close call - dex 11, speed 2, armor 10
+base, compounding at dex 2.5 / speed 0.75 / armor 4 per level, against dexbelt's
+dex-only line. Dexon already wears a `windbelt+1`. `method` stays `compound`,
+checked rather than assumed: `G.items.windbelt.compound` exists and there is no
+upgrade path.
+
+**dexbelt did NOT become dead stock, and it stays in `PONTY_PRICED_ITEMS`.**
+`G.craft.windbelt` is `1x dexbelt+2 + 40x stormfeather + 4x essenceofether +
+300,000g`, so dexbelt went from being the goal to being the first input to it.
+Removing it from the buy list would have starved the new goal - worth saying out
+loud because the obvious tidy-up after this change is exactly the wrong move.
+
+**Neither goal is close, and the file now says so next to the rows.** Belts
+compound, so each level costs three of the level below - `+2` is 9 `windbelt+0`
+and `+4` is 81, before counting compound failures, which destroy the inputs.
+Priced in the gate material at 4 essenceofether per craft, starting from the
+`+1` Dexon wears:
+
+| Goal | More windbelt+0 needed | essenceofether |
+|---|---|---|
+| tier 2 `@2` | 6 | 24 |
+| tier 3 `@4` | ~78 | ~312 |
+
+Measured 2026-10-10: **18 essenceofether held**, and thundergrips wants 12 of the
+same material per copy. So tier 2 is both short and contended, and tier 3 is not
+reachable at anything like the current supply. essenceofether was already the
+documented bottleneck behind eight recipes with no reliable tap; this change puts
+a second claim on it.
+
+The other two inputs are not the constraint, with one wrinkle: 1,963 stormfeather
+is 49 belts' worth, but **there is no `dexbelt+2` banked** - 1 at `+0` and 2 at
+`+3` - and the recipe asks for level 2 specifically, so the two `+3` copies may
+not qualify. Unverified; the recipe's level field was not tested for
+exact-or-higher.
+
+Also corrected the tier-1 comment that described the ranger's accessories as the
+"dexbelt/dexring/dexamulet" set, which would have pointed the next reader at the
+item this change just replaced.
+
+No code paths touched - three hunks, all in `GEAR_PROGRESSION.ranger` plus the
+header. Goals verified by evaluating the parsed table: ranger reads
+`windbelt@2:compound` / `windbelt@4:compound`, priest and mage unchanged.
+
 ## v93
 
 Opportunistic mluck on the whole party.
