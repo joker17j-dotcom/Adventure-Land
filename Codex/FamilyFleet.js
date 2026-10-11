@@ -1442,6 +1442,57 @@ function isExchangeable(name) {
 
 
 // ============================================================================
+// TOKENS - never sold, always banked, never spent by the script
+// ============================================================================
+/* Added 2026-10-11 at the owner's instruction. Tokens accumulate in the bank
+   and the FAMILY MEMBER spends them, by hand, in game. Nothing here buys
+   anything with them, and that is the requirement rather than a gap.
+
+   WHY THEY NEEDED A RULE OF THEIR OWN. Measured against the deployed data at
+   game version 17665 - all four items of type 'token':
+
+       monstertoken   s:9999   g:12000   npc:'monsterhunter'
+       funtoken       s:9999   g:12000
+       pvptoken       s:9999   g:24000
+       friendtoken    s:9999   g:36000
+
+   NOT ONE of them carries an `e` field, so isExchangeable does not protect
+   them the way it protects gems and boxes. None is a craft input and none is
+   on the plan. They therefore fell through every guard to shouldSell's default
+   of "anything the plan does not want", and every one of them has a `g`, so
+   Gabriel accepts them. A hunt turned in at Daisy was being vendored at that
+   ranger's next bank window - sellSurplus runs at the end of EVERY
+   character's window, rangers included.
+
+   DERIVED FROM `type`, NOT A LIST. The opposite of the choice isExchangeable
+   makes, and for the same underlying reason: there, `type` was the dishonest
+   test because x0 is type 'quest' and gem0 is type 'gem', so no type predicts
+   exchangeability. Here `type: 'token'` IS the thing - it selects exactly the
+   four above and nothing else, checked against the whole item table. A token
+   the game adds later is covered the day it appears, and a written-out list
+   would not be.
+
+   NOTHING WITHDRAWS THEM, WHICH IS CORRECT HERE. The only two withdraw paths
+   are slotToEquip (wearable upgrades) and isWorkItem (plan items below their
+   ceiling); a token qualifies for neither, so once banked it stays banked
+   until a person retrieves it. Under any other requirement that would be a
+   leak - it is why the first attempt at this protected them in the BAG - but
+   the requirement is manual spending, so "the script can put them in and
+   cannot take them out" is the whole design.
+
+   KEPT OUT OF KEEP_ITEMS ON PURPOSE. That list is "the plan has no opinion
+   about this and neither should the sell pass", and everything on it stays in
+   the bag because that is where it is used - potions, scrolls, the computer.
+   Tokens are not sold for the same reason but they are not kept in the bag
+   either, so folding them in would make one rule out of two and lose the
+   banking half. */
+function isToken(name) {
+	const d = itemDef(name);
+	return !!(d && d.type === 'token');
+}
+
+
+// ============================================================================
 // CRAFT INPUTS - never sold, always banked
 // ============================================================================
 /* Added 2026-10-11 at the owner's instruction: the materials the gear plan's
@@ -4257,6 +4308,10 @@ function shouldBank(item) {
 	   a craft needs 40 or 80 of a thing at once, which is a bank's job and not a
 	   bag's. -> CRAFT INPUTS */
 	if (isCraftInput(item.name)) return true;
+	/* Tokens go to the bank and stay there for a person to spend. Costs four
+	   bank slots at the very most, whatever the count, since all four token
+	   types stack to 9999. -> TOKENS */
+	if (isToken(item.name)) return true;
 	if (!isPlanItem(item.name)) return false;
 	if (slotToEquip(item)) return false;
 	if (myRole() === 'merchant') {
@@ -4297,6 +4352,10 @@ function shouldSell(item) {
 	   opinion about stormfeather or essenceofether, and "the plan does not want
 	   it" is precisely the reading that would vendor them. */
 	if (isCraftInput(item.name)) return false;
+	/* -> TOKENS. Ahead of the plan check for exactly the reason craft inputs
+	   are: the plan has no opinion about a monstertoken, and "the plan does not
+	   want it" is the reading that was vendoring them. */
+	if (isToken(item.name)) return false;
 	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
 	return true;
 }
