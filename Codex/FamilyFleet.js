@@ -244,14 +244,50 @@ const CONFIG = {
 		   -> FARM RANKING */
 		farmRanking: {
 			enabled: true,
-			/* Maps to consider. Deliberately a list rather than "every map G
-			   declares": most of them are instances, dungeons or event spaces
-			   this character has no business walking into alone, and the safety
-			   test cannot tell a hard monster from an unreachable one. Add a map
-			   here once it is known to be walkable and worth farming. */
-			maps: ['main'],
-			// Never ranked, whatever the numbers say.
-			never: ['phoenix', 'mrpumpkin', 'mrgreen', 'grinch', 'snowman'],
+			/* MAPS, derived from 2026-10-11 - null means "every map the game says
+			   is farmable", which is Ranger.js's own test ported verbatim:
+			   not pvp, not instance. -> isMapSafeForFarming
+
+			   This used to be the hand-list ['main'], written 2026-10-03 with the
+			   same brief that removed the scanning. It was not a leftover of the
+			   scout layer - it was a deliberately conservative start, on the
+			   grounds that the safety test cannot tell a hard monster from an
+			   unreachable one. That reasoning was right and is now handled
+			   properly rather than avoided: the pvp/instance flags do the
+			   admitting, and travelBlacklist does the "cannot get there" half.
+
+			   Measured 2026-10-11: the test admits 43 of 54 maps, 27 of them
+			   carrying monsters, for 136 packs against the 41 that ['main'] saw.
+			   It rejects 11 - all ten instance maps plus arena, which carries
+			   pvp. Set an explicit array here to go back to a hand-list. */
+			maps: null,
+
+			/* Never ranked, whatever the numbers say.
+
+			   booboo, mummy and d_wiz added 2026-10-11 with the map opening, and
+			   they are the ONLY reason it is safe. Measured across the admitted
+			   set: exactly four packs carry a `rage` rectangle, and in all four
+			   the boundary CENTRE - which is the standing point farmCandidates
+			   hands out - sits inside it. This file has no rage geometry at all,
+			   so ranking one of those means walking to the middle of a rage box,
+			   which on the main account cost three deaths and zero kills at
+			   booboo's (415,-702). Both pure-damage packs in the admitted set are
+			   also these booboos.
+
+			   REMOVE THESE THREE ONLY WITH a rectangle-aware standing point and
+			   one-at-a-time pulling. -> CLAUDE.md, "RAGE BOXES" in Ranger.js */
+			never: ['phoenix', 'mrpumpkin', 'mrgreen', 'grinch', 'snowman',
+			        'booboo', 'mummy', 'd_wiz'],
+
+			/* A spot that cannot be walked to is blacklisted for this long and
+			   then tried again. Ranger.js admits unreachable maps too and leans
+			   on its blacklist to find that out; this is the small version of
+			   the same idea, and WITHOUT IT opening the maps would wedge a
+			   ranger: chooseSpot caches its pick for crabxReady.checkEveryMs and
+			   would retry an unreachable top-ranked spot forever.
+			   -> travelBlacklist */
+			unreachableMs: 60 * 60 * 1000,
+			unreachableStrikes: 3,
 			/* Refuse pure damage outright rather than modelling it: it ignores
 			   armour and resistance, so the survival margin would be computed
 			   against a defence that does not apply. */
@@ -262,6 +298,65 @@ const CONFIG = {
 			   goo and not crabx. When nothing safe advances the plan the answer
 			   is the safest thing on the board. */
 			fallback: { map: 'main', monster: 'crab' },
+		},
+
+		/* ACHIEVEMENTS - OFF. Turn on with achvOn().
+
+		   Ported from Ranger.js 2026-10-11 so the family member can grind kill
+		   achievements when they want to. Ranger ships this ON with a 22-entry
+		   queue; here it is OFF with a single record, which is what the owner
+		   asked for. Add entries in Ranger's shape - { m, map, x, y, rung, also }
+		   - and remember the saved position is an INDEX, so achvReset(n) after a
+		   reorder.
+
+		   WHAT TURNING THIS ON DOES, and it is not a small thing. The queue sets
+		   an OVERRIDE that replaces the farm scorer's pick, and that override
+		   deliberately bypasses farmRanking.never AND crabxReady.refusePure for
+		   the queued monster. booboo is on the never-list and is pure damage;
+		   both refusals exist for the unattended case, and this is the operator
+		   saying "I know, do it anyway". What keeps it safe instead is the rage
+		   machinery: pull.concurrent 1, the rage guard, and a route that never
+		   crosses a rectangle. If you turn this on with pull.enabled false, you
+		   have removed the safety and kept the danger.
+
+		   rung is a threshold out of G.monsters[m].achievements[0][0], and
+		   reading progress needs a TRACKER in the bag - without one achvTick
+		   says so once and the queue cannot advance. rung null means run until
+		   achvOff() or achvStop(), which is why this entry never reaches a
+		   second one even if you add it. */
+		achievements: {
+			enabled: false,
+			/* Consecutive failed trips before the override is released. The
+			   achievement spot is whitelisted against the travel blacklist - that
+			   is the point of whitelisting it - so without this there would be no
+			   way to give up on a spot that cannot be reached.
+			   -> travelBlacklist, isUnreachable */
+			maxTravelFailures: 10,
+			refreshMs: 5 * 60 * 1000,   // how often to ask the server for a tracker
+			reassertMs: 30 * 1000,      // how often to check the override is ours
+			pull: {
+				enabled: true,
+				concurrent: 1,
+				margin: 4,           // margin + step must stay <= 9 - see rageCfg
+				guardMargin: 0,      // the guard trips only on a REAL breach
+				step: 5,             // route-search grid, in units
+				maxCells: 200000,
+				parkWithin: 45,
+				pullTimeoutMs: 20000,
+				repullGapMs: 1200,
+				respectCourage: true,
+			},
+			/* ONE RECORD, as asked. Coordinates and shape are Ranger's index-0
+			   entry verbatim: (290,-990) is the corridor spot outside BOTH
+			   spookytown rectangles - 148 from the booboo box, 140 from the
+			   mummy one - reached live with zero breaches. `also` runs mummy from
+			   the same spot because booboo respawns every 48s against mummy's
+			   24s and would otherwise idle most of the trip; the rung still
+			   tracks `m`. NOT (415,-702), which is the rage-box centre.
+			   -> RANGER_SPOTS */
+			queue: [
+				{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
+			],
 		},
 
 		/* MONSTER HUNT - off until you turn it on. mhOn() / mhOff() / mhStatus()
@@ -1836,26 +1931,202 @@ function bossStatus() {
 /* Every pack the game declares, as flat candidates. Built per pass rather than
    cached: level and gear move, and a spot that was unsafe an hour ago may not
    be now. */
+
+/* Ranger.js's map test, ported verbatim 2026-10-11 rather than reinvented.
+
+   Two flags and nothing else. I had first written a door-BFS from main, which
+   looked more careful and was wrong in both directions: it admitted maps the
+   game marks instance-free but unreachable, and it REFUSED six the ranger farms
+   happily - old_main, goobrawl, d2, jail, cyberland and batcave are none of them
+   door-reachable from main, and all six are admitted here. Reachability is not
+   a property of the door graph; it is whatever smart_move can do, and the honest
+   way to find that out is to try and remember the failure.
+   -> travelBlacklist */
+
+/* RANGER'S MEASURED STANDING POINTS, ported 2026-10-11 at the owner's
+   instruction: use the coordinates listed in Ranger.js rather than computing a
+   spot here.
+
+   These are CONFIG.achievements.queue from Ranger.js - "the monster, where to
+   stand, and the rung to stop at", and its own comment says the coordinates are
+   the same spots the manual overrides used. They were arrived at live on the
+   main account, which makes them worth more than anything this file can derive:
+   farmCandidates' boundary CENTRE is a geometric guess that happens to be
+   correct on open ground and catastrophic next to a rage rectangle.
+
+   THE BOOBOO ENTRY IS THE WHOLE POINT, and it is why FIRST MATCH WINS below.
+   The table carries booboo TWICE:
+
+     index 0   (290, -990)   rung null    <- the corridor spot, outside BOTH
+                                            spookytown rectangles (148 from the
+                                            booboo box, 140 from the mummy one),
+                                            reached live with zero breaches
+     index 19  (415, -702)   rung 100000  <- the spawn-boundary centre, INSIDE
+                                            the booboo rage box - the coordinate
+                                            that cost the main account three
+                                            deaths and zero kills
+
+   Ranger never reaches index 19 because index 0 has rung null and the queue
+   stops there, so the bad coordinate sits in its table harmlessly. Here there
+   is no queue and no rung, so a naive "find the entry for this monster" could
+   pick either. Order is preserved and the FIRST match is taken, which is the
+   curated one. Do not sort this array.
+
+   `also` is carried across: the booboo entry serves mummy from the same spot,
+   which is how mummy gets a safe standing point too.
+
+   A monster absent from this table falls back to the boundary centre exactly as
+   before - this narrows the guessing, it does not replace it. */
+const RANGER_SPOTS = [
+	{ m: 'booboo',     map: 'spookytown',  x:  290, y:  -990, also: ['mummy'] },
+	{ m: 'stoneworm',  map: 'spookytown',  x:  677, y:   129 },
+	{ m: 'mole',       map: 'tunnel',      x:   14, y: -1072 },
+	{ m: 'armadillo',  map: 'main',        x:  526, y:  1846 },
+	{ m: 'porcupine',  map: 'desertland',  x: -829, y:   135 },
+	{ m: 'croc',       map: 'main',        x:  801, y:  1710 },
+	{ m: 'iceroamer',  map: 'winterland',  x:  824, y:   -45 },
+	{ m: 'poisio',     map: 'main',        x: -121, y:  1360 },
+	{ m: 'crabx',      map: 'main',        x: -984, y:  1762 },
+	{ m: 'squig',      map: 'main',        x:-1175, y:   422 },
+	{ m: 'tortoise',   map: 'main',        x:-1124, y:  1118 },
+	{ m: 'bbpompom',   map: 'winter_cave', x:  -82, y:  -949 },
+	{ m: 'bat',        map: 'batcave',     x:   66, y:     8 },
+	{ m: 'boar',       map: 'winterland',  x:   20, y: -1109 },
+	{ m: 'cgoo',       map: 'level2s',     x:   34, y:   503 },
+	{ m: 'spider',     map: 'main',        x:  948, y:  -144 },
+	{ m: 'ghost',      map: 'halloween',   x: -405, y: -1642 },
+	{ m: 'wolfie',     map: 'winterland',  x: -169, y: -2026 },
+	/* index 19 in Ranger's queue - (415,-702), the booboo rage-box centre - is
+	   DELIBERATELY NOT COPIED. It is unreachable in Ranger because the queue
+	   stops at index 0, and copying it here would make it reachable. */
+	{ m: 'scorpion',   map: 'main',        x: 1578, y:  -168 },
+	{ m: 'gscorpion',  map: 'desertland',  x:  391, y: -1422 },
+	{ m: 'osnake',     map: 'halloween',   x: -509, y:  -626 },
+];
+
+/* monster -> the first entry that names it, directly or through `also`.
+   Built once; the table is static. */
+const RANGER_SPOT_BY_MONSTER = (() => {
+	const idx = new Map();
+	for (const e of RANGER_SPOTS) {
+		if (!e || !e.m) continue;
+		const names = [e.m].concat(Array.isArray(e.also) ? e.also : []);
+		for (const n of names) if (!idx.has(n)) idx.set(n, e);   // FIRST match wins
+	}
+	return idx;
+})();
+
+/* The measured spot for this monster, but only when it is on the same map as
+   the pack being considered - an entry naming spookytown says nothing about
+   where to stand for the same monster somewhere else. */
+function rangerSpot(monster, mapName) {
+	const e = RANGER_SPOT_BY_MONSTER.get(monster);
+	if (!e || e.map !== mapName) return null;
+	return { x: e.x, y: e.y };
+}
+
+function isMapSafeForFarming(mapData) {
+	if (!mapData) return false;
+	if (mapData.pvp) return false;
+	if (mapData.instance) return false;
+	return true;
+}
+
+/* THE "CANNOT GET THERE" HALF.
+
+   Ranger.js carries a full blacklist with permanence, reporting and whitelists;
+   this is the part of it that the fleet needs - a strike count per spot and a
+   timeout. Kept in CODE storage so a reload or a shard hop does not hand the
+   character the same unreachable spot again with a clean slate. */
+const travelStrikes = {};        // spotKey -> consecutive failures
+let travelBlack = null;          // spotKey -> ms timestamp it may be retried
+function tbLoad() {
+	if (travelBlack) return travelBlack;
+	let saved = null;
+	try { saved = SS.get('travel_black', null); } catch (e) { }
+	travelBlack = (saved && typeof saved === 'object') ? saved : {};
+	return travelBlack;
+}
+function tbSave() {
+	try { SS.set('travel_black', tbLoad()); }
+	catch (e) { log('could not persist the travel blacklist - a reload will forget it', 'orange'); }
+}
+function spotKey(monster, map) { return monster + '@' + map; }
+function isUnreachable(monster, map) {
+	/* An achievement spot is whitelisted: the blacklist must not quietly remove
+	   the thing the operator asked for. achvNoteTravelFailure is the release
+	   valve, after maxTravelFailures. -> achvWhitelisted */
+	if (achvWhitelisted(monster, map)) return false;
+	const until = tbLoad()[spotKey(monster, map)] || 0;
+	return Date.now() < until;
+}
+/* Called when a walk to a ranked spot did not take. Strikes rather than one
+   failure, because an interrupted smart_move is routine - a death, a rage
+   guard, a monster in the doorway - and one of those is not evidence that a
+   map cannot be reached. */
+function noteTravelFailure(monster, map) {
+	const cfg = CONFIG.ranger.farmRanking || {};
+	/* A whitelisted achievement spot is counted separately and released by
+	   maxTravelFailures rather than blacklisted. -> achvNoteTravelFailure */
+	if (achvWhitelisted(monster, map)) { achvNoteTravelFailure(); return false; }
+	const key = spotKey(monster, map);
+	travelStrikes[key] = (travelStrikes[key] || 0) + 1;
+	const need = cfg.unreachableStrikes || 3;
+	if (travelStrikes[key] < need) return false;
+	const ms = cfg.unreachableMs || 60 * 60 * 1000;
+	tbLoad()[key] = Date.now() + ms;
+	travelStrikes[key] = 0;
+	tbSave();
+	log('cannot reach ' + key + ' after ' + need + ' tries - ignoring it for '
+		+ Math.round(ms / 60000) + ' min', '#E9C46A');
+	ranger.spot = null;            // re-rank now rather than after checkEveryMs
+	return true;
+}
+function noteTravelSuccess(monster, map) {
+	delete travelStrikes[spotKey(monster, map)];
+}
+/* Read it from the console. */
+function farmBlacklist() {
+	const b = tbLoad();
+	const keys = Object.keys(b).filter((k) => b[k] > Date.now());
+	if (!keys.length) { log('travel blacklist is empty'); return; }
+	keys.forEach((k) => log('  ' + k + ': ' + Math.round((b[k] - Date.now()) / 60000) + ' min left'));
+}
+function farmBlacklistClear() {
+	travelBlack = {};
+	tbSave();
+	ranger.spot = null;
+	log('travel blacklist cleared', '#7FD98A');
+}
+
 function farmCandidates() {
 	const cfg = CONFIG.ranger.farmRanking;
 	const out = [];
 	let g = null;
 	try { g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null; } catch (e) { }
 	if (!g || !g.maps) return out;
-	for (const mapName of (cfg.maps || [])) {
+	/* null => every map the game calls farmable. -> isMapSafeForFarming */
+	const names = Array.isArray(cfg.maps) ? cfg.maps : Object.keys(g.maps);
+	for (const mapName of names) {
 		const m = g.maps[mapName];
 		if (!m || !Array.isArray(m.monsters)) continue;
+		if (!Array.isArray(cfg.maps) && !isMapSafeForFarming(m)) continue;
 		for (const pack of m.monsters) {
 			if (!pack || !pack.type) continue;
 			if ((cfg.never || []).indexOf(pack.type) !== -1) continue;
 			const b = pack.boundary;
+			/* Ranger's measured point first, the boundary centre only as a
+			   fallback. -> RANGER_SPOTS */
+			const measured = rangerSpot(pack.type, mapName);
 			out.push({
 				type: pack.type, map: mapName,
-				x: b ? Math.round((b[0] + b[2]) / 2) : (pack.x || 0),
-				y: b ? Math.round((b[1] + b[3]) / 2) : (pack.y || 0),
+				x: measured ? measured.x : (b ? Math.round((b[0] + b[2]) / 2) : (pack.x || 0)),
+				y: measured ? measured.y : (b ? Math.round((b[1] + b[3]) / 2) : (pack.y || 0)),
 				count: pack.count || 1,
 				grow: !!pack.grow,
 				hasBoundary: !!b,
+				// 'ranger' means a spot somebody stood on; 'centre' is geometry.
+				spotSource: measured ? 'ranger' : 'centre',
 			});
 		}
 	}
@@ -2002,6 +2273,12 @@ function rankFarmSpots() {
 	const want = wantedFromWorn();
 	const rows = [];
 	for (const cand of farmCandidates()) {
+		/* -> travelBlacklist. Checked before the safety maths so a spot we
+		   cannot walk to costs nothing to skip. */
+		if (isUnreachable(cand.type, cand.map)) {
+			rows.push({ cand, ok: false, why: 'unreachable, blacklisted' });
+			continue;
+		}
 		const safe = spotSafety(cand);
 		if (!safe.ok) { rows.push({ cand, ok: false, why: safe.why }); continue; }
 		const dv = dropValue(cand, want);
@@ -2028,6 +2305,21 @@ function rankFarmSpots() {
    itself is missing from the game data the old goo spot is the floor under the
    floor, because standing still is worse than farming something. */
 function chooseSpot() {
+	/* The achievement queue outranks EVERYTHING, including the hunt. Both are
+	   explicit modes the operator turns on; this one is the more deliberate of
+	   the two - it is off by default and bypasses the never-list to run - so a
+	   character told to grind booboo is not quietly diverted by a hunt that
+	   happens to arrive. -> CONFIG.ranger.achievements */
+	const achv = achvSpot();
+	if (achv) {
+		const akey = achv.monster + '@' + achv.map;
+		if (!ranger.spot || akey !== ranger.spot.monster + '@' + ranger.spot.map) {
+			log('farming ' + akey + ' - ' + achv.why, '#9FD3FF');
+		}
+		ranger.spot = achv;
+		return ranger.spot;
+	}
+
 	/* A viable monster hunt outranks the scorer: it is a fixed instruction with
 	   a clock on it, while the ranked spot is always available. Everything
 	   downstream - the walk, the target pick, the rotation - is the ordinary
@@ -2054,7 +2346,8 @@ function chooseSpot() {
 		if (r.good.length) {
 			const best = r.good[0];
 			pick = { map: best.cand.map, monster: best.cand.type, x: best.cand.x, y: best.cand.y,
-				why: 'advances ' + best.items.slice(0, 3).join(', ') };
+				why: 'advances ' + best.items.slice(0, 3).join(', ')
+					+ (best.cand.spotSource === 'ranger' ? ' [measured spot]' : '') };
 		} else if (!ranger.rankingQuietUntil || now > ranger.rankingQuietUntil) {
 			ranger.rankingQuietUntil = now + (CONFIG.ranger.farmRanking.quietMs || 15 * 60 * 1000);
 			const wanted = [...r.want.keys()];
@@ -2443,6 +2736,765 @@ async function slenderTick() {
 }
 
 
+
+// ============================================================================
+// RAGE BOXES - the geometry this file did not have
+// ============================================================================
+/* PORTED FROM Ranger.js 2026-10-11 at the owner's instruction, to make the
+   achievement grind below possible. Almost all of it is verbatim: the geometry
+   is geometry, and the numbers in rageCfg were paid for on the main account and
+   must not be re-derived here. What changed is marked SOLO or ADAPTED.
+
+   WHAT A RAGE BOX IS. G.maps[map].monsters[i] can carry a `rage` rectangle
+   beside its `boundary`. Stepping inside aggros the whole pack AND applies the
+   monster's own `rage` multiplier - 1.5 for booboo and mummy. Measured on
+   spookytown: booboo's rage rectangle is IDENTICAL to its boundary, and
+   farmCandidates hands out the boundary CENTRE, so the old standing point
+   (415,-702) was dead centre of it. On the main account that cost three deaths
+   and zero kills with the spawn never reached.
+
+   Nothing here restricts movement OUTSIDE a rectangle. Closing, backing off and
+   regrouping are untouched - the rectangle is the only thing that is solid.
+
+   REQUIRES xmove and can_move, neither of which this file used before. Both are
+   typeof-guarded at every site: referencing an undeclared identifier THROWS, and
+   this file has already paid for that lesson once in attackWithRotation. With
+   them missing, routing refuses to travel rather than walking a straight line
+   through a rectangle. */
+function rageLog(m, c) {
+	log('[rage] ' + m, c || '#FF9F6B');
+	console.log('[rage] ' + m);
+}
+
+/* ADAPTED: reads CONFIG.ranger.achievements.pull to match this file's nesting,
+   and drops Ranger's ragePullShared, which was a party broadcast. Every NUMBER
+   is Ranger's, and the comments explaining them are kept because they are the
+   record of what was measured. */
+function rageCfg() {
+	const a = (CONFIG.ranger && CONFIG.ranger.achievements && CONFIG.ranger.achievements.pull) || {};
+	return {
+		enabled: a.enabled !== false,
+		/* THE KNOB. How many of the target monsters may be in flight at once.
+		   1 is the proven-safe start: one un-enraged booboo is 264 dps and one
+		   mummy 317 after armor. On the main account that was measured against a
+		   priest's ~1,499 hps, giving a ceiling of about four. THESE RANGERS HAVE
+		   NO HEALER, so 1 is not a starting point to raise casually - it is the
+		   number that makes a solo pull survivable at all. */
+		concurrent: Math.max(1, a.concurrent || 1),
+		/* MEASURED 2026-10-09 on the main account. rageRoute excludes cells
+		   within margin + step of a rectangle, so 30 with a step of 25 was really
+		   demanding 55 units of clearance. The spookytown corridor entrance is a
+		   PINCH 14-18 units wide, so 55 never had a chance. 4 + 5 = 9 does, with
+		   5 units of headroom. 8 + 5 = 13 was tried and FAILED against the live
+		   map: the grid is anchored at the search window's corner, not the origin,
+		   so with only 13..18 of usable band no lattice point landed in it.
+		   KEEP margin + step AT OR BELOW 9 for this corridor. */
+		margin: (typeof a.margin === 'number') ? a.margin : 4,
+		/* 5, not 25. A 10-unit grid cannot resolve a 14-unit gap: the same search
+		   that succeeds at step 5 reports NO ROUTE at step 10 at every margin,
+		   which is what made a passable corridor look like a sealed pocket. */
+		step: a.step || 5,
+		/* Big enough that step 5 survives. The budget is spent BEFORE the grid is
+		   built - too small and the doubling loop pushes the step back to 20 and
+		   silently undoes the fix. Spookytown at step 5 is ~131,000 cells. */
+		maxCells: a.maxCells || 200000,
+		/* HYSTERESIS, and the reason nothing could move even when the route was
+		   fine. The guard used to trip on the same margin the planner aims for,
+		   so arriving at a correctly-planned spot WAS a breach: stop, shove out,
+		   walk back, forever - 11 stop/xmove pairs in 5 seconds. The guard now
+		   fires only on a real breach and escapes out to margin. */
+		guardMargin: (typeof a.guardMargin === 'number') ? a.guardMargin : 0,
+		parkWithin: a.parkWithin || 45,
+		pullTimeoutMs: a.pullTimeoutMs || 20000,
+		repullGapMs: (typeof a.repullGapMs === 'number') ? a.repullGapMs : 1200,
+		respectCourage: a.respectCourage !== false,
+		/* Interruptions are combat, not routing, so they get their own budget. */
+		maxInterrupts: (typeof a.maxInterrupts === 'number') ? a.maxInterrupts : 12,
+	};
+}
+
+function rageBoxes(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+	const m = g && g.maps && g.maps[map];
+	if (!m || !Array.isArray(m.monsters)) return [];
+	const out = [];
+	for (const s of m.monsters) {
+		const r = s && s.rage;
+		if (Array.isArray(r) && r.length === 4) out.push({ type: s.type, r: r, boundary: s.boundary || null });
+	}
+	return out;
+}
+
+function rageHit(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	const boxes = rageBoxes(map);
+	for (let i = 0; i < boxes.length; i++) {
+		const r = boxes[i].r;
+		if (x >= r[0] - m && x <= r[2] + m && y >= r[1] - m && y <= r[3] + m) return boxes[i];
+	}
+	return null;
+}
+
+function rageClips(map, ax, ay, bx, by, margin) {
+	if (!rageBoxes(map).length) return null;
+	const n = Math.max(8, Math.min(160, Math.ceil(Math.hypot(bx - ax, by - ay) / 15)));
+	for (let i = 0; i <= n; i++) {
+		const t = i / n;
+		const hit = rageHit(map, ax + (bx - ax) * t, ay + (by - ay) * t, margin);
+		if (hit) return hit;
+	}
+	return null;
+}
+
+function rageEscape(map, x, y, margin) {
+	const m = (typeof margin === 'number') ? margin : rageCfg().margin;
+	let px = x, py = y;
+	for (let guard = 0; guard < 5; guard++) {
+		const b = rageHit(map, px, py, m);
+		if (!b) return { x: px, y: py };
+		const r = b.r;
+		const outs = [
+			{ x: r[0] - m - 2, y: py }, { x: r[2] + m + 2, y: py },
+			{ x: px, y: r[1] - m - 2 }, { x: px, y: r[3] + m + 2 },
+		];
+		outs.sort((p, q) => Math.hypot(p.x - px, p.y - py) - Math.hypot(q.x - px, q.y - py));
+		px = outs[0].x; py = outs[0].y;
+	}
+	return { x: px, y: py };
+}
+
+function rageRoute(map, from, to, margin) {
+	if (typeof can_move !== 'function') return null;
+	const cfg = rageCfg();
+	const m = (typeof margin === 'number') ? margin : cfg.margin;
+	const boxes = rageBoxes(map);
+	if (!boxes.length) return null;
+
+	let x0 = Math.min(from.x, to.x), x1 = Math.max(from.x, to.x);
+	let y0 = Math.min(from.y, to.y), y1 = Math.max(from.y, to.y);
+	for (const b of boxes) {
+		x0 = Math.min(x0, b.r[0]); x1 = Math.max(x1, b.r[2]);
+		y0 = Math.min(y0, b.r[1]); y1 = Math.max(y1, b.r[3]);
+	}
+	const PAD = 280;
+	x0 -= PAD; x1 += PAD; y0 -= PAD; y1 += PAD;
+	/* Clamp to the map. Without this the flood walks off the edge - can_move is
+	   perfectly happy to answer for points outside the geometry - and spends the
+	   whole cell budget in the void. Measured: an unclamped A* to the park point
+	   expanded 400,000 nodes on a map holding only ~19,000 at step 20 and found
+	   nothing; clamped, the same search exhausts honestly in 12,164. */
+	try {
+		const geo = G.geometry[map];
+		if (geo) {
+			x0 = Math.max(x0, geo.min_x); x1 = Math.min(x1, geo.max_x);
+			y0 = Math.max(y0, geo.min_y); y1 = Math.min(y1, geo.max_y);
+		}
+	} catch (e) { }
+
+	let step = cfg.step;
+	while (((x1 - x0) / step + 1) * ((y1 - y0) / step + 1) > cfg.maxCells) step *= 2;
+	const W = Math.floor((x1 - x0) / step) + 1, H = Math.floor((y1 - y0) / step) + 1;
+	const base = character.base;
+	const stand = (x, y) => { try { return !!can_move({ map: map, x: x, y: y, going_x: x, going_y: y, base: base }); } catch (e) { return false; } };
+	const seg = (a, b) => { try { return !!can_move({ map: map, x: a[0], y: a[1], going_x: b[0], going_y: b[1], base: base }); } catch (e) { return false; } };
+
+	/* The grid is tested at cell CENTRES, so two adjacent open centres can still
+	   have a segment between them that clips a corner of the rectangle - both
+	   endpoints outside a convex shape does not put the line outside it. Caught
+	   by the harness: a leg into (550,-886) grazed the booboo box. Rejecting
+	   cells within m + step of a rectangle buys a full cell of clearance, which
+	   is more than any single 8-connected step can cross. The CLIP checks below
+	   still use the configured margin, so the route is verified against the real
+	   boundary rather than the padded one. */
+	const gm = m + step;
+	const grid = new Uint8Array(W * H);
+	for (let i = 0; i < W; i++) for (let j = 0; j < H; j++) {
+		const x = x0 + i * step, y = y0 + j * step;
+		grid[j * W + i] = (!rageHit(map, x, y, gm) && stand(x, y)) ? 1 : 0;
+	}
+	const clamp = (v, hi) => Math.max(0, Math.min(hi, v));
+	const cellOf = (p) => [clamp(Math.round((p.x - x0) / step), W - 1), clamp(Math.round((p.y - y0) / step), H - 1)];
+	/* The start may be blocked - we could be standing in a box right now, which
+	   is exactly the case this has to recover from - so seed from the nearest
+	   open cell instead of giving up. */
+	const nearestOpen = (c) => {
+		if (grid[c[1] * W + c[0]]) return c;
+		for (let rad = 1; rad < 14; rad++) {
+			for (let di = -rad; di <= rad; di++) for (let dj = -rad; dj <= rad; dj++) {
+				if (Math.max(Math.abs(di), Math.abs(dj)) !== rad) continue;
+				const ni = c[0] + di, nj = c[1] + dj;
+				if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+				if (grid[nj * W + ni]) return [ni, nj];
+			}
+		}
+		return null;
+	};
+	const S = nearestOpen(cellOf(from)), Gl = nearestOpen(cellOf(to));
+	if (!S || !Gl) return null;
+
+	const prev = new Int32Array(W * H).fill(-1);
+	const seen = new Uint8Array(W * H);
+	const q = [S[1] * W + S[0]];
+	seen[q[0]] = 1;
+	const goal = Gl[1] * W + Gl[0];
+	/* FOUR-connected, on NODES only.
+	   An earlier version also verified every EDGE with can_move, to stop the
+	   simplifier emitting a leg nothing had checked. That was the right worry
+	   and the wrong tool: can_move's SEGMENT test is far stricter than its POINT
+	   test, so checking every 25-unit edge fragments the graph. Measured live on
+	   spookytown, from the (0,0) spawn to the corridor park point:
+	     4-connected + edge checks   1,030 cells reachable   park point NOT reached
+	     8-connected + edge checks     999                   NOT reached
+	     4-connected, nodes only     5,301                   reached
+	     8-connected, nodes only     5,504                   reached
+	   Connectivity and margin made no difference; the edge check alone did it.
+	   rageRoute returned null, safeSmartMove threw, and the party sat at the
+	   spawn through 41 consecutive travel failures. Walkability is now settled
+	   per LEG in rageWalk, which is where the legs are actually walked: a leg
+	   can_move clears goes to xmove, and one it does not goes to smart_move,
+	   whose pathfinder handles terrain. Dropping diagonals stays, because it
+	   removes corner-cutting by construction and the simplifier straightens the
+	   path afterwards. */
+	const D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+	let found = false, head = 0;
+	while (head < q.length) {
+		const cur = q[head++];
+		if (cur === goal) { found = true; break; }
+		const ci = cur % W, cj = (cur - ci) / W;
+		for (let d = 0; d < 4; d++) {
+			const ni = ci + D[d][0], nj = cj + D[d][1];
+			if (ni < 0 || nj < 0 || ni >= W || nj >= H) continue;
+			const nk = nj * W + ni;
+			if (seen[nk] || !grid[nk]) continue;
+			seen[nk] = 1; prev[nk] = cur; q.push(nk);
+		}
+	}
+	if (!found) return null;
+
+	const raw = [];
+	for (let k = goal; k !== -1; k = prev[k]) {
+		const ci = k % W, cj = (k - ci) / W;
+		raw.push([x0 + ci * step, y0 + cj * step]);
+	}
+	raw.reverse();
+
+	const out = [raw[0]];
+	let i = 0;
+	while (i < raw.length - 1) {
+		let best = i + 1;
+		for (let j = raw.length - 1; j > i; j--) {
+			if (seg(raw[i], raw[j]) && !rageClips(map, raw[i][0], raw[i][1], raw[j][0], raw[j][1], m)) { best = j; break; }
+		}
+		if (best === i + 1 && rageClips(map, raw[i][0], raw[i][1], raw[best][0], raw[best][1], m))
+			rageLog('route leg ' + i + ' grazes a rectangle - the grid clearance should have prevented this', 'red');
+		out.push(raw[best]); i = best;
+	}
+	return out;
+}
+
+function rageRequiredRange(map, mon, margin) {
+	const cfg = rageCfg();
+	const m = (typeof margin === 'number') ? margin : cfg.margin;
+	const b = rageHit(map, mon.x, mon.y, 0);
+	if (!b) return 0;
+	const r = b.r;
+	const d = Math.min(mon.x - r[0], r[2] - mon.x, mon.y - r[1], r[3] - mon.y);
+	return d + m + 2;
+}
+
+function rageStaging(map) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const sp = g && g.maps && g.maps[map] && g.maps[map].spawns;
+	if (!Array.isArray(sp)) return null;
+	for (const s of sp) {
+		if (!Array.isArray(s) || typeof s[0] !== 'number' || typeof s[1] !== 'number') continue;
+		if (!rageHit(map, s[0], s[1], rageCfg().margin)) return { x: s[0], y: s[1] };
+	}
+	return null;
+}
+
+/* ADAPTED: Ranger consults CONFIG.movement.approaches for hand-pinned
+   approaches. This file has no such table, so a route is always planned. The
+   hook is kept so one can be added without touching rageWalk. */
+function rageWaypoints(map, to, margin) {
+	const hand = ((CONFIG.ranger && CONFIG.ranger.approaches) || {})[
+		map + '|' + Math.round(to.x) + '|' + Math.round(to.y)];
+	if (Array.isArray(hand) && hand.length) {
+		const bad = hand.filter((p) => rageHit(map, p[0], p[1], margin));
+		if (!bad.length) return hand.concat([[to.x, to.y]]);
+		rageLog('ignoring the hand-pinned approach - ' + bad.length
+			+ ' of its points sit inside a rectangle', 'orange');
+	}
+	return rageRoute(map, { x: character.x, y: character.y }, to, margin);
+}
+
+const rageNav = { busy: false };
+
+async function rageWalk(map, to, margin, attempts) {
+	if (typeof xmove !== 'function') { rageLog('xmove is not a function here - cannot walk a safe route', 'red'); return false; }
+	const cfg = rageCfg();
+	const max = attempts || 4;
+	const maxInterrupts = cfg.maxInterrupts;
+	const near = (p) => Math.hypot(character.x - p[0], character.y - p[1]) < 12;
+	const base = character.base;
+	const legClear = (a, b) => {
+		if (typeof can_move !== 'function') return false;
+		try { return !!can_move({ map: map, x: a[0], y: a[1], going_x: b[0], going_y: b[1], base: base }); }
+		catch (e) { return false; }
+	};
+	const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+	/* Anything else steering us is a second driver on the same wheel: smart.moving
+	   was measured true throughout the stranded trip. */
+	try { if (typeof stop === 'function') stop(); } catch (e) { }
+	rageNav.busy = true;
+	let interrupts = 0;
+	try {
+		for (let a = 0; a < max; a++) {
+			if (near([to.x, to.y])) return true;
+			const wp = rageWaypoints(map, to, margin);
+			if (!wp || !wp.length) return false;          // genuinely no route
+			let blocked = false;
+			const was = [character.x, character.y];
+			for (let i = 0; i < wp.length; i++) {
+				if (near(wp[i])) continue;
+				const from = [character.x, character.y];
+				try {
+					/* A leg can_move clears is walked directly, which keeps the
+					   pathfinder out of it. One it does not clear is handed to
+					   smart_move: both ends are already margin-clear of every
+					   rectangle and the leg is short, so there is nowhere for it to
+					   wander, and rageGuard is still watching. */
+					if (legClear(from, wp[i])) await xmove(wp[i][0], wp[i][1]);
+					else await smart_move({ map: map, x: wp[i][0], y: wp[i][1] });
+				} catch (e) {
+					const why = String((e && (e.reason || e.message)) || e);
+					/* An interruption is COMBAT, not a bad route. Measured on the
+					   desertland leg: 4 attackers against courage 2, the move
+					   rejected as "interrupted", and the character pinned in place.
+					   Spending a route attempt on that is how a walk through
+					   contested ground exhausts its budget without ever being
+					   wrong about the route. */
+					if (/interrupt/i.test(why) && interrupts < maxInterrupts) {
+						interrupts++;
+						await pause(500);
+						i--;
+						continue;
+					}
+					blocked = true;
+					rageLog('leg ' + (i + 1) + '/' + wp.length + ' refused (' + why + ') - re-planning', '#8b98ab');
+					break;
+				}
+			}
+			if (!blocked) return true;
+			/* Gaining no ground is worth saying, but it is NOT a reason to stop:
+			   an obstruction can be another character or a monster standing in the
+			   way for a moment. The attempt cap is what bounds this - an earlier
+			   version returned false the first time a leg failed before any had
+			   succeeded, which made every transient block permanent. */
+			if (Math.hypot(character.x - was[0], character.y - was[1]) < 1)
+				rageLog('no ground gained on attempt ' + (a + 1) + ' of ' + max, '#8b98ab');
+		}
+		if (!near([to.x, to.y]))
+			rageLog('gave up after ' + max + ' attempts' + (interrupts ? ' and ' + interrupts + ' interruptions' : '')
+				+ ', ' + Math.round(Math.hypot(character.x - to.x, character.y - to.y)) + ' units short', 'orange');
+		return near([to.x, to.y]);
+	} finally {
+		rageNav.busy = false;
+	}
+}
+
+async function safeMove(x, y) {
+	if (typeof xmove !== 'function') return;
+	const map = character.map;
+	const cfg = rageCfg();
+	if (!cfg.enabled || !rageBoxes(map).length) return xmove(x, y);
+
+	if (rageHit(map, x, y, cfg.margin)) {
+		const e = rageEscape(map, x, y, cfg.margin);
+		x = e.x; y = e.y;
+	}
+	if (rageClips(map, character.x, character.y, x, y, cfg.margin)) {
+		const ok = await rageWalk(map, { x: x, y: y }, cfg.margin);
+		if (!ok) rageLog('no safe route to ' + Math.round(x) + ',' + Math.round(y) + ' - staying put', 'orange');
+		return;
+	}
+	return xmove(x, y);
+}
+
+/* Detect on the real rectangle, escape out to the planner's margin. Using one
+   number for both is what pinned the main party in place for a whole run. */
+async function rageGuard() {
+	const cfg = rageCfg();
+	if (!cfg.enabled) return false;
+	let hit = null;
+	try { hit = rageHit(character.map, character.x, character.y, cfg.guardMargin); }
+	catch (e) { return false; }
+	if (!hit) return false;
+	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ','
+		+ Math.round(character.y) + ' - leaving now', 'red');
+	try { if (typeof stop === 'function') stop(); } catch (e) { }
+	const e2 = rageEscape(character.map, character.x, character.y, cfg.margin);
+	if (typeof xmove === 'function') {
+		try { await xmove(e2.x, e2.y); }
+		catch (err) { rageLog('escape move failed: ' + (err && err.message || err), 'red'); }
+	}
+	return true;
+}
+
+// ---- one-at-a-time pulling -------------------------------------------------
+const ragePull = { openedAt: {}, lastPull: 0, busy: false };
+
+/* The monsters this pull is for: the achievement target plus its `also`. */
+function ragePullTypes() {
+	const t = achvTarget();
+	if (!t || !t.m) return [];
+	const out = [t.m];
+	for (const a of (Array.isArray(t.also) ? t.also : [])) if (out.indexOf(a) < 0) out.push(a);
+	return out;
+}
+
+/* Active only where it is needed: the spot being farmed has to be one with a
+   rage box on this map. Everywhere else the ordinary farm loop is untouched. */
+function ragePullActive() {
+	const cfg = rageCfg();
+	if (!cfg.enabled) return false;
+	if (!achvIsOurs()) return false;
+	const t = achvTarget();
+	if (!t || t.map !== character.map) return false;
+	const types = ragePullTypes();
+	if (!types.length) return false;
+	for (const b of rageBoxes(character.map)) if (types.indexOf(b.type) >= 0) return true;
+	return false;
+}
+
+function rageEngagedCount(types) {
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	/* SOLO. Ranger counts anything targeting a PARTY member; these rangers are
+	   alone on their shards, so the only name that can own a monster is ours. */
+	const names = [character.name];
+	const now = Date.now(), cfg = rageCfg();
+	let n = 0;
+	const counted = {};
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (types.indexOf(e.mtype) < 0) continue;
+		if (e.target && names.indexOf(e.target) >= 0) { counted[id] = 1; n++; }
+	}
+	/* One we have opened on but which has not registered a target yet still
+	   counts, or the gate lets a second pull through in the gap. */
+	for (const id in ragePull.openedAt) {
+		if (now - ragePull.openedAt[id] > cfg.pullTimeoutMs) { delete ragePull.openedAt[id]; continue; }
+		if (!counted[id] && E[id] && !E[id].dead) n++;
+	}
+	return n;
+}
+
+/* SOLO: Ranger picks the party member with the reach. There is only one of us,
+   so the question is simply whether WE can reach it from outside the box. */
+function ragePuller(map, mon) {
+	const need = rageRequiredRange(map, mon);
+	const reach = Math.max(20, (character.range || 0) - 6);
+	return reach >= need ? { name: character.name, range: character.range || 0 } : null;
+}
+
+/* ADAPTED: parks at the achievement spot rather than Ranger's `destination`,
+   and moves with safeMove so no leg crosses a rectangle. */
+async function ragePullTick() {
+	if (ragePull.busy) return true;
+	if (!ragePullActive()) return false;
+	const cfg = rageCfg();
+	const map = character.map;
+	const types = ragePullTypes();
+
+	if (rageEngagedCount(types) >= cfg.concurrent) return false;
+	if (Date.now() - ragePull.lastPull < cfg.repullGapMs) return false;
+	if (cfg.respectCourage) {
+		const courage = character.courage || 2;
+		let onMe = 0;
+		const E = (typeof parent !== 'undefined' && parent.entities) || {};
+		for (const id in E) if (E[id] && E[id].target === character.name) onMe++;
+		if (onMe >= courage) return false;
+	}
+
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	let pick = null, pickD = Infinity;
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (types.indexOf(e.mtype) < 0) continue;
+		if (e.target) continue;                       // already somebody's problem
+		if (ragePull.openedAt[id]) continue;
+		if (!rageHit(map, e.x, e.y, 0)) continue;     // already outside - the loop takes it
+		const d = Math.hypot(e.x - character.x, e.y - character.y);
+		if (d < pickD) { pick = e; pickD = d; }
+	}
+	if (!pick) return false;
+
+	if (!ragePuller(map, pick)) return false;         // cannot reach it from safety
+
+	const need = rageRequiredRange(map, pick);
+	const reach = Math.max(20, (character.range || 0) - 6);
+	const b = rageHit(map, pick.x, pick.y, 0);
+	if (!b) return false;
+	/* Stand off the nearest edge, on the monster's side, never closer to the
+	   rectangle than the margin. */
+	const r = b.r;
+	const edges = [
+		{ x: r[0] - cfg.margin - 2, y: pick.y }, { x: r[2] + cfg.margin + 2, y: pick.y },
+		{ x: pick.x, y: r[1] - cfg.margin - 2 }, { x: pick.x, y: r[3] + cfg.margin + 2 },
+	];
+	edges.sort((p, q) => Math.hypot(p.x - pick.x, p.y - pick.y) - Math.hypot(q.x - pick.x, q.y - pick.y));
+	const spot = edges[0];
+	if (Math.hypot(spot.x - pick.x, spot.y - pick.y) > reach) return false;
+
+	const t = achvTarget();
+	const park = { x: t.x, y: t.y };
+	ragePull.busy = true;
+	try {
+		rageLog('pulling ' + pick.mtype + ' (need ' + Math.round(need)
+			+ ', reach ' + Math.round(reach) + ')', '#FFD700');
+		await safeMove(spot.x, spot.y);
+		if (typeof attack === 'function' && typeof is_in_range === 'function' && is_in_range(pick)) {
+			try {
+				await attack(pick);
+				ragePull.openedAt[pick.id] = Date.now();
+				ragePull.lastPull = Date.now();
+			} catch (e) { rageLog('open shot failed: ' + (e && e.reason || e && e.message || e), 'orange'); }
+		}
+		await safeMove(park.x, park.y);
+	} finally {
+		ragePull.busy = false;
+	}
+	return true;
+}
+
+function rageStatus() {
+	const map = character.map;
+	const boxes = rageBoxes(map);
+	rageLog(map + ': ' + (boxes.length
+		? boxes.map((b) => b.type + ' [' + b.r.join(',') + ']').join('  ')
+		: 'no rage boxes'), '#8b98ab');
+	rageLog('pull ' + (ragePullActive() ? 'ACTIVE' : 'idle')
+		+ ' | types ' + (ragePullTypes().join(',') || 'none')
+		+ ' | concurrent ' + rageCfg().concurrent + ' | margin ' + rageCfg().margin
+		+ ' | engaged ' + rageEngagedCount(ragePullTypes())
+		+ ' | xmove ' + typeof xmove + ' | can_move ' + typeof can_move, '#8b98ab');
+	return { boxes: boxes, types: ragePullTypes(), cfg: rageCfg() };
+}
+
+
+// ============================================================================
+// ACHIEVEMENTS - a queued kill grind, off by default
+// ============================================================================
+/* Ported from Ranger.js 2026-10-11. The bookkeeping is Ranger's; what changed
+   is how the spot is held. Ranger sets `manualOverride` and calls
+   runFarmSearch(); this file has chooseSpot and ranger.spot, so the override is
+   achvOverride and chooseSpot consults it first. -> CONFIG.ranger.achievements */
+const ACHV_KEY = 'achv_queue';
+let achvOverride = null;      // { m, map, x, y, also } - beats the scorer
+let achvPaused = false;
+let achvKills = 0;
+let achvLastRefresh = 0;
+let achvWarned = false;
+let achvTravelFails = 0;
+
+function achvCfg() {
+	return (CONFIG.ranger && CONFIG.ranger.achievements) || { enabled: false, queue: [] };
+}
+function achvLog(m, c) {
+	log('[achv] ' + m, c || '#9FD3FF');
+	console.log('[achv] ' + m);
+}
+function achvLoad() {
+	let s = null;
+	try { s = SS.get(ACHV_KEY, null); } catch (e) { }
+	if (!s || typeof s !== 'object') s = { i: 0, done: [] };
+	if (typeof s.i !== 'number') s.i = 0;
+	if (!Array.isArray(s.done)) s.done = [];
+	return s;
+}
+function achvSave(s) {
+	try { SS.set(ACHV_KEY, s); }
+	catch (e) { achvLog('could not persist the queue - a reload restarts it', 'orange'); }
+}
+function achvTarget() {
+	const q = achvCfg().queue || [];
+	const s = achvLoad();
+	return (s.i >= 0 && s.i < q.length) ? q[s.i] : null;
+}
+
+/* max(own + diff, account best) - the same expression the server uses to decide
+   whether a rung is earned, so this cannot disagree with the game. */
+function achvScore(m) {
+	const t = (typeof parent !== 'undefined' && parent.tracker) || {};
+	const own = t.monsters || {}, d = t.monsters_diff || {}, mx = (t.max && t.max.monsters) || {};
+	return Math.max((own[m] || 0) + (d[m] || 0), (mx[m] || [0, 0])[0]);
+}
+
+/* Ask the server for a fresh tracker without letting it draw the panel. */
+function achvRefresh() {
+	return new Promise((resolve) => {
+		let restored = false;
+		const P = parent;
+		const orig = P.render_tracker;
+		const restore = () => { if (!restored) { restored = true; try { P.render_tracker = orig; } catch (e) { } } };
+		try {
+			P.render_tracker = function () { };
+			P.socket.emit('tracker');
+		} catch (e) { restore(); return resolve(false); }
+		setTimeout(() => { restore(); resolve(true); }, 2200);
+	});
+}
+
+/* Take the spot. Whitelisting is what stops the travel blacklist from quietly
+   removing an achievement spot that took a few tries to reach. */
+function achvApply(t) {
+	achvOverride = { m: t.m, map: t.map, x: t.x, y: t.y,
+		also: Array.isArray(t.also) ? t.also.slice() : [] };
+	achvKills = 0;
+	achvTravelFails = 0;
+	/* PRUNE, not just shadow. achvWhitelisted already makes isUnreachable
+	   answer false for this spot, so the override would work either way - but a
+	   stale entry left behind outlives the override and would take the spot the
+	   moment achievements are turned off again. Ranger prunes here for the same
+	   reason. -> travelBlacklist */
+	try {
+		const b = tbLoad();
+		for (const n of [t.m].concat(Array.isArray(t.also) ? t.also : [])) {
+			delete b[spotKey(n, t.map)];
+			delete travelStrikes[spotKey(n, t.map)];
+		}
+		tbSave();
+	} catch (e) { }
+	ranger.spot = null;        // re-pick now rather than after checkEveryMs
+	achvLog('holding ' + t.m + '@' + t.map + ' at ' + t.x + ',' + t.y
+		+ (t.rung == null ? ' (no rung)' : ' for ' + t.rung), '#7FD98A');
+}
+function achvIsOurs() {
+	const t = achvTarget();
+	return !!(t && achvOverride && achvOverride.m === t.m && achvOverride.map === t.map);
+}
+/* Is this spot the achievement's? Consulted by isUnreachable so the blacklist
+   leaves it alone, until maxTravelFailures releases it. */
+function achvWhitelisted(monster, mapName) {
+	if (!achvOverride) return false;
+	if (achvOverride.map !== mapName) return false;
+	if (achvOverride.m === monster) return true;
+	return achvOverride.also.indexOf(monster) >= 0;
+}
+function achvNoteTravelFailure() {
+	if (!achvOverride) return;
+	achvTravelFails++;
+	const max = achvCfg().maxTravelFailures || 10;
+	if (achvTravelFails < max) return;
+	achvLog('could not reach ' + achvOverride.m + '@' + achvOverride.map + ' in '
+		+ max + ' tries - releasing the spot, achvResume() to retry', 'orange');
+	achvPaused = true;
+	achvOverride = null;
+	ranger.spot = null;
+}
+
+function achvAdvance(reason) {
+	const s = achvLoad(), t = achvTarget();
+	if (t) s.done.push({ m: t.m, rung: t.rung, at: Date.now(), why: reason });
+	s.i++;
+	achvSave(s);
+	const n = achvTarget();
+	if (n) { achvLog('next: ' + n.m + '@' + n.map + ' for ' + n.rung, '#7FD98A'); achvApply(n); }
+	else {
+		achvLog('queue finished - handing the spot back to the scorer', '#FFD700');
+		achvOverride = null;
+		ranger.spot = null;
+	}
+}
+
+/* The farm spot, when the queue owns it. DELIBERATELY bypasses the never-list
+   and spotSafety: booboo is on both and that is the whole point of a manual
+   grind. -> CONFIG.ranger.achievements */
+function achvSpot() {
+	if (!achvCfg().enabled || achvPaused) return null;
+	if (!achvOverride) return null;
+	return { map: achvOverride.map, monster: achvOverride.m,
+		x: achvOverride.x, y: achvOverride.y,
+		why: 'achievement grind (' + achvOverride.m
+			+ (achvOverride.also.length ? ' + ' + achvOverride.also.join(', ') : '') + ')' };
+}
+
+async function achvTick() {
+	const cfg = achvCfg();
+	if (!cfg.enabled || achvPaused) return;
+	const t = achvTarget();
+	if (!t) return;
+
+	if (!achvWarned && !(typeof parent !== 'undefined' && parent.tracker)) {
+		achvWarned = true;
+		achvLog('no tracker data - a tracker item must be in the bag or progress '
+			+ 'cannot be read', 'orange');
+	}
+	if (!achvIsOurs()) { achvApply(t); return; }
+
+	/* rung null = run until the toggle goes off, so there is no threshold to
+	   race and nothing to refresh early for. */
+	const base = achvScore(t.m);
+	if (t.rung == null) { if (Date.now() - achvLastRefresh < cfg.refreshMs) return; }
+	else if (Date.now() - achvLastRefresh < cfg.refreshMs && base + achvKills * 1.3 < t.rung) return;
+
+	achvLastRefresh = Date.now();
+	try { await achvRefresh(); } catch (e) { }
+	achvKills = 0;
+	const now = achvScore(t.m);
+	if (t.rung == null) achvLog(t.m + ': ' + Math.round(now) + ' (no rung - running until stopped)', '#8b98ab');
+	else if (now >= t.rung) { achvLog(t.m + ' reached ' + t.rung + ' (' + Math.round(now) + ')', '#00FF00'); achvAdvance('reached'); }
+	else achvLog(t.m + ': ' + Math.round(now) + ' / ' + t.rung, '#8b98ab');
+}
+
+// ---- console helpers -------------------------------------------------------
+function achvOn() {
+	if (!CONFIG.ranger.achievements) CONFIG.ranger.achievements = { enabled: true, queue: [] };
+	CONFIG.ranger.achievements.enabled = true;
+	achvPaused = false;
+	achvTravelFails = 0;
+	const t = achvTarget();
+	if (t) achvApply(t);
+	achvLog('ON - in memory only, so a reload or a shard hop restores the file default. '
+		+ 'This BYPASSES the never-list and refusePure for ' + (t ? t.m : 'the target')
+		+ '; pull.concurrent ' + rageCfg().concurrent + ' and the rage guard are what keep it safe.', '#7FD98A');
+}
+function achvOff() {
+	if (CONFIG.ranger.achievements) CONFIG.ranger.achievements.enabled = false;
+	achvOverride = null;
+	ranger.spot = null;
+	achvLog('OFF - the spot goes back to the scorer', '#E9C46A');
+}
+function achvStop() { achvPaused = true; achvOverride = null; ranger.spot = null; achvLog('stopped - achvResume() to take it back', '#E9C46A'); return true; }
+function achvResume() { achvPaused = false; achvTravelFails = 0; const t = achvTarget(); if (t) achvApply(t); achvLog('resumed', '#7FD98A'); return true; }
+function achvSkip() { achvLog('skipped by hand', '#FFD700'); achvAdvance('skipped'); return achvTarget(); }
+function achvReset(i) {
+	const s = achvLoad();
+	s.i = (typeof i === 'number') ? i : 0;
+	s.done = [];
+	achvSave(s);
+	achvLog('queue index set to ' + s.i);
+	const t = achvTarget();
+	if (t && achvCfg().enabled && !achvPaused) achvApply(t);
+	return t;
+}
+function achvStatus() {
+	const cfg = achvCfg(), s = achvLoad(), t = achvTarget();
+	achvLog('enabled=' + (cfg.enabled ? 'on' : 'off') + ' paused=' + achvPaused
+		+ ' index=' + s.i + '/' + ((cfg.queue || []).length)
+		+ ' tracker=' + (typeof parent !== 'undefined' && parent.tracker ? 'yes' : 'NO')
+		+ ' travelFails=' + achvTravelFails);
+	if (!t) { achvLog('queue finished or empty'); return; }
+	achvLog('target ' + t.m + '@' + t.map + ' (' + t.x + ',' + t.y + ') rung='
+		+ (t.rung == null ? 'null' : t.rung)
+		+ (t.also ? ' also ' + t.also.join(',') : ''));
+	achvLog('score ' + Math.round(achvScore(t.m)) + ' | ours=' + achvIsOurs()
+		+ ' | pull ' + (ragePullActive() ? 'ACTIVE' : 'idle'));
+	rageStatus();
+}
+
 // ============================================================================
 // MONSTER HUNT - is THIS hunt worth doing, or do we wait out its clock
 // ============================================================================
@@ -2539,10 +3591,25 @@ function mhEvaluate(h) {
 	   spaces a solo character has no business entering - so a hunt for something
 	   that lives outside it is refused rather than walked to. This is the
 	   err-on-the-side-of-safety rule doing most of its work. */
-	const allowed = (CONFIG.ranger.farmRanking && CONFIG.ranger.farmRanking.maps) || [];
+	/* farmCandidates is the one source for "where does it live", so the hunt
+	   inherits the farm's map admission, its never-list and its unreachable
+	   blacklist for free. The reasons it can come back empty are worth telling
+	   apart: two are deliberate policy and one means the game moved.
+
+	   This used to read "does not live on <allowed maps>", which was true while
+	   maps was the hand-list ['main'] and became misleading the moment the list
+	   was derived: a mummy hunt was refused with "does not live on any allowed
+	   map" when mummy lives on spookytown, which IS admitted - it is the
+	   never-list that refuses it, for the rage box. */
+	const fr = CONFIG.ranger.farmRanking || {};
+	if ((fr.never || []).indexOf(h.id) !== -1) {
+		return { ok: false, why: h.id + ' is on the never-farm list' };
+	}
 	const spots = farmCandidates().filter((c) => c.type === h.id);
 	if (!spots.length) {
-		return { ok: false, why: h.id + ' does not live on ' + (allowed.join('/') || 'any allowed map') };
+		const scope = Array.isArray(fr.maps) ? fr.maps.join('/') : 'any farmable map';
+		return { ok: false, why: h.id + ' does not live on ' + scope
+			+ ' (or every spot for it is blacklisted as unreachable)' };
 	}
 
 	let best = null, firstRefusal = null;
@@ -2613,7 +3680,8 @@ function mhSpot() {
 		return null;
 	}
 	return { map: v.cand.map, monster: v.cand.type, x: v.cand.x, y: v.cand.y,
-		why: 'monster hunt (' + v.h.id + ' x' + v.h.c + ')' };
+		why: 'monster hunt (' + v.h.id + ' x' + v.h.c + ')'
+			+ (v.cand.spotSource === 'ranger' ? ' [measured spot]' : '') };
 }
 
 /* Returns true when it owned the tick. Only ever walks for two reasons: to bank
@@ -2698,6 +3766,11 @@ async function farmTick() {
 	   its own drops - and chests expire. */
 	await lootTick();
 
+	/* ONE AT A TIME. Only active at an achievement spot that has a rage box on
+	   this map; everywhere else it answers false immediately and the ordinary
+	   loop below is untouched. -> ragePullTick */
+	try { if (await ragePullTick()) return; } catch (e) { rageLog('pull tick threw: ' + e, 'red'); }
+
 	/* Slenderman, before the boss path and before the farm target, and only if
 	   he is already standing in our range. He is excluded from the boss list so
 	   nothing here walks to him. -> Slenderman: hits of opportunity
@@ -2720,6 +3793,9 @@ async function farmTick() {
 	if (boss) { await bossStandOff(boss); await attackWithRotation(boss); return; }
 
 	const target = get_nearest_monster({ type: spot.monster });
+	/* Seeing one IS arrival, which is the only honest definition available here.
+	   -> travelBlacklist */
+	if (target) noteTravelSuccess(spot.monster, spot.map);
 	if (!target) {
 		// Nothing of ours in view: walk to the pack rather than standing idle.
 		//
@@ -2729,7 +3805,10 @@ async function farmTick() {
 		// with an empty screen stood at the origin indefinitely. On a new
 		// account that is every character's first tick, and it never farms.
 		if (await goToMonster(spot.monster)) return;
-		if (character.map !== spot.map) { await goTo({ map: spot.map, x: 0, y: 0 }); return; }
+		if (character.map !== spot.map) {
+			if (!(await goTo({ map: spot.map, x: 0, y: 0 }))) noteTravelFailure(spot.monster, spot.map);
+			return;
+		}
 		/* Last resort: the map's own spawn table.
 
 		   What used to be here was another get_nearest_monster, with
@@ -2743,7 +3822,11 @@ async function farmTick() {
 		const spawn = (typeof spot.x === 'number' && typeof spot.y === 'number' && (spot.x || spot.y))
 			? { map: spot.map, x: spot.x, y: spot.y }
 			: monsterSpawn(spot.map, spot.monster);
-		if (spawn) await goTo(spawn);
+		/* EVERY route to this spot has now been tried and none of them landed.
+		   That is the signal the blacklist wants - not one failed smart_move,
+		   which is routine, but a whole tick that got nowhere. Three of these in
+		   a row and the spot is set aside. -> travelBlacklist */
+		if (!spawn || !(await goTo(spawn))) noteTravelFailure(spot.monster, spot.map);
 		return;
 	}
 
@@ -2823,6 +3906,9 @@ async function attackWithRotation(target) {
 			log(`${step.skill} refused: ${e && e.reason ? e.reason : e}`, 'orange');
 		}
 	}
+	/* achvKills feeds the eager rung check so a refresh happens before the
+	   threshold is crossed rather than after. -> achvTick */
+	if (achvIsOurs()) achvKills++;
 	try { await attack(target); } catch (e) {
 		/* This catch used to be empty, so every refused attack vanished. A
 		   contested field refuses a lot of them - the target dies to someone
@@ -2843,6 +3929,10 @@ async function attackWithRotation(target) {
 async function rangerTick() {
 	if (character.rip) { try { await respawn(); } catch (e) { } return; }
 	useRangerPotions();
+	/* BEFORE ANYTHING THAT MOVES. Standing in a rage box is the one state worth
+	   leaving immediately, and it is ahead of the movement lock on purpose: the
+	   lock is held by whatever walked us in. -> RAGE BOXES */
+	try { if (await rageGuard()) return; } catch (e) { }
 	/* In town for any reason at all, keep the beat - INCLUDING while a walk is
 	   in progress.
 
@@ -2873,6 +3963,9 @@ async function rangerTick() {
 		fleetState.parkedFull = false;
 
 		if (potionsLow() && potionTripDue()) { await townTrip('potions'); return; }
+		/* Queue bookkeeping - tracker refresh and the rung check. Cheap, and it
+		   never moves the character. -> ACHIEVEMENTS */
+		try { await achvTick(); } catch (e) { console.error('achvTick error:', e); }
 		/* Takes a hunt or banks a finished one, and owns the tick while it walks
 		   to Daisy. A hunt it has refused returns false here and farming
 		   continues underneath. -> MONSTER HUNT */
