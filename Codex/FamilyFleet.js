@@ -202,13 +202,36 @@ const CONFIG = {
 			minHpFraction: 0.6,
 			// Names refused even when the game flags them cooperative.
 			// abtesting is team PvP with a join window, not a boss.
-			exclude: ['abtesting'],
+			/* slenderman added 2026-10-11 at the owner's instruction, and it was
+			   not just a wasted trip - it STOPPED THE RANGERS FARMING. Measured
+			   from the deployed data: G.monsters.slenderman.cooperative is true,
+			   so bossPick() selects him whenever he is live. bossTick then sets
+			   the trip and returns TRUE, which makes farmTick return at its
+			   `if (await bossTick()) return;` - so nothing below it ever runs.
+			   And the trip can never progress, because bossWalkTarget(name) has
+			   no position to offer for him: parent.S.slenderman carries only
+			   { name, map } where every other boss also sends x/y, he is not in
+			   BOSS_JOIN_SPOTS, and monsterSpawn('main', ...) cannot help because
+			   he lives on cave/halloween/spookytown. So the character logs "no
+			   position known for slenderman - cannot travel" every tick and does
+			   nothing else until maxTripMs (20 min) expires, then repeats after
+			   cooldownMs. Excluding him here blocks BOTH paths that read this
+			   list - bossEligible() for the trip and coopBossInReach() for the
+			   in-reach swing - and the opportunity block below is what still
+			   takes a shot at him when he turns up on his own.
+			   -> Slenderman: hits of opportunity */
+			exclude: ['abtesting', 'slenderman'],
 
 			/* TRAVEL, added 2026-10-03 at the operator's instruction. The ATTACK
 			   rule above is unchanged and still Ranger.js's: somebody else must
 			   already be on it. Travelling and swinging are separate decisions, so
 			   a boss nobody has engaged is one this character goes to, stands at,
 			   and does not open - the caps below are what end that standoff. */
+			/* STAND-OFF, added 2026-10-11 with goo brawl. How far OUTSIDE a boss's
+			   own attack range to stand before swinging. -> bossStandOff */
+			standOff: true,
+			standOffMargin: 25,
+
 			travel: true,
 			maxTripMs: 20 * 60 * 1000,
 			maxDeaths: 2,
@@ -239,6 +262,49 @@ const CONFIG = {
 			   goo and not crabx. When nothing safe advances the plan the answer
 			   is the safest thing on the board. */
 			fallback: { map: 'main', monster: 'crab' },
+		},
+
+		/* MONSTER HUNT - off until you turn it on. mhOn() / mhOff() / mhStatus()
+		   flip and inspect it at runtime. -> MONSTER HUNT */
+		monsterHunt: {
+			enabled: false,
+
+			/* WHY THIS IS NOT DEXON'S VERSION. His picks the best hunt across a
+			   party of three that talk to each other over the party link. These
+			   three are alone on separate shards and never communicate, so there
+			   is nothing to compare against and no one to coordinate with. The
+			   only question left is the one the owner asked for: is THIS hunt
+			   worth doing, or do we leave it and wait out its clock. There is
+			   deliberately no rerolling and no best-pick. */
+
+			/* THE GRIND BOUND IS SECONDS, NEVER KILL COUNT. The server sets the
+			   count as (20*60*times)/(max_hp/1000)/(respawn+0.25), so it scales
+			   INVERSELY with how tough the monster is: a x500 assignment is bees
+			   and a x1 is an 80,000 hp skeletor. A count-based rule has the sign
+			   backwards - it refuses the trivial hunt and admits the hopeless
+			   one. 10 rather than Dexon's 15 because these characters are solo,
+			   unattended, and have no healer. 0 disables this bound. */
+			maxEstMin: 10,
+
+			/* ERR ON THE SIDE OF SAFETY, the owner's instruction, and this is
+			   where it lives. The farm spots use crabxReady.minSurvivalMargin
+			   (1.5) and the owner has watched those work. A hunt target is
+			   chosen by the server and never reviewed, so it is held to this
+			   instead. Raise it to be more cautious, not less. */
+			huntSurvivalMargin: 2.5,
+
+			// Re-grade the held hunt this often: gear improves, and a hunt
+			// refused at level 30 can become reasonable later in the same clock.
+			recheckMs: 2 * 60 * 1000,
+			// After taking a hunt we cannot use, wait this long before walking
+			// to Daisy again - the clock has to run out first either way.
+			retryMs: 5 * 60 * 1000,
+			// Stop grinding one hunt after this even if it is still viable.
+			huntCapMs: 25 * 60 * 1000,
+			// Daisy is NOT in reach of townSpot - measured 2026-10-11, she is at
+			// (126, -413), 457 units away, against 286 for the furthest NPC that
+			// spot was computed to cover. So the hunt gets its own trip.
+			maxDaisyTripMs: 4 * 60 * 1000,
 		},
 
 		crabxReady: {
@@ -458,40 +524,118 @@ const CONFIG = {
 	verbose: true,
 };
 
-// A ranger's gear plan, tier 1 through 3. Tier 1 is the block commented out in
-// Merchant.js - this account needs it.
+/* A ranger's gear plan, tier 1 through 3. Tier 1 is the block commented out in
+   Merchant.js - this account needs it, so it stays and is NOT synced.
+
+   TIERS 2 AND 3 ARE MERCHANT v95's GEAR_PROGRESSION.ranger, resynced
+   2026-10-11, WITH ONE DELIBERATE DIVERGENCE: tier-2 mainhand is
+   bowofthedead@8 here against the merchant's @7, because the whole fleet
+   already holds it at +7 and @7 would be a goal with nothing left to do. The
+   two tables do not have to agree to both be right; do not "fix" this back. They had drifted on five slots at tier 2 and three at tier 3:
+   mainhand firebow -> bowofthedead, chest coat -> mrnarmor, pants plain ->
+   frankypants, belt dexbelt -> windbelt, gloves supermittens -> thundergrips at
+   tier 2 only. Generated from Merchant.js rather than retyped, so the two
+   cannot drift through a transcription slip.
+
+   READ THE SUPPLY NOTE BELOW BEFORE TRUSTING TIER 2 - three of those new
+   targets are craft-gated and this account cannot currently reach them. */
 const RANGER_GEAR = [
 	{
-		earring1: { item: 'dexearring', level: 1, method: 'compound' }, helmet: { item: 'helmet', level: 6, method: 'upgrade' },
-		earring2: { item: 'dexearring', level: 1, method: 'compound' }, amulet: { item: 'dexamulet', level: 2, method: 'compound' },
-		mainhand: { item: 'firebow', level: 5, method: 'upgrade' },     chest: { item: 'coat', level: 6, method: 'upgrade' },
+		/* RETIRED 2026-10-11, on the family's report that these are met or
+		   exceeded across the fleet: mainhand (firebow@5), helmet (helmet@6),
+		   chest (coat@6), shoes (shoes@6), amulet (dexamulet@2), gloves
+		   (gloves@6) and both rings (dexring@2).
+
+		   `null` rather than a deleted key, deliberately. Every reader here
+		   guards with `if (!spec || !spec.item) continue`, so both spellings
+		   work - but a null says "this slot has no tier-1 goal" where a missing
+		   key looks like somebody forgot one. GEAR_SLOTS is read off TIER 2, so
+		   a sparse tier 1 costs nothing.
+
+		   WHAT RETIRING ONE ACTUALLY DOES: the item leaves PLAN_INDEX unless
+		   another tier names it, and then isPlanItem goes false - so it is no
+		   longer banked and the sell pass may vendor it. That is the point.
+		   firebow, helmet, coat, gloves and dexring leave outright. shoes does
+		   NOT: measured 2026-10-11, G.craft.wingedboots consumes it, so it stays
+		   protected as a craft input and keeps accumulating - retiring it stops
+		   the SCROLL SPEND, not the banking. dexamulet does not leave either,
+		   because tiers 2 and 3 still ask for it at @4 and @5.
+
+		   BELT (dexbelt@1) RETIRED TOO, and this is the case worth understanding
+		   before anyone restores it. dexbelt is windbelt's input at level 2, and
+		   it now appears in NO tier at all - so every level it is allowed to
+		   reach comes from the RECIPE rather than from the plan:
+
+		     craftRequiredLevel('dexbelt')  2   <- G.craft.windbelt
+		     compoundCeiling('dexbelt')     2   <- the recipe, not any tier
+		     isCraftInput('dexbelt')        true <- so the sell pass spares it
+
+		   That only holds while windbelt is still a plan goal, which it is at
+		   tiers 2 and 3. If windbelt is ever dropped from the plan, dexbelt
+		   loses its ceiling AND its protection in the same edit, and the fleet
+		   will quietly start vendoring belts. Before this file read recipe
+		   levels, retiring this row would have stopped dexbelt compounding
+		   altogether - it answered "no tier compounds this item".
+		   -> craftRequiredLevel */
+		earring1: { item: 'dexearring', level: 1, method: 'compound' }, helmet: null,
+		earring2: { item: 'dexearring', level: 1, method: 'compound' }, amulet: null,
+		mainhand: null,                                                 chest: null,
 		offhand: { item: 't2quiver', level: 5, method: 'upgrade' },     cape: { item: 'bcape', level: 4, method: 'upgrade' },
-		ring1: { item: 'dexring', level: 2, method: 'compound' },       pants: { item: 'pants', level: 6, method: 'upgrade' },
-		ring2: { item: 'dexring', level: 2, method: 'compound' },       belt: { item: 'dexbelt', level: 1, method: 'compound' },
-		orb: { item: 'orbg', level: 1, method: 'compound' },            shoes: { item: 'shoes', level: 6, method: 'upgrade' },
-		gloves: { item: 'gloves', level: 6, method: 'upgrade' },        elixir: null,
+		ring1: null,                                                    pants: { item: 'pants', level: 6, method: 'upgrade' },
+		ring2: null,                                                    belt: null,
+		orb: { item: 'orbg', level: 1, method: 'compound' },            shoes: null,
+		gloves: null,                                                   elixir: null,
 	},
 	{
-		earring1: { item: 'dexearring', level: 4, method: 'compound' }, helmet: { item: 'fury', level: 4, method: 'upgrade' },
-		earring2: { item: 'dexearring', level: 4, method: 'compound' }, amulet: { item: 'dexamulet', level: 4, method: 'compound' },
-		mainhand: { item: 'firebow', level: 9, method: 'upgrade' },     chest: { item: 'coat', level: 9, method: 'upgrade' },
-		offhand: { item: 't2quiver', level: 7, method: 'upgrade' },     cape: { item: 'ecape', level: 7, method: 'upgrade' },
-		ring1: { item: 'cring', level: 3, method: 'compound' },         pants: { item: 'pants', level: 9, method: 'upgrade' },
-		ring2: { item: 'suckerpunch', level: 0, method: 'compound' },   belt: { item: 'dexbelt', level: 3, method: 'compound' },
-		orb: { item: 'orbofdex', level: 3, method: 'compound' },        shoes: { item: 'wingedboots', level: 8, method: 'upgrade' },
-		gloves: { item: 'supermittens', level: 5, method: 'upgrade' },  elixir: null,
+		earring1: { item: 'dexearring', level: 4, method: 'compound' },  helmet: { item: 'fury', level: 4, method: 'upgrade' },
+		earring2: { item: 'dexearring', level: 4, method: 'compound' },  amulet: { item: 'dexamulet', level: 4, method: 'compound' },
+		mainhand: { item: 'bowofthedead', level: 8, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' },
+		offhand: { item: 't2quiver', level: 7, method: 'upgrade' },      cape: { item: 'ecape', level: 7, method: 'upgrade' },
+		ring1: { item: 'cring', level: 3, method: 'compound' },          pants: { item: 'frankypants', level: 6, method: 'upgrade' },
+		ring2: { item: 'suckerpunch', level: 0, method: 'compound' },    belt: { item: 'windbelt', level: 2, method: 'compound' },
+		orb: { item: 'orbofdex', level: 3, method: 'compound' },         shoes: { item: 'wingedboots', level: 8, method: 'upgrade' },
+		gloves: { item: 'thundergrips', level: 7, method: 'upgrade' },   elixir: null,
 	},
 	{
-		earring1: { item: 'dexearring', level: 5, method: 'compound' }, helmet: { item: 'fury', level: 8, method: 'upgrade' },
-		earring2: { item: 'dexearring', level: 5, method: 'compound' }, amulet: { item: 'dexamulet', level: 5, method: 'compound' },
-		mainhand: { item: 'firebow', level: 10, method: 'upgrade' },    chest: { item: 'tshirt9', level: 4, method: 'upgrade' },
-		offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' },  cape: { item: 'ecape', level: 9, method: 'upgrade' },
-		ring1: { item: 'suckerpunch', level: 2, method: 'compound' },   pants: { item: 'pants', level: 10, method: 'upgrade' },
-		ring2: { item: 'suckerpunch', level: 2, method: 'compound' },   belt: { item: 'dexbelt', level: 5, method: 'compound' },
-		orb: { item: 'orbofdex', level: 5, method: 'compound' },        shoes: { item: 'wingedboots', level: 10, method: 'upgrade' },
-		gloves: { item: 'supermittens', level: 6, method: 'upgrade' },  elixir: null,
+		earring1: { item: 'dexearring', level: 5, method: 'compound' },  helmet: { item: 'fury', level: 8, method: 'upgrade' },
+		earring2: { item: 'dexearring', level: 5, method: 'compound' },  amulet: { item: 'dexamulet', level: 5, method: 'compound' },
+		mainhand: { item: 'bowofthedead', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 4, method: 'upgrade' },
+		offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' },   cape: { item: 'ecape', level: 9, method: 'upgrade' },
+		ring1: { item: 'suckerpunch', level: 2, method: 'compound' },    pants: { item: 'frankypants', level: 7, method: 'upgrade' },
+		ring2: { item: 'suckerpunch', level: 2, method: 'compound' },    belt: { item: 'windbelt', level: 4, method: 'compound' },
+		orb: { item: 'orbofdex', level: 5, method: 'compound' },         shoes: { item: 'wingedboots', level: 10, method: 'upgrade' },
+		gloves: { item: 'supermittens', level: 6, method: 'upgrade' },   elixir: null,
 	},
 ];
+
+/* SUPPLY NOTE for the resynced tiers, 2026-10-11. Matching the merchant was the
+   instruction and is done; this is what it costs, because three of the new
+   tier-2 targets are CRAFT-GATED and this account is nowhere near them.
+   Recipes read from the deployed data, game version 17665:
+
+     windbelt      1x dexbelt+2 + 40x stormfeather + 4x essenceofether + 300,000g
+     thundergrips  1x mrngloves+6 + 80x stormfeather + 12x essenceofether + 800,000g
+     bowofthedead  1x mbones + 1x bow + 120,000g
+
+   bowofthedead is the easy one and is also sold - Ponty carried it through the
+   Halloween event - so that slot is reachable.
+
+   The other two are not, for two different reasons. Both want essenceofether,
+   which the merchant's own notes record as gating eight recipes with no reliable
+   source on the main account; a fresh account has none. And windbelt is flagged
+   `exclusive: true` in G.items, which in this game marks an item players cannot
+   trade - so Ponty and the stands are very unlikely ever to stock one, and the
+   craft is the only route. I have NOT verified what `exclusive` forbids
+   precisely; treat "unbuyable" as the likely reading, not a measured fact.
+
+   WHAT THIS MEANS IN PRACTICE. The gear planner reads the lowest unmet tier per
+   slot, so those slots will sit permanently unmet and the Ponty pass will keep
+   looking for items it can never find. That wastes a little work, not a lot:
+   nothing here stalls the way the slenderman trip did, because an unmet slot is
+   a normal state in this file's design. If the chasing becomes annoying, the
+   honest fix for THIS account is to keep the old targets for the three gated
+   slots (firebow, dexbelt, supermittens) and let the main party's plan run
+   ahead - the two tables do not have to agree to both be right. */
 
 /* Every item named anywhere in tier 3. These are never sold to an NPC, at any
    level, even as junk - a tier-3 name in the bag is either progress or the
@@ -1201,6 +1345,133 @@ function isExchangeable(name) {
 	return !!(d && d.e !== undefined);
 }
 
+
+// ============================================================================
+// CRAFT INPUTS - never sold, always banked
+// ============================================================================
+/* Added 2026-10-11 at the owner's instruction: the materials the gear plan's
+   targets are CRAFTED from must survive the sell pass and accumulate in the
+   bank, exactly as exchangeables do.
+
+   DERIVED FROM G.craft, not from a list here - the same rule isExchangeable
+   follows, and for the same reason. The plan moved to craft-gated targets in the
+   v95 resync (windbelt, thundergrips, bowofthedead), and a written-out list of
+   their inputs would go stale the next time a target changes. Walking G.craft
+   from the plan means the protected set follows the plan automatically.
+
+   WHAT THIS PROTECTS, resolved from the deployed data at version 17665:
+     windbelt      <- dexbelt (lvl 2), stormfeather, essenceofether
+     thundergrips  <- mrngloves (lvl 6), stormfeather, essenceofether
+     bowofthedead  <- mbones, bow
+     wingedboots   <- shoes, feather0
+   Note dexbelt: it is a tier-1 GOAL and also a tier-2 INPUT, so it is protected
+   twice over. That is the case that made this worth deriving - the v95 resync
+   removed dexbelt as the tier-2/3 belt, and a naive reading of "the plan no
+   longer wants dexbelt" is exactly how the sell pass would have vendored the
+   input to the thing that replaced it.
+
+   TRANSITIVE, with a depth cap. An input can itself be craftable, and the cap
+   is there because G.craft is operator data at heart - a cycle in it would hang
+   this walk, and a hang inside a self-chained tick is the failure mode this file
+   is most careful about.
+
+   Cached like coopBosses: an EMPTY read means "G is not ready", not "there are
+   none", so it is not cached until something comes back. */
+let craftInputCache = null;
+function craftInputsCollect(name, out, depth) {
+	if (!name || depth < 0) return;
+	let c = null;
+	try { c = (parent && parent.G && parent.G.craft) ? parent.G.craft[name] : null; } catch (e) { return; }
+	if (!c || !Array.isArray(c.items)) return;
+	for (const row of c.items) {
+		// G.craft rows are [qty, name] or [qty, name, level].
+		const n = Array.isArray(row) ? row[1] : null;
+		if (!n || out.has(n)) continue;
+		out.add(n);
+		craftInputsCollect(n, out, depth - 1);
+	}
+}
+function craftInputs() {
+	if (craftInputCache) return craftInputCache;
+	const out = new Set();
+	try {
+		for (const name of PLAN_INDEX.keys()) craftInputsCollect(name, out, 3);
+	} catch (e) { }
+	if (out.size) craftInputCache = out;
+	return out;
+}
+function isCraftInput(name) {
+	return !!name && craftInputs().has(name);
+}
+
+
+/* THE LEVEL A RECIPE NEEDS ITS INPUT AT - a number the tier table never states.
+
+   Added 2026-10-11, after the v95 gear sync quietly broke the belt. G.craft
+   wants dexbelt at level 2 for windbelt and mrngloves at +6 for thundergrips,
+   and NEITHER number appears anywhere in RANGER_GEAR. The tier table's only
+   mention of dexbelt is the tier-1 goal of @1, so compoundCeiling('dexbelt')
+   answered 1 and compoundRefusal then said "already at the highest level any
+   tier asks" for every dexbelt+1 - one level short of the only thing on the
+   plan that now consumes it. Measured before this fix: ceiling 1, and a +1
+   refused. The merchant was banking dexbelts forever and advancing none of them.
+
+   mrngloves had it worse: it is not in RANGER_GEAR at all, so planCeiling
+   answered null, isWorkItem answered false, and the merchant would never have
+   taken one out of the bank or put a scroll in it.
+
+   DERIVED, like craftInputs() and for the same reason - a recipe level written
+   down here would go stale the next time a target changes.
+
+   SPLIT BY OPERATION, which is the part that needs care. A required level is
+   only a ceiling for the operation the item actually supports: dexbelt carries
+   `compound` in G.items so it raises the COMPOUND ceiling, while mrngloves
+   carries `upgrade` so it raises the UPGRADE one. Feeding a level into the wrong
+   one would have compoundRefusal trying to merge three of something that should
+   be scrolled up singly. Materials like mbones and feather0 carry neither and
+   get no ceiling at all, which is correct - they are consumed as they are. */
+let craftLevelCache = null;
+function craftRequiredLevels() {
+	if (craftLevelCache) return craftLevelCache;
+	const out = new Map();
+	try {
+		const craft = (parent && parent.G && parent.G.craft) || {};
+		const seen = new Set();
+		const walk = (name, depth) => {
+			if (!name || depth < 0 || seen.has(name)) return;
+			seen.add(name);
+			const c = craft[name];
+			if (!c || !Array.isArray(c.items)) return;
+			for (const row of c.items) {
+				if (!Array.isArray(row)) continue;
+				const n = row[1];
+				const lvl = Number(row[2]) || 0;
+				if (!n) continue;
+				if (lvl > (out.get(n) || 0)) out.set(n, lvl);
+				walk(n, depth - 1);
+			}
+		};
+		for (const name of PLAN_INDEX.keys()) walk(name, 3);
+	} catch (e) { }
+	if (out.size) craftLevelCache = out;
+	return out;
+}
+/* null rather than 0 when nothing needs it at a level: 0 would read as "a
+   recipe wants this at +0", which is not a target to climb toward. */
+function craftRequiredLevel(name) {
+	const v = craftRequiredLevels().get(name);
+	return (typeof v === 'number' && v > 0) ? v : null;
+}
+/* Which operation the GAME says this item takes. G.items is authoritative;
+   the plan's own `method` field only covers items the plan names. */
+function itemOperation(name) {
+	const d = itemDef(name);
+	if (!d) return null;
+	if (d.compound) return 'compound';
+	if (d.upgrade) return 'upgrade';
+	return null;
+}
+
 // ============================================================================
 // COOPERATIVE BOSSES - join a fight, never open one
 // ============================================================================
@@ -1262,6 +1533,49 @@ function coopBossInReach() {
 	return null;
 }
 
+/* Back out of a boss's reach before swinging at it.
+
+   Ranger.js has bossPosture for this and it is the one thing the brawl needs
+   that this file did not have. The join TELEPORTS us to an arrival point, which
+   for goobrawl is inside rgoo's 64-unit range - and rgoo is attack 320 at
+   frequency 1.2, so standing there is ~384 dps into a character that has no
+   business absorbing it. maxDeaths (2) would eventually end the trip, which is a
+   bound, not a posture.
+
+   Deliberately conservative in both directions. It refuses to act at all when
+   the boss out-ranges us, because then there is no standing point that is both
+   safe and in range and shuffling would just waste the tick - the trip caps are
+   what end that case. And it only ever moves AWAY: nothing here closes distance,
+   so it cannot walk a character into a pack.
+
+   `move` is typeof-guarded. Referencing an undeclared identifier THROWS rather
+   than evaluating to undefined, and this file has already paid for that lesson
+   once in attackWithRotation. */
+async function bossStandOff(mob) {
+	if (!mob) return false;
+	const cfg = (CONFIG.ranger && CONFIG.ranger.coopBosses) || {};
+	if (cfg.standOff === false) return false;
+	const def = monsterDef(mob.mtype);
+	const mobRange = (def && def.range) || 0;
+	if (!mobRange) return false;
+	const want = mobRange + (cfg.standOffMargin || 25);
+	// Cannot out-range it: there is no posture to take. Let the caps decide.
+	if ((character.range || 0) <= want) return false;
+	let d = 0;
+	try { d = Math.hypot(mob.x - character.x, mob.y - character.y); } catch (e) { return false; }
+	if (!d || d >= want) return false;                      // already clear
+	if (typeof move !== 'function') return false;
+	const k = want / Math.max(d, 1);
+	const tx = mob.x + (character.x - mob.x) * k;
+	const ty = mob.y + (character.y - mob.y) * k;
+	try {
+		await move(tx, ty);
+		bossNote('backed off ' + mob.mtype + ' to ' + Math.round(want)
+			+ ' (its range ' + mobRange + ', ours ' + Math.round(character.range || 0) + ')');
+		return true;
+	} catch (e) { return false; }
+}
+
 /* ---------------------------------------------------------- the boss trip
 
    TRAVEL IS NEW, the attack rule is not. The operator's instruction, 2026-10-03:
@@ -1279,6 +1593,34 @@ function coopBossInReach() {
    so there is nobody to agree with and all of that is dead weight here. What
    carries over is the part that is about one character: the gate, the live read
    from parent.S, the join spots, and the trip caps. */
+/* GOO BRAWL, added 2026-10-11 - and the join spot below was never enough on its
+   own. goobrawl is the ONE joinable event whose parent.S key is an EVENT name
+   rather than a monster name: G.monsters.crabxx, .franky and .icegolem all exist
+   and all carry cooperative: true, while G.monsters.goobrawl DOES NOT EXIST.
+   Two things failed quietly as a result, both of them here:
+
+     * isCoopBoss('goobrawl') read undefined, answered false, and bossEligible()
+       rejected it as "not cooperative" every time it went live. The gate was
+       right about the data and wrong about the event.
+     * bossApproach() asked get_nearest_monster({ type: 'goobrawl' }) and got
+       null forever, so it never recognised ARRIVAL - it would have kept
+       re-emitting join while standing in the brawl, and never swung.
+
+   bossMonsterType() maps the event name to the monster that is actually there,
+   which fixes both and relaxes no policy: goobrawl now passes the cooperative
+   test for the same reason the other three do, rather than being admitted by
+   hand. -> bossStandOff for the part Ranger.js needs bossPosture for.
+
+   Measured from the deployed data, game version 17665:
+     rgoo  hp 1,000,000  attack 320  frequency 1.2  range 64  armor 300
+           resistance 300  xp 48,000,000  physical  cooperative  aggro 0.1
+     bgoo  hp 100,000    attack 5     range 15      xp 100,000  cooperative
+   rgoo's range of 64 is the free-shot band - well inside a ranger's reach - but
+   ONLY if the character actually stands outside it, which is what bossStandOff
+   is for. The join teleports us to the arrival point, not to a firing posture. */
+const BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' };
+function bossMonsterType(name) { return BOSS_FIGHT_TYPE[name] || name; }
+
 const BOSS_JOIN_SPOTS = {
 	goobrawl: { map: 'goobrawl', x: null, y: null },
 	crabxx: { map: 'main', x: -1000, y: 1700 },
@@ -1319,7 +1661,8 @@ function bossEligible(name) {
 	const cfg = CONFIG.ranger.coopBosses;
 	if (!cfg.enabled || !cfg.travel) return { ok: false, why: 'travel is off' };
 	if ((cfg.exclude || []).indexOf(name) !== -1) return { ok: false, why: 'excluded' };
-	if (!isCoopBoss(name)) return { ok: false, why: 'not cooperative' };
+	// -> GOO BRAWL: the event name is not always the monster name.
+	if (!isCoopBoss(bossMonsterType(name))) return { ok: false, why: 'not cooperative' };
 	const until = bossState.cooldown[name] || 0;
 	if (until > Date.now()) return { ok: false, why: 'gave up, ' + Math.round((until - Date.now()) / 60000) + ' min left' };
 	return { ok: true, why: 'cooperative' };
@@ -1371,7 +1714,9 @@ function bossEnd(why) {
    caller owns the tick either way, which is what keeps the farm loop from
    walking us back to the farm spot in the same breath. */
 async function bossApproach(name) {
-	if (get_nearest_monster({ type: name })) return;   // arrived; the attack rule decides from here
+	// -> GOO BRAWL. Asking for the EVENT name here returned null forever.
+	const arrived = get_nearest_monster({ type: bossMonsterType(name) });
+	if (arrived) { await bossStandOff(arrived); return; }   // arrived; the attack rule decides from here
 	if (BOSS_JOIN_SPOTS[name]) {
 		// hopsickness is the one refusal worth naming: it is temporary, and the
 		// alternative reading - "join is broken" - would send us walking to a
@@ -1422,7 +1767,7 @@ async function bossTick() {
 	   trip cap above is what eventually sends us home. Travelling to a boss and
 	   declining to open it is the instruction, not a bug. */
 	const mob = coopBossInReach();
-	if (mob) { await attackWithRotation(mob); return true; }
+	if (mob) { await bossStandOff(mob); await attackWithRotation(mob); return true; }
 
 	await bossApproach(t.name);
 	return true;
@@ -1455,7 +1800,7 @@ function bossStatus() {
 	for (const n of live) {
 		const e = bossEligible(n);
 		const d = parent.S[n] || {};
-		const mob = get_nearest_monster({ type: n });
+		const mob = get_nearest_monster({ type: bossMonsterType(n) });
 		bossLog('  ' + n + ': ' + (e.ok ? 'ELIGIBLE' : 'no - ' + e.why)
 			+ (d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
 			+ (mob ? (mob.target ? ' - engaged by ' + mob.target + ', we would attack' : ' - nobody on it, we would hold') : ''),
@@ -1530,7 +1875,11 @@ function farmCandidates() {
    The two live-stat tests already answer "can this character handle it" without
    a hardcoded level, which is why they were the right thing to generalise. The
    key keeps its name because the config block is shared. */
-function spotSafety(cand) {
+/* marginOverride, added 2026-10-11 for the monster hunt. The farm's margin is
+   tuned for a spot the owner has watched; a hunt is handed to us by the server
+   and graded sight-unseen, so it is held to a stricter one. Omitted everywhere
+   else, which leaves farm behaviour byte-identical. -> MONSTER HUNT */
+function spotSafety(cand, marginOverride) {
 	const cfg = CONFIG.ranger.crabxReady;
 	const mob = monsterDef(cand.type);
 	if (!mob) return { ok: false, why: 'unknown monster' };
@@ -1555,7 +1904,9 @@ function spotSafety(cand) {
 	const attackers = Math.min(cand.count, cfg.maxAttackers || 3);
 	const incoming = (mob.attack || 0) * (mob.frequency || 1) * attackers;
 	const sustain = healThroughput();
-	if (incoming * (cfg.minSurvivalMargin || 1.5) > sustain) {
+	const margin = (typeof marginOverride === 'number' && marginOverride > 0)
+		? marginOverride : (cfg.minSurvivalMargin || 1.5);
+	if (incoming * margin > sustain) {
 		return { ok: false, why: 'incoming ' + Math.round(incoming) + ' dps vs sustain ' + Math.round(sustain) };
 	}
 	const effective = Math.max(mitigated(myDps(), mob.armor || 0), 1);
@@ -1677,6 +2028,20 @@ function rankFarmSpots() {
    itself is missing from the game data the old goo spot is the floor under the
    floor, because standing still is worse than farming something. */
 function chooseSpot() {
+	/* A viable monster hunt outranks the scorer: it is a fixed instruction with
+	   a clock on it, while the ranked spot is always available. Everything
+	   downstream - the walk, the target pick, the rotation - is the ordinary
+	   farm path. -> MONSTER HUNT */
+	const hunt = mhSpot();
+	if (hunt) {
+		const hkey = hunt.monster + '@' + hunt.map;
+		if (!ranger.spot || hkey !== ranger.spot.monster + '@' + ranger.spot.map) {
+			log('farming ' + hkey + ' - ' + hunt.why, '#7FD98A');
+		}
+		ranger.spot = hunt;
+		return ranger.spot;
+	}
+
 	const now = Date.now();
 	if (ranger.spot && now - ranger.lastReadinessCheck < CONFIG.ranger.crabxReady.checkEveryMs) {
 		return ranger.spot;
@@ -1994,6 +2359,336 @@ async function lootTick() {
 	return got;
 }
 
+/* ---- Slenderman: hits of opportunity, never a trip ------------------------
+   PORTED FROM Ranger.js 2026-10-11, on the owner's instruction to stop doing
+   Slenderman but still swing at him if he is seen. He is in
+   CONFIG.ranger.coopBosses.exclude, so neither the trip nor the coop in-reach
+   swing will touch him; this is the only thing that does.
+
+   WHY THERE IS NO TRIP TO BE HAD, same as in Ranger.js:
+     * The spawn broadcast carries only { name, map } - no x/y - so
+       bossWalkTarget() returns null for him and always will.
+     * event_loop relocates him once a second to a random walkable node on a
+       random one of cave/halloween/spookytown if ANY non-invisible player on
+       his map comes within 600 units. A ranger's range is far short of that,
+       so closing the gap IS the thing that teleports him away.
+     * Only s.invis suppresses that trigger, and the first swing drops invis.
+       Nobody holds him.
+
+   So the only shot that exists is the one where he materialises on top of us,
+   and this takes exactly that shot: no movement, no target commitment, no trip.
+
+   PHYSICAL ATTACKERS ONLY. reflection:96 is gated on defense == 'resistance',
+   which is set for MAGICAL damage only, so a magical attacker would send 96% of
+   each cast into its own face. All three fleet rangers are physical, so this
+   fires for them; the class is still read from G at runtime rather than assumed,
+   so the block stays correct for the merchant in the roster - there it simply
+   never fires.
+
+   WHAT THE SHOT IS WORTH, measured from the deployed monster data rather than
+   inherited from Ranger.js's comment: he carries no armor, no resistance and no
+   evasion, but he DOES carry phresistance 95, which Ranger.js's note does not
+   mention. Physical lands, at roughly a twentieth of its usual value, against
+   66,666 hp. Treat this as a free poke and an achievement ticket, not as
+   progress toward a kill - the achievements table wants kills, not hits.
+
+   NO noHang HERE. This file has never had that helper (measured: 0 occurrences),
+   and referencing an undeclared identifier THROWS rather than evaluating to
+   undefined - the exact Form A failure that cost this file 37 dead ticks in
+   attackWithRotation. The swing uses the same plain awaited use_skill in a
+   try/catch that attackWithRotation already uses. */
+const SLENDER_MAPS = new Set(['cave', 'halloween', 'spookytown']);
+let slenderLastNote = 0;
+function slenderNote() {
+	if (Date.now() - slenderLastNote < 1000) return;
+	slenderLastNote = Date.now();
+	log('[slender] in range - taking the shot', '#B388FF');
+	// Deliberately outside log(), which is gated on CONFIG.verbose. A shot at
+	// something this rare should leave a trace even with logging turned down.
+	console.log('[slender] in range - taking the shot');
+}
+function slenderOpportunity() {
+	try {
+		if (typeof parent === 'undefined' || !parent.entities) return null;
+		const S = parent.S || {};
+		if (!S.slenderman || !S.slenderman.live) return null;
+		if (!SLENDER_MAPS.has(character.map)) return null;
+		/* typeof, not truthiness: an undeclared identifier THROWS. */
+		const cls = (parent.G && parent.G.classes) ? parent.G.classes[character.ctype] : null;
+		if (!cls || cls.damage_type !== 'physical') return null;
+		for (const id in parent.entities) {
+			const e = parent.entities[id];
+			if (!e || e.type !== 'monster' || e.mtype !== 'slenderman' || e.dead) continue;
+			if (typeof is_in_range === 'function' && !is_in_range(e)) return null;
+			return e;
+		}
+		return null;
+	} catch (err) {
+		/* A default returned from a catch must say so, or 'the helper is missing'
+		   and 'there is no slenderman here' stay indistinguishable forever. */
+		console.error('[slender] opportunity check threw:', err);
+		return null;
+	}
+}
+
+/* Returns true when the shot was taken and this tick is spent. */
+async function slenderTick() {
+	const slender = slenderOpportunity();
+	if (!slender) return false;
+	try { if (typeof change_target === 'function') change_target(slender); } catch (e) { }
+	slenderNote();
+	try { await use_skill('attack', slender); }
+	catch (e) { log('[slender] shot refused: ' + (e && e.reason ? e.reason : e), 'orange'); }
+	return true;
+}
+
+
+// ============================================================================
+// MONSTER HUNT - is THIS hunt worth doing, or do we wait out its clock
+// ============================================================================
+/* Added 2026-10-11 at the owner's instruction, and deliberately NOT a port of
+   Dexon's version. His exists to pick the best hunt across three characters that
+   talk over the party link; these three are alone on separate shards and never
+   communicate. So the pool, the broadcast, the accept-wait and the best-pick are
+   all absent by design, and what is left is one decision: grind the hunt we were
+   handed, or leave it and let the clock run out.
+
+   THERE IS NO REROLL, and that is a property of the server rather than a choice:
+   while a hunt is held the server answers monsterhunt_already and leaves it
+   untouched. Waiting is the only alternative to doing it, which is exactly what
+   the owner asked for.
+
+   CREDIT IS SHARD-LOCKED AND FAILS SILENTLY. monster_hunt_logic returns on its
+   first line unless s.monsterhunt.sn === region + " " + server_name. These
+   rangers hold one shard each and never hop, so this should never fire - but it
+   is checked rather than assumed, because the failure is invisible: the kills
+   land, the counter does not move, and nothing says why.
+
+   ACCEPTING AND TURNING IN ARE THE SAME CALL - socket.emit('monsterhunt') with
+   no arguments - and the server decides which it means from whether a finished
+   hunt is held. s.monsterhunt is { id, c, ms, sn }; c reaching 0 is "done".
+
+   DAISY IS NOT IN REACH OF townSpot. Measured 2026-10-11: she is at (126, -413),
+   457 units from (-179, -72), where the furthest NPC that spot was chosen to
+   cover sits at 286. townTrip() therefore cannot do this and the hunt gets its
+   own destination, read from G rather than written down. */
+
+function mhCfg() {
+	return (CONFIG.ranger && CONFIG.ranger.monsterHunt) || { enabled: false };
+}
+function mhLog(m, c) { log('[hunt] ' + m, c || '#FFD700'); }
+
+const mhState = {
+	verdict: null,      // { key, ok, why, cand, estSec, at }
+	lastNote: null,
+	quietUntil: 0,      // set after a refusal, so we stop walking to Daisy
+	startedAt: 0,       // when the current accepted hunt began
+	daisyTripAt: 0,
+};
+
+function mhSelfHunt() {
+	try { return (character.s && character.s.monsterhunt) || null; } catch (e) { return null; }
+}
+function mhShard() {
+	try { return parent.server_region + ' ' + parent.server_identifier; } catch (e) { return null; }
+}
+function mhDaisySpot() { return npcSpot('main', 'monsterhunter'); }
+function mhAtDaisy() {
+	const d = mhDaisySpot();
+	if (!d) return false;
+	const me = myPos();
+	if (me.map !== d.map) return false;
+	// The NPC's range, not ours - same reasoning as townSpotRadius.
+	return Math.hypot(me.x - d.x, me.y - d.y) <= (CONFIG.scout.townSpotRadius || 60);
+}
+
+/* Seconds to finish `count` kills at this spot. Throughput is the LESSER of how
+   fast we can kill and how fast they come back: a two-spawn pack on a 60s
+   respawn is supply-bound no matter how hard we hit. */
+function mhEstimateSec(cand, count) {
+	const mob = monsterDef(cand.type);
+	if (!mob || !mob.hp) return null;
+	const eff = Math.max(mitigated(myDps(), mob.armor || 0), 1);
+	const byDamage = eff / mob.hp;
+	const bySupply = (cand.count || 1) / Math.max(mob.respawn || 1, 0.25);
+	const killRate = Math.min(byDamage, bySupply);
+	if (!(killRate > 0)) return null;
+	return (Number(count) || 1) / killRate;
+}
+
+/* The whole decision. Refusals are returned rather than logged so mhStatus can
+   print the reason without re-running anything. */
+function mhEvaluate(h) {
+	const cfg = mhCfg();
+	if (!h || !h.id) return { ok: false, why: 'no hunt held' };
+
+	const shard = mhShard();
+	if (shard && h.sn && h.sn !== shard) {
+		return { ok: false, why: 'credit is locked to ' + h.sn + ', we are on ' + shard };
+	}
+	const mob = monsterDef(h.id);
+	if (!mob) return { ok: false, why: h.id + ' is not in the game data' };
+	/* A cooperative monster is a boss, and the boss path owns those on its own
+	   rules - joining one somebody else is holding, never opening one alone. A
+	   hunt is an instruction to kill a fixed number, which is the opposite. */
+	if (mob.cooperative) return { ok: false, why: h.id + ' is a cooperative boss' };
+	if (mob.damage_type === 'pure') return { ok: false, why: 'pure damage, unmitigable' };
+
+	/* WHERE IT LIVES, and only among maps the owner has allowed. farmRanking.maps
+	   is deliberately short because most maps are instances, dungeons or event
+	   spaces a solo character has no business entering - so a hunt for something
+	   that lives outside it is refused rather than walked to. This is the
+	   err-on-the-side-of-safety rule doing most of its work. */
+	const allowed = (CONFIG.ranger.farmRanking && CONFIG.ranger.farmRanking.maps) || [];
+	const spots = farmCandidates().filter((c) => c.type === h.id);
+	if (!spots.length) {
+		return { ok: false, why: h.id + ' does not live on ' + (allowed.join('/') || 'any allowed map') };
+	}
+
+	let best = null, firstRefusal = null;
+	for (const cand of spots) {
+		const safe = spotSafety(cand, cfg.huntSurvivalMargin);
+		if (!safe.ok) { if (!firstRefusal) firstRefusal = safe.why; continue; }
+		const est = mhEstimateSec(cand, h.c);
+		if (est == null) { if (!firstRefusal) firstRefusal = 'cannot estimate a kill rate'; continue; }
+		if (!best || est < best.estSec) best = { cand, estSec: est, ttk: safe.ttk };
+	}
+	if (!best) return { ok: false, why: firstRefusal || 'no safe spot for it' };
+
+	const capSec = (cfg.maxEstMin || 0) * 60;
+	if (capSec > 0 && best.estSec > capSec) {
+		return { ok: false, why: Math.round(best.estSec / 60) + ' min of grinding, cap is '
+			+ cfg.maxEstMin + ' min' };
+	}
+	/* And it has to fit the clock we actually have. Starting a grind that cannot
+	   finish before the hunt expires spends the whole window for nothing - the
+	   same waste as doing an unsafe one, minus the dying. */
+	const leftSec = (Number(h.ms) || 0) / 1000;
+	if (leftSec > 0 && best.estSec > leftSec) {
+		return { ok: false, why: 'needs ' + Math.round(best.estSec / 60) + ' min, only '
+			+ Math.round(leftSec / 60) + ' min left on its clock' };
+	}
+	return { ok: true, cand: best.cand, estSec: best.estSec,
+		why: h.id + ' x' + h.c + ' in about ' + Math.round(best.estSec / 60) + ' min' };
+}
+
+/* Cached so the verdict is logged once rather than every tick, and re-graded on
+   recheckMs because gear moves. Keyed on the hunt's identity, not its count -
+   the count falls as we kill and would re-key on every single one. */
+function mhVerdict() {
+	const h = mhSelfHunt();
+	if (!h || !h.id) { mhState.verdict = null; return { ok: false, why: 'no hunt held', h: null }; }
+	const key = h.id + '|' + (h.sn || '');
+	const cfg = mhCfg();
+	const v = mhState.verdict;
+	if (v && v.key === key && (Date.now() - v.at) < (cfg.recheckMs || 120000)) {
+		return Object.assign({}, v, { h: h });
+	}
+	const out = mhEvaluate(h);
+	out.key = key;
+	out.at = Date.now();
+	mhState.verdict = out;
+	if (mhState.lastNote !== key + '|' + out.ok + '|' + out.why) {
+		mhState.lastNote = key + '|' + out.ok + '|' + out.why;
+		if (out.ok) { mhState.startedAt = mhState.startedAt || Date.now(); mhLog('taking ' + out.why, '#7FD98A'); }
+		else { mhLog('leaving ' + h.id + ' x' + h.c + ' alone - ' + out.why
+			+ '; waiting out its clock', '#E9C46A'); }
+	}
+	return Object.assign({}, out, { h: h });
+}
+
+/* The farm spot, when a hunt is worth doing. Consumed by chooseSpot, so every
+   bit of travelling and attacking downstream is the ordinary farm path. */
+function mhSpot() {
+	const cfg = mhCfg();
+	if (!cfg.enabled) return null;
+	const v = mhVerdict();
+	if (!v.ok || !v.cand) return null;
+	if (mhState.startedAt && (Date.now() - mhState.startedAt) > (cfg.huntCapMs || 25 * 60 * 1000)) {
+		if (mhState.lastNote !== 'capped|' + v.key) {
+			mhState.lastNote = 'capped|' + v.key;
+			mhLog('giving up on ' + v.h.id + ' - past the ' + Math.round((cfg.huntCapMs || 0) / 60000)
+				+ ' min cap', '#E9C46A');
+		}
+		return null;
+	}
+	return { map: v.cand.map, monster: v.cand.type, x: v.cand.x, y: v.cand.y,
+		why: 'monster hunt (' + v.h.id + ' x' + v.h.c + ')' };
+}
+
+/* Returns true when it owned the tick. Only ever walks for two reasons: to bank
+   a finished hunt, or to take one when we hold none. */
+async function mhTick() {
+	const cfg = mhCfg();
+	if (!cfg.enabled) return false;
+	if (myRole() !== 'ranger') return false;
+	if (character.rip) return false;
+
+	const h = mhSelfHunt();
+
+	// A finished hunt is a token waiting to be banked, and the same emit hands
+	// out the next one. Worth the trip on its own.
+	const finished = !!(h && h.id && !h.c);
+	if (!h || finished) {
+		if (!finished && Date.now() < mhState.quietUntil) return false;
+		const d = mhDaisySpot();
+		if (!d) { mhLog('Daisy is not in the game data for main - cannot hunt', 'orange'); return false; }
+		if (!mhAtDaisy()) {
+			if (Date.now() - mhState.daisyTripAt < 5000) return false;   // one walk at a time
+			mhState.daisyTripAt = Date.now();
+			mhLog(finished ? 'walking to Daisy to bank ' + h.id : 'walking to Daisy for a hunt');
+			await goTo(d);
+			return true;
+		}
+		/* blocked() is the file's own gate and it is INVERTED: true means the
+		   action must not happen. -> blocked */
+		if (blocked(finished ? 'bank the finished ' + h.id + ' hunt at Daisy'
+		                     : 'take a monster hunt from Daisy')) return true;
+		try { parent.socket.emit('monsterhunt'); }
+		catch (e) { mhLog('emit failed: ' + e, 'red'); return true; }
+		mhState.startedAt = 0;
+		mhState.verdict = null;
+		const got = mhSelfHunt();
+		mhLog(got && got.id ? 'holding ' + got.id + ' x' + got.c : 'asked for a hunt', '#7FD98A');
+		return true;
+	}
+
+	/* We hold an unfinished hunt. Grade it; if it is not worth doing we do NOT
+	   walk anywhere and do NOT reroll - the clock is the only way out, and
+	   ordinary farming continues underneath. */
+	const v = mhVerdict();
+	if (!v.ok) { mhState.quietUntil = Date.now() + (cfg.retryMs || 5 * 60 * 1000); return false; }
+	return false;   // viable: chooseSpot picks it up, the farm path does the rest
+}
+
+// ---- operator commands ----------------------------------------------------
+function mhOn() {
+	if (!CONFIG.ranger.monsterHunt) CONFIG.ranger.monsterHunt = {};
+	CONFIG.ranger.monsterHunt.enabled = true;
+	mhState.quietUntil = 0;
+	mhState.verdict = null;
+	mhLog('ON - in memory only, so a reload or a shard hop restores the file default', '#7FD98A');
+}
+function mhOff() {
+	if (!CONFIG.ranger.monsterHunt) CONFIG.ranger.monsterHunt = {};
+	CONFIG.ranger.monsterHunt.enabled = false;
+	ranger.spot = null;    // hand the spot straight back to the scorer
+	mhLog('OFF - ordinary farming resumes', '#E9C46A');
+}
+function mhStatus() {
+	const cfg = mhCfg();
+	const h = mhSelfHunt();
+	mhLog('enabled=' + (cfg.enabled ? 'on' : 'off') + ' shard=' + mhShard()
+		+ ' atDaisy=' + mhAtDaisy() + ' daisy=' + JSON.stringify(mhDaisySpot()));
+	if (!h || !h.id) { mhLog('holding nothing'); return; }
+	mhLog('holding ' + h.id + ' x' + h.c + ', ' + Math.round((Number(h.ms) || 0) / 60000)
+		+ ' min left, sn=' + h.sn);
+	const v = mhEvaluate(h);
+	mhLog(v.ok ? 'VIABLE - ' + v.why : 'refused - ' + v.why, v.ok ? '#7FD98A' : '#E9C46A');
+	if (v.ok) mhLog('  spot ' + v.cand.type + '@' + v.cand.map
+		+ ' (' + v.cand.x + ', ' + v.cand.y + ')  est ' + Math.round(v.estSec) + 's');
+}
+
 async function farmTick() {
 	const spot = chooseSpot();
 	if (!spot || !spot.monster) return;
@@ -2002,6 +2697,15 @@ async function farmTick() {
 	   to travel to a new pack should leave with the floor cleared, not abandon
 	   its own drops - and chests expire. */
 	await lootTick();
+
+	/* Slenderman, before the boss path and before the farm target, and only if
+	   he is already standing in our range. He is excluded from the boss list so
+	   nothing here walks to him. -> Slenderman: hits of opportunity
+
+	   Ahead of bossTick on purpose, mirroring Ranger.js. It costs a boss trip at
+	   most one tick, and only in the moment he is physically on top of us -
+	   which lasts about a second, because proximity is what relocates him. */
+	if (await slenderTick()) return;
 
 	/* A live boss event outranks the farm spot entirely: bossTick travels, and
 	   while a trip is running it owns the tick so nothing below walks us back.
@@ -2012,7 +2716,8 @@ async function farmTick() {
 	/* No trip, but a cooperative boss wandered into the farm spot and somebody
 	   else is holding it: free credit, no travel. -> COOPERATIVE BOSSES */
 	const boss = coopBossInReach();
-	if (boss) { await attackWithRotation(boss); return; }
+	// -> bossStandOff: get out of its reach first, then swing.
+	if (boss) { await bossStandOff(boss); await attackWithRotation(boss); return; }
 
 	const target = get_nearest_monster({ type: spot.monster });
 	if (!target) {
@@ -2168,6 +2873,10 @@ async function rangerTick() {
 		fleetState.parkedFull = false;
 
 		if (potionsLow() && potionTripDue()) { await townTrip('potions'); return; }
+		/* Takes a hunt or banks a finished one, and owns the tick while it walks
+		   to Daisy. A hunt it has refused returns false here and farming
+		   continues underneath. -> MONSTER HUNT */
+		if (await mhTick()) return;
 		await farmTick();
 	} catch (e) {
 		console.error('rangerTick error:', e);
@@ -2451,6 +3160,10 @@ function shouldBank(item) {
 	   to exchange - that is the whole point of the `e` count.
 	   -> EXCHANGEABLE ITEMS */
 	if (isExchangeable(item.name)) return true;
+	/* Craft inputs accumulate in the bank for the same reason exchangeables do:
+	   a craft needs 40 or 80 of a thing at once, which is a bank's job and not a
+	   bag's. -> CRAFT INPUTS */
+	if (isCraftInput(item.name)) return true;
 	if (!isPlanItem(item.name)) return false;
 	if (slotToEquip(item)) return false;
 	if (myRole() === 'merchant') {
@@ -2487,6 +3200,10 @@ function shouldSell(item) {
 	// -> EXCHANGEABLE ITEMS. A Mystery Box is 12,000,000 to the right NPC and
 	// nothing at all to the plan, so the plan must not be the one deciding.
 	if (isExchangeable(item.name)) return false;
+	/* -> CRAFT INPUTS. Ahead of the plan check on purpose: the plan has no
+	   opinion about stormfeather or essenceofether, and "the plan does not want
+	   it" is precisely the reading that would vendor them. */
+	if (isCraftInput(item.name)) return false;
 	if (isPlanItem(item.name) && bankWantsMore(item.name)) return false;
 	return true;
 }
@@ -2647,13 +3364,20 @@ function upgradeScrollFor(item) {
    pair being pushed for a tier-1 character still has tier 3 as its ceiling.
    Stopping at the nearest target would park every item one tier short. */
 function planCeiling(name) {
-	const entry = PLAN_INDEX.get(name);
-	if (!entry) return null;
 	let best = null;
-	for (const use of entry.tiers) {
-		if (use.method !== 'upgrade') continue;
-		if (best === null || use.level > best) best = use.level;
+	const entry = PLAN_INDEX.get(name);
+	if (entry) {
+		for (const use of entry.tiers) {
+			if (use.method !== 'upgrade') continue;
+			if (best === null || use.level > best) best = use.level;
+		}
 	}
+	/* -> craftRequiredLevel. thundergrips wants mrngloves at +6, and mrngloves
+	   is not in RANGER_GEAR at all - without this the merchant never takes one
+	   out of the bank, because isWorkItem reads this function. */
+	const need = craftRequiredLevel(name);
+	if (need !== null && itemOperation(name) === 'upgrade'
+		&& (best === null || need > best)) best = need;
 	return best;
 }
 
@@ -2743,13 +3467,21 @@ async function upgradePass(maxAttempts) {
    item no tier compounds - dexearring runs 1, 4, 5 across the tiers, while
    pants is an upgrade item at every tier and belongs to the other ceiling. */
 function compoundCeiling(name) {
-	const entry = PLAN_INDEX.get(name);
-	if (!entry) return null;
 	let best = null;
-	for (const use of entry.tiers) {
-		if (use.method !== 'compound') continue;
-		if (best === null || use.level > best) best = use.level;
+	const entry = PLAN_INDEX.get(name);
+	if (entry) {
+		for (const use of entry.tiers) {
+			if (use.method !== 'compound') continue;
+			if (best === null || use.level > best) best = use.level;
+		}
 	}
+	/* A RECIPE ASKS TOO. -> craftRequiredLevel. This is why the item does not
+	   have to be in PLAN_INDEX at all: windbelt's input is dexbelt+2 whether or
+	   not any tier still names dexbelt, so removing the tier-1 belt goal cannot
+	   strand the input. */
+	const need = craftRequiredLevel(name);
+	if (need !== null && itemOperation(name) === 'compound'
+		&& (best === null || need > best)) best = need;
 	return best;
 }
 
