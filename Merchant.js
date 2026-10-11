@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v93
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v95
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -733,6 +733,31 @@ const CONFIG = {
 
 		// One throttle for all of this pass's chatter.
 		logThrottleMs: 60 * 1000,
+	},
+
+	/* CRAFT-INPUT LEVEL CAPS - stop compounding something past the level a
+	   RECIPE consumes it at. Operator's call 2026-10-10, for dexbelt.
+
+	   dexbelt is no longer a gear goal; from v94 it is the first input to
+	   windbelt (G.craft.windbelt = 1x dexbelt+2 + 40x stormfeather
+	   + 4x essenceofether + 300,000g). So a dexbelt+3 is not "further along" -
+	   it is a dexbelt that has been spent. Two were already made that way while
+	   dexbelt@3 was still the ranger tier-2 goal, which is the exact failure
+	   this cap exists to stop repeating.
+
+	   Enforced in BOTH compound paths, because they reach different levels:
+	     autoCombineOneBaseDuplicateGroup merges any 3 identical copies at level
+	       0 or 1, so it already tops out at +2 - but that ceiling is an accident
+	       of its level filter rather than a stated rule, so it is not relied on.
+	     attemptBestPlanStep compounds toward a GEAR_PROGRESSION goal. THIS is
+	       what produced the +3s. Nothing targets dexbelt today, so the guard
+	       there is defensive: it stops a future goal edit from quietly burning
+	       craft inputs the same way.
+
+	   The number is the FINISHED level: 2 means "+2 is the goal, never compound
+	   a +2 into a +3". Remove a line to uncap that item. */
+	craftInputCaps: {
+		dexbelt: 2,
 	},
 
 	/* PONTY BUY LIST - the tier-3 gear the operator wants picked up whenever it
@@ -2589,6 +2614,14 @@ function mluckOppDump() {
 }
 try { parent.MLUCK_OPP = mluckOppDump; } catch (e) { }
 
+/* DEPLOY MARKER. load_code serves a cached copy and an over-size slot runs the
+   OLD build silently, so the slot's version string is the one thing that cannot
+   verify a deploy. Nothing in v94 or v95 was reachable from outside this file's
+   IIFE - both changed only CONFIG and GEAR_PROGRESSION - which left no way to
+   feature-detect either. This is that way. Read it as parent.MERCHANT_VER;
+   bump it with the header. -> CLAUDE.md, "Deploying a code slot" */
+try { parent.MERCHANT_VER = 95; } catch (e) { }
+
 async function pickupItemsFrom(recipientName) {
 	// The fighters' own clearInventory()/muling logic already auto-sends
 	// items to Meltymerch whenever he's within range - no pull mechanism
@@ -3556,7 +3589,8 @@ function decodeLevel(raw) {
 const GEAR_PROGRESSION = {
 	ranger: [
 		{
-			// Uses the dexterity-stat set (dexbelt/dexring/dexamulet), not
+			// Uses the dexterity-stat set (dexring/dexamulet - the BELT moved to
+			// windbelt@2/@4 on 2026-10-10, see the tier-2 note below), not
 			// -> MerchantComments.md#earring1
 		},
 		{
@@ -3605,7 +3639,28 @@ const GEAR_PROGRESSION = {
 			   roughly a billion gold-equivalent. -> MerchantComments.md#mrnarmor */
 			earring1: { item: 'dexearring', level: 4, method: 'compound' }, helmet: { item: 'fury', level: 4, method: 'upgrade' }, earring2: { item: 'dexearring', level: 4, method: 'compound' }, amulet: { item: 'dexamulet', level: 4, method: 'compound' },
 			mainhand: { item: 'bowofthedead', level: 7, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
-			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 0, method: 'compound' }, belt: { item: 'dexbelt', level: 3, method: 'compound' },
+			/* BELT IS windbelt FROM 2026-10-10, operator's call: @2 here and @4 at
+			   tier 3, replacing dexbelt@3/@5. windbelt is dex 11 / speed 2 / armor 10
+			   base with compound {dex 2.5, speed 0.75, armor 4}, against dexbelt's
+			   dex-only line, and Dexon already wears a +1.
+
+			   dexbelt STAYS a wanted item - it is now an INPUT, not a dead goal.
+			   G.craft.windbelt = 1x dexbelt+2 + 40x stormfeather + 4x essenceofether
+			   + 300,000g, so it is still in PONTY_PRICED_ITEMS on purpose.
+
+			   READ THE SUPPLY BEFORE BELIEVING EITHER GOAL. Belts compound, so a
+			   level costs 3x the one below: +2 is 9 windbelt+0, +4 is 81 - and that
+			   ignores compound failures, which destroy the inputs. Priced in the
+			   gate material at 4 essenceofether per craft:
+			     tier 2 @2, from the +1 he wears: 6 more at +0 = 24 essenceofether
+			     tier 3 @4, from that same +1:   ~78 more at +0 = ~312
+			   Measured 2026-10-10: 18 essenceofether held, and thundergrips wants 12
+			   of the same material per copy. So tier 2 is short and contended, and
+			   tier 3 is not reachable at anything like the current supply. The other
+			   two inputs are not the problem - 1,963 stormfeather is 49 belts' worth,
+			   but there is no dexbelt+2 banked (1x +0, 2x +3) and the recipe asks for
+			   level 2 specifically. -> MerchantComments.md#windbelt */
+			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 0, method: 'compound' }, belt: { item: 'windbelt', level: 2, method: 'compound' },
 			orb: { item: 'orbofdex', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'thundergrips', level: 7, method: 'upgrade' }, elixir: null,
 		},
 		{
@@ -3631,7 +3686,7 @@ const GEAR_PROGRESSION = {
 			   damage is. Tier 2 above is the armor one. */
 			earring1: { item: 'dexearring', level: 5, method: 'compound' }, helmet: { item: 'fury', level: 8, method: 'upgrade' }, earring2: { item: 'dexearring', level: 5, method: 'compound' }, amulet: { item: 'dexamulet', level: 5, method: 'compound' },
 			mainhand: { item: 'bowofthedead', level: 9, method: 'upgrade' }, chest: { item: 'tshirt9', level: 4, method: 'upgrade' }, offhand: { item: 'alloyquiver', level: 9, method: 'upgrade' }, cape: { item: 'ecape', level: 9, method: 'upgrade' },
-			ring1: { item: 'suckerpunch', level: 2, method: 'compound' }, pants: { item: 'frankypants', level: 7, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 2, method: 'compound' }, belt: { item: 'dexbelt', level: 5, method: 'compound' },
+			ring1: { item: 'suckerpunch', level: 2, method: 'compound' }, pants: { item: 'frankypants', level: 7, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 2, method: 'compound' }, belt: { item: 'windbelt', level: 4, method: 'compound' },
 			orb: { item: 'orbofdex', level: 5, method: 'compound' }, shoes: { item: 'wingedboots', level: 10, method: 'upgrade' }, gloves: { item: 'supermittens', level: 6, method: 'upgrade' }, elixir: null,
 		},
 	],
@@ -4474,6 +4529,21 @@ async function bankFullyProgressedItems() {
 	return true;
 }
 
+/* The level past which an item stops being worth compounding, because a recipe
+   consumes it at exactly that level. Infinity when uncapped.
+   -> CONFIG.craftInputCaps */
+function craftInputCap(itemName) {
+	const caps = (typeof CONFIG !== 'undefined' && CONFIG.craftInputCaps) || {};
+	const v = caps[itemName];
+	return (typeof v === 'number' && v >= 0) ? v : Infinity;
+}
+
+/* True if compounding FROM this level would carry the item past its cap. A
+   compound raises the level by exactly one, so the test is on level + 1. */
+function compoundWouldOvershootCap(itemName, level) {
+	return ((Number(level) || 0) + 1) > craftInputCap(itemName);
+}
+
 // True if this item is compoundable per G.items (authoritative), falling
 // back to the gear plan's own 'compound'/'upgrade' method if G is unavailable.
 function isCompoundableItem(itemName) {
@@ -4504,6 +4574,9 @@ function findBaseDuplicateGroup() {
 		if (!item || !item.name) return;
 		if (item.level !== 0 && item.level !== 1) return;
 		if (!isCompoundableItem(item.name)) return; // e.g. "coat" - meant to be upgraded individually, not merged 3-for-1
+		/* A recipe wants this one at a fixed level, so merging past it spends
+		   the input instead of improving it. -> CONFIG.craftInputCaps */
+		if (compoundWouldOvershootCap(item.name, item.level)) return;
 		const key = `${item.name}|${item.level}`;
 		if (!groups.has(key)) groups.set(key, []);
 		groups.get(key).push(idx);
@@ -4791,6 +4864,12 @@ async function attemptBestPlanStep(currentGold) {
 	const held = [];
 	for (const c of candidates) {
 		const level = c.item.level || 0;
+		/* Craft-input cap, before any step is priced. Defensive - no goal
+		   targets a capped item today. -> CONFIG.craftInputCaps */
+		if (c.method === 'compound' && compoundWouldOvershootCap(c.item.name, level)) {
+			held.push({ key: gearHeldKey(c.item), why: 'craft_input_cap@' + craftInputCap(c.item.name) });
+			continue;
+		}
 		let step = null, group = null;
 		if (c.method === 'compound') {
 			group = findCompoundGroup(character.items, c.item.name, level);
