@@ -1,4 +1,7 @@
 // ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v82 (The hunt sent the whole party to the dead centre of a rage box and wedged it there twice in one morning. mhEvaluate's spot is the boundary centre, and for a rage-boxed pack the rage rectangle IS the boundary, so the one point rageRoute must refuse is exactly the one the hunt asked for: rage_route_blocked, 1419 units short, travel attempt 1033. Measured live - mummy@spookytown centre (255.5,-1432), then booboo@spookytown centre (415,-702): two monsters, one arithmetic, which rules out anything mummy-specific. All three characters blocked independently. Dexon computes the spot and sendFarmSpot broadcasts destination.x/y verbatim; Priest.js and Mage.js carry the full rage machinery and NO mh* functions, so they inherit the coordinate and fail on it themselves - one source, three consumers, which is why this is Ranger-only and the other two need no redeploy. THE FIX IS A LOOKUP, NOT A COMPUTATION. rageEscape() was the obvious move and was wrong: it returns the nearest point outside the rectangle and knows nothing about walls, the exact mistake v80 was spent correcting, where (415,-986) was geometrically fine and genuinely unreachable. The problem is also small - G holds SEVEN rage boxes in the whole game and isMapSafeForFarming already excludes three (spider_instance is instance:true), leaving four a hunt can reach: mummy@spookytown, booboo@spookytown x2, d_wiz@d2. The queue already has verified points for the first three. BUT THE QUEUE IS NOT UNIFORMLY TRUSTWORTHY, which is the part worth remembering: entry 0 is a real park point - (290,-990), rageHit null, 140 from the mummy RAGE rectangle [-124,-1631,614,-1130] and 148 from booboo's, reproducing v80's figures once measured against rage rather than boundary - while entry 18 is booboo @ (415,-702), gap 0, rageHit 'booboo', INSIDE the box. The coordinate that wedged the party was sitting in the queue looking like an answer, and first-match-wins picks entry 0 today only because it is first. So huntParkPoint validates instead of trusting: rageHit() must place the candidate outside EVERY box, and rectGap must put it within HUNT_PARK_MAX_GAP of THIS pack - 400, against measured 140/148 for the right pack and 861 for the wrong one. Nearest qualifying entry wins, so ordering stops mattering, and a rageHit that throws disqualifies rather than passes. No qualifying point means the spot is skipped and the hunt declined, which costs one slot; guessing cost an hour, twice. d_wiz@d2 has no entry and stays refused until someone stands there and measures. Also fixes the two config comments v81 left inverted.)
+// ==========================================================================
+// ==========================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v81 (The monster hunt refused booboo before computing anything, and the reason was wrong. mhEvaluate's seventh line was `if (mob.damage_type === 'pure') return null`, justified as "no amount of gear or healing makes it survivable". Pure damage ignores armour and resistance; it does not ignore healing, and the uptime gate twenty lines below is healThroughput - incomingDps, in which armour is not a term. The conclusion did not follow from the premise. It was also the ONLY damage_type check in the file: the farm scorer has none and puts every mob through the same gate, so this script farmed booboo - the whole v80 entry is about routing into its corridor at (290,-990) - while refusing it as a hunt. MEASURED, because the first draft of this entry guessed and guessed wrong: that line was the SOLE blocker. Run against the party's real figures - max_hp 7,149, heal throughput 2,000/s, dps 2,198 physical / 1,702 magical, all read live out of the CODE context - booboo scores at FULL uptime even with the old attackers=4, because 220 x 1.2 x 4 = 1,056 incoming is still under 2,000 of healing. Removing the pure line alone admits it. The claim that minUptimeFraction 0.5 would have refused it anyway was wrong. The attacker change below is still correct and still changes verdicts, just not booboo's: booboo is supply-bound at 5 spawns on a 48s respawn, so the attacker count does not move its estimate at all. Where it bites is mummy - count 9, 420 x 1.2 x 4 = 2,016 against 2,000 of heal degrades uptime, while the pulled 504 does not. attackers now reads spot.rage - the same G.maps[map].monsters[i].rage that rageBoxes() reads, so every rage-boxed spot on every map is covered and no monster is named here - and uses rageCfg().concurrent when the pull is enabled, falling back to the pessimistic pack count when it is not. phresistance stays absent; the v72 note sourcing it to stats.js as a status resistance still holds. booboo is supply-bound at 5 spawns on a 48s respawn, so a 2-count hunt is ~19s of killing against maxEstMin 15min - the clock was never the obstacle.)
 // ==========================================================================
 // ============================================================================
@@ -526,8 +529,11 @@ const CONFIG = {
 		leaderTrustMs: 20000,
 	},
 
-	/* ACHIEVEMENT QUEUE - off until you turn it on. -> ACHIEVEMENT QUEUE below. */
-	/* MONSTER HUNT - off until you turn it on. -> MONSTER HUNT below.
+	/* ACHIEVEMENT QUEUE - currently OFF. -> ACHIEVEMENT QUEUE below. The queue
+	   is still READ while this is off: huntParkPoint() resolves a rage-boxed
+	   hunt's park point out of it and achvCfg() has no enabled gate, so
+	   emptying the queue would silently disable rage-boxed hunts as well. */
+	/* MONSTER HUNT - currently ON. -> MONSTER HUNT below.
 	   mhOn() and mhOff() flip 'enabled' at runtime; off restores ordinary
 	   farming and hands the spot straight back to the scorer. */
 	monsterHunt: {
@@ -580,8 +586,13 @@ const CONFIG = {
 	},
 
 	achievements: {
-		/* ON, and monsterHunt above stays OFF - shipped ready to paste and watch
-		   the booboo/mummy run without editing anything first. */
+		/* OFF, with monsterHunt above ON - the operator's 2026-10-12 choice, and
+		   the reverse of what this comment claimed through v81. The queue below
+		   stays live either way; see huntParkPoint(). Entry 18 (booboo at
+		   415,-702) is a boundary centre, not a park point - it is inside the
+		   rage box and huntParkPoint rejects it. Left in place rather than
+		   deleted because the achievement path may use it differently; do not
+		   copy it as a travel target. */
 		enabled: false,
 		/* Consecutive failed travel attempts to an achievement spot before the
 		   override is released. Needed because the breaker in the farm loop
@@ -5659,6 +5670,74 @@ function mhRefresh() { mhPool[character.name] = mhSelfReport(); }
 
 /* SAFETY AND COST, from the party's own model. Returns null when this monster
    is not something the party should be standing in. */
+/* How far a park point may sit from the rectangle it serves. Two real data
+   points set it and neither is near the line: the measured points are 140 and
+   148 out, and the nearest WRONG-pack match is 861. 400 has wide margin on
+   both sides rather than being tuned to either. */
+const HUNT_PARK_MAX_GAP = 400;
+
+function rectGap(x, y, r) {
+	if (!Array.isArray(r) || r.length < 4) return null;
+	const dx = Math.max(r[0] - x, 0, x - r[2]);
+	const dy = Math.max(r[1] - y, 0, y - r[3]);
+	return Math.hypot(dx, dy);
+}
+
+/* The park point for a rage-boxed spot, taken from the achievement queue.
+
+   WHY A LOOKUP AND NOT rageEscape(). rageEscape returns the nearest point
+   outside the rectangle - pure geometry, no knowledge of walls. v80 is the
+   record of why that is not enough: (415,-986) sits outside everything and is
+   genuinely unreachable, a flood from it stopping after 385 cells with
+   smart_move refusing the trip. Computing a park point and trusting it is the
+   failure this version exists to stop repeating. The queue's points were
+   walked. (290,-990) is 140 from the mummy rage rectangle and 148 from
+   booboo's - ONE point serving both packs, which a nearest-exit rule cannot
+   produce because it optimises distance rather than usefulness.
+
+   THE QUEUE IS NOT UNIFORMLY TRUSTWORTHY, which is why this validates rather
+   than just reads. Measured 2026-10-12: entry 0 is a real park point, but
+   entry 18 is `booboo @ (415,-702)` - the raw boundary centre, gap 0, INSIDE
+   the box. That is the exact coordinate that wedged the party, sitting in the
+   queue looking like an answer. First-match-wins happens to pick entry 0 today
+   purely because it is first.
+
+   So every candidate must clear two gates:
+     1. rageHit() must say it is outside EVERY box on the map. That is the
+        defining property of a park point, needs no threshold, and is the same
+        check rageGuard uses - entry 0 returns null, entry 18 returns "booboo".
+     2. It must be within HUNT_PARK_MAX_GAP of THIS spot's rectangle, which is
+        what stops the booboo[5] point being handed to the booboo[4] pack 861
+        units away.
+   Nearest qualifying entry wins, so ordering stops mattering.
+
+   A rageHit that throws DISQUALIFIES the candidate rather than passing it.
+   Refusing a hunt costs a slot; guessing cost an hour, twice.
+
+   `also` is honoured, which is what makes the booboo entry cover mummy.
+   achvCfg() hands back CONFIG.achievements with no enabled gate, so this works
+   with the achievement system switched off - the live config. */
+function huntParkPoint(monster, mapName, rect) {
+	let q = null;
+	try { q = achvCfg().queue; } catch (e) { return null; }
+	if (!Array.isArray(q)) return null;
+	let best = null;
+	for (let i = 0; i < q.length; i++) {
+		const e = q[i];
+		if (!e || e.map !== mapName) continue;
+		if (e.m !== monster && !(Array.isArray(e.also) && e.also.indexOf(monster) >= 0)) continue;
+		if (typeof e.x !== 'number' || typeof e.y !== 'number') continue;
+		let inside = true;
+		try { inside = !!((typeof rageHit === 'function') ? rageHit(mapName, e.x, e.y) : true); }
+		catch (err) { inside = true; }
+		if (inside) continue;
+		const gap = rectGap(e.x, e.y, rect);
+		if (gap === null || gap > HUNT_PARK_MAX_GAP) continue;
+		if (!best || gap < best.gap) best = { x: e.x, y: e.y, via: e.m, gap: Math.round(gap), idx: i };
+	}
+	return best;
+}
+
 function mhEvaluate(id) {
 	if (!id) return null;
 	if (!parent.G || !parent.G.maps || !parent.G.monsters) return null;
@@ -5741,10 +5820,34 @@ function mhEvaluate(id) {
 			const killRate = Math.min(eff / mob.hp, (spot.count || 1) / (mob.respawn || 1));
 			if (!(killRate > 0)) continue;
 			const [bx1, by1, bx2, by2] = spot.boundary;
-			const cand = { id: id, map: mapName, x: (bx1 + bx2) / 2, y: (by1 + by2) / 2,
+
+			/* THE CENTRE OF A RAGE BOX IS THE ONE PLACE WE MUST NOT GO, and for
+			   booboo the rage rectangle IS the boundary, so the centre is not
+			   merely inside it - it is the furthest point from any exit.
+			   Travelling there cannot work: refusing it is rageRoute's whole
+			   job, and it refuses in a loop, which is how the party spent an
+			   hour on travel attempt 1033.
+
+			   No qualifying park point means SKIP THE SPOT, not guess one.
+			   Returning null propagates to mhScore's `if (!ev) return null` and
+			   the hunt is declined, costing one slot and a clock. */
+			let sx = (bx1 + bx2) / 2, sy = (by1 + by2) / 2, park = null;
+			if (raged) {
+				park = huntParkPoint(id, mapName, spot.rage);
+				if (!park) {
+					mhLog('skipping ' + id + '@' + mapName + ' - rage-boxed, and no park point in '
+						+ 'CONFIG.achievements.queue is both outside the boxes and within '
+						+ HUNT_PARK_MAX_GAP + ' of this pack; refusing rather than guessing', 'orange');
+					continue;
+				}
+				sx = park.x; sy = park.y;
+			}
+
+			const cand = { id: id, map: mapName, x: sx, y: sy,
 				/* keep the spawn box: the centre may be unstandable and mhWalkableSpot
 				   needs somewhere to look for a point that is not. */
 				b: [bx1, by1, bx2, by2],
+				park: park || undefined,
 				uptime: uptime, killRate: killRate * uptime, count: spot.count || 1 };
 			if (!best || cand.killRate > best.killRate) best = cand;
 		}
