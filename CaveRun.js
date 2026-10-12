@@ -1,4 +1,6 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v12 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v13 (TEST BUILD)
+// v13 2026-10-12 crypt: retaliate against anything that starts it, except the
+//                three that would win; caveOnly/caveNever set it at runtime
 // v12 2026-10-12 crypt mode: operator drives the leader, followers cohere and
 //                fight, and NOTHING may be attacked but the whitelist
 // v11 2026-10-11 telemetry archived per run; door recon; chest recon fixed;
@@ -169,9 +171,32 @@ const MOVE = {
    driving is what keeps the party away from Marceline. Kiting still considers
    ALL threats, not just the whitelist, which is what you want near her. */
 const CRYPT = {
-	/* The ONLY monster types that may be attacked in crypt mode. Everything
-	   else in the Crypt is either lethal or an 18.7M-hp time sink. */
+	/* What we go looking for. pickTarget will initiate on these. */
 	only: ['vbat'],
+
+	/* NEVER, not even when they are already hitting us. Measured 2026-10-12
+	   against the party's real figures (heal 2,000/s, FatherToken armour 512 /
+	   resistance 569 as the best tank), dps AFTER mitigation:
+
+	     a6 Marceline   9,401   kills FT in ~0.9s
+	     a8 Angel       5,624   ~2.3s
+	     a1 Spike       2,466   and 18,700,000 hp - 99 minutes of party dps
+
+	   Fighting back against these is how the run ends, so retaliation is
+	   refused too. Everything NOT on this list is survivable in a straight
+	   fight and may be answered:
+
+	     a7 Lucinda       529   +1,471 margin
+	     a4 Orlok         567   +1,433
+	     a3 Lestat        957   +1,043
+	     a5 Elena          35   +1,965
+	     a2 Bill        1,645   +355  (thin - the one to watch)
+	     vbat           1,015   +985
+
+	   v12 had only the whitelist, so a7 could stand there hitting the priest
+	   while the party refused to answer - safe, because 529 against 2,000 of
+	   healing is a stalemate, but it stops you clearing a path. */
+	never: ['a6', 'a8', 'a1'],
 };
 
 let mode = 'cave';         // cave | dry | crypt
@@ -230,11 +255,29 @@ function leaderMap() { try { const p = (parent.party || {})[leaderName()]; retur
 function offCave() { return mode !== 'cave'; }
 function active() { return offCave() ? phase === 'active' : phase === 'inside'; }
 
-/* The whitelist. Open in every mode but crypt, so nothing else changes. */
+/* Did this one start it? Retaliation is judged from the monster's own target,
+   so there is no flag to thread through pickTarget and no way for the two
+   gates in combatTick to disagree about what counts as self-defence. */
+function attackingUs(t) {
+	try {
+		if (!t || !t.target) return false;
+		return partyNames().indexOf(t.target) >= 0;
+	} catch (e) { return false; }
+}
+
+/* Open in every mode but crypt, so nothing else changes.
+
+   Three outcomes, in order, and the order is the safety property:
+     1. on `never`  -> refused, even in self-defence. These win the fight.
+     2. on `only`   -> may be initiated on. This is the hunt.
+     3. otherwise   -> only if it is already hitting a party member.
+   A monster that wanders into range and is ignoring us is still left alone. */
 function mayAttack(t) {
 	if (mode !== 'crypt') return true;
 	if (!t || !t.mtype) return false;
-	return CRYPT.only.indexOf(t.mtype) >= 0;
+	if (CRYPT.never.indexOf(t.mtype) >= 0) return false;
+	if (CRYPT.only.indexOf(t.mtype) >= 0) return true;
+	return attackingUs(t);
 }
 
 // ------------------------------------------------------------- threats -----
@@ -1195,7 +1238,7 @@ const TEL_KEEP = 5;
 const TEL_ARCHIVE_MS = 30000;
 
 const tel = {
-	ver: 11, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
+	ver: 13, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -1381,9 +1424,26 @@ function caveLead(name) {
    and only at CRYPT.only. Run it on all three before you take the door. */
 function caveCrypt() {
 	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
-	clog('CRYPT MODE as ' + role() + ' - will ONLY attack: ' + CRYPT.only.join(', '), '#FFD700');
+	clog('CRYPT MODE as ' + role() + ' - hunting: ' + CRYPT.only.join(', ')
+		+ ' | will answer anything that starts it EXCEPT ' + CRYPT.never.join(', '), '#FFD700');
 	clog('leader is operator-driven; followers cohere at ' + MOVE.closeAt + 'u', '#FFD700');
-	return { mode: mode, role: role(), leader: leaderName(), only: CRYPT.only.slice() };
+	return { mode: mode, role: role(), leader: leaderName(),
+		only: CRYPT.only.slice(), never: CRYPT.never.slice() };
+}
+
+/* Adjust the lists without a redeploy - v12 needed a paste to change its mind,
+   which is a poor property to discover while standing in the room. Call with no
+   arguments to read the current lists. */
+function caveOnly() {
+	if (arguments.length) CRYPT.only = Array.prototype.slice.call(arguments).filter(Boolean);
+	clog('crypt only: ' + (CRYPT.only.join(', ') || '(nothing)'), '#FFD700');
+	return CRYPT.only.slice();
+}
+
+function caveNever() {
+	if (arguments.length) CRYPT.never = Array.prototype.slice.call(arguments).filter(Boolean);
+	clog('crypt never (not even in self-defence): ' + (CRYPT.never.join(', ') || '(nothing)'), '#FFD700');
+	return CRYPT.never.slice();
 }
 
 function caveDry() {
@@ -1415,6 +1475,7 @@ function caveStop() { stopped = true; phase = 'idle'; recovering = false; aim = 
 function caveStatus() {
 	const st = caveState(), lp = leaderPos();
 	const info = { mode: mode, only: (mode === 'crypt' ? CRYPT.only.slice() : null),
+		never: (mode === 'crypt' ? CRYPT.never.slice() : null),
 		role: role(), leader: leaderName(), phase: phase, active: active(),
 		inCave: inCave(), paused: cavePaused(), map: character.map, engaged: engaged(), recovering: recovering,
 		speed: character.speed, range: character.range,
@@ -1453,7 +1514,7 @@ try {
 
 try {
 	window.caveGo = caveGo; window.caveDry = caveDry; window.caveLead = caveLead;
-	window.caveCrypt = caveCrypt;
+	window.caveCrypt = caveCrypt; window.caveOnly = caveOnly; window.caveNever = caveNever;
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
 	window.caveDump = caveDump;
 } catch (e) {}
