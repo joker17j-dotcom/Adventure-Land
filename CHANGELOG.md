@@ -28,6 +28,62 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v96
+
+Move `arbNoHang` out of `arbAdvance()`. It had never been reachable from the
+mluck pass, and Meltymerch had never cast mluck on anyone.
+
+**The fault.** The helper and its explanatory comment were pasted in just after
+the `picked` phase block's closing brace. That brace closes the `if`, not the
+function - `arbAdvance()` runs from the `picked` test all the way to the
+`stranded` test, 364 lines - so `function arbNoHang` sat at brace depth 1,
+block-scoped inside `arbAdvance`. The block was written flush at zero
+indentation, which is the tell that whoever added it believed it was at file
+level. `mluckOpportunityPass` called it anyway, 4,500 lines earlier:
+
+    line 2544:  await arbNoHang(use_skill('mluck', target), 'mluck ' + name, 5000);
+
+Textbook Form A, and the irony is that the comment sitting directly above the
+declaration documents that exact hazard.
+
+**What it cost.** Measured in the live v95 slot 2026-10-12 via `mluckOppDump()`:
+`attempts 1, casts 0, denied 1`, with Dexon's `lastRefusal` reading
+`"arbNoHang is not defined"`. `casts: 0` is lifetime. The catch at 2554 counts
+the ReferenceError as a denial and parks the target for `retryAfterFailMs`
+(5 min), so the steady state was one throw every five minutes, forever.
+
+A callee is dereferenced before its arguments are evaluated, so `use_skill()`
+was never reached and no cast ever went to the server. No mp was spent and
+Dexon's buff from another player's merchant was never actually contested -
+the failure was silent in-game as well as in the counters.
+
+**Scope, measured rather than assumed.** A sweep of all 9,507 lines for
+functions declared below top level with a caller in a different scope returned
+exactly one hit. The four Ponty helpers (`arbPontyPlanned`, `arbPontyLive`,
+`arbPontyMatch`, `arbPontyBuy`) are stranded in the same place but every one
+of their callers is also inside `arbAdvance`, where nested declarations hoist
+into that function's scope - so they work, and Ponty is not implicated. An
+earlier guess that a broken `arbPontyLive` explained Ponty buying no `cring`
+was wrong and is withdrawn; the drought is a real drought.
+
+Present and identical in v93, v94 and v95.
+
+**The change is a pure relocation.** The 20-line block moved ahead of
+`arbAdvance`, no text change and no reindentation, plus a 12-line note added
+inside the existing comment. Verified by excising the block from both builds
+and confirming the remainders are byte-identical. `arbNoHang`'s body is
+unchanged, `arbAdvance` still owns all seven phases, and braces balance at EOF.
+
+**Also carries `parked: true`** (line 352), which the repo copy had as `false`
+against its own comment's standing preference of 2026-10-01. Built on the
+deployed slot, so this brings the committed copy in line with the live one.
+
+**Feature-detect after deploy, per the rule at the top of this file.** The
+version string proves nothing. Reload fully, then `mluckOppDump()`: v96 is
+running when Dexon's `lastRefusal` is no longer `"arbNoHang is not defined"`
+and `counters.casts` climbs above 0. `mluckOpp` state resets on reload, so the
+5-minute park clears and the first attempt should be immediate.
+
 ## v95
 
 Stop compounding dexbelt past +2. Operator's call, 2026-10-10.
