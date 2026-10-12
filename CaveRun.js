@@ -1,4 +1,6 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v10 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v11 (TEST BUILD)
+// v11 2026-10-11 telemetry archived per run; door recon; chest recon fixed;
+//                lootRangeFilter switch (default unchanged)
 // v10 2026-10-10 loot: pause guard, cooldown, per-chest backoff, shape recon
 // v9 2026-10-10 heal cooldown gate; friendly_target forensics; objective and
 //               objective-button reconnaissance (both read-only)
@@ -91,6 +93,20 @@ const CFG = {
 	lootMaxTries: 3,        // attempts before a chest is rested
 	lootDeadMs: 15000,      // how long a rested chest is left alone
 	lootRange: 400,         // ONLY applied when the chest record exposes a position
+	/* THE RANGE FILTER WAS 98% OF v10's LOOT SUPPRESSION, and it is the one
+	   brake v10 shipped without verifying. Measured over the two runs:
+
+	     run   loot() calls   out-of-range rejections
+	     v7           6,236   (filter did not exist)
+	     v10            103   4,916
+
+	   Backoff accounted for 74 of v10's rejections and give-up for 6; the
+	   range filter did the other 4,916. Turning this off restores v10's other
+	   three brakes (pause guard, rate cooldown, per-chest backoff) WITHOUT the
+	   unverified one, which is the clean A/B - it is not a revert to v7's
+	   hammering. Left TRUE so v11 changes no behaviour on its own; flip it for
+	   one run, or read tel.chestProbe below, whichever you prefer. */
+	lootRangeFilter: true,
 
 	/* RESTOCK. Each character buys its own - there is no shared pool, and a
 	   priest that runs dry heals nobody. 2000 of each at 100g is 200k per
@@ -459,10 +475,49 @@ async function followFloor() {
 	}
 	if (Date.now() - lastDoorTry < 3000) return true;
 	lastDoorTry = Date.now();
-	bump('doorTry'); ev('door', { to: lm });
-	clog('taking the door to ' + lm, '#7FD1FF');
-	try { await transport(door.to, 0); bump('doorOk'); ev('doorOk', lm); }
-	catch (e) { ev('doorFail', String((e && (e.reason || e.message)) || e)); clog('transport refused: ' + (e && e.reason || e), 'orange'); }
+	bump('doorTry');
+
+	/* DOOR RECON - v11. v10 called transport() 24 times across the only two
+	   doors in the run and got zero successes, every one refused with
+	   transport_cant_reach, and nothing recorded said why. followFloor hashes
+	   IDENTICALLY at v7, v9 and v10, so the version is not the variable and
+	   neither is the leader - both were ruled out. Three explanations survive:
+	     a) transport() is the wrong mechanism for a cave floor door
+	     b) right mechanism, wrong spawn - transport(to, 0) hardcodes spawn 0
+	     c) doorNear 40 is looser than the server's own reach check, or the
+	        character is still in motion when the call lands
+	   (b) shows up as doorShape carrying a spawn/index field we are ignoring.
+	   (c) shows up as gap clustering near 40, or moving:true on the failures.
+	   (a) is what is left when neither of those appears.
+
+	   Object.keys IS the honest tool here, unlike the chest case below: a door
+	   is a plain server object, not a PIXI sprite with accessors on a
+	   prototype. Recorded on EVERY attempt rather than once, because the gap
+	   at the moment of the call is the variable in (c) and one sample cannot
+	   show a distribution. Two doors a run means ~24 records - nothing. */
+	const rec = {
+		to: lm, spawnSent: 0,
+		doorX: Math.round(door.x), doorY: Math.round(door.y),
+		myX: Math.round(character.real_x), myY: Math.round(character.real_y),
+		gap: Math.round(Math.hypot(door.x - character.real_x, door.y - character.real_y)),
+		doorNear: CFG.doorNear, moving: !!character.moving, map: character.map,
+	};
+	if (!tel.doorShape) {
+		try { tel.doorShape = { keys: Object.keys(door), sample: JSON.parse(JSON.stringify(door)) }; }
+		catch (e) { tel.doorShape = { keys: null, why: String(e) }; }
+	}
+	clog('taking the door to ' + lm + ' (gap ' + rec.gap + ')', '#7FD1FF');
+	try { await transport(door.to, 0); rec.ok = true; bump('doorOk'); }
+	catch (e) {
+		rec.ok = false;
+		rec.why = String((e && (e.reason || e.message)) || e);
+		clog('transport refused: ' + rec.why + ' at gap ' + rec.gap, 'orange');
+	}
+	rec.afterX = Math.round(character.real_x);
+	rec.afterY = Math.round(character.real_y);
+	rec.afterMap = character.map;
+	if (tel.doors.length < 40) tel.doors.push(rec);
+	ev(rec.ok ? 'doorOk' : 'doorFail', rec);
 	return true;
 }
 
@@ -892,10 +947,44 @@ function lootTick() {
 	const ids = Object.keys(chests);
 	if (!ids.length) { chestTries = {}; deadChests = {}; return; }
 
-	/* Recorded once: the one field list that decides whether a range filter is
-	   possible at all. */
+	/* WHY chestFields WAS THE WRONG INSTRUMENT, kept here so the mistake is not
+	   made again. It asked "does a chest record carry a position?" with
+	   Object.keys, and came back with a PIXI sprite's OWN keys - _texture,
+	   vertexData, blendMode, transform - and no x or y anywhere in the list.
+	   Read literally that says the filter can never apply. The filter applied
+	   4,916 times in the same run.
+
+	   PIXI defines x and y as accessors on DisplayObject.prototype over
+	   transform.position, and Object.keys does not walk a prototype. So the
+	   one recon built to verify the filter's premise reported the opposite of
+	   the truth, and the counters next to it were the only thing that caught
+	   it. typeof reads through the prototype; Object.keys does not. */
 	if (!tel.chestFields) {
-		try { tel.chestFields = Object.keys(chests[ids[0]] || {}); ev('chestShape', tel.chestFields); } catch (e) { }
+		try { tel.chestFields = Object.keys(chests[ids[0]] || {}); } catch (e) { }
+	}
+
+	/* THE QUESTION chestFields COULD NOT ANSWER. Not "is there a position" -
+	   there is - but "is it in the same coordinate space as character.real_x",
+	   which is what the comparison actually assumes. A sprite's x/y could be
+	   render coordinates, and comparing those against world coordinates would
+	   reject nearly everything at any radius. 98.3% of attempts were rejected
+	   against a 400 radius, so this is the live suspicion. gap vs lootRange on
+	   a single real chest settles it. */
+	if (!tel.chestProbe) {
+		try {
+			const c0 = chests[ids[0]];
+			const hasXY = (typeof c0.x === 'number' && typeof c0.y === 'number');
+			tel.chestProbe = {
+				xType: typeof c0.x, yType: typeof c0.y,
+				ownKey: Object.prototype.hasOwnProperty.call(c0, 'x'),
+				x: hasXY ? Math.round(c0.x) : null, y: hasXY ? Math.round(c0.y) : null,
+				myX: Math.round(character.real_x), myY: Math.round(character.real_y),
+				gap: hasXY ? Math.round(Math.hypot(c0.x - character.real_x, c0.y - character.real_y)) : null,
+				lootRange: CFG.lootRange, filterOn: !!CFG.lootRangeFilter,
+				chestMap: c0.map, myMap: character.map,
+			};
+			ev('chestProbe', tel.chestProbe);
+		} catch (e) { tel.chestProbe = { why: String(e) }; }
 	}
 
 	/* A chest that is gone has been looted or expired; forget it rather than
@@ -911,8 +1000,9 @@ function lootTick() {
 		if (deadChests[id]) { delete deadChests[id]; chestTries[id] = 0; }
 
 		const c = chests[id];
-		const cx = (c && typeof c.x === 'number') ? c.x : null;
-		const cy = (c && typeof c.y === 'number') ? c.y : null;
+		const useRange = !!CFG.lootRangeFilter;
+		const cx = (useRange && c && typeof c.x === 'number') ? c.x : null;
+		const cy = (useRange && c && typeof c.y === 'number') ? c.y : null;
 		if (cx !== null && cy !== null
 			&& Math.hypot(cx - character.real_x, cy - character.real_y) > CFG.lootRange) {
 			bump('lootOutOfRange'); continue;
@@ -1027,8 +1117,27 @@ function objButtonRecon() {
    filters on the reading side, which would silently blind the priest's
    telemetry - measured 2026-10-06. */
 const TEL_KEY = 'cave_tel_' + character.ctype;
+
+/* ONE KEY PER CLASS MEANT EVERY RUN DESTROYED THE LAST ONE. That is why a
+   question about the 2026-10-10 run - did its doors work? - was unanswerable
+   four days later: v7 carried the same doorTry/doorOk counters, recorded a real
+   answer, and tonight's run overwrote it. runId already existed and was not in
+   the key.
+
+   THE ARCHIVE KEY KEEPS THE CLASS-NOT-NAME RULE above. A key containing
+   "Token" is redacted by output filters on the reading side, so FatherToken's
+   name must never appear in one; ctype + runId is safe.
+
+   runId is 'r' + base36 of Date.now(), so ids of equal length sort lexically
+   in time order - which lets telPrune find the oldest by sorting KEYS instead
+   of parsing five 30 KB blobs. */
+const TEL_RUN_PREFIX = TEL_KEY + '_';
+const TEL_RUN_KEY = TEL_RUN_PREFIX + 'r' + Date.now().toString(36);
+const TEL_KEEP = 5;
+const TEL_ARCHIVE_MS = 30000;
+
 const tel = {
-	ver: 10, runId: 'r' + Date.now().toString(36), name: character.name, ctype: character.ctype,
+	ver: 11, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -1036,7 +1145,7 @@ const tel = {
 	counters: { ticks: 0, engagedTicks: 0, pausedTicks: 0, pausedMoveSkipped: 0,
 		pausedAttackSkipped: 0, attacks: 0, attackFail: 0, noTargetWhileEngaged: 0,
 		closeSteps: 0, closeSmart: 0, kiteSteps: 0, kiteRejected: 0, recoveries: 0,
-		outrunWarnTicks: 0, doorTry: 0, doorOk: 0,
+		outrunWarnTicks: 0, doorTry: 0, doorOk: 0, telArchiveFail: 0,
 		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
 		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
@@ -1050,7 +1159,10 @@ const tel = {
 	reasons: {},
 	friendly: {},          // v9 forensics: distinct friendly_target victims
 	objectives: null,      // v9 recon: what an objective record looks like
-	chestFields: null,     // v10 recon: does a chest record carry a position?
+	chestFields: null,     // v10 recon: OWN KEYS ONLY - see chestProbe for why
+	chestProbe: null,      // v11 recon: the question chestFields could not answer
+	doorShape: null,       // v11 recon: what a door record actually carries
+	doors: [],             // v11 recon: one entry per transport() attempt
 	objButtons: null,      // v9 recon: the top-bar buttons, read-only
 	objFns: null,
 	maxDistLeader: 0, msBeyondLeash: 0, msRecovering: 0, helpers: {}, events: [],
@@ -1094,8 +1206,62 @@ function telFlush(force) {
 				choice: st.choice ? { id: st.choice.id, resolved: !!st.choice.resolved,
 					mine: st.choice.votes && st.choice.votes[character.name] } : null } : null,
 		};
-		parent.localStorage.setItem(TEL_KEY, JSON.stringify(tel));
+		const blob = JSON.stringify(tel);
+		parent.localStorage.setItem(TEL_KEY, blob);
+		telArchive(false, blob);
 	} catch (e) {}
+}
+
+/* ARCHIVED ON ITS OWN CLOCK, NOT ON `force`. ev() already calls telFlush(true)
+   on a 500ms throttle, so archiving on every forced flush would write 30 KB
+   twice a second for nothing. 30s is the resolution of the worst case that
+   actually happens: the operator switches scripts and the run ends with no
+   final flush, losing at most the last half minute. */
+let lastArchive = 0;
+function telArchive(force, blob) {
+	if (!force && Date.now() - lastArchive < TEL_ARCHIVE_MS) return;
+	lastArchive = Date.now();
+	try {
+		parent.localStorage.setItem(TEL_RUN_KEY, blob);
+	} catch (e) {
+		/* Out of quota. Drop every older archive and try once - losing old runs
+		   beats losing the one in progress. */
+		telPrune(0);
+		try { parent.localStorage.setItem(TEL_RUN_KEY, blob); }
+		catch (e2) { bump('telArchiveFail'); return; }
+	}
+	telPrune(TEL_KEEP);
+}
+
+/* Collect the keys BEFORE removing any: localStorage is index-addressed and
+   removing during the walk reshuffles what ls.key(i) returns. */
+function telPrune(keep) {
+	try {
+		const ls = parent.localStorage;
+		const mine = [];
+		for (let i = 0; i < ls.length; i++) {
+			const k = ls.key(i);
+			if (k && k.indexOf(TEL_RUN_PREFIX) === 0) mine.push(k);
+		}
+		if (mine.length <= keep) return;
+		mine.sort();   // lexical == chronological, see TEL_RUN_KEY
+		const doomed = mine.slice(0, mine.length - keep);
+		for (let i = 0; i < doomed.length; i++) ls.removeItem(doomed[i]);
+	} catch (e) {}
+}
+
+/* Everything this class has kept, newest last - so a later session can read a
+   run that has already been replaced as the live one. */
+function caveRuns() {
+	const out = [];
+	try {
+		const ls = parent.localStorage;
+		for (let i = 0; i < ls.length; i++) {
+			const k = ls.key(i);
+			if (k && k.indexOf(TEL_RUN_PREFIX) === 0) out.push(k);
+		}
+	} catch (e) {}
+	return out.sort();
 }
 
 function telCensus() {
@@ -1126,7 +1292,14 @@ function telHook() {
 	try { game.on('death', function (d) { if (!alive()) return; bump('entityDeaths'); }); } catch (e) {}
 	try { game.on('new_map', function (d) { if (!alive()) return; ev('new_map', d && (d.name || d.map)); }); } catch (e) {}
 }
-function caveDump() { telFlush(true); try { show_json(tel); } catch (e) {} clog('telemetry at ' + TEL_KEY); return tel; }
+function caveDump() {
+	telFlush(true);
+	try { telArchive(true, JSON.stringify(tel)); } catch (e) {}
+	try { show_json(tel); } catch (e) {}
+	clog('telemetry at ' + TEL_KEY + ' - this run archived at ' + TEL_RUN_KEY);
+	clog('kept runs: ' + caveRuns().join(', '));
+	return tel;
+}
 
 // ------------------------------------------------------------ commands -----
 function caveSay(msg) {
