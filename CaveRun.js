@@ -1,4 +1,6 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v11 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v12 (TEST BUILD)
+// v12 2026-10-12 crypt mode: operator drives the leader, followers cohere and
+//                fight, and NOTHING may be attacked but the whitelist
 // v11 2026-10-11 telemetry archived per run; door recon; chest recon fixed;
 //                lootRangeFilter switch (default unchanged)
 // v10 2026-10-10 loot: pause guard, cooldown, per-chest backoff, shape recon
@@ -137,7 +139,42 @@ const MOVE = {
 	smartMoveMaxMs: 8000,
 };
 
-let mode = 'cave';         // cave | dry
+/* CRYPT MODE, AND WHY IT IS NOT JUST dry.
+
+   dry was the right hook and the wrong safety story. It makes active() true
+   without any Cave state, which is exactly what is needed to run this script on
+   a map that is not the Cave - but it suppresses only cave ENTRY, floor
+   following and voting. combatTick and moveTick have no dry guard at all, so
+   dry still walks and still swings. In the Crypt that is the most dangerous
+   setting available, not the safest: caveDry() sets phase='active', which is
+   the very gate that wakes combatTick, and pickTarget ends in a bare
+   get_nearest_monster() fallback with no type restriction.
+
+   WHAT IS IN THAT ROOM, measured 2026-10-12 against the party's real figures
+   (heal 2,000/s, FatherToken armour 512 / resistance 569 as the best tank):
+
+     a6 Marceline   9,401 dps on FT   kills him in ~0.9s
+     a8 Angel       5,624 dps         ~2.3s
+     a1 Spike       2,466 dps AND 18,700,000 hp - 99 minutes of party dps
+     vbat           1,015 dps         +985 margin, 45s each  <- the only target
+
+   So crypt mode is dry's active() hook plus a HARD whitelist. The whitelist is
+   enforced twice on purpose - once in pickTarget so nothing downstream ever
+   sees a forbidden target, and again immediately before attack(), because the
+   entire failure mode is something slipping through to that one call.
+
+   THE OPERATOR DRIVES THE LEADER. moveTick returns early for the leader, so in
+   crypt mode the leader is yours to steer and the other two cohere to it and
+   shoot. That is deliberate: a geofence would fight your own driving, and your
+   driving is what keeps the party away from Marceline. Kiting still considers
+   ALL threats, not just the whitelist, which is what you want near her. */
+const CRYPT = {
+	/* The ONLY monster types that may be attacked in crypt mode. Everything
+	   else in the Crypt is either lethal or an 18.7M-hp time sink. */
+	only: ['vbat'],
+};
+
+let mode = 'cave';         // cave | dry | crypt
 let phase = 'idle';        // idle | restock | gather | staged | inside | active (dry)
 let stopped = false;
 let engagedUntil = 0;
@@ -188,7 +225,17 @@ function leaderMap() { try { const p = (parent.party || {})[leaderName()]; retur
    rehearsal impossible: both combatTick and moveTick returned immediately
    anywhere but inside the cave, so nothing could be exercised without
    spending the one daily run. */
-function active() { return mode === 'dry' ? phase === 'active' : phase === 'inside'; }
+/* True for dry AND crypt: both run outside the Cave, where `inside` never
+   arrives because nothing sets it. */
+function offCave() { return mode !== 'cave'; }
+function active() { return offCave() ? phase === 'active' : phase === 'inside'; }
+
+/* The whitelist. Open in every mode but crypt, so nothing else changes. */
+function mayAttack(t) {
+	if (mode !== 'crypt') return true;
+	if (!t || !t.mtype) return false;
+	return CRYPT.only.indexOf(t.mtype) >= 0;
+}
 
 // ------------------------------------------------------------- threats -----
 function threats() {
@@ -223,22 +270,28 @@ function inRangeFor(t, skill) {
 
 function pickTarget() {
 	if (!engaged()) return null;
+	/* THE WHITELIST IS APPLIED TO ALL THREE PATHS, and the third is the one that
+	   matters. Following the leader's target and the "already hitting us" scan
+	   are both bounded by what the party is doing; the get_nearest_monster
+	   fallback is not bounded by anything, and in the Crypt the nearest monster
+	   is eventually Marceline. */
 	try {
 		const le = leaderEntity();
 		if (le && le.target) {
 			const t = parent.entities[le.target];
-			if (t && t.type === 'monster' && !t.dead && inRangeFor(t)) return t;
+			if (t && t.type === 'monster' && !t.dead && inRangeFor(t) && mayAttack(t)) return t;
 		}
 	} catch (e) {}
 	const names = partyNames();
 	let best = null, bestD = Infinity;
 	for (const m of threats()) {
 		if (!m.target || names.indexOf(m.target) < 0) continue;
+		if (!mayAttack(m)) continue;
 		const d = dist(character, m);
 		if (d < bestD && inRangeFor(m)) { best = m; bestD = d; }
 	}
 	if (best) return best;
-	try { if (isFn(get_nearest_monster)) { const n = get_nearest_monster(); if (n && inRangeFor(n)) return n; } } catch (e) {}
+	try { if (isFn(get_nearest_monster)) { const n = get_nearest_monster(); if (n && inRangeFor(n) && mayAttack(n)) return n; } } catch (e) {}
 	return null;
 }
 
@@ -412,6 +465,11 @@ async function combatTick() {
 		return;
 	}
 	try {
+		/* SECOND GATE, deliberately redundant with pickTarget. Everything this
+		   mode exists to prevent funnels through this one call, so it is worth
+		   paying for twice - a future edit to pickTarget cannot quietly reopen
+		   it. If this ever fires, the first gate has a hole. */
+		if (!mayAttack(target)) { bump('cryptBlocked'); return; }
 		if (isFn(can_attack) && !can_attack(target)) return;
 		if (!isLeader()) change_target(target);
 		await attack(target);
@@ -459,7 +517,7 @@ function kiteStep(lp) {
    0 across a 29-minute run while the leader was never actually on another
    floor; the trigger was his death and respawn. */
 async function followFloor() {
-	if (mode === 'dry') return false;
+	if (offCave()) return false;
 	const lm = leaderMap();
 	if (!lm || lm === character.map) return false;
 	const st = caveState();
@@ -800,7 +858,7 @@ function deathTick() {
 
 // ---------------------------------------------------------------- vote -----
 function voteTick() {
-	if (stopped || mode === 'dry' || isLeader()) return;
+	if (stopped || offCave() || isLeader()) return;
 	const st = caveState(), choice = st && st.choice;
 	if (!choice || choice.resolved) return;
 	if (choice.deadline && Date.now() > choice.deadline) return;
@@ -1145,7 +1203,7 @@ const tel = {
 	counters: { ticks: 0, engagedTicks: 0, pausedTicks: 0, pausedMoveSkipped: 0,
 		pausedAttackSkipped: 0, attacks: 0, attackFail: 0, noTargetWhileEngaged: 0,
 		closeSteps: 0, closeSmart: 0, kiteSteps: 0, kiteRejected: 0, recoveries: 0,
-		outrunWarnTicks: 0, doorTry: 0, doorOk: 0, telArchiveFail: 0,
+		outrunWarnTicks: 0, doorTry: 0, doorOk: 0, telArchiveFail: 0, cryptBlocked: 0,
 		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
 		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
@@ -1319,6 +1377,15 @@ function caveLead(name) {
    refused - so the cohesion, kiting, combat, potion, party and loot paths can
    all be exercised on an ordinary map without spending the one daily run.
    Everything that broke on 2026-10-06 except doors and votes reproduces here. */
+/* Crypt mode. The leader is yours to drive; the other two cohere and shoot,
+   and only at CRYPT.only. Run it on all three before you take the door. */
+function caveCrypt() {
+	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
+	clog('CRYPT MODE as ' + role() + ' - will ONLY attack: ' + CRYPT.only.join(', '), '#FFD700');
+	clog('leader is operator-driven; followers cohere at ' + MOVE.closeAt + 'u', '#FFD700');
+	return { mode: mode, role: role(), leader: leaderName(), only: CRYPT.only.slice() };
+}
+
 function caveDry() {
 	if (inCave()) { clog('already inside a cave - caveDry() is for outside', 'orange'); return null; }
 	mode = 'dry'; stopped = false; phase = 'active'; recovering = false; aim = null;
@@ -1334,7 +1401,7 @@ function caveDry() {
    out of gold, or on the give-up timer - so there is no path where a character
    stays in town indefinitely. */
 function caveGo() {
-	if (mode === 'dry') { clog('in dry mode - caveStop() then re-engage for a real run', 'orange'); return null; }
+	if (offCave()) { clog('in ' + mode + ' mode - caveStop() then re-engage for a real run', 'orange'); return null; }
 	stopped = false;
 	restockReset();
 	phase = 'restock';
@@ -1347,7 +1414,8 @@ function caveGo() {
 function caveStop() { stopped = true; phase = 'idle'; recovering = false; aim = null; caveSay('stop'); clog('stopped', 'orange'); }
 function caveStatus() {
 	const st = caveState(), lp = leaderPos();
-	const info = { mode: mode, role: role(), leader: leaderName(), phase: phase, active: active(),
+	const info = { mode: mode, only: (mode === 'crypt' ? CRYPT.only.slice() : null),
+		role: role(), leader: leaderName(), phase: phase, active: active(),
 		inCave: inCave(), paused: cavePaused(), map: character.map, engaged: engaged(), recovering: recovering,
 		speed: character.speed, range: character.range,
 		distLeader: lp ? Math.round(Math.hypot(lp.x - character.real_x, lp.y - character.real_y)) : null,
@@ -1362,7 +1430,7 @@ function caveStatus() {
 	return info;
 }
 function caveEnter() {
-	if (mode === 'dry') { clog('REFUSED - dry mode never enters. caveStop() and re-engage first.', 'red'); return null; }
+	if (offCave()) { clog('REFUSED - ' + mode + ' mode never enters the Cave. caveStop() and re-engage first.', 'red'); return null; }
 	if (!isLeader()) { clog('only ' + leaderName() + ' enters - the server builds the party from the opener', 'orange'); return; }
 	const b = gateReport();
 	if (b.length) { clog('NOT entering - ' + b.join(' | '), 'red'); return b; }
@@ -1385,6 +1453,7 @@ try {
 
 try {
 	window.caveGo = caveGo; window.caveDry = caveDry; window.caveLead = caveLead;
+	window.caveCrypt = caveCrypt;
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
 	window.caveDump = caveDump;
 } catch (e) {}
@@ -1395,7 +1464,7 @@ async function tick() {
 		const was = phase;
 		if (inCave()) phase = 'inside';
 		else if (phase === 'inside') { phase = 'idle'; votedFor = {}; deadDoors = {}; }
-		else if (mode === 'dry') phase = stopped ? 'idle' : 'active';
+		else if (offCave()) phase = stopped ? 'idle' : 'active';
 		else if (phase === 'gather' && character.map === CFG.keeper.map && dist(character, CFG.keeper) <= CFG.stageWithin) phase = 'staged';
 		if (phase !== was) { clog('phase -> ' + phase, '#7FD1FF'); ev('phase', { from: was, to: phase }); }
 		if (phase === 'staged' && isLeader()) {
