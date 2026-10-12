@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v95
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v96
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -349,7 +349,7 @@ const CONFIG = {
 		// PARKED - hold the party's home shard and never hop just to scout.
 		// Standing preference 2026-10-01: keep this true, same as `enabled`.
 		// -> MerchantComments.md#parked
-		parked: false,
+		parked: true,
 		bridge: 'http://127.0.0.1:8787',
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// -> MerchantComments.md#aldata
@@ -6972,6 +6972,38 @@ async function arbGoldDelta(fn, args, sim) {
 	return { outcome: outcome, reason: reason, returned: returned, delta: character.gold - before };
 }
 
+/* MERCHANT.JS HAS NO noHang(). That helper shipped in Ranger v51 / Priest v26 /
+   Mage v50 and was never ported here - this file says so twice already, at the
+   mover note and in the self-chained-loop note. v71 called it anyway, in both
+   Ponty functions below, and referencing an undeclared identifier THROWS rather
+   than evaluating to undefined. The throw landed in arbPontyLive's own catch and
+   came back out as "could not read Ponty: noHang is not defined" with
+   retry: true, so every Ponty flip burned its three attempts and abandoned -
+   textbook Form B, a catch returning a plausible lie. Measured in Meltymerch's
+   live CODE context 2026-10-01: typeof noHang === 'undefined'.
+
+   So the bound lives here, local and self-contained, with no dependency on the
+   party scripts. Promise.race is the idiom this file already uses for the party
+   link and the scout bridge. Do NOT replace this with noHang().
+
+   v96 MOVED THIS BLOCK OUT OF arbAdvance(). It had been pasted in just
+   after the `picked` phase block's closing brace, which closes the `if`
+   and not the function, so this declaration sat at brace depth 1 and was
+   invisible outside arbAdvance. mluckOpportunityPass called it anyway and
+   every mluck threw "arbNoHang is not defined" - and because a callee is
+   dereferenced before its arguments, use_skill() was never reached, so no
+   cast ever went to the server. Measured in the live v95 slot: casts 0,
+   denied 1, lastRefusal on Dexon "arbNoHang is not defined", while the
+   four Ponty helpers stranded in the same place still worked because all
+   of their callers are inside arbAdvance too. KEEP THIS AT TOP LEVEL.
+*/
+function arbNoHang(p, label, ms) {
+	return Promise.race([
+		Promise.resolve(p),
+		new Promise((_, rej) => setTimeout(() => rej(new Error((label || 'call') + ' timed out after ' + ms + 'ms')), ms)),
+	]);
+}
+
 /* One phase per tick. Never chains work onto a hop, because nothing after a
    hop runs. */
 async function arbAdvance() {
@@ -7015,26 +7047,6 @@ async function arbAdvance() {
        an ordinary outcome, and item_gone in particular is the normal one: somebody
        else took the listing between the scan and the trip. */
 function arbPontyPlanned(t) { return !!t && (t.buyIsNpc || arbIsNpcTarget(t.buyFrom)); }
-
-/* MERCHANT.JS HAS NO noHang(). That helper shipped in Ranger v51 / Priest v26 /
-   Mage v50 and was never ported here - this file says so twice already, at the
-   mover note and in the self-chained-loop note. v71 called it anyway, in both
-   Ponty functions below, and referencing an undeclared identifier THROWS rather
-   than evaluating to undefined. The throw landed in arbPontyLive's own catch and
-   came back out as "could not read Ponty: noHang is not defined" with
-   retry: true, so every Ponty flip burned its three attempts and abandoned -
-   textbook Form B, a catch returning a plausible lie. Measured in Meltymerch's
-   live CODE context 2026-10-01: typeof noHang === 'undefined'.
-
-   So the bound lives here, local and self-contained, with no dependency on the
-   party scripts. Promise.race is the idiom this file already uses for the party
-   link and the scout bridge. Do NOT replace this with noHang(). */
-function arbNoHang(p, label, ms) {
-	return Promise.race([
-		Promise.resolve(p),
-		new Promise((_, rej) => setTimeout(() => rej(new Error((label || 'call') + ' timed out after ' + ms + 'ms')), ms)),
-	]);
-}
 
 async function arbPontyLive() {
 	if (typeof get_secondhands !== 'function') return { rows: null, why: 'get_secondhands is not in this context' };
