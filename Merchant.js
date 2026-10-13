@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v96
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v97
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -349,7 +349,7 @@ const CONFIG = {
 		// PARKED - hold the party's home shard and never hop just to scout.
 		// Standing preference 2026-10-01: keep this true, same as `enabled`.
 		// -> MerchantComments.md#parked
-		parked: true,
+		parked: false,
 		bridge: 'http://127.0.0.1:8787',
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// -> MerchantComments.md#aldata
@@ -780,11 +780,13 @@ const CONFIG = {
 			// Cake
 			'slice_mint', 'slice_blueberry', 'slice_citrus', 'slice_honey', 'slice_nightberry', 'slice_strawberry',
 			// other
-			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'tracker', 'feather0', 'monstertoken', 'candy0', 'voidthread', 'essenceofether',
+			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'feather0', 'monstertoken', 'candy0', 'voidthread', 'essenceofether',
 			// emberhood craft inputs - Ponty only, never from a player stand
 			'ashleaf', 'embercore', 'essenceoffire',
 			//upgrade
 			'scroll3', 'scroll4', 'cscroll3', 'cscroll4', 'offeringp', 'offering', 'offeringx',
+			//keys
+			'dkey', 'bkey', 'ukey', 'cryptkey', 'frozenkey', 'spiderkey', 'stonekey', 'tombkey',
 		],
 
 		/* The operator's two stops, and nothing else. Both are tested before
