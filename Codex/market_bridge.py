@@ -211,6 +211,38 @@ BOSS_MIN_KILLS_FOR_TREND = 5
 # one success returns to the configured interval.
 BOSS_BACKOFF_MAX_SEC = 15 * 60
 
+# Boss data source. "server_info" is the game's own broadcast, reached over
+# engine.io long-polling; "aldata" is the original third-party poll, kept
+# selectable as a fallback. server_info wins on every axis that matters:
+# first-party rather than a third party, pushed rather than polled so no rate
+# limit (the ALData path really did hit a 429), max_hp GIVEN rather than
+# inferred from the largest value seen, and `spawn` the server's own field
+# rather than a derivation. A full sweep measured 5.3s against 45s.
+BOSS_SOURCE = "server_info"
+SI_HTTP_TIMEOUT = 15
+SI_READ_SLACK = 5           # added to pingTimeout for the long-poll read
+SI_RECONNECT_BASE = 5
+SI_RECONNECT_MAX = 5 * 60
+SI_SERVER_LIST_URL = "https://adventure.land"
+# Seed list, measured 2026-10-17. The live list is fetched from the page
+# first - that is where the browser gets it, so it follows a new server - and
+# this is the fallback when that fetch fails.
+SI_SEED_SERVERS = [
+    {"name": "I", "region": "EU", "address": "de.adventure.land", "path": "/ws1/"},
+    {"name": "II", "region": "EU", "address": "de.adventure.land", "path": "/ws2/"},
+    {"name": "III", "region": "EU", "address": "de.adventure.land", "path": "/ws3/"},
+    {"name": "IV", "region": "EU", "address": "de.adventure.land", "path": "/ws4/"},
+    {"name": "PVP", "region": "EU", "address": "de.adventure.land", "path": "/wspvp/"},
+    {"name": "I", "region": "US", "address": "na2.adventure.land", "path": "/ws1/"},
+    {"name": "II", "region": "US", "address": "na2.adventure.land", "path": "/ws2/"},
+    {"name": "III", "region": "US", "address": "na2.adventure.land", "path": "/ws3/"},
+    {"name": "IV", "region": "US", "address": "na2.adventure.land", "path": "/ws4/"},
+    {"name": "V", "region": "US", "address": "na2.adventure.land", "path": "/ws5/"},
+    {"name": "PVP", "region": "US", "address": "na2.adventure.land", "path": "/wspvp/"},
+    {"name": "I", "region": "ASIA", "address": "sg.adventure.land", "path": "/ws1/"},
+    {"name": "II", "region": "ASIA", "address": "sg.adventure.land", "path": "/ws2/"},
+]
+
 # The 15 ids in allBosses plus the 6 cooperative monsters Ranger.js lists
 # separately in attackIfTargeted. Verified against Party/Ranger.js:186 and
 # :256 on 2026-10-17. ALData's README states cutebee and goldenbat are
@@ -1077,10 +1109,28 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         lo, hi = parse_ts(a.pop("first_t")), parse_ts(a.pop("last_t"))
         win = round(hi - lo) if (lo and hi and hi > lo) else 0
         a["observed_window_sec"] = win
-        a["kills_per_day"] = round(a["kills_logged"] / (win / 86400.0), 2) if win else None
+        # Capped at the physical maximum. Measured 2026-10-17: EU IV mrgreen
+        # reported 152.11 kills/day off ONE kill in a 568-second window,
+        # against a ceiling of 15.32 for a 5,640s respawn - a short window
+        # divides a single kill into a huge rate, and boss_timers.html sorts
+        # the home-server table on exactly this number, so the least reliable
+        # row led it. Both the raw and the cap are kept so the capping is
+        # visible rather than silent.
+        rs = BOSS_RESPAWN_SEC.get(a["type"])
+        raw = (a["kills_logged"] / (win / 86400.0)) if win else None
+        cap = (86400.0 / rs) if rs else None
+        a["kills_per_day_raw"] = round(raw, 2) if raw is not None else None
+        a["kills_per_day_cap"] = round(cap, 2) if cap else None
+        a["rate_capped"] = bool(raw is not None and cap and raw > cap)
+        a["kills_per_day"] = (round(min(raw, cap), 2) if (raw is not None and cap)
+                              else (round(raw, 2) if raw is not None else None))
         a["enough_data"] = a["kills_logged"] >= BOSS_MIN_KILLS_FOR_TREND
         out.append(a)
-    out.sort(key=lambda r: (-(r["kills_per_day"] or 0), r["type"], r["server"]))
+    # Thin rows sort BELOW every qualified row, not merely lower. Capping
+    # alone does not fix the defect above: a capped 15.32 off one kill still
+    # outranks a real 12 earned over days.
+    out.sort(key=lambda r: (not r["enough_data"], -(r["kills_per_day"] or 0),
+                            r["type"], r["server"]))
     return {
         "now": iso(now()),
         "log": str(path) if path else None,
@@ -1094,6 +1144,259 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         "last_event": rows[-1].get("t") if rows else None,
         "history": out,
     }
+
+
+# ------------------------------------------------- engine.io / socket.io v4
+#
+# The boss poller talks to the game's own servers rather than a third party,
+# and it does so over engine.io HTTP long-polling with nothing but
+# urllib.request. No python-socketio, and the zero-dependency property of
+# this file is deliberate.
+#
+# Polling is open on the socket we want: node/server.js:52 constructs the main
+# io server with path, pingInterval, pingTimeout and cors and NO `transports`
+# option, so it keeps the default ["polling", "websocket"]. Only the separate
+# msgpack server at :60 is websocket-only.
+#
+# No auth is needed. server_functions.js:2961 does broadcast("server_info", E)
+# and broadcast() blanket-emits to every connected socket with no player
+# check, which is why an anonymous socket that completes the handshake
+# receives it.
+#
+# The exchange:
+#   GET  {path}socket.io/?EIO=4&transport=polling
+#        -> 0{"sid":...,"pingInterval":4000,"pingTimeout":12000}
+#   POST {path}socket.io/?EIO=4&transport=polling&sid=SID   body: 40
+#   GET  {path}socket.io/?EIO=4&transport=polling&sid=SID
+#        -> 40{"sid":...}   then   42["server_info",{...}]
+#
+# Packets in one polling body are separated by U+001E. Engine.io types: 0
+# open, 1 close, 2 ping, 3 pong, 4 message. Socket.io rides on 4: 40 CONNECT,
+# 42 EVENT. A ping MUST be answered with a pong or the server drops the
+# socket at pingTimeout.
+EIO_SEP = "\x1e"
+
+
+def eio_packets(body: str) -> list:
+    """Split one polling body into engine.io packets."""
+    return [p for p in (body or "").split(EIO_SEP) if p != ""]
+
+
+def eio_parse(pkt: str):
+    """One engine.io packet -> (kind, name, data).
+
+    kind is 'open', 'ping', 'close', 'connect', 'event' or 'other'. Anything
+    unrecognised is 'other' rather than an exception: this is a wire format
+    from a server we do not control, and a packet shape we have not seen
+    before must not take the poller down."""
+    if not pkt:
+        return ("other", None, None)
+    t = pkt[0]
+    if t == "0":
+        try:
+            return ("open", None, json.loads(pkt[1:]))
+        except Exception:
+            return ("open", None, {})
+    if t == "2":
+        return ("ping", None, None)
+    if t == "1":
+        return ("close", None, None)
+    if t != "4":
+        return ("other", None, None)
+
+    body = pkt[1:]
+    if not body:
+        return ("other", None, None)
+    st, rest = body[0], body[1:]
+    # Optional namespace: present only when it is not the default "/".
+    if rest.startswith("/"):
+        i = rest.find(",")
+        rest = rest[i + 1:] if i >= 0 else ""
+    # Optional ack id, digits between the namespace and the payload.
+    j = 0
+    while j < len(rest) and rest[j].isdigit():
+        j += 1
+    rest = rest[j:]
+
+    if st == "0":
+        try:
+            return ("connect", None, json.loads(rest) if rest else None)
+        except Exception:
+            return ("connect", None, None)
+    if st == "2":
+        try:
+            arr = json.loads(rest)
+        except Exception:
+            return ("other", None, None)
+        if isinstance(arr, list) and arr:
+            return ("event", arr[0], arr[1] if len(arr) > 1 else None)
+    return ("other", None, None)
+
+
+def servers_from_html(html: str) -> list:
+    """Pull X.servers out of the adventure.land page.
+
+    This is where the browser itself gets the list, so it stays correct when
+    a server is added. A failure here is soft - the caller falls back to the
+    seed list - because a layout change on a page we do not control must not
+    stop the poller."""
+    m = re.search(r"X\.servers\s*=\s*(\[.*?\])\s*;", html or "", re.S)
+    if not m:
+        return []
+    try:
+        rows = json.loads(m.group(1))
+    except Exception:
+        return []
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and r.get("address") and r.get("name") and r.get("region"):
+            out.append({"name": str(r["name"]), "region": str(r["region"]),
+                        "address": str(r["address"]), "path": str(r.get("path") or "/")})
+    return out
+
+
+class ServerInfoClient(threading.Thread):
+    """Holds one long-polling socket open to one game server.
+
+    Event-driven, NOT polled: broadcast_e() fires from the server's event
+    loop when something changes, so a quiet server simply has nothing to say.
+    Measured across all 13 on 2026-10-17: 11 answered, slowest 5,344ms, 2 did
+    not answer within 9 seconds. A server that has not spoken is UNKNOWN, not
+    dead - the connection is held open and the row stays stale rather than
+    being reported live:false, which is the regression that would log false
+    deaths."""
+
+    def __init__(self, server: dict, on_event, stop_evt: threading.Event):
+        super().__init__(name="si-" + server["region"] + server["name"], daemon=True)
+        self.server = server
+        self.on_event = on_event
+        self._stop = stop_evt
+        self.connected = False
+        self.events = 0
+        self.last_event = 0.0
+        self.last_error: str | None = None
+        self.fails = 0
+
+    def _url(self, sid=None):
+        s = self.server
+        base = "https://%s%ssocket.io/?EIO=4&transport=polling" % (
+            s["address"], s["path"] if s["path"].endswith("/") else s["path"] + "/")
+        return base + ("&sid=" + sid if sid else "")
+
+    def _get(self, url, timeout):
+        req = urllib.request.Request(url, headers={"Accept": "*/*",
+                                                   "User-Agent": "al-market-bridge"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+
+    def _post(self, url, payload, timeout):
+        req = urllib.request.Request(
+            url, data=payload.encode("utf-8"), method="POST",
+            headers={"Content-Type": "text/plain;charset=UTF-8",
+                     "User-Agent": "al-market-bridge"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._session()
+                self.fails = 0
+            except Exception as e:
+                self.connected = False
+                self.fails += 1
+                self.last_error = "%s: %s" % (type(e).__name__, e)
+                if self.fails == 1:
+                    say("[bosses] %s %s: %s" % (self.server["region"],
+                                                self.server["name"], self.last_error))
+            # Backoff on a dropped or refused socket, capped.
+            if not self._stop.is_set():
+                self._stop.wait(min(SI_RECONNECT_BASE * (2 ** min(self.fails, 6)),
+                                    SI_RECONNECT_MAX))
+
+    def _session(self) -> None:
+        opened = self._get(self._url(), SI_HTTP_TIMEOUT)
+        sid = ping_timeout = None
+        for pkt in eio_packets(opened):
+            kind, _n, data = eio_parse(pkt)
+            if kind == "open" and isinstance(data, dict):
+                sid = data.get("sid")
+                ping_timeout = data.get("pingTimeout")
+        if not sid:
+            raise RuntimeError("no sid in handshake")
+        # socket.io CONNECT on the default namespace.
+        self._post(self._url(sid), "40", SI_HTTP_TIMEOUT)
+        self.connected = True
+        read_to = (float(ping_timeout or 12000) / 1000.0) + SI_READ_SLACK
+
+        while not self._stop.is_set():
+            body = self._get(self._url(sid), read_to)
+            pong = False
+            for pkt in eio_packets(body):
+                kind, name, data = eio_parse(pkt)
+                if kind == "ping":
+                    pong = True
+                elif kind == "close":
+                    return                      # server hung up; reconnect
+                elif kind == "event" and name == "server_info":
+                    self.events += 1
+                    self.last_event = now()
+                    try:
+                        self.on_event(self.server, data)
+                    except Exception as e:
+                        print("[bridge] server_info handler failed: %s" % e)
+            if pong:
+                # Unanswered, the server drops us at pingTimeout.
+                self._post(self._url(sid), "3", SI_HTTP_TIMEOUT)
+
+
+def server_info_entries(server: dict, payload, types) -> list:
+    """Translate one server_info payload into ALData-shaped entries.
+
+    Deliberately a translation layer rather than a second pipeline: the
+    sampling, dps delta, transition guards and persistence below are
+    unchanged and keep being exercised by the same code paths.
+
+    Shapes measured 2026-10-17 across all 13 servers:
+      live  {live, map, hp, max_hp, target, x, y}
+      dead  {live, spawn}
+    `target` stays sparse - a name, null, or the field absent on an
+    untouched boss - so presence is preserved and has_target_field still
+    means what it meant.
+
+    lastSeen becomes OUR receive time, which is honest: the payload is
+    pushed, so the moment it arrived IS the moment it was current. Each push
+    therefore carries a distinct stamp and counts as a real observation,
+    which is what the sample dedupe below wants."""
+    out = []
+    if not isinstance(payload, dict):
+        return out
+    seen_at = iso(now())
+    wanted = set(types)
+    for mtype, d in payload.items():
+        if mtype not in wanted or not isinstance(d, dict):
+            continue
+        e = {"type": mtype, "serverRegion": server["region"],
+             "serverIdentifier": server["name"]}
+        if d.get("live"):
+            e["hp"] = d.get("hp")
+            e["max_hp"] = d.get("max_hp")
+            e["map"] = d.get("map")
+            e["x"] = d.get("x")
+            e["y"] = d.get("y")
+            e["lastSeen"] = seen_at
+            if "target" in d:
+                e["target"] = d.get("target")
+        else:
+            # Dead: the server's OWN scheduled respawn, not a derivation.
+            # server_functions.js:2589 sets it as future_s(nominal respawn),
+            # so subtracting BOSS_RESPAWN_SEC still recovers the death time -
+            # that path uses the nominal value, not the randomised
+            # monster_respawns delay at server.js:13097.
+            if d.get("spawn"):
+                e["estimatedRespawn"] = d.get("spawn")
+        out.append(e)
+    return out
 
 
 class BossWatch:
@@ -1113,14 +1416,17 @@ class BossWatch:
     each keep their own state across hops and CODE restarts."""
 
     def __init__(self, types, interval: int = BOSS_POLL_SECONDS, enabled: bool = True,
-                 events_path=None):
+                 events_path=None, source: str = BOSS_SOURCE):
         self.lock = threading.Lock()
         self.events_path = events_path
         self.fights: dict[tuple, dict] = {}      # (type, region, ident) -> fight state
         self.events_written = 0
         self.events_error: str | None = None
         self._pending: list[dict] = []
-        self._seeded = False
+        self.source = source
+        self.clients: list = []
+        self.servers: list = []
+        self._seeded_servers: set = set()   # per server, not per process
         self._last_poll_t = 0.0
         self.types = list(types)
         self.interval = max(5, int(interval))
@@ -1128,6 +1434,9 @@ class BossWatch:
         self.samples: dict[tuple, object] = {}   # (type, region, ident) -> deque
         self.meta: dict[tuple, dict] = {}        # same key -> latest reading
         self.max_hp: dict[str, float] = {}       # type -> largest hp seen since start
+        # server_info GIVES max_hp, so it stops being an inference. Kept
+        # separate from the observed maximum so max_hp_source stays honest.
+        self.max_hp_given: dict[str, float] = {}
         self.last_attempt = 0.0
         self.last_success = 0.0
         self.last_error: str | None = None
@@ -1139,7 +1448,66 @@ class BossWatch:
     def start(self) -> None:
         if not self.enabled:
             return
+        if self.source == "server_info":
+            self.servers = self._server_list()
+            for srv in self.servers:
+                c = ServerInfoClient(srv, self._on_server_info, self._stop)
+                self.clients.append(c)
+                c.start()
+            say("[bosses] server_info: holding %d sockets open" % len(self.clients))
+            return
         threading.Thread(target=self._loop, name="bosswatch", daemon=True).start()
+
+    def _server_list(self) -> list:
+        """The live list from the page, falling back to the seed.
+
+        A missing server is a soft failure by design - the fallback keeps the
+        poller running on the 13 that were measured rather than crashing on a
+        layout change in a page we do not control."""
+        try:
+            req = urllib.request.Request(SI_SERVER_LIST_URL,
+                                         headers={"User-Agent": "al-market-bridge"})
+            with urllib.request.urlopen(req, timeout=SI_HTTP_TIMEOUT) as r:
+                rows = servers_from_html(r.read().decode("utf-8", "replace"))
+            if rows:
+                say("[bosses] server list: %d from %s" % (len(rows), SI_SERVER_LIST_URL))
+                return rows
+            say("[bosses] server list: page gave none, using the %d seeded"
+                % len(SI_SEED_SERVERS))
+        except Exception as e:
+            say("[bosses] server list: %s: %s - using the %d seeded"
+                % (type(e).__name__, e, len(SI_SEED_SERVERS)))
+        return list(SI_SEED_SERVERS)
+
+    def _on_server_info(self, server: dict, payload) -> None:
+        """One pushed payload from one server.
+
+        Scoped to THAT server. Running the transition pass over every tracked
+        key on a single server's push would read all the others as absent and
+        manufacture deaths for them, which is the one bug in here that would
+        produce plausible numbers rather than an error."""
+        entries = server_info_entries(server, payload, self.types)
+        key = (str(server["region"]), str(server["name"]))
+        t = now()
+        seen = set()
+        for e in entries:
+            k = self._record(e)
+            if k:
+                seen.add(k)
+        with self.lock:
+            for k, m in self.meta.items():
+                if (k[1], k[2]) == key:
+                    m["present"] = k in seen
+            self.last_success = t
+            self.last_error = None
+            self.fails = 0
+            self.entries_last_poll = len(entries)
+            try:
+                self._transitions(t, len(entries), {key}, only_server=key,
+                                  complete=isinstance(payload, dict) and bool(payload))
+            except Exception as ex:
+                print("[bridge] boss transition pass failed: %s" % ex)
+        self._flush_events()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -1247,6 +1615,9 @@ class BossWatch:
 
         with self.lock:
             if hp is not None:
+                mg = entry.get('max_hp')
+                if isinstance(mg, (int, float)) and not isinstance(mg, bool) and mg > 0:
+                    self.max_hp_given[mtype] = float(mg)
                 prev = self.max_hp.get(mtype)
                 if prev is None or hp > prev:
                     self.max_hp[mtype] = hp
@@ -1319,7 +1690,8 @@ class BossWatch:
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
 
-    def _transitions(self, poll_t: float, n_entries: int, servers_seen: set) -> None:
+    def _transitions(self, poll_t: float, n_entries: int, servers_seen: set,
+                     only_server: tuple | None = None, complete: bool = False) -> None:
         """Compare this poll against the last and record spawns and deaths.
 
         Reached ONLY from a fully successful fetch - guard 1. Everything else
@@ -1336,18 +1708,31 @@ class BossWatch:
 
         # GUARD: an empty answer while live bosses are tracked is a partial
         # response, not a world where everything died at once.
-        prior_live = sum(1 for f in self.fights.values() if f.get("alive"))
-        if n_entries == 0 and prior_live > 0:
+        #
+        # `complete` is the exception, and it matters for server_info. That
+        # payload is the server's whole S object, so one carrying `schedule`
+        # and `event_flags` but no boss key is POSITIVE evidence that no boss
+        # is live there - server_functions.js:2612 deletes E[type] outright
+        # once the monster is gone. Without this a boss that dies as its
+        # event ends would read as stale forever and the death would never be
+        # logged. A payload that is empty, or not a dict, is still truncated.
+        scope = (lambda k: (k[1], k[2]) == only_server) if only_server else (lambda k: True)
+        prior_live = sum(1 for k, f in self.fights.items()
+                         if f.get("alive") and scope(k))
+        if n_entries == 0 and prior_live > 0 and not complete:
             say(f"[bosses] empty response while tracking {prior_live} live - "
                 f"ignored, no transitions recorded")
             return
 
-        # GUARD: the first successful poll of a process has nothing to compare
-        # against. Seed and emit nothing.
-        seeding = not self._seeded
-
         for key, m in self.meta.items():
+            if not scope(key):
+                continue                   # another server's push says nothing here
             mtype, region, ident = key
+            # GUARD: the first sighting of a SERVER has nothing to compare
+            # against. Seed it and emit nothing. Per server rather than per
+            # process, so a shard first seen on the fifth poll is seeded too
+            # rather than reading as a spawn.
+            seeding = (region, ident) not in self._seeded_servers
             server = f"{region} {ident}".strip()
             entry = m["entry"]
             cur_id = entry.get("id")
@@ -1419,7 +1804,10 @@ class BossWatch:
                     gap = gap_for(f)
                     rs = BOSS_RESPAWN_SEC.get(mtype)
                     if er is not None and rs:
-                        death_t, how, dconf = er - rs, "respawn_offset", conf_for(gap)
+                        # The server's own scheduled respawn minus the nominal
+                        # interval is an exact death time, so the observation gap
+                        # neither bounds it nor downgrades it.
+                        death_t, how, dconf = er - rs, "respawn_offset", "high"
                     elif dead_reported:
                         lo = f.get("last_alive_t") or (poll_t - gap)
                         death_t, how, dconf = (lo + poll_t) / 2.0, "poll_bracket", "low"
@@ -1460,7 +1848,11 @@ class BossWatch:
                         f["alive"] = False
                         f["spawn_t"] = None
 
-        self._seeded = True
+        for key in self.meta:
+            if scope(key):
+                self._seeded_servers.add((key[1], key[2]))
+        for rg in servers_seen:
+            self._seeded_servers.add(rg)
         self._last_poll_t = poll_t
 
     # -------------------------------------------------------------- output
@@ -1509,7 +1901,7 @@ class BossWatch:
                 # NOT a figure from game data - the bridge has none. A bridge
                 # started while every shard's boss was half dead will read high
                 # on pct until one respawns. Labelled so a caller can tell.
-                mx = self.max_hp.get(mtype)
+                mx = self.max_hp_given.get(mtype) or self.max_hp.get(mtype)
                 pct = round(hp / mx * 100.0, 2) if (hp is not None and mx) else None
                 age = round(t - m["seen_ts"]) if m["seen_ts"] is not None else None
                 dps, win, nsamp = self._dps(self.samples.get(key))
@@ -1527,7 +1919,8 @@ class BossWatch:
                     "s": entry.get("s"),
                     "hp": hp,
                     "max_hp": mx,
-                    "max_hp_source": "observed" if mx else None,
+                    "max_hp_source": ("server" if self.max_hp_given.get(mtype)
+                                      else ("observed" if mx else None)),
                     "pct": pct,
                     "target": m["target"],
                     "has_target_field": m["has_target"],
@@ -1565,7 +1958,14 @@ class BossWatch:
                 "events_log": str(self.events_path) if self.events_path else None,
                 "events_written": self.events_written,
                 "events_error": self.events_error,
-                "seeded": self._seeded,
+                "source": self.source,
+                "seeded_servers": len(self._seeded_servers),
+                "sockets": [{"server": c.server["region"] + " " + c.server["name"],
+                             "connected": c.connected, "events": c.events,
+                             "silent_for_sec": (round(now() - c.last_event)
+                                                if c.last_event else None),
+                             "fails": c.fails, "last_error": c.last_error}
+                            for c in self.clients],
             }
 
 
@@ -1758,6 +2158,9 @@ def main():
                     help="do not poll ALData for boss hp")
     ap.add_argument("--boss-interval", type=int, default=BOSS_POLL_SECONDS,
                     help=f"seconds between ALData boss polls (default {BOSS_POLL_SECONDS})")
+    ap.add_argument("--boss-source", default=BOSS_SOURCE, choices=["server_info", "aldata"],
+                    help=f"where boss hp comes from (default {BOSS_SOURCE}); "
+                         f"aldata is the old third-party poll, kept as a fallback")
     ap.add_argument("--boss-events", default=BOSS_EVENTS_PATH,
                     help=f"append-only boss spawn/kill log (default {BOSS_EVENTS_PATH}); "
                          f"empty string disables it")
@@ -1774,7 +2177,8 @@ def main():
             _ev.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             print(f"[bridge] cannot create {_ev.parent}: {e}")
-    Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses, _ev)
+    Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses, _ev,
+                               a.boss_source)
     Handler.bosses.start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
@@ -1784,8 +2188,10 @@ def main():
     if a.no_bosses:
         print(f"[bridge]   bosses       -> GET /bosses (poller OFF, --no-bosses)")
     else:
-        print(f"[bridge]   bosses       -> GET /bosses?type=&server="
-              f" (ALData every {Handler.bosses.interval}s)")
+        src = ("the game's own server_info broadcast, pushed"
+               if a.boss_source == "server_info"
+               else f"ALData every {Handler.bosses.interval}s")
+        print(f"[bridge]   bosses       -> GET /bosses?type=&server= ({src})")
         print(f"[bridge]   kill log     -> GET /boss_events, /boss_history"
               f" ({a.boss_events or 'OFF'})")
         print(f"[bridge]   schedule     -> GET /schedule?region=&server=&hours=")

@@ -393,7 +393,7 @@ filterable by `?type=mrgreen` and `?server=EU+III`.
 
 **Why the bridge and not a character script.** `server.status` (`parent.S`)
 describes only the shard the character holding it is connected to, so no script
-can see a boss on another server. ALData is the only cross-server source.
+can see a boss on another server.
 Running one poller here also keeps the hp history across CODE restarts and
 shard hops, and has one caller hit a free third-party API instead of four.
 
@@ -443,6 +443,51 @@ stay distinguishable to a game script that has no other way to tell.
 Covered types are the 15 in `allBosses` plus the 6 cooperative monsters
 `Party/Ranger.js` lists separately in `attackIfTargeted`. ALData's README
 states `cutebee` and `goldenbat` are excluded from its results.
+
+### Where the hp comes from — `server_info`, not ALData
+
+The poller reads the game's **own** `server_info` broadcast over engine.io
+HTTP long-polling, with no new dependency. `--boss-source aldata` switches
+back to the original third-party poll, kept as a fallback.
+
+| | ALData | `server_info` |
+|---|---|---|
+| source | third party | the game server |
+| cadence | 45s poll, hit a 429 | pushed, no rate limit |
+| `max_hp` | inferred from the largest value seen | **given** |
+| respawn | a derivation | the server's own `spawn` field |
+| full sweep | 45s | **5.3s measured** |
+
+Polling is open on the socket: `node/server.js:52` builds the main io server
+with no `transports` option, so it keeps the default
+`["polling", "websocket"]` — only the msgpack server at `:60` is
+websocket-only. No auth is needed either: `server_functions.js:2961` does
+`broadcast("server_info", E)` and `broadcast()` blanket-emits to every
+connected socket with no player check, so an anonymous socket that completes
+the handshake receives it.
+
+**It is event-driven, not polled.** `broadcast_e()` fires when something
+changes, so a quiet server simply has nothing to say. Connections are held
+open and accumulate; a server that has not spoken is **unknown, not dead**,
+and keeps the `stale` / `dps: null` discipline. Reconnect is backed off.
+
+Seeding is **per server**: the first sighting of a shard is recorded without
+emitting a spawn, because a boss already up may have been up for hours and an
+invented spawn makes an invented TTK. A push is also scoped to the server
+that sent it — running the transition pass over every tracked key on one
+server's push would read all the others as absent and manufacture deaths.
+
+Two things this does NOT change. `dps` still needs two samples over time —
+`server_info` gives hp at an instant, same as before. And the death time is
+still `spawn - respawn_sec`: `server_functions.js:2589` sets that field from
+`future_s(nominal respawn)`, **not** the randomised `monster_respawns` delay
+at `server.js:13097`, so the subtraction still lands on the death. Because
+the field is exact, such a death is logged `confidence: "high"` regardless of
+the observation gap.
+
+The server list comes from `X.servers` on the adventure.land page — where the
+browser gets it, so it follows a new server — falling back to a 13-entry seed
+list if that fetch fails.
 
 ### The kill log — `GET /boss_events`, `GET /boss_stats`
 
@@ -511,6 +556,16 @@ returns to the configured interval.
 Low-confidence kills are counted but kept OUT of the medians unless asked
 for. A kill whose timestamp is bounded only by a wide poll gap still proves
 the boss died there and says very little about how long it took.
+
+`kills_per_day` is **capped at the physical maximum**, `86400 / respawn_sec`.
+Measured 2026-10-17: EU IV mrgreen reported 152.11 kills/day off ONE kill in a
+568-second window, against a ceiling of 15.32 — a short window divides a single
+kill into an enormous rate, and the ranking sorts on exactly this number.
+`kills_per_day_raw` and `kills_per_day_cap` are both kept so the capping is
+visible, and `rate_capped` flags it. The ranking also partitions on
+`enough_data` so thin rows fall BELOW every qualified row: capping alone does
+not fix it, because a capped 15.32 off one kill still outranks a real 12
+earned over days.
 
 **`stalled_count` is the figure a median TTK cannot show,** and the reason
 the ranking is not just a TTK table. A stall is a spawn whose next same-type,

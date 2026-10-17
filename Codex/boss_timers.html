@@ -271,7 +271,12 @@ function schedView() {
 /* --------------------------------------------------------------- ranking */
 function rankView() {
   const rows = (HIST.history || []).filter(r => r.type === TYPE)
-    .sort((a, b) => (b.kills_per_day || 0) - (a.kills_per_day || 0));
+    /* Qualified rows first, THEN by rate. Sorting on rate alone put a
+       one-kill server at the top of the table the home decision is made
+       from - a short window turns a single kill into a huge rate. */
+    .sort((a, b) => (a.enough_data === b.enough_data)
+      ? (b.kills_per_day || 0) - (a.kills_per_day || 0)
+      : (a.enough_data ? -1 : 1));
   const min = HIST.min_kills_for_trend;
   const head = `<p class="note">The decision view, for <b class="hi">${esc(TYPE)}</b>,
     sorted by kills per day. <b class="hi">Rows with fewer than ${min} logged kills are
@@ -297,7 +302,8 @@ function rankView() {
   </tr></thead><tbody>${rows.map(r => `<tr class="${r.enough_data ? "" : "thin"}">
     <td>${esc(r.server)}${r.enough_data ? "" :
        ` <span class="warn" title="fewer than ${min} kills logged">thin</span>`}</td>
-    <td class="num up">${r.kills_per_day == null ? "—" : r.kills_per_day.toFixed(2)}</td>
+    <td class="num up">${r.kills_per_day == null ? "—" : r.kills_per_day.toFixed(2)}${
+       r.rate_capped ? ` <span class="warn" title="raw ${r.kills_per_day_raw} exceeds the physical ceiling of ${r.kills_per_day_cap} for this respawn">capped</span>` : ""}</td>
     <td class="num">${r.kills_logged}</td>
     <td class="num dim">${r.ttk_sample}${r.confidence_counts.low
        ? ` <span class="warn" title="${r.confidence_counts.low} low-confidence kills, excluded from medians">*</span>` : ""}</td>
