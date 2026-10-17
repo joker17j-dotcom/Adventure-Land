@@ -21,17 +21,27 @@ root, so any path in an older note, comment or commit message may be stale.
   Another player's scripts, kept because the repo that hosted them went private
   or away, and whatever was useful in them was folded into our own scripts many
   versions ago. The files carry no extension and have spaces in their names, so
-  `node --check` and type-filtered `git grep` skip them silently.
+  a `*.js` glob and a type-filtered `git grep` skip them silently - which is
+  why `git ls-files '*.js'` matches 0 of the 8. `node --check` does NOT skip
+  them: measured 2026-10-17, `node --check 'Crowns3bc/DPS v4'` runs and exits
+  0, spaces and all. It is whatever glob you feed it that drops them, so they
+  can be syntax-checked by naming them.
   `Crowns3bc/Ranger` is 1,648 lines and `Crowns3bc/Priest` 1,478, which makes a
   bare "Ranger" or "Priest" ambiguous - write `Party/Ranger.js` when that is
   what is meant. Their commit messages read "Update print statement from
   'Hello' to 'Goodbye'", which is a Copilot default describing nothing; do not
   read meaning into them.
-- **`Archived/` is retired work**, currently `Archived/Upgrade`.
-- **`TASKS.md` was deleted on 2026-10-17** and not migrated. 649 lines,
-  recoverable with `git show fe70d60:TASKS.md`. Four references still point at
-  it: `Codex/FamilyFleet.js:497` and `:5183` (both "TASKS.md 5e"),
-  `Party/CHANGELOG.md:2112` ("item 1") and the `README.md` file table.
+- **`Archived/` is retired work**: `Archived/Upgrade` and `Archived/TASKS.md`.
+- **`TASKS.md` is at `Archived/TASKS.md`.** It was deleted from the root on
+  2026-10-17 and restored under `Archived/` the same day in `aa409aa`, byte
+  for byte: blob `a3b2965a`, 649 lines, identical to
+  `git show fe70d60:TASKS.md`. Read it in the tree; there is no need to go
+  digging in history for it, which is what this entry said to do until
+  2026-10-17.
+  Three references still spell it as a root path and want the `Archived/`
+  prefix: `Codex/FamilyFleet.js:497` and `:5183` (both "TASKS.md 5e") and
+  `Party/CHANGELOG.md:2168` ("item 1"). The `README.md` entry already points
+  at the new path.
 
 ## Which session are you
 
@@ -82,18 +92,26 @@ through Chrome" would stop a session that *can* push from ever trying.
   convention in `8026394`, and was caught by the file appearing in the sidebar
   rather than by anything deliberate. Open the existing file and edit it.
 
-## Who commits - hand it over by default
+## Who commits
 
-**Both sessions, but the default differs.** The Claude Code session pushes with
-git and should simply do it. This session's web-editor route was MEASURED on
-2026-10-17 at ~14 minutes for one CLAUDE.md commit, ~8 with the recipe followed
-exactly, against under a minute for the operator by hand. So:
+**The default differs by session.** This section used to be headed "hand it
+over by default" and then open by saying the Claude Code session should simply
+push, so the heading and the first bullet contradicted each other for one of
+the two readers. Find your own session below; the rest of the section is the
+browser-driven route and does not apply to the other.
 
-- **DEFAULT: hand the commit to the operator.** Provide three things and stop -
-  the content, the commit message, and the extended description. Do not open
-  the web editor.
-- **Commit directly only when told to, for that commit.** Standing permission
-  to push is not a standing instruction to push.
+- **Claude Code session: commit and push with `git`, without being asked.**
+  It is one call, the result is verifiable against `origin/main`, and nothing
+  below about handing a commit over applies. Routing a change through a human
+  from here costs the operator time and buys nothing.
+- **Browser-driven session: DEFAULT is to hand the commit to the operator.**
+  Provide three things and stop - the content, the commit message, and the
+  extended description. Do not open the web editor. That route was MEASURED on
+  2026-10-17 at ~14 minutes for one `CLAUDE.md` commit, ~8 with the recipe
+  followed exactly, against under a minute for the operator by hand.
+- **Browser-driven session: commit directly only when told to, for that
+  commit.** Standing permission to push is not a standing instruction to
+  push.
 - **How the content is handed over depends on size.** Markdown and short text
   go in a fenced block in the chat, copy-pasteable, tables preserved. A 400 KB
   character script does not - send that as a file. Never paste a whole script
