@@ -1,5 +1,8 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v83 (`also` on an achievement entry now reaches the attack filter, and that is the whole change. achvApply() has always read `also`, added those monsters to PERMANENT_WHITELIST so the economics check could not drop the spot, and fed them to ragePullTypes() for the one-at-a-time puller - but shouldAttackMob never consulted the list. Traced in the shipped file: `also` reaches achvApply, ragePullTypes and the farm_spot message, and no attack decision anywhere. So a snake at the osnake spot was pulled, whitelisted, and then shot only while it happened to be targeting FatherToken - the targetPriority fallback on the last line of shouldAttackMob. The new check sits next to `mob.mtype === home` at the same precedence, and NOT in CONFIG.combat.alwaysAttack, which was the obvious-looking fix and is wrong twice over: that set is a sort key in updateCache as well as a filter, so snake there would rank every snake ABOVE the osnakes the achievement is counting, and it is global, so it would also commit the party to snakes on every other map. The osnake queue entry gains `also: ['snake']`. Entries without `also` are untouched - rageAlso is empty everywhere else, and the guard short-circuits on length. Priest and Mage need no change: they carry rageAlso for the puller but have no shouldAttackMob of their own, and follow the leader's target. TDZ checked - rageAlso is declared below shouldAttackMob, but the only module-scope call before that point is plProbe(), which awaits a bridge health fetch and cannot reach the combat path.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v84 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. The cross-shard dragold hunter becomes a cross-shard BOSS hunter, and it ships OFF. CONFIG.dragold is now CONFIG.bossHop, carrying seven targets - dragold, grinch, snowman, franky, crabxx, mrpumpkin, mrgreen - each with its kills_to_rung. The state machine needed almost nothing: only six places ever named dragold. TWO FEEDS, AND THE BRIDGE IS OPTIONAL. The per-shard parent.io sockets stay and now record every target type rather than filtering on data.dragold, which gives liveness and hp everywhere with no external process; the bridge /bosses endpoint is layered on top for the one thing a snapshot cannot give, the dps it measured from its own sample series on that shard. A dead bridge costs a worse pick, not the hunt - refreshBridge() is fire-and-forget on a 30s interval, nothing in tick() awaits it, and a failure drops the rows rather than letting a stale dps rot, because fallbackDps is at least honestly labelled. ShowBossHop names the source per row. SELECTION. secsToDeath = hp / shardDps(shard, mtype); eligible when secsToDeath >= (requiredDwellMs + hopLatencyMs + safetyMarginMs) / 1000, which is 76.5s at the shipped numbers; among the eligible take the SMALLEST secsToDeath, tie-broken on the lowest kills_to_rung. Smallest-first reads backwards until you write out the alternative: eligibility has already guaranteed the boss lives long enough to earn credit, so every candidate past that gate pays the same and what separates them is how long Dexon is stuck there. Biggest-first parks him on a full-health mrgreen for twenty minutes while four others die elsewhere. A boss that has not spawned yet is admitted only inside preSpawnBuffer and is costed at full health, which correctly ranks it last - arriving early means waiting. NO HOME ROUTING BETWEEN HOPS, which v83 did after every kill. Going home is not useless in itself; it clears Hop Sickness instantly, measured 2026-10-17 with ~11 minutes still on the clock. But the clear is spent the moment he leaves again, because the next hop re-stamps the full 12 minutes, so between two kills the round trip buys nothing, costs two hops of latency, and re-arms Realm Fatigue on the whole party - which does NOT clear on the way home. FIGHTING now falls straight back to IDLE. FIGHTING ALSO EXITS ON DEATH OR A HARD ABORT AND NOTHING ELSE: credit requires being live in that shard's process when the boss dies, because the award loop resolves contributors through players[name_to_id[name]] behind a bare if (current) and a departed player's points are discarded without even reaching total. maxFightMs is therefore an abort for a fight that has gone wrong, never a 'banked enough, move on' timer; there is no such thing as leaving early with a share. It also aborts if something else moved him off the target shard mid-fight, since the credit is gone either way and pretending otherwise just wedges the state. The relay message generalises from dragold_hop to boss_hop and now carries shard and mtype alongside the region and name it already sent, and it is sent BEFORE change_server because change_server reloads the page and anything after it may never run. ShowDragold becomes ShowBossHop, listing the candidate table sorted the way the picker sorts it, with each row's dps source and whether it clears the floor; its gate moves from parent.S.lunarnewyear - right while the only target was a lunar-new-year boss - to the feature's own switch. Two toggle comments rewritten to describe effect rather than current state, per the operator's standing rule.)
+// ==========================================================================
+// ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v83 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. Dexon is running v82. `also` on an achievement entry now reaches the attack filter, and that is the whole change. achvApply() has always read `also`, added those monsters to PERMANENT_WHITELIST so the economics check could not drop the spot, and fed them to ragePullTypes() for the one-at-a-time puller - but shouldAttackMob never consulted the list. Traced in the shipped file: `also` reaches achvApply, ragePullTypes and the farm_spot message, and no attack decision anywhere. So a snake at the osnake spot was pulled, whitelisted, and then shot only while it happened to be targeting FatherToken - the targetPriority fallback on the last line of shouldAttackMob. The new check sits next to `mob.mtype === home` at the same precedence, and NOT in CONFIG.combat.alwaysAttack, which was the obvious-looking fix and is wrong twice over: that set is a sort key in updateCache as well as a filter, so snake there would rank every snake ABOVE the osnakes the achievement is counting, and it is global, so it would also commit the party to snakes on every other map. The osnake queue entry gains `also: ['snake']`. Entries without `also` are untouched - rageAlso is empty everywhere else, and the guard short-circuits on length. Priest and Mage need no change: they carry rageAlso for the puller but have no shouldAttackMob of their own, and follow the leader's target. TDZ checked - rageAlso is declared below shouldAttackMob, but the only module-scope call before that point is plProbe(), which awaits a bridge health fetch and cannot reach the combat path.)
 // ==========================================================================
 // ==========================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v82 (The hunt sent the whole party to the dead centre of a rage box and wedged it there twice in one morning. mhEvaluate's spot is the boundary centre, and for a rage-boxed pack the rage rectangle IS the boundary, so the one point rageRoute must refuse is exactly the one the hunt asked for: rage_route_blocked, 1419 units short, travel attempt 1033. Measured live - mummy@spookytown centre (255.5,-1432), then booboo@spookytown centre (415,-702): two monsters, one arithmetic, which rules out anything mummy-specific. All three characters blocked independently. Dexon computes the spot and sendFarmSpot broadcasts destination.x/y verbatim; Priest.js and Mage.js carry the full rage machinery and NO mh* functions, so they inherit the coordinate and fail on it themselves - one source, three consumers, which is why this is Ranger-only and the other two need no redeploy. THE FIX IS A LOOKUP, NOT A COMPUTATION. rageEscape() was the obvious move and was wrong: it returns the nearest point outside the rectangle and knows nothing about walls, the exact mistake v80 was spent correcting, where (415,-986) was geometrically fine and genuinely unreachable. The problem is also small - G holds SEVEN rage boxes in the whole game and isMapSafeForFarming already excludes three (spider_instance is instance:true), leaving four a hunt can reach: mummy@spookytown, booboo@spookytown x2, d_wiz@d2. The queue already has verified points for the first three. BUT THE QUEUE IS NOT UNIFORMLY TRUSTWORTHY, which is the part worth remembering: entry 0 is a real park point - (290,-990), rageHit null, 140 from the mummy RAGE rectangle [-124,-1631,614,-1130] and 148 from booboo's, reproducing v80's figures once measured against rage rather than boundary - while entry 18 is booboo @ (415,-702), gap 0, rageHit 'booboo', INSIDE the box. The coordinate that wedged the party was sitting in the queue looking like an answer, and first-match-wins picks entry 0 today only because it is first. So huntParkPoint validates instead of trusting: rageHit() must place the candidate outside EVERY box, and rectGap must put it within HUNT_PARK_MAX_GAP of THIS pack - 400, against measured 140/148 for the right pack and 861 for the wrong one. Nearest qualifying entry wins, so ordering stops mattering, and a rageHit that throws disqualifies rather than passes. No qualifying point means the spot is skipped and the hunt declined, which costs one slot; guessing cost an hour, twice. d_wiz@d2 has no entry and stays refused until someone stands there and measures. Also fixes the two config comments v81 left inverted.)
@@ -492,9 +495,75 @@ const CONFIG = {
 		mluckLevelFallback: 40,
 	},
 
-	dragold: {
-		enabled: true,
+	/* CROSS-SHARD BOSS HOP -> bossHop below. Generalised from the dragold-only
+	   scanner on 2026-10-17; the state machine was already general and only
+	   six places named dragold.
+
+	   The three numbers that decide whether a hop is worth making, all
+	   measured 2026-10-17 - see the CLAUDE.md sections "Kill credit and
+	   achievement score" and "Server hopping, home bonus and Realm Fatigue".
+
+	   CREDIT REQUIRES BEING PRESENT WHEN THE BOSS DIES. The award loop
+	   resolves contributors through players[name_to_id[name]] and skips
+	   anyone not live in THAT shard's process, so a departed player's
+	   monster.points is discarded and does not even reach `total`. There is
+	   therefore no such thing as banking damage and moving on, and maxFightMs
+	   is a HARD ABORT, never a credit timer.
+
+	   HOP SICKNESS COSTS 5x IN DWELL, not 4x: points /= 4 AND output: -20,
+	   which is a 0.2 factor, and share scales as (factor * T)^0.65. A chaining
+	   party is permanently sick - every hop re-stamps the full 12 minutes - so
+	   the sick column is the only one worth quoting here. The two measured
+	   anchors for mrgreen at 36,000,000 hp: 50.1s against 40 other
+	   contributors, 147.0s against 300. requiredDwellMs sits between them at
+	   60s because that is the operator's dial, NOT because 60s was measured to
+	   be the threshold at any particular contributor count. Raise it on a busy
+	   shard.
+
+	   PUSH ONE CHARACTER, NOT THREE. Achievement score is a MAX across the
+	   account, never a sum: the effective value is max(own p.stats total,
+	   max_stats[monster][0]), so a second character earning credit adds
+	   nothing unless it would overtake the holder. Dexon is the holder for
+	   most of this list but NOT all of it - snowman was measured at 22.1 held
+	   by FatherToken against Dexon's own 18.05 - so do not read "Dexon hops,
+	   the others follow" as "the others are decoration". The followers earn
+	   the party multiplier either way: 1 + 0.3/divider per own non-merchant
+	   party member, divider 2 for a cooperative monster, which is 1.30 a kill
+	   for the full party against 1.00 alone. That multiplier needs them
+	   PRESENT at the death, same as Dexon - see the credit rule above. */
+	bossHop: {
+		/* Off: the operator flips it. Chaining hops keeps the party
+		   permanently hop-sick, which is a real cost to everything else it
+		   does, so this is a session the operator starts deliberately.
+		   Flipping it needs a RELOAD, not just an edit: startScanning() runs
+		   once at load and returns early while this is false, so the sockets
+		   never open and tick() has nothing to pick from. */
+		enabled: false,
 		preSpawnBuffer: 3000,
+		hopLatencyMs: 1500,          // measured 274ms per change_server + margin
+		safetyMarginMs: 15000,
+		maxFightMs: 15 * 60 * 1000,  // hard abort only, NOT a credit timer
+		requiredDwellMs: 60000,
+		/* Used only when the bridge has no fresh dps for that shard and boss -
+		   either it is down, or it has not sampled this fight yet. NOT a
+		   per-boss measurement: it is the whole-server figure the bridge read
+		   at mrgreen on 2026-10-17, 22,866 on US V and 21,561 on EU III,
+		   rounded down. A boss with fewer players on it will be slower than
+		   this and one at a weekend peak faster, so treat a fallback-sourced
+		   secsToDeath as an order of magnitude, not a number. ShowBossHop
+		   labels every row with which of the two it used. */
+		fallbackDps: 20000,
+		/* Priority is kills to this boss's next achievement rung, used ONLY to
+		   break a tie on time-to-death. */
+		targets: [
+			{ mtype: 'dragold', kills_to_rung: 1 },
+			{ mtype: 'grinch', kills_to_rung: 1 },
+			{ mtype: 'snowman', kills_to_rung: 60 },
+			{ mtype: 'franky', kills_to_rung: 68 },
+			{ mtype: 'crabxx', kills_to_rung: 70 },
+			{ mtype: 'mrpumpkin', kills_to_rung: 490 },
+			{ mtype: 'mrgreen', kills_to_rung: 621 },
+		],
 	},
 
 	/* BOSS EVENTS - the operator's rule, 2026-09-30: cooperative bosses only,
@@ -532,13 +601,15 @@ const CONFIG = {
 		leaderTrustMs: 20000,
 	},
 
-	/* ACHIEVEMENT QUEUE - currently OFF. -> ACHIEVEMENT QUEUE below. The queue
-	   is still READ while this is off: huntParkPoint() resolves a rage-boxed
-	   hunt's park point out of it and achvCfg() has no enabled gate, so
-	   emptying the queue would silently disable rage-boxed hunts as well. */
-	/* MONSTER HUNT - currently ON. -> MONSTER HUNT below.
-	   mhOn() and mhOff() flip 'enabled' at runtime; off restores ordinary
-	   farming and hands the spot straight back to the scorer. */
+	/* ACHIEVEMENT QUEUE -> ACHIEVEMENT QUEUE below. On, the queue drives which
+	   achievement Dexon is grinding toward. The queue is still READ while this
+	   is off: huntParkPoint() resolves a rage-boxed hunt's park point out of it
+	   and achvCfg() has no enabled gate, so emptying the queue would silently
+	   disable rage-boxed hunts as well. */
+	/* MONSTER HUNT -> MONSTER HUNT below. On, the party takes and works monster
+	   hunts; off restores ordinary farming and hands the spot straight back to
+	   the scorer.
+	   mhOn() and mhOff() flip 'enabled' at runtime. */
 	monsterHunt: {
 		enabled: true,
 		/* The backstop on waiting for everyone, NOT the rule. The rule is in
@@ -1039,7 +1110,7 @@ async function mainLoop() {
 			}
 		}
 
-		if (await noHang(dragold.tick(), 'dragold.tick') === 'block') {
+		if (await noHang(bossHop.tick(), 'bossHop.tick') === 'block') {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
 		if (character.map === "jail" && !smart.moving) {
@@ -2496,6 +2567,12 @@ async function handleSpecificEvent(eventType, mapName, x, y) {
    hunter to this boss: at ~491 effective DPS into 960,000 HP behind armor 320
    and phresistance 30, the open question is how much damage he actually lands
    before other players finish it.
+
+   PARTLY OVERTAKEN 2026-10-17. The hunter was generalised anyway and crabxx is
+   in CONFIG.bossHop.targets, so the "is it worth it" question is now answered
+   per-hop at runtime by hp / shardDps rather than once, in advance, from this
+   log. The log is still the thing to read for whether the 491 figure holds and
+   what share of the kill he actually lands - the hop rule assumes neither.
    ============================================================================ */
 const CRABXX_KEY = 'crabxx_contrib';
 
@@ -2598,64 +2675,262 @@ function crabxxReport() {
 	return out;
 }
 
-const dragold = {
+/* ============================================================================
+   CROSS-SHARD BOSS HOP
+   ============================================================================
+   Generalised 2026-10-17 from the dragold-only scanner that shipped in v62.
+   The state machine was already general; only six places named dragold - the
+   server_info filter, the local-liveness probe, the scanResults shape, the
+   config key, the relay message and the log strings.
+
+   TWO FEEDS, AND THE BRIDGE IS NOT REQUIRED.
+
+   1. SOCKETS, always on. One parent.io connection per non-PVP shard,
+      listening for the game's own server_info broadcast. That is the same
+      payload the bridge polls, so this is first-hand data, not a mirror:
+      {live, map, hp, max_hp, target, x, y} when the boss is up and
+      {live, spawn} when it is not. It gives liveness and hp everywhere, for
+      every target type, with no external process at all.
+
+   2. THE BRIDGE /bosses ENDPOINT, when it answers. It adds the one thing a
+      single snapshot cannot: dps, measured from its own sample series on
+      that shard. hp/dps is the whole selection rule, so with the bridge up
+      the decision rests on an observed figure and without it on
+      CONFIG.bossHop.fallbackDps.
+
+   Written this way round deliberately. Dexon keeps hopping when the bridge is
+   down - he just picks worse - rather than the hunt stopping with it.
+
+   SELECTION. For each live boss on another shard:
+
+       secsToDeath = hp / shardDps(shard, mtype)
+       eligible    = secsToDeath >= (requiredDwell + hopLatency + safety) / 1000
+       choose      = the SMALLEST secsToDeath among the eligible
+       tie-break   = the lowest kills_to_rung
+
+   Smallest-first looks backwards until you write out what the alternative
+   buys. Eligibility has already guaranteed the boss lives long enough to earn
+   credit, so every candidate past that gate pays the same; what separates
+   them is how long Dexon is then stuck there. Taking the one nearest death
+   banks the kill soonest and frees him for the next, which is the only way a
+   chain beats sitting still. Going biggest-first would park him on a
+   full-health mrgreen for twenty minutes while four others died elsewhere.
+
+   NO HOME ROUTING BETWEEN HOPS. v83 sent him back to USIV after every kill.
+   Going home is not useless in itself - it clears Hop Sickness instantly,
+   measured 2026-10-17 with ~11 minutes still on the clock - but the clear is
+   spent the moment he leaves again, because the next hop out re-stamps the
+   full 12 minutes. So between two kills the round trip buys nothing and costs
+   two hops' latency, and it re-arms Realm Fatigue on the whole party, which
+   does NOT clear on the way home. Going home is worth doing when the CHAIN
+   ENDS, which is the operator flipping enabled off, not something this state
+   machine should decide. FIGHTING therefore falls straight back to IDLE, and
+   IDLE either picks the next target or hands control to ordinary farming on
+   whatever shard he is standing in.
+
+   FIGHTING EXITS ON DEATH OR A HARD ABORT, NOTHING ELSE. Kill credit requires
+   being live in that shard's process when the boss dies: the award loop
+   resolves contributors through players[name_to_id[name]] and silently skips
+   anyone who has left, so accumulated damage does not travel. maxFightMs is
+   therefore an abort for a fight that has gone wrong, never a "banked enough,
+   move on" timer, and there is no such thing as leaving early with a share.
+   ============================================================================ */
+/* How long a server_info push stays usable. Not a measured period: it is a
+   generous multiple of the push rate, chosen so an ordinary gap never
+   discards a good shard while a dead socket drops out within minutes. */
+const SCAN_STALE_MS = 5 * 60 * 1000;
+/* Consecutive failed change_server calls before the target is abandoned.
+   Without it an unreachable shard wedges the hunter on a retry loop that
+   never picks anything else. */
+const HOP_ATTEMPT_CAP = 3;
+
+const bossHop = {
 	state: 'IDLE',
 	targetShard: null,
-	scanResults: [],
+	targetType: null,
 	hopping: false,
+	hopAttempts: 0,
+	arrivedAt: 0,
+	fightStart: 0,
+	// shard|mtype -> { shard, mtype, live, hp, maxHp, spawnTime, at }
+	scanResults: [],
+	// shard|mtype -> { dps, etaSec, hp, stale } from the bridge, or empty
+	bridgeRows: [],
+	bridgeAt: 0,
+	bridgeErr: null,
+
+	targetCfg(mtype) {
+		return CONFIG.bossHop.targets.find(t => t.mtype === mtype) || null;
+	},
+
+	targetTypes() {
+		return CONFIG.bossHop.targets.map(t => t.mtype);
+	},
 
 	startScanning() {
-		if (!CONFIG.dragold.enabled) return;
+		if (!CONFIG.bossHop.enabled) return;
 		if (typeof parent.io !== 'function') {
-			game_log('Cross-server dragold scanning unavailable here - will still fight dragold locally if it spawns', 'orange');
+			game_log('Cross-shard boss scanning unavailable here - bosses will still be fought locally when they spawn', 'orange');
 			return;
 		}
 		const servers = parent?.X?.servers;
 		if (!servers) return;
 
+		const wanted = this.targetTypes();
 		for (const server of servers) {
 			if (server.name === 'PVP') continue;
 			const shard = server.region + server.name;
 			const socket = parent.io(`https://${server.address}`, { path: server.path + 'socket.io', transports: ['websocket'] });
 			socket.on('server_info', (data) => {
-				if (!data?.dragold) return;
-				const spawnTime = new Date(data.dragold.spawn).getTime();
-				const idx = this.scanResults.findIndex(r => r.shard === shard);
-				const entry = { shard, live: data.dragold.live, spawnTime };
-				if (idx >= 0) this.scanResults[idx] = entry;
-				else this.scanResults.push(entry);
+				if (!data) return;
+				const at = Date.now();
+				for (const mtype of wanted) {
+					const d = data[mtype];
+					if (!d) continue;
+					/* Both shapes, kept apart on purpose: a live boss carries hp
+					   and max_hp and no spawn, a dead one carries spawn and no
+					   hp. Reading one field off the other shape yields
+					   undefined, which would read as "hp 0" downstream. */
+					this.record({
+						shard,
+						mtype,
+						live: d.live === true,
+						hp: typeof d.hp === 'number' ? d.hp : null,
+						maxHp: typeof d.max_hp === 'number' ? d.max_hp : null,
+						spawnTime: d.spawn ? new Date(d.spawn).getTime() : null,
+						at,
+					});
+				}
 			});
 		}
+		this.refreshBridge();
+		setInterval(() => this.refreshBridge(), 30000);
+	},
+
+	record(entry) {
+		const idx = this.scanResults.findIndex(
+			r => r.shard === entry.shard && r.mtype === entry.mtype);
+		if (idx >= 0) this.scanResults[idx] = entry;
+		else this.scanResults.push(entry);
+	},
+
+	/* Enrichment only, and deliberately fire-and-forget: nothing in tick()
+	   awaits it, so a slow or dead bridge costs the hunt nothing. On failure
+	   the rows are dropped rather than left to rot, because a stale dps is
+	   worse than no dps - fallbackDps is at least honestly labelled. */
+	refreshBridge() {
+		if (!CONFIG.bossHop.enabled) return;
+		plFetch('/bosses').then((j) => {
+			const rows = Array.isArray(j?.bosses) ? j.bosses : (Array.isArray(j) ? j : []);
+			this.bridgeRows = rows.map(r => ({
+				shard: (r.serverRegion || '') + (r.serverIdentifier || ''),
+				mtype: r.type,
+				dps: typeof r.dps === 'number' ? r.dps : null,
+				hp: typeof r.hp === 'number' ? r.hp : null,
+				etaSec: typeof r.eta_sec === 'number' ? r.eta_sec : null,
+				stale: r.stale === true,
+			}));
+			this.bridgeAt = Date.now();
+			this.bridgeErr = null;
+		}, (e) => {
+			this.bridgeRows = [];
+			this.bridgeErr = String(e);
+		});
+	},
+
+	bridgeRow(shard, mtype) {
+		if (Date.now() - this.bridgeAt > 120000) return null;
+		return this.bridgeRows.find(
+			r => r.shard === shard && r.mtype === mtype && !r.stale) || null;
+	},
+
+	/* Observed dps on that shard when the bridge has it, the measured
+	   aggregate otherwise. Never zero: a zero would make secsToDeath infinite
+	   and every candidate eligible, which is the opposite of safe. */
+	shardDps(shard, mtype) {
+		const row = this.bridgeRow(shard, mtype);
+		if (row && row.dps > 0) return row.dps;
+		return CONFIG.bossHop.fallbackDps;
 	},
 
 	currentShard() {
 		return parent.server_region + parent.server_identifier;
 	},
 
-	localDragoldLive() {
-		return parent?.S?.dragold?.live === true;
+	localBossLive(mtype) {
+		return parent?.S?.[mtype]?.live === true;
 	},
 
-	pickTargetShard() {
+	/* Any target boss live in this shard right now, lowest kills_to_rung
+	   first. Checked before any hop: a boss standing here costs no latency and
+	   no hop sickness, so it always wins. */
+	localTarget() {
+		let best = null;
+		for (const t of CONFIG.bossHop.targets) {
+			if (!this.localBossLive(t.mtype)) continue;
+			if (!best || t.kills_to_rung < best.kills_to_rung) best = t;
+		}
+		return best?.mtype ?? null;
+	},
+
+	/* Every (shard, boss) worth considering, each with the secsToDeath the
+	   selection rule turns on. A boss that has not spawned yet is admitted
+	   only inside preSpawnBuffer and is costed at full health, which ranks it
+	   last among the eligible - correct, since arriving early means waiting. */
+	candidates() {
 		const now = Date.now();
 		const cur = this.currentShard();
-		let best = null;
+		const out = [];
 
 		for (const r of this.scanResults) {
 			if (r.shard === cur) continue;
+			/* A socket that has quietly died leaves its last push sitting in
+			   scanResults forever, and a frozen hp reads as a live boss that
+			   never loses health - which is exactly the candidate the picker
+			   likes best. server_info is pushed on a short period, so an
+			   entry this old means the feed is gone, not that nothing moved. */
+			if (now - r.at > SCAN_STALE_MS) continue;
+			const cfg = this.targetCfg(r.mtype);
+			if (!cfg) continue;
 
+			let hp = null;
 			if (r.live) {
-				best = r;
-				break;
+				const row = this.bridgeRow(r.shard, r.mtype);
+				hp = r.hp ?? row?.hp ?? r.maxHp;
+			} else if (r.spawnTime) {
+				const untilSpawn = r.spawnTime - now;
+				if (untilSpawn <= 0 || untilSpawn > CONFIG.bossHop.preSpawnBuffer) continue;
+				/* typeof, not G?. - optional chaining does NOT save an
+				   UNDECLARED identifier from throwing, and this runs inside
+				   a loop whose catch would turn it into a silent no-op. */
+				const g = (typeof parent !== 'undefined' && parent.G) ? parent.G
+					: (typeof G !== 'undefined' ? G : null);
+				hp = r.maxHp ?? g?.monsters?.[r.mtype]?.hp ?? null;
+			} else {
+				continue;
 			}
+			if (!(hp > 0)) continue;
 
-			const untilSpawn = r.spawnTime - now;
-			if (untilSpawn > 0 && untilSpawn <= CONFIG.dragold.preSpawnBuffer) {
-				if (!best || r.spawnTime < best.spawnTime) best = r;
-			}
+			out.push({
+				shard: r.shard,
+				mtype: r.mtype,
+				hp,
+				live: r.live,
+				secsToDeath: hp / this.shardDps(r.shard, r.mtype),
+				kills_to_rung: cfg.kills_to_rung,
+			});
 		}
+		return out;
+	},
 
-		return best?.shard ?? null;
+	pickTarget() {
+		const c = CONFIG.bossHop;
+		const floorSec = (c.requiredDwellMs + c.hopLatencyMs + c.safetyMarginMs) / 1000;
+		const eligible = this.candidates().filter(x => x.secsToDeath >= floorSec);
+		if (!eligible.length) return null;
+		eligible.sort((a, b) =>
+			a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung);
+		return eligible[0];
 	},
 
 	async lootBeforeHop() {
@@ -2675,110 +2950,126 @@ const dragold = {
 		return null;
 	},
 
-	async changeServer(shard) {
+	async changeServer(shard, mtype) {
 		const parsed = this.parseShard(shard);
 		if (!parsed) {
-			game_log(`dragold: can't parse shard "${shard}"`, 'red');
+			game_log(`bossHop: can't parse shard "${shard}"`, 'red');
 			return false;
 		}
-		game_log(`🐉 Hopping to ${shard} for dragold`, '#FFD700');
+		game_log(`🐉 Hopping to ${shard} for ${mtype}`, '#FFD700');
 		this.hopping = true;
 		try {
-			change_server(parsed.region, parsed.name);
+			/* Tell the followers BEFORE change_server: it reloads the page, so
+			   anything after it in this function may never run. The leader
+			   decides and they only obey - they run no scanner of their own. */
 			plSend(['FatherToken', 'MageofOz'], {
-				message: 'dragold_hop',
+				message: 'boss_hop',
+				shard,
+				mtype,
 				region: parsed.region,
 				name: parsed.name
 			});
+			change_server(parsed.region, parsed.name);
 			this.hopping = false;
 			return true;
 		} catch (e) {
-			game_log(`dragold: server change failed — ${e}`, 'red');
+			game_log(`bossHop: server change failed — ${e}`, 'red');
 			this.hopping = false;
 			return false;
 		}
 	},
 
 	async tick() {
-		if (!CONFIG.dragold.enabled) return 'continue';
+		if (!CONFIG.bossHop.enabled) return 'continue';
 		if (this.hopping) return 'block';
 
 		const cur = this.currentShard();
 
 		switch (this.state) {
 			case 'IDLE': {
-				if (this.localDragoldLive()) {
+				const here = this.localTarget();
+				if (here) {
 					this.state = 'FIGHTING';
 					this.targetShard = cur;
-					game_log('🐉 Dragold live here — entering FIGHTING', '#FFD700');
+					this.targetType = here;
+					this.arrivedAt = this.arrivedAt || Date.now();
+					this.fightStart = Date.now();
+					game_log(`🐉 ${here} live here — entering FIGHTING`, '#FFD700');
 					return 'continue';
 				}
 
-				const target = this.pickTargetShard();
-				if (target) {
-					this.state = 'HOPPING';
-					this.targetShard = target;
-				} else {
-					return 'continue';
-				}
+				const pick = this.pickTarget();
+				if (!pick) return 'continue';
+				this.state = 'HOPPING';
+				this.targetShard = pick.shard;
+				this.targetType = pick.mtype;
+				game_log(`🐉 ${pick.mtype} on ${pick.shard}: ~${Math.round(pick.secsToDeath)}s to death — hopping`, '#FFD700');
 			}
 
 			case 'HOPPING': {
 				if (cur === this.targetShard) {
-					if (this.localDragoldLive()) {
+					this.arrivedAt = Date.now();
+					if (this.localBossLive(this.targetType)) {
 						this.state = 'FIGHTING';
-						game_log('🐉 Arrived — dragold is live, FIGHTING', '#FFD700');
+						this.fightStart = Date.now();
+						game_log(`🐉 Arrived — ${this.targetType} is live, FIGHTING`, '#FFD700');
 						return 'continue';
 					}
-					game_log('🐉 Arrived but dragold not live here — back to IDLE', '#FFD700');
-					this.state = 'IDLE';
-					this.targetShard = null;
+					game_log(`🐉 Arrived but ${this.targetType} is not live here — back to IDLE`, '#FFD700');
+					this.reset();
 					return 'continue';
 				}
 
 				if (await this.lootBeforeHop()) return 'block';
 
-				await this.changeServer(this.targetShard);
+				if (!await this.changeServer(this.targetShard, this.targetType)) {
+					if (++this.hopAttempts >= HOP_ATTEMPT_CAP) {
+						game_log(`🐉 Giving up on ${this.targetShard} after ${this.hopAttempts} failed hops`, 'orange');
+						this.reset();
+						return 'continue';
+					}
+				}
 				return 'block';
 			}
 
 			case 'FIGHTING': {
-				if (this.localDragoldLive()) {
+				if (cur !== this.targetShard) {
+					/* Something else moved him. Credit for this fight is gone
+					   whatever happens now, so stop pretending otherwise. */
+					game_log(`🐉 Left ${this.targetShard} mid-fight — abandoning ${this.targetType}`, 'orange');
+					this.reset();
 					return 'continue';
 				}
-				game_log('🐉 Dragold dead — RETURNING home', '#FFD700');
-				this.state = 'RETURNING';
-				this.targetShard = null;
-			}
-
-			case 'RETURNING': {
-				const liveShard = this.scanResults.find(
-					r => r.shard !== cur && r.live
-				)?.shard;
-
-				if (liveShard) {
-					this.state = 'HOPPING';
-					this.targetShard = liveShard;
-					game_log(`🐉 New live dragold on ${liveShard} — diverting`, '#FFD700');
-					return 'block';
-				}
-
-				if (cur === homeServer) {
-					this.state = 'IDLE';
-					this.targetShard = null;
+				if (this.localBossLive(this.targetType)) {
+					const fought = Date.now() - this.fightStart;
+					if (fought > CONFIG.bossHop.maxFightMs) {
+						game_log(`🐉 ${this.targetType} still up after ${Math.round(fought / 60000)}m — hard abort`, 'orange');
+						this.reset();
+						return 'continue';
+					}
 					return 'continue';
 				}
-
-				if (await this.lootBeforeHop()) return 'block';
-
-				await this.changeServer(homeServer);
-				return 'block';
+				const dwell = Date.now() - (this.arrivedAt || this.fightStart);
+				game_log(`🐉 ${this.targetType} dead on ${this.targetShard} after ${Math.round(dwell / 1000)}s here — next target`, '#FFD700');
+				/* Straight back to IDLE, NOT home - see NO HOME ROUTING above.
+				   Credit was already awarded where it died. */
+				this.reset();
+				return 'continue';
 			}
 
 			default:
-				this.state = 'IDLE';
+				this.reset();
 				return 'continue';
 		}
+	},
+
+	reset() {
+		this.state = 'IDLE';
+		this.targetShard = null;
+		this.targetType = null;
+		this.hopAttempts = 0;
+		this.arrivedAt = 0;
+		this.fightStart = 0;
 	}
 };
 
@@ -4276,20 +4567,49 @@ function pingButton() {
 setInterval(pingButton, 1000);
 
 function topButtons() {
-	if (parent.S.lunarnewyear) {
-		add_top_button('ShowDragold', '🐉', () => {
+	/* Was gated on parent.S.lunarnewyear, which was right while the hunter
+	   only knew about dragold - he spawns in that event and nowhere else. The
+	   target list now spans seven bosses with unrelated calendars, so the
+	   gate is the feature's own switch. */
+	if (CONFIG.bossHop.enabled) {
+		add_top_button('ShowBossHop', '🐉', () => {
+			const now = Date.now();
+			const c = CONFIG.bossHop;
+			const floorSec = (c.requiredDwellMs + c.hopLatencyMs + c.safetyMarginMs) / 1000;
 			const info = {
-				state: dragold.state,
-				targetShard: dragold.targetShard,
-				currentShard: dragold.currentShard(),
-				localDragoldLive: dragold.localDragoldLive(),
-				scanResults: dragold.scanResults
+				state: bossHop.state,
+				targetShard: bossHop.targetShard,
+				targetType: bossHop.targetType,
+				currentShard: bossHop.currentShard(),
+				localTarget: bossHop.localTarget(),
+				eligibleAtOrAboveSec: Math.round(floorSec),
+				bridge: bossHop.bridgeAt
+					? { ageSec: Math.round((now - bossHop.bridgeAt) / 1000), rows: bossHop.bridgeRows.length }
+					: { ageSec: null, rows: 0, error: bossHop.bridgeErr },
+				/* Sorted the way the picker sorts, so the top row IS the
+				   next hop unless it falls below the floor. */
+				candidates: bossHop.candidates()
+					.sort((a, b) => a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung)
+					.map(x => ({
+						shard: x.shard,
+						mtype: x.mtype,
+						live: x.live,
+						hp: Math.round(x.hp),
+						dps: Math.round(bossHop.shardDps(x.shard, x.mtype)),
+						dpsSource: bossHop.bridgeRow(x.shard, x.mtype)?.dps > 0 ? 'bridge' : 'fallback',
+						secsToDeath: Math.round(x.secsToDeath),
+						eligible: x.secsToDeath >= floorSec,
+						kills_to_rung: x.kills_to_rung,
+					})),
+				scanResults: bossHop.scanResults
 					.slice()
-					.sort((a, b) => a.spawnTime - b.spawnTime)
+					.sort((a, b) => (a.spawnTime ?? 0) - (b.spawnTime ?? 0))
 					.map(r => ({
 						shard: r.shard,
+						mtype: r.mtype,
 						live: r.live,
-						spawnTime: new Date(r.spawnTime).toLocaleString()
+						hp: r.hp,
+						spawnTime: r.spawnTime ? new Date(r.spawnTime).toLocaleString() : null
 					}))
 			};
 			show_json(info);
@@ -6472,7 +6792,7 @@ mainLoop();
 actionLoop();
 skillLoop();
 equipmentLoop();
-dragold.startScanning();
+bossHop.startScanning();
 maintenanceLoop();
 potionLoop();
 farmSpotTick();
