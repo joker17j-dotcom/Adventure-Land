@@ -186,6 +186,138 @@ browser-driven route and does not apply to the other.
   documentation. This holds for `adventureland_mongodb` as well: it is the
   server source, not a mirror of the deployed client.
 
+## Server hopping, home bonus and Realm Fatigue
+
+**Both sessions must know this; only the browser-driven one can measure it.**
+Every figure here was measured live on 2026-10-17 off `character.s` on each
+character tab, with the operator's go-ahead for a disruptive test hop.
+
+- **A hop re-stamps BOTH clocks on EVERY non-merchant character, and moving
+  together does not help.** This is the measurement that kills the obvious
+  chain-hop design. Three characters hopped inside one second - 274ms hop
+  latency each - and all three Realm Fatigue timers jumped back to full:
+  +504,779 / +508,866 / +506,390 ms against the no-restamp prediction. The
+  trigger is the HOP ITSELF, not a desync window between characters, so
+  synchronising the party buys exactly nothing. Hop Sickness resets the same
+  way - a predicted 161,147 ms came back 688,306.
+- **Hopping ONE character fatigues the ones who stayed**, after a lag of
+  roughly 10-30 seconds. At +6s the two who stayed home still read clean, and
+  reading that as "staying put is free" would have been a wrong conclusion;
+  by the next read both carried ~1,774,000 ms. Do not call this one early.
+- **Activity re-stamps it.** The two actively farming read ~26s elapsed while
+  the idle one on another shard read 184s, so the timer tops back up rather
+  than running down while any mismatch persists.
+- **Reuniting does NOT clear it, and only then does it decay 1:1 with real
+  time.** All three co-located on one shard still carried it; decay ratios
+  measured 0.999 / 1.006 / 1.004 over 49-119 second windows.
+- **Returning home clears Hop Sickness INSTANTLY; Realm Fatigue survives the
+  trip.** All three arrived on the home shard with `hopsickness` absent despite
+  ~11 minutes remaining moments earlier, while Realm Fatigue came home intact
+  at 29.5 minutes. `G.conditions.hopsickness.explanation` says so outright,
+  and also says the 12 minutes is "online play" - it does not tick down while
+  the character is offline.
+- **The merchant exemption is one-way, not total.** Meltymerch hopped through
+  US I/II/III/V, EU I/II/III and ASIA I/II across the whole test: he never
+  received Realm Fatigue and never inflicted it on anybody. He DOES take Hop
+  Sickness - measured 11.9 minutes on EU III. So merchant arbitrage costs the
+  combat party nothing, and costs the merchant only his own luck/gold while
+  away, which arbitrage profit does not depend on.
+- **So Realm Fatigue is the cheap half.** It blocks home bonuses and kiss
+  rewards only, the home bonus does not apply off-home anyway, and it does not
+  scale with how many shards get visited - its whole cost is delaying the home
+  bonus resuming once back. Hop Sickness is the expensive one; see below.
+
+## Kill credit and achievement score
+
+**Both sessions.** Server-source reads plus live measurement, 2026-10-17.
+
+- **CREDIT REQUIRES BEING PRESENT WHEN THE MONSTER DIES.** The award loop
+  resolves every contributor through `players[name_to_id[name]]` and skips any
+  entry whose player is not live in THAT shard's process - the guard is a bare
+  `if (current)` - so a departed player's accumulated `monster.points` is
+  discarded and does not even contribute to `total`. Hop away before the kill
+  and the damage earned nothing. Any design that banks damage at one boss and
+  moves on is therefore broken; the party has to wait out the death.
+- **Share formula.** `total = SUM(points^0.65)`;
+  `share = points^0.65 / total`; credit if `share > 0.0025`. `points` is
+  accumulated `mnet`, with `mnet /= 4` under Hop Sickness and `mnet *= 5` with
+  the home-server bonus.
+- **Hop Sickness costs 5x in required participation time, not 4x.** `/4` on
+  points AND `output: -20` on damage dealt gives a 0.2 factor. Because share
+  scales as `(factor * T)^0.65`, that is 2.46x in share at a fixed dwell and
+  exactly 5x in dwell. For mrgreen (36,000,000 HP) one character needs 10.1s
+  clean against 50.1s hopsick at 40 other contributors, and 29.7s against
+  147.0s at 300.
+- **Score per credited kill is `1 + 0.3/divider` per own non-merchant party
+  member, where `divider = 2` if the monster is `cooperative`.** Measured over
+  11 monsters with the full three-character party: 1.58-1.59 for
+  non-cooperative - asymptote 1.6, lifetime averages dragged down by older solo
+  kills - and 1.30 for cooperative, crabxx landing on exactly 1.3000. Roughly
+  0.63 kills per point on regular mobs, 0.77 on bosses.
+- **Credit on a NON-COOPERATIVE monster needs no damage at all** - party
+  membership plus presence suffices. Measured: a character with its runner
+  stopped, standing still, took 113 credits in 56.4s (2.003/s) against 1.984/s
+  and 1.942/s for the two actually fighting. Do NOT generalise this to bosses:
+  `cooperative` monsters go through the share-gated path above, which is
+  exactly why 12 crabxx runs produced only 7 credited kills.
+- **Achievement score is a MAX across the account's characters, never a sum.**
+  The effective value is `max(own p.stats total, max_stats[monster][0])`, and
+  the tracker returns `max.monsters[name]` as `[value, holderName]`. Proven by
+  the holders differing: poisio max 11,218.0 "MageofOz" against Dexon's own
+  11,148.8, and snowman 22.1 "FatherToken" against Dexon's own 18.05. A second
+  character earning credit therefore adds NOTHING unless it would overtake the
+  holder - push ONE character, not three. Correction to an earlier note: the
+  claim that 12/12 crabxx runs cleared the credit threshold was computed on
+  party-combined points and is wrong; per-character it is 11/12, and the one
+  failure is a wipe either way.
+- **Read standings with the `tracker` socket event, not the NPC.** There is no
+  `G.npcs.tracktrix`, no top-level function naming the fetch, and
+  `character.p` is null on the client - so this is not guessable and cost real
+  time to find. `socket.emit('tracker')` plus a listener on `tracker` returns
+  `monsters` (kill counts), `monsters_diff` (score minus kills), `max`
+  (`{monsters, level}` - the account maxima, each `[value, holder]`), and also
+  `exchanges`, `maps`, `tables`, `drops`, `drops_home`,
+  `monsters_home_server`, `global`, `global_static`. A monster's score is
+  `monsters[n] + monsters_diff[n]`. Keep the raw payload on `window.__X` and
+  report only derived numbers; it is large and trips the result filter.
+- **`drops_home` is a home-shard-EXCLUSIVE drop table**, present for exactly
+  eight monsters - crabxx, rharpy, phoenix, icegolem, dragold, franky, mrgreen,
+  mrpumpkin - and additive to the normal table, which all eight also have. It
+  is static reference data, NOT personal history; an attempt to use it for
+  per-kill drop-rate history was a dead end. Operator's 2026-10-17 call: these
+  are not worth planning around, the normal drops are.
+
+## Stopping and restarting a character's CODE
+
+**Browser-driven session only.** Needs a live character tab.
+
+- **`stop_runner()` and `start_runner()`, both called with no arguments.**
+  Measured off the game's own markup rather than guessed: the Disengage control
+  carries `onclick="btc(event); stop_runner()"` and Engage `start_runner()`.
+  `stop_character_code` does not exist in either context, and reading the
+  function sources is useless - they come back `[BLOCKED]` because they contain
+  the code-slot token.
+- **Stopping the runner DESTROYS the `maincode` iframe, and every game helper
+  with it.** `change_server`, `smart_move`, `move` and `xmove` all live in that
+  sandbox and are gone after a stop. The top window keeps a plain `move(x,y)`
+  but NOT `change_server`, so a hop REQUIRES the runner engaged. `code_move`
+  and `code_travel` do exist at top level and silently no-op with the sandbox
+  down - they return `undefined` and the character never moves. To park a
+  character and then hop it, engage the runner only long enough to call
+  `change_server` and stop it again on arrival.
+- **Top-level `move(x,y)` is straight-line and clips at walls.** It sets
+  `going_x`/`going_y` to the last reachable point, so a long trip needs a
+  waypoint chain with a stall check. Pathfinding exists only as `smart_move`,
+  inside the sandbox.
+- **`code_active` reads false synchronously right after `start_runner()`.**
+  The sandbox takes a second or two to boot; check it again before concluding
+  the restart failed.
+- **A character left with its runner stopped on a foreign shard will die.**
+  Lost Dexon that way on 2026-10-17: his script was engaged during the hop
+  window, wandered to desertland without the priest, and died. `respawn()`
+  also lives in the sandbox, not at top level, so reviving him needed the
+  runner back up first.
+
 ## The loaded copy vs this one
 
 **Both sessions.**
@@ -459,6 +591,16 @@ ask the other session to measure first.
 
 - **Async work returns `{}`.** Stash the result on `window.__X` inside the
   snippet and read it back with a follow-up synchronous call.
+- **Keep page-side sleeps under ~40s.** The CDP `Runtime.evaluate` behind the
+  tool times out at 45,000ms and reports "The renderer may be frozen or
+  unresponsive", which looks exactly like a hung tab and is not. Measured
+  2026-10-17: three parallel 45s `await` calls all failed that way while the
+  tabs were perfectly healthy and the characters still farming. Long waits
+  belong in a stashed driver that returns immediately, polled with short calls.
+- **A navigation mid-evaluation kills the call.** `change_server` reinitialises
+  the page, so everything on `window` is wiped and an in-flight eval returns
+  "Inspected target navigated or closed". To carry a value across a hop, write
+  it to `localStorage`, which survives - and remove the key afterwards.
 
 ## Editing files in the GitHub web editor
 
@@ -489,10 +631,14 @@ The Claude Code session commits with git and should never use this route.
   against 17,975, which is 32 non-ASCII characters, 29 of them em-dashes. Both
   looked exactly like the file having moved underneath, and the first nearly
   sent a session chasing a phantom conflict. Hash UTF-16 units on both sides
-  (Python: iterate the str, not the bytes), or encode to UTF-8 on both sides
-  with `TextEncoder`. Confirm a suspected mismatch against the blob hash
-  before believing it - `git rev-parse origin/main:<path>` settles whether the
-  file actually changed.
+  (Python: `len(s.encode('utf-16-le'))//2`, NOT `len(s)` - that counts code
+  points, which differ AGAIN on astral characters: a third mismatch the same
+  day read `Party/Ranger.js` 372,969 against 372,979 expected, which is ten
+  emoji, seven dragons and two crowns and one briefcase, each one code point
+  but two UTF-16 units), or encode to UTF-8 on both sides with `TextEncoder`.
+  Confirm a suspected mismatch against the blob hash before believing it -
+  `git rev-parse origin/main:<path>` settles whether the file actually
+  changed.
 - **Set content with `view.dispatch`, not selectAll+paste.** The paste route
   silently APPENDED once - 27,816 chars where 16,181 was expected. Use
   `document.querySelector('.cm-content').cmTile.view.dispatch({changes:{from:0,
