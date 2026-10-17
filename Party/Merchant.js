@@ -903,9 +903,22 @@ const CONFIG = {
 	// Vendor-bound goods shown on the stand instead of sold to an NPC.
 	// -> see the STAND SALES block for the measured facts behind these.
 	standSales: {
-		// Listed goods vanish on a shard hop, so this does not mix with shard
-		// hopping - which is what arbitrage and an unparked scout both do. See
-		// the STAND SALES block and CHANGELOG 2026-09-22.
+		// On: the best vendor-bound goods are listed on the stand instead of
+		// being sold to an NPC. Off: they go to the NPC as usual.
+		//
+		// Hopping with goods in the stand does NOT lose them - confirmed by the
+		// operator 2026-10-17, and already corrected in CHANGELOG on 2026-09-24
+		// with the mechanism: the client is sent player.cslots, and
+		// reslot_player() repopulates trade slots only from get_trade_slots(),
+		// which returns [] while the stand is closed. So a closed stand makes
+		// them invisible CLIENT-side while the goods stay server-side. The
+		// trailing comment here said "DISABLED 2026-09-22: listed goods vanish
+		// on a shard hop" for over three weeks after that was disproved,
+		// because it cited the CHANGELOG rather than carrying the finding.
+		//
+		// So the rollback reason no longer holds, and v47's ARB_HELD_KEY
+		// registry independently covers the NPC-dump risk the same entry
+		// worried about. Re-enabling is the operator's call, not a fix owed.
 		enabled: false,
 		slots: [1, 2, 3, 4, 5],      // trade slots this feature owns (1-indexed)
 		revalueEveryMs: 5 * 60 * 1000,

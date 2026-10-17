@@ -84,6 +84,34 @@ hops reproduces the 2026-09-22 loss, and `arbitrage.enabled` hops on nearly
 every trade. Fixing it means unlisting every owned trade slot in `mHopTo`
 before the hop, not just closing the stand.
 
+**CORRECTED 2026-10-17, same day, by the operator: nothing is lost and there
+is nothing to fix.** The paragraph above is wrong in its conclusion. Hopping
+with goods in the stand does not lose them, and the mechanism had already
+been established in this file on 2026-09-24, under "(unversioned) stand sales
+disabled": the client is sent `player.cslots`, and `reslot_player()` deletes
+every trade slot and repopulates only from `get_trade_slots(player)`, which
+returns `[]` when the stand is closed (`node/server.js:867`). A closed stand
+therefore makes the trade slots invisible CLIENT-side while the goods remain
+server-side - which is exactly what `character.slots.tradeN` going empty
+after a hop looks like. It was confirmed live at the time: anniversarygift
+x39 and marketparcel x2 were still held.
+
+The mechanical observation survives and is harmless: `ensureStandClosed()`
+really does only call `close_stand()`. The inference drawn from it does not.
+
+Worth recording as process rather than mechanics, because this is the same
+failure the rest of this entry is about. The stale claim lived in a trailing
+code comment - "DISABLED 2026-09-22: listed goods vanish on a shard hop, see
+CHANGELOG" - which pointed AT the entry that had corrected it three weeks
+earlier. The v98 rewrite above carried the claim forward into a fuller
+sentence without following its own pointer, which is how a comment that cites
+a source instead of carrying the finding launders a dead fact into a fresh
+one. The comment now carries the mechanism.
+
+Consequence: the 2026-09-22 rollback reason no longer holds, and v47's
+ARB_HELD_KEY registry independently covers the NPC-dump risk the same entry
+raised. Whether to re-enable `standSales` is the operator's call.
+
 ## v96
 
 Move `arbNoHang` out of `arbAdvance()`. It had never been reachable from the

@@ -125,8 +125,11 @@ has.
   This README said the opposite until 2026-10-17, which is exactly the failure
   the comment beside `enabled` warns about: a stale "OFF, deliberately and
   temporarily" sitting next to a value that is already `true`.
-- **Stand sales are OFF.** `CONFIG.standSales.enabled: false` (line 900),
-  disabled 2026-09-22 because listed goods vanish on a shard hop.
+- **Stand sales are OFF.** `CONFIG.standSales.enabled: false`. Rolled back
+  2026-09-22 on the belief that listed goods vanish on a shard hop; that was
+  disproved on 2026-09-24 (they persist server-side - a closed stand only
+  hides them client-side) and re-confirmed by the operator 2026-10-17. The
+  rollback reason no longer holds; re-enabling is a decision, not a fix.
 
 ## A note on method
 
