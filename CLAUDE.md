@@ -3,6 +3,36 @@
 Standing instructions from the user. These survive context compaction; the
 conversation may not.
 
+## Repo layout
+
+**Both sessions.** Reorganised 2026-10-17; before that everything sat at the
+root, so any path in an older note, comment or commit message may be stale.
+
+- **The character scripts and their changelog live in `Party/`** -
+  `Party/Ranger.js`, `Party/Priest.js`, `Party/Mage.js`, `Party/Merchant.js`,
+  `Party/CHANGELOG.md`, `Party/MerchantComments.md`. Verified at the move:
+  Ranger, Priest and Mage kept byte-identical blobs, so nothing drifted.
+- **`CaveRun.js` is still at the root**, with `Cleanout.js`,
+  `ExchangeQuest.js`, `OpenGifts.js` and `UpgradeCompound.js`. It is run by all
+  three combat characters but was deliberately left out of `Party/`.
+- **`CLAUDE.md` stays at the root**, so the `git show origin/main:CLAUDE.md`
+  recipe below keeps working.
+- **`Crowns3bc/` is REFERENCE ONLY - never edit it, never deploy from it.**
+  Another player's scripts, kept because the repo that hosted them went private
+  or away, and whatever was useful in them was folded into our own scripts many
+  versions ago. The files carry no extension and have spaces in their names, so
+  `node --check` and type-filtered `git grep` skip them silently.
+  `Crowns3bc/Ranger` is 1,648 lines and `Crowns3bc/Priest` 1,478, which makes a
+  bare "Ranger" or "Priest" ambiguous - write `Party/Ranger.js` when that is
+  what is meant. Their commit messages read "Update print statement from
+  'Hello' to 'Goodbye'", which is a Copilot default describing nothing; do not
+  read meaning into them.
+- **`Archived/` is retired work**, currently `Archived/Upgrade`.
+- **`TASKS.md` was deleted on 2026-10-17** and not migrated. 649 lines,
+  recoverable with `git show fe70d60:TASKS.md`. Four references still point at
+  it: `Codex/FamilyFleet.js:497` and `:5183` (both "TASKS.md 5e"),
+  `Party/CHANGELOG.md:2112` ("item 1") and the `README.md` file table.
+
 ## Which session are you
 
 Two Claude sessions share this repo and this file. Almost everything here
@@ -55,7 +85,8 @@ through Chrome" would stop a session that *can* push from ever trying.
 ## Version headers
 
 - **Prepend to the header, never replace it.** Line 2 of each character script
-  accumulates version entries oldest-last; `Priest.js` carries five. Both
+  accumulates version entries oldest-last; `Party/Priest.js` carries five.
+  Both
   sessions bump this line, so it is the one line that conflicts on almost every
   rebase - and resolving it by taking one side silently deletes the other
   side's history.
@@ -65,12 +96,17 @@ through Chrome" would stop a session that *can* push from ever trying.
   exactly what someone needs before deploying, and exactly what a careless
   header resolution destroys. Lost once, in ba067df, restored after the other
   session caught it.
-- **`Merchant.js` is the exception.** Its history was moved to `CHANGELOG.md`
+- **`Party/Merchant.js` is the exception.** Its history was moved to
+  `Party/CHANGELOG.md`
   on 2026-09-21 to stay under the CODE slot size cap, so line 2 there carries
-  only the current version and the entry goes in `CHANGELOG.md` instead. Do not
+  only the current version and the entry goes in `Party/CHANGELOG.md`
+  instead. Do not
   prepend to a header that deliberately does not accumulate. Verified
-  2026-09-25: `Merchant.js` line 2 ends at `v52`, and `CHANGELOG.md` holds the
-  rest.
+  2026-10-17: `Party/Merchant.js` line 2 ends at `v97`, and
+  `Party/CHANGELOG.md` holds the rest. The v97 entry is deliberately NOT
+  written yet - the operator's 2026-10-17 call was to leave the bump in place
+  and fold v97's three changes (`parked: false`, `tracker` dropped from
+  `pontyBuy.items`, eight key ids added) into the next change's entry.
 
 ## Handing code to the other chat
 
@@ -109,7 +145,8 @@ through Chrome" would stop a session that *can* push from ever trying.
   substance in both directions; do not degrade this copy to match the other's
   formatting.
 - **The loaded copy is allowed to be ahead.** That same check found the
-  `Merchant.js` version-header exception present in the loaded copy and missing
+  `Party/Merchant.js` version-header exception present in the loaded copy and
+  missing
   here, which would have walked the other session into prepending to a header
   that does not accumulate. It was carried into this file on 2026-09-25. Drift
   is a two-way diff, not a one-way correction.
@@ -153,9 +190,9 @@ through Chrome" would stop a session that *can* push from ever trying.
 **Browser-driven session only.**
 
 - **`character.bank` is null anywhere but inside the bank map.** That is why a
-  bank read has meant walking a character there and back - `arbProbeBank()` in
-  Merchant.js exists to time that round trip, and it reports free slots and gold
-  only, never contents.
+  bank read has meant walking a character there and back - `arbProbeBank()`
+  in `Party/Merchant.js` exists to time that round trip, and it reports free
+  slots and gold only, never contents.
 - **The /hub BANK button sidesteps it completely.** Click it, then read
   `window.comm_items.bank`: an object of `items0..itemsN` arrays covering every
   pack, each entry `{name, level, q}`. Measured 2026-10-04: 109 distinct
@@ -177,6 +214,24 @@ Claude Code session stops after `browser_code_eval`.
 - **It returns `queued`, never the value.** Round-trip results by writing to
   `parent.localStorage` in the snippet and reading that key from the keeper tab.
   Remove the keys afterwards.
+- **`[BLOCKED: ...]` SUPPRESSES THE RESULT, NOT THE EXECUTION.** The snippet
+  ran. Reading a blocked result as "nothing happened" and re-sending it is how
+  a probe that writes or deletes gets done twice - learned the expensive way
+  when a blocked read had already removed the counter it was reporting on, so
+  a completed probe read as a failed one. Never re-send a mutating snippet
+  because its result came back blocked; re-read the state instead.
+- **What trips it is not predictable, so keep the value you need OUT of the
+  payload.** Measured 2026-10-12: a 24-character instance id came back
+  `[BLOCKED: Base64 encoded data]`, and FatherToken's entry came back
+  `[BLOCKED: Sensitive key]` in two unrelated probes while Dexon, MageofOz and
+  Meltymerch came through both times - the only field name containing "Token",
+  which is a LEAD and not confirmed. His attack and frequency are still
+  unmeasured because of it. `document.hidden` and `document.visibilityState`
+  trip it reliably. Report DERIVED facts - a length, a boolean, a brace depth,
+  a count - and where the raw value is needed, have the GAME read it rather
+  than moving it through a tool result:
+  `enter("crypt", parent.localStorage.getItem('crypt_instance'))` never puts
+  the id in a result at all.
 
 ## Deploying a code slot
 
@@ -210,6 +265,16 @@ Claude Code session stops after `browser_code_eval`.
   FUNCTION returning 0, while `get_entities` is still undefined.
   FUNCTION in both: `is_on_cooldown`, `get_chests`, `loot`,
   `get_nearest_monster`.
+- **`ms_to_next_skill` is OURS, not the game's, and that is the whole of the
+  difference.** The bullet above files it alongside `get_entities` as a
+  context-varying game helper. It is not one: all three party scripts declare
+  their own, so it is a FUNCTION wherever one of them is loaded and UNDEFINED
+  in FamilyFleet for the single reason that `FamilyFleet.js` never declares it.
+  Verified 2026-10-17 against the reorganised repo - `Party/Ranger.js:4374`,
+  `Party/Priest.js:3873`, `Party/Mage.js:1520`. So read the 2026-09-22
+  measurement as "Ranger.js was loaded in that context", never as "browser
+  CODE contexts provide it" - the second reading would walk a new script
+  straight into the Form B above, which is exactly what it did in FamilyFleet.
 - **Trusting the recorded line cost a wrong diagnosis.** `actionLoop`'s
   `ms_to_next_skill('attack')` was named as the reason the party would not
   attack, on the strength of this file saying it was undefined. It was
