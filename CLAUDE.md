@@ -214,6 +214,14 @@ browser-driven route and does not apply to the other.
   refused ("GitHub access to this repository is not enabled for this session").
   Use `git fetch origin main && git show origin/main:<path>`. From a browser tab
   the contents API works fine.
+- **Look for an existing clone before pulling source through a browser.**
+  Measured 2026-10-17: this container already held `/tmp/alrepo` (this repo) and
+  `/tmp/almongo` (`adventureland_mongodb`, the game's server source), so
+  `git -C /tmp/almongo grep` answered server-behaviour questions in one call.
+  Claude instead spent a morning fetching that same source through
+  `raw.githubusercontent.com` in a browser tab and fighting truncated results.
+  The container is ephemeral, so treat those paths as a lead, not a guarantee:
+  `find / -maxdepth 4 -name .git -type d` settles it.
 
 ## Browser tabs - the keeper
 
@@ -227,9 +235,14 @@ browser-driven route and does not apply to the other.
   when a task needs a different page, saying so when it does. Tabs leaving the
   group is not automatically a fault: twice on 2026-10-04 Claude read its own
   disappearing tabs as a bug when the operator was simply managing them.
-- **Never navigate the keeper.** `navigate` without an explicit `tabId` takes
-  the group's FIRST tab - that is how a live Meltymerch tab was sent to GitHub
-  mid-session and disconnected him.
+- **Closing the keeper is the hazard; navigating it is not.** Operator's
+  correction 2026-10-17: "You can navigate the keeper just not close the
+  keeper." Moving it to another page and back is fine when a task needs it.
+- **ALWAYS pass an explicit `tabId` to `navigate`.** Without one it takes the
+  group's FIRST tab, which is not necessarily the keeper - that is how a live
+  Meltymerch tab was sent to GitHub mid-session and disconnected him. The
+  earlier wording here blamed "navigating the keeper", which banned the safe
+  act and left the dangerous one described only in passing.
 - **Why that origin.** `adventure.land` is the only origin that can call
   `pull_merchants` (same-origin AND credentialed; cross-origin is blocked with
   no CORS headers, and `credentials: 'omit'` fails even same-origin), read
@@ -241,6 +254,24 @@ browser-driven route and does not apply to the other.
   `calculate_item_properties` exist only on a CHARACTER tab. Read item values and
   stats there; read the bank and the bridge from /hub. Measured 2026-10-04:
   probing /hub for those functions returns an empty candidate list.
+- **The server buttons switch which server /hub MONITORS, and `server.status`
+  (`S`) reports THAT server - not the server any character is on.** Measured
+  2026-10-17: with /hub on EU II and all four characters on US IV, `S.mrgreen`
+  described EU II's boss and matched the bridge's EU II row exactly. So a /hub
+  boss read covers one server, and the button is what selects it.
+- **Calling `select_login_server(...)` directly is a silent no-op.** Measured
+  2026-10-17: no reload followed and `S` never changed - `pageAgeSec` was still
+  8462 afterwards, which proves the page never reloaded. Click the button.
+- **Claude got this backwards once.** It reported that /hub "does not follow
+  the active server" when its own click one call earlier had already changed
+  it, and credited the change to a character hopping. When a reading shifts
+  right after you acted on the page, suspect your own last action first.
+- **A boss's hp PERCENTAGE is not evidence that anyone is fighting it.** Only a
+  CHANGE in hp across two samples, or a non-null `target`, separates a live
+  fight from an abandoned one. Measured 2026-10-17: ASIA I's mrgreen sat at
+  exactly 28,088,505 hp (78%) for over five hours, and US III at 15,417,063 for
+  24 minutes. Claude called the first "actively being fought" on the strength
+  of the percentage alone. Sample twice before claiming a fight.
 
 ## Reading the bank without travelling
 
