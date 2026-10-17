@@ -157,6 +157,51 @@ BOSS_RESPAWN_SEC = {
     "ent": 12,
     "rimedjinn": 12,
 }
+# ---------------------------------------------------- daily / nightly windows
+#
+# READ FROM THE SERVER SOURCE, NOT MEASURED. Everything in this block comes
+# from kaansoral/adventureland_mongodb and has NOT been confirmed against the
+# running game. The respawn table above was derived the same way once and was
+# wrong, so treat these as a lead: S.schedule IS exposed to the client
+# (js/functions.js:5765 reads S.schedule.time_offset), which makes them
+# checkable from a browser in one call.
+#
+# The mechanism, server_functions.js:2321-2345. Each server computes a game
+# hour `ch = (UTC_hour + 24 + E.schedule.time_offset) % 24` and fires a daily
+# when ch hits an hour in E.schedule.dailies, a nightly for E.schedule
+# .nightlies. So a window's UTC hour is (game_hour - offset) mod 24, and the
+# offset is per REGION, not per server: server.js:316 sets
+# E.schedule.time_offset = TIMEO[region]. Every US shard therefore runs the
+# same clock as every other US shard.
+#
+# Quirk worth knowing: `last_daily` at server_functions.js:2330 and :2339 is
+# ONE variable shared by both loops, so if a daily hour ever equalled a
+# nightly hour only one of them would fire. The configured hours do not
+# collide, so this is latent rather than live.
+SCHEDULE_REGION_OFFSET = {"EU": 1, "US": -5, "ASIA": 7}   # server.js:291 TIMEO
+SCHEDULE_DAILY_HOURS = [13, 20]                           # server.js:164
+SCHEDULE_NIGHTLY_HOURS = [23]                             # server.js:165
+# server.js:281-284. BOTH LISTS ARE shuffle()d AT SERVER START, so which event
+# a given window fires is per-process, differs between shards and changes on
+# every restart. It cannot be predicted from outside - only observed, which is
+# what the `observed` field below does.
+SCHEDULE_DAILY_EVENTS = ["crabxx", "goobrawl", "abtesting"]
+SCHEDULE_NIGHTLY_EVENTS = ["icegolem", "franky"]
+# design/events.js durations, seconds.
+SCHEDULE_EVENT_SEC = {"crabxx": 2400, "goobrawl": 540, "abtesting": 480,
+                      "icegolem": 2400, "franky": 2400}
+# Only events that spawn a MONSTER can ever be observed through ALData, so
+# goobrawl and abtesting are permanently invisible here - their absence from
+# a window says nothing about whether they ran.
+SCHEDULE_OBSERVABLE = {"crabxx", "icegolem", "franky"}
+# Seed list for servers the poller has not seen yet. Measured by the browser
+# session 2026-10-17; the live set from ALData is preferred whenever there is
+# one.
+SCHEDULE_SEED_SERVERS = [
+    "ASIA I", "ASIA II", "EU I", "EU II", "EU III", "EU IV", "EU PVP",
+    "US I", "US II", "US III", "US IV", "US PVP", "US V",
+]
+
 # A server needs at least this many logged kills before its ranking row counts
 # as a trend rather than an anecdote. The page greys out anything below it.
 BOSS_MIN_KILLS_FOR_TREND = 5
@@ -874,6 +919,83 @@ def _pct(xs, q):
     return round(s[lo] + (s[hi] - s[lo]) * frac, 1)
 
 
+def schedule_windows(servers, path=None, hours_ahead=48, hours_back=24) -> dict:
+    """Daily and nightly windows per server, as UTC instants.
+
+    Everything crossing the wire here is UTC, exactly like /bosses. The page
+    renders it with Intl and a named zone. Nothing computes a local offset
+    server-side: the game's own region offsets are FIXED (EU +1, US -5,
+    ASIA +7) and do not follow daylight saving, so a window sits at a
+    constant UTC hour all year while its wall-clock time in America/New_York
+    moves an hour when US DST ends on 2026-11-01. A hardcoded -04:00 would be
+    silently wrong from that night on; a named zone is not.
+
+    `observed` closes the loop where it can. Which event a window fires is
+    shuffled per server process and unknowable from outside, but crabxx,
+    icegolem and franky are monsters, so a spawn logged inside the window
+    names the event that actually ran. goobrawl and abtesting are not
+    monsters and can never appear, so a null `observed` is "not known",
+    never "nothing happened"."""
+    t_now = now()
+    spawns: dict = {}
+    for d in boss_events_load(path):
+        if d.get("ev") != "spawn" or d.get("type") not in SCHEDULE_OBSERVABLE:
+            continue
+        ts = parse_ts(d.get("t"))
+        if ts:
+            spawns.setdefault(d.get("server"), []).append((ts, d["type"]))
+
+    out = []
+    for server in sorted(set(servers) or set(SCHEDULE_SEED_SERVERS)):
+        region = server.split(" ")[0].upper()
+        offset = SCHEDULE_REGION_OFFSET.get(region)
+        if offset is None:
+            continue                       # unknown region: no clock to compute
+        rows = []
+        for kind, game_hours, pool in (
+                ("daily", SCHEDULE_DAILY_HOURS, SCHEDULE_DAILY_EVENTS),
+                ("nightly", SCHEDULE_NIGHTLY_HOURS, SCHEDULE_NIGHTLY_EVENTS)):
+            for gh in game_hours:
+                utc_hour = (gh - offset + 24) % 24
+                # Walk whole UTC days around now so a window that already
+                # opened today is still listed while it is running.
+                base = (t_now // 86400) * 86400
+                for day in range(-(hours_back // 24) - 1, hours_ahead // 24 + 2):
+                    at = base + day * 86400 + utc_hour * 3600
+                    if at < t_now - hours_back * 3600 or at > t_now + hours_ahead * 3600:
+                        continue
+                    longest = max(SCHEDULE_EVENT_SEC.get(e, 0) for e in pool)
+                    seen = None
+                    for ts, mtype in spawns.get(server, []):
+                        if at <= ts <= at + longest:
+                            seen = mtype
+                            break
+                    rows.append({
+                        "kind": kind, "game_hour": gh, "utc_hour": utc_hour,
+                        "at": iso(at), "in_sec": round(at - t_now),
+                        "candidates": list(pool),
+                        "observable": sorted(set(pool) & SCHEDULE_OBSERVABLE),
+                        "observed": seen,
+                        "window_sec": longest,
+                        "running": at <= t_now <= at + longest,
+                    })
+        rows.sort(key=lambda r: r["at"])
+        out.append({"server": server, "region": region, "time_offset": offset,
+                    "windows": rows})
+    return {
+        "now": iso(t_now),
+        "source": "server source (kaansoral/adventureland_mongodb), NOT measured live",
+        "region_offset": SCHEDULE_REGION_OFFSET,
+        "daily_hours_game": SCHEDULE_DAILY_HOURS,
+        "nightly_hours_game": SCHEDULE_NIGHTLY_HOURS,
+        "daily_events": SCHEDULE_DAILY_EVENTS,
+        "nightly_events": SCHEDULE_NIGHTLY_EVENTS,
+        "never_observable": sorted(
+            set(SCHEDULE_DAILY_EVENTS + SCHEDULE_NIGHTLY_EVENTS) - SCHEDULE_OBSERVABLE),
+        "servers": out,
+    }
+
+
 def boss_history(path, want_type=None, want_server=None, since=None,
                  include_low=False) -> dict:
     """Per (type, server) kill history - the view the home-server call rests on.
@@ -1560,6 +1682,23 @@ class Handler(BaseHTTPRequestHandler):
                 (q.get("server") or [""])[0].strip().lower() or None,
                 (q.get("since") or [""])[0].strip() or None,
                 (q.get("include_low") or [""])[0] in ("1", "true", "yes")))
+        elif path == "/schedule":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            with self.bosses.lock:
+                live = {f"{r} {i}".strip() for (_t, r, i) in self.bosses.meta}
+            servers = live or set(SCHEDULE_SEED_SERVERS)
+            wr = (q.get("region") or [""])[0].strip().upper() or None
+            ws = (q.get("server") or [""])[0].strip().lower() or None
+            if wr: servers = {s for s in servers if s.split(" ")[0].upper() == wr}
+            if ws: servers = {s for s in servers if s.lower() == ws}
+            try:
+                ahead = max(1, min(336, int((q.get("hours") or ["48"])[0])))
+            except ValueError:
+                ahead = 48
+            d = schedule_windows(servers, self.bosses.events_path, ahead)
+            d["servers_from"] = "alData" if live else "seed list"
+            self._send(d)
         elif path == "/boss_page":
             # Served from disk rather than embedded, so the page stays a
             # reviewable file in Codex/ and git sees its diffs. Resolved
@@ -1649,6 +1788,7 @@ def main():
               f" (ALData every {Handler.bosses.interval}s)")
         print(f"[bridge]   kill log     -> GET /boss_events, /boss_history"
               f" ({a.boss_events or 'OFF'})")
+        print(f"[bridge]   schedule     -> GET /schedule?region=&server=&hours=")
         print(f"[bridge]   page         -> http://{a.host}:{a.port}/boss_page")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
     print(f"[bridge]   logging {'off (--quiet)' if a.quiet else 'on - one line per scan and relayed message'}")

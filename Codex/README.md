@@ -519,6 +519,51 @@ nibbled, and was abandoned. Measured 2026-10-17, ASIA I held 28,088,505 hp
 for 40+ minutes and US III 15,417,063 for 24+. That server produces no bad
 TTK, because it produces no TTK at all, and it is the worst possible home.
 
+## `GET /schedule` — daily and nightly windows
+
+When each shard's daily and nightly windows open, as UTC instants the page
+renders in America/New_York. Takes `?region=`, `?server=` and `?hours=`.
+
+**The clock is per REGION, not per server.** `server.js:316` sets
+`E.schedule.time_offset = TIMEO[region]`, and `server_functions.js:2321`
+computes a game hour as `(UTC_hour + 24 + offset) % 24`, firing a daily when
+it reaches an hour in `E.schedule.dailies` and a nightly for `.nightlies`. So
+a window's UTC hour is `(game_hour - offset) mod 24`, and every shard in a
+region opens at the same instant:
+
+| Region | Offset | Dailies (game 13, 20) | Nightly (game 23) |
+|---|---|---|---|
+| EU | +1 | 12:00, 19:00 UTC | 22:00 UTC |
+| US | −5 | 18:00, 01:00 UTC | 04:00 UTC |
+| ASIA | +7 | 06:00, 13:00 UTC | 16:00 UTC |
+
+**Those offsets are fixed and do not follow daylight saving**, so a window
+sits at a constant UTC hour all year while its wall-clock time in
+America/New_York moves. The US 18:00 UTC daily is 2:00 PM EDT today and 1:00
+PM EST from 2026-11-01. That is the whole reason the page converts with a
+named zone instead of a stored offset.
+
+**Which event fires cannot be predicted.** `server.js:281-284` holds the
+rotations `["crabxx", "goobrawl", "abtesting"]` and `["icegolem", "franky"]`
+and `shuffle()`s BOTH at server start, so the order differs between shards
+and changes on every restart. The route lists the candidates and fills in
+`observed` from the kill log where it can: crabxx, icegolem and franky are
+monsters and show up as spawns, so a spawn inside the window names what ran.
+`goobrawl` and `abtesting` are not monsters and can never appear, so a null
+`observed` means "not known", never "nothing happened".
+
+> **Source-derived, not measured.** Every constant in this section comes from
+> `kaansoral/adventureland_mongodb` and has not been confirmed against the
+> running game. The respawn table above was built the same way once and was
+> wrong. `S.schedule` IS exposed to the client — `js/functions.js:5765` reads
+> `S.schedule.time_offset` — so this is one browser call away from being
+> verified, and `SCHEDULE_*` in `market_bridge.py` is where to correct it.
+
+Latent quirk, recorded while reading: `last_daily` at
+`server_functions.js:2330` and `:2339` is one variable shared by both loops,
+so a daily hour equal to a nightly hour would fire only one of them. The
+configured hours do not collide.
+
 ## `GET /boss_page`
 
 The page, served from the bridge so it is same-origin with the JSON. Read off
@@ -526,9 +571,10 @@ disk from `boss_timers.html` next to `market_bridge.py`, so it stays a
 reviewable file in git; opening that file directly also works, because it
 falls back to the absolute loopback address when the protocol is `file:`.
 
-Three views. **Now** — every (type, server), live-and-dying first, with
+Four views. **Now** — every (type, server), live-and-dying first, with
 either "respawns 12:43 PM" and a ticking countdown or "up, ~11 min left".
-**Timers** — the next window per server for one type. **Server ranking** —
+**Timers** — the next respawn per server for one type. **Schedule** — the
+daily and nightly windows above, per server, with what was observed in each. **Server ranking** —
 the decision view, sorted by kills per day, with the stall count and a sample
 column; anything under `BOSS_MIN_KILLS_FOR_TREND` (5) logged kills is greyed
 out and labelled, because a 1-kill server otherwise tops the table. `dps` is

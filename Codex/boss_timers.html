@@ -44,7 +44,7 @@
   tr:hover td { background:#1a212c; }
   .num { text-align:right; font-variant-numeric:tabular-nums; }
   .dim { color:var(--dim); } .up { color:var(--up); } .dead { color:var(--dead); }
-  .warn { color:var(--warn); }
+  .warn { color:var(--warn); } .hot { color:var(--hot); }
   .thin td { opacity:.42; }              /* below the trend threshold */
   .bar { position:relative; width:100px; height:9px; background:#232c38;
          border-radius:2px; overflow:hidden; display:inline-block; vertical-align:middle; }
@@ -66,6 +66,7 @@
   <div class="tabs">
     <button class="tab on" data-v="now">Now</button>
     <button class="tab" data-v="timers">Timers</button>
+    <button class="tab" data-v="sched">Schedule</button>
     <button class="tab" data-v="rank">Server ranking</button>
   </div>
   <select id="type" hidden></select>
@@ -78,12 +79,14 @@
 /* Same-origin when served from /boss_page; absolute when opened from disk. */
 const BASE = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8787";
 const TZ = "America/New_York";
-let VIEW = "now", TYPE = "mrgreen", BOSSES = null, HIST = null, ERR = null;
+let VIEW = "now", TYPE = "mrgreen", BOSSES = null, HIST = null, SCHED = null, ERR = null;
 
 const fClock = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, hour:"numeric", minute:"2-digit", hour12:true });
 const fStamp = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, month:"short", day:"numeric", hour:"numeric", minute:"2-digit", hour12:true });
+const fDow = new Intl.DateTimeFormat("en-US",
+  { timeZone: TZ, weekday:"short", hour:"numeric", minute:"2-digit", hour12:true });
 const tzName = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, timeZoneName:"short" }).formatToParts(new Date())
   .find(p => p.type === "timeZoneName").value;
@@ -108,8 +111,9 @@ async function grab(p) {
 }
 async function refresh() {
   try {
-    const [b, h] = await Promise.all([grab("/bosses"), grab("/boss_history")]);
-    BOSSES = b; HIST = h; ERR = null;
+    const [b, h, sc] = await Promise.all([
+      grab("/bosses"), grab("/boss_history"), grab("/schedule?hours=48")]);
+    BOSSES = b; HIST = h; SCHED = sc; ERR = null;
   } catch (x) { ERR = x.message; }
   syncTypes(); paint();
 }
@@ -122,7 +126,7 @@ function allTypes() {
 }
 function syncTypes() {
   const sel = document.getElementById("type"), types = allTypes();
-  sel.hidden = (VIEW === "now") || !types.length;
+  sel.hidden = (VIEW === "now") || (VIEW === "sched") || !types.length;
   if (sel.hidden) return;
   if (!types.includes(TYPE)) TYPE = types[0];
   sel.innerHTML = types.map(t =>
@@ -220,6 +224,50 @@ function timersView() {
     </tr>`; }).join("")}</tbody></table>`;
 }
 
+/* -------------------------------------------------------------- schedule */
+function schedView() {
+  const srv = SCHED?.servers || [];
+  if (!srv.length) return `<p class="empty">No servers known yet.</p>`;
+  const off = Object.entries(SCHED.region_offset)
+    .map(([r, o]) => `${r} ${o >= 0 ? "+" : ""}${o}`).join(", ");
+  const head = `<p class="note">Daily and nightly windows, all times ${tzName}.
+    The game clock is offset per <b class="hi">region</b>, not per server
+    (${esc(off)}), so every shard in a region opens at the same moment — the rows are
+    listed per server because that is how you will use them. Dailies fire at game hours
+    ${SCHED.daily_hours_game.join(" and ")}, the nightly at
+    ${SCHED.nightly_hours_game.join(" and ")}.</p>
+  <p class="note"><b class="hi">Which event fires is not predictable.</b> Both rotations are
+    shuffled when a server process starts, so it differs between shards and changes on every
+    restart. <code>${esc((SCHED.daily_events||[]).join(", "))}</code> rotate for dailies and
+    <code>${esc((SCHED.nightly_events||[]).join(", "))}</code> for nightlies.
+    <b class="hi">Observed</b> is filled in from the kill log when the event spawns a monster;
+    <code>${esc((SCHED.never_observable||[]).join(", "))}</code> are not monsters and can never
+    appear there, so a blank means "not known", never "nothing ran".</p>
+  <p class="note"><b class="hi">These offsets are fixed and do not follow daylight saving</b>,
+    so every window below sits at a constant UTC hour while its ${tzName} time moves an hour
+    when US DST ends 2026-11-01. That is why the page converts with a named zone rather than a
+    stored offset. Source: ${esc(SCHED.source)}.</p>`;
+  return head + srv.map(s => {
+    const next = s.windows.find(w => w.in_sec > 0);
+    return `<h2>${esc(s.server)} <span class="dim">— region clock ${
+      s.time_offset >= 0 ? "+" : ""}${s.time_offset}${
+      next ? `, next window in ${dur(next.in_sec)}` : ""}</span></h2>
+    <table><thead><tr>
+      <th>Kind</th><th>Opens</th><th class="num">In</th><th class="num">Window</th>
+      <th>Observed</th><th>Could be</th>
+    </tr></thead><tbody>${s.windows.map(w => `<tr class="${w.in_sec < 0 && !w.running ? "thin" : ""}">
+      <td class="${w.kind === "nightly" ? "hot" : ""}">${esc(w.kind)}</td>
+      <td>${w.running ? '<span class="pill up">OPEN</span> ' : ""}<b class="hi">${fDow.format(new Date(w.at))}</b></td>
+      <td class="num ${w.in_sec > 0 && w.in_sec < 1800 ? "warn" : "dim"}">${
+        w.running ? "now" : w.in_sec < 0 ? "past" : dur(w.in_sec)}</td>
+      <td class="num dim">${dur(w.window_sec)}</td>
+      <td>${w.observed ? `<span class="up">${esc(w.observed)}</span>`
+          : w.in_sec < 0 ? '<span class="dim">—</span>' : ""}</td>
+      <td class="dim">${esc(w.candidates.join(", "))}</td>
+    </tr>`).join("")}</tbody></table>`;
+  }).join("");
+}
+
 /* --------------------------------------------------------------- ranking */
 function rankView() {
   const rows = (HIST.history || []).filter(r => r.type === TYPE)
@@ -269,7 +317,9 @@ function paint() {
     el.innerHTML = `<p class="empty">No data. Is the bridge running?
       <code>python3 market_bridge.py</code></p>`; return;
   }
-  el.innerHTML = VIEW === "now" ? nowView() : VIEW === "timers" ? timersView() : rankView();
+  el.innerHTML = VIEW === "now" ? nowView()
+               : VIEW === "timers" ? timersView()
+               : VIEW === "sched" ? schedView() : rankView();
 }
 
 document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
