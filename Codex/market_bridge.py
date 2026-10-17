@@ -97,7 +97,7 @@ BOSS_STALE_AFTER = 120
 # the death timestamp cannot be recovered afterwards: once a boss respawns,
 # `estimated_respawn` goes null and `lastSeen` with it, so polling /bosses after
 # the fact can never reconstruct a kill. Default lives next to ledger.jsonl.
-BOSS_EVENTS_PATH = "./boss_events.jsonl"
+BOSS_EVENTS_PATH = "./data/boss_events.jsonl"
 # A boss going ABSENT from the response is not a death - a 429 or a partial
 # answer looks identical. Measured 2026-10-17 on a real cycle:
 # last_error "HTTPError: HTTP Error 429: Too Many Requests", recovered by
@@ -106,46 +106,65 @@ BOSS_EVENTS_PATH = "./boss_events.jsonl"
 BOSS_ABSENT_CONFIRM = 3
 # A transition seen across a gap wider than this many poll intervals is logged
 # `confidence: "low"` - the event is real, the timestamp is poorly bounded.
-BOSS_GAP_HIGH_CONF = 2.5
+# Low rows stay in the file and are excluded from medians by default.
+BOSS_GAP_HIGH_CONF = 2
 
-# Nominal respawn seconds per type, read out of the creator's
-# design/monsters.js (kaansoral/adventureland_mongodb) on 2026-10-17 and
-# evaluated: entries there are JS expressions such as `94*60`, and greenjr/jr
-# carry `480 && 12*72*60`, where && yields the RIGHT operand.
+# Nominal respawn seconds per type. MEASURED FROM THE DEPLOYED CLIENT by the
+# browser session on 2026-10-17, reading G.monsters[<type>].respawn, and that
+# is the only reason these are trustworthy.
 #
-# This is what makes an exact death time recoverable. ALData's
-# estimatedRespawn is death + the NOMINAL respawn, so death = ER - this.
-# Verified by the browser session 2026-10-17 for mrgreen: ER 16:43:25Z minus
-# 5640 (94*60) gives 15:09:25Z, matching a death projected independently from
-# hp and dps at ~15:10Z. Verified for that one type only - any other type is
-# the same arithmetic on the same field, which is a reasonable expectation and
-# not a measurement, so the event records which method it used.
+# The creator's design/monsters.js DISAGREES with the running client on two of
+# them, and the shape of the disagreement is worth keeping. There, greenjr
+# reads `480 && 12*72*60` and jr `480 && 6*72*60`; evaluated as JavaScript
+# those are 51840 and 25920, because && yields the right operand. The client
+# reports 480 for both. mvampire, whose source entry is a plain `18*60`,
+# agrees at 1080 - so source and client part company exactly where the source
+# carries the && form, and nowhere else. rimedjinn is absent from the source
+# file altogether and the client reports 12.
 #
-# Note the SERVER randomises the actual respawn (node/server.js:13096: a
-# respawn above 200 is scheduled at respawn * (720 + random*480) ms). So these
-# values do NOT predict when a boss returns; they decode when it died. -1 in
-# the source means "never respawns on a timer" and those types are omitted
-# here rather than stored as -1, so a lookup miss is the single "unknown" path.
+# This file previously carried the evaluated source values. They were wrong,
+# and they were wrong in the way CLAUDE.md warns about: the mongodb repo is
+# the SERVER SOURCE, not a mirror of what is deployed. Do not re-derive this
+# table from it.
+#
+# What the table is for: ALData's estimatedRespawn is death plus the nominal
+# respawn, so death = estimatedRespawn - this. Verified for mrgreen, where
+# 94*60 = 5640 reproduced a death time projected independently from hp and
+# dps. It decodes a death; it does NOT predict a return, because the server
+# randomises the actual respawn (node/server.js:13096 schedules a respawn
+# above 200 at respawn * (720 + random*480) ms).
+#
+# -1 in the client means event-only, no automatic respawn. Those types are
+# omitted rather than stored, so a lookup miss is the single "unknown" path
+# and no timer is ever computed for them: franky, icegolem, crabxx, bgoo,
+# rgoo.
 BOSS_RESPAWN_SEC = {
-    "bscorpion": 6,
-    "dragold": 10800,
-    "ent": 12,
-    "greenjr": 51840,
-    "grinch": 43200,
-    "jr": 25920,
     "mrgreen": 5640,
     "mrpumpkin": 3240,
+    "greenjr": 480,
+    "jr": 480,
     "phoenix": 32,
-    "wabbit": 3600,
-    "pinkgoo": 3600,
     "rharpy": 400,
     "slenderman": 600,
     "snowman": 3600,
+    "dragold": 10800,
+    "grinch": 43200,
+    "wabbit": 3600,
+    "pinkgoo": 3600,
     "tiger": 1800,
-    # Omitted deliberately: bgoo, crabxx, franky, icegolem, rgoo carry
-    # respawn -1 (event-spawned, no timer); rimedjinn is a skin in items.js
-    # and not a monster at all, so it has no respawn to read.
+    "mvampire": 1080,    # not in BOSS_TYPES; kept so the constant is not lost
+    "bscorpion": 6,
+    "ent": 12,
+    "rimedjinn": 12,
 }
+# A server needs at least this many logged kills before its ranking row counts
+# as a trend rather than an anecdote. The page greys out anything below it.
+BOSS_MIN_KILLS_FOR_TREND = 5
+# 429 backoff. The 45s interval sits close to whatever ALData's rate limit is -
+# a real cycle on 2026-10-17 returned "HTTP Error 429: Too Many Requests" and
+# recovered on its own. Each consecutive failure doubles the wait, capped here;
+# one success returns to the configured interval.
+BOSS_BACKOFF_MAX_SEC = 15 * 60
 
 # The 15 ids in allBosses plus the 6 cooperative monsters Ranger.js lists
 # separately in attackIfTargeted. Verified against Party/Ranger.js:186 and
@@ -179,6 +198,11 @@ def now() -> float:
 
 def iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def html_escape(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
 
 
 def shard_key(region: str, name: str) -> str:
@@ -836,23 +860,40 @@ def boss_events_load(path) -> list[dict]:
     return rows
 
 
-def _median(xs):
+def _pct(xs, q):
+    """Linear-interpolated percentile, q in 0..1. None for an empty list."""
     s = sorted(xs)
-    n = len(s)
-    if not n:
+    if not s:
         return None
-    return float(s[n // 2]) if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+    if len(s) == 1:
+        return float(s[0])
+    pos = q * (len(s) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    frac = pos - lo
+    return round(s[lo] + (s[hi] - s[lo]) * frac, 1)
 
 
-def boss_stats(path, want_type=None, want_server=None) -> dict:
-    """Per (type, server) reliability, which is the question the log exists for.
+def boss_history(path, want_type=None, want_server=None, since=None,
+                 include_low=False) -> dict:
+    """Per (type, server) kill history - the view the home-server call rests on.
 
-    `kill_rate` is deaths / (deaths + lost), NOT deaths / spawns: a boss that
-    is up right now has not failed to die, it simply has not resolved yet, and
-    counting it as a miss would make every busy server look worse the moment
-    it got busy. Only resolved fights vote."""
+    Low-confidence rows stay in the file and are counted, but are kept OUT of
+    the medians and percentiles unless asked for: a kill whose timestamp is
+    bounded only by a wide poll gap still tells you the boss died there, and
+    tells you very little about how long it took.
+
+    stalled_count is the figure that a median TTK cannot show. A server where
+    the boss spawns and is then nibbled and abandoned looks fine on TTK -
+    there simply are no TTKs - and is the worst possible home. Measured
+    2026-10-17: ASIA I held 28,088,505 hp for 40+ minutes and US III
+    15,417,063 for 24+. A stall is a spawn whose next same-type, same-server
+    spawn arrives with no death in between."""
     rows = boss_events_load(path)
+    if since:
+        rows = [r for r in rows if (r.get("t") or "") >= since]
     agg: dict[tuple, dict] = {}
+    seq: dict[tuple, list] = {}
     for d in rows:
         mtype, server = d.get("type"), d.get("server")
         if not mtype or not server:
@@ -861,79 +902,75 @@ def boss_stats(path, want_type=None, want_server=None) -> dict:
             continue
         if want_server and server.lower() != want_server:
             continue
-        a = agg.setdefault((mtype, server), {
-            "type": mtype, "server": server, "spawns": 0, "kills": 0,
-            "lost": 0, "ttks": [], "last_kill": None, "last_ttk_sec": None,
-            "low_confidence_kills": 0,
+        k = (mtype, server)
+        a = agg.setdefault(k, {
+            "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
+            "lost": 0, "ttks": [], "last_kill_t": None, "last_spawn_t": None,
+            "first_t": None, "last_t": None,
+            "confidence_counts": {"high": 0, "low": 0},
         })
+        seq.setdefault(k, []).append(d)
+        t = d.get("t")
+        if t:
+            if a["first_t"] is None or t < a["first_t"]:
+                a["first_t"] = t
+            if a["last_t"] is None or t > a["last_t"]:
+                a["last_t"] = t
         ev = d.get("ev")
         if ev == "spawn":
             a["spawns"] += 1
+            if t and (a["last_spawn_t"] is None or t > a["last_spawn_t"]):
+                a["last_spawn_t"] = t
         elif ev == "lost":
             a["lost"] += 1
         elif ev == "death":
-            a["kills"] += 1
-            if d.get("confidence") != "high":
-                a["low_confidence_kills"] += 1
-            if d.get("t") and (a["last_kill"] is None or d["t"] > a["last_kill"]):
-                a["last_kill"] = d["t"]
-                a["last_ttk_sec"] = d.get("ttk_sec")
-            if isinstance(d.get("ttk_sec"), (int, float)):
+            a["kills_logged"] += 1
+            c = "high" if d.get("confidence") == "high" else "low"
+            a["confidence_counts"][c] += 1
+            if t and (a["last_kill_t"] is None or t > a["last_kill_t"]):
+                a["last_kill_t"] = t
+            if isinstance(d.get("ttk_sec"), (int, float)) and (include_low or c == "high"):
                 a["ttks"].append(d["ttk_sec"])
 
     out = []
-    for a in agg.values():
-        ttks, resolved = a.pop("ttks"), a["kills"] + a["lost"]
-        a["kills_with_ttk"] = len(ttks)
-        a["ttk_median_sec"] = _median(ttks)
-        a["ttk_mean_sec"] = round(sum(ttks) / len(ttks), 1) if ttks else None
+    for k, a in agg.items():
+        # Stall: spawn -> next spawn with no death between the two.
+        ordered = sorted(seq[k], key=lambda d: d.get("t") or "")
+        stalls, open_spawn = 0, False
+        for d in ordered:
+            if d.get("ev") == "spawn":
+                if open_spawn:
+                    stalls += 1
+                open_spawn = True
+            elif d.get("ev") == "death" and open_spawn:
+                open_spawn = False
+        a["stalled_count"] = stalls
+        ttks = a.pop("ttks")
+        a["ttk_median_sec"] = _pct(ttks, 0.5)
+        a["ttk_p25_sec"] = _pct(ttks, 0.25)
+        a["ttk_p75_sec"] = _pct(ttks, 0.75)
         a["ttk_min_sec"] = min(ttks) if ttks else None
         a["ttk_max_sec"] = max(ttks) if ttks else None
-        a["resolved"] = resolved
-        a["kill_rate"] = round(a["kills"] / resolved, 3) if resolved else None
+        a["ttk_sample"] = len(ttks)
+        lo, hi = parse_ts(a.pop("first_t")), parse_ts(a.pop("last_t"))
+        win = round(hi - lo) if (lo and hi and hi > lo) else 0
+        a["observed_window_sec"] = win
+        a["kills_per_day"] = round(a["kills_logged"] / (win / 86400.0), 2) if win else None
+        a["enough_data"] = a["kills_logged"] >= BOSS_MIN_KILLS_FOR_TREND
         out.append(a)
-    out.sort(key=lambda r: (r["type"], r["server"]))
-
-    servers: dict[str, dict] = {}
-    for a in out:
-        s = servers.setdefault(a["server"], {
-            "server": a["server"], "kills": 0, "lost": 0, "spawns": 0,
-            "types_killed": set(), "ttks": [], "last_kill": None})
-        s["kills"] += a["kills"]
-        s["lost"] += a["lost"]
-        s["spawns"] += a["spawns"]
-        if a["kills"]:
-            s["types_killed"].add(a["type"])
-        if a["ttk_median_sec"] is not None:
-            s["ttks"].append(a["ttk_median_sec"])
-        if a["last_kill"] and (s["last_kill"] is None or a["last_kill"] > s["last_kill"]):
-            s["last_kill"] = a["last_kill"]
-    srows = []
-    for s in servers.values():
-        ttks = s.pop("ttks")
-        s["types_killed"] = len(s["types_killed"])
-        resolved = s["kills"] + s["lost"]
-        s["resolved"] = resolved
-        s["kill_rate"] = round(s["kills"] / resolved, 3) if resolved else None
-        s["ttk_median_sec"] = _median(ttks)
-        srows.append(s)
-    # The home-server question: most kills first, ties broken by the faster
-    # typical kill. Deliberately not a single blended score - the operator is
-    # making a 36-hour-cooldown decision and should see the components.
-    srows.sort(key=lambda r: (-r["kills"], r["ttk_median_sec"] or 1e9, r["server"]))
-
-    deaths = [d for d in rows if d.get("ev") == "death"]
+    out.sort(key=lambda r: (-(r["kills_per_day"] or 0), r["type"], r["server"]))
     return {
         "now": iso(now()),
         "log": str(path) if path else None,
+        "min_kills_for_trend": BOSS_MIN_KILLS_FOR_TREND,
+        "medians_include_low_confidence": bool(include_low),
         "events": len(rows),
-        "deaths": len(deaths),
+        "deaths": sum(1 for d in rows if d.get("ev") == "death"),
         "spawns": sum(1 for d in rows if d.get("ev") == "spawn"),
         "lost": sum(1 for d in rows if d.get("ev") == "lost"),
         "first_event": rows[0].get("t") if rows else None,
         "last_event": rows[-1].get("t") if rows else None,
-        "by_server_type": out,
-        "by_server": srows,
+        "history": out,
     }
 
 
@@ -990,7 +1027,20 @@ class BossWatch:
                 # A poller must never take the bridge down. /merchants, /msg and
                 # /trades are the live services here; boss data is an extra.
                 print(f"[bridge] boss poller error: {e}")
-            self._stop.wait(self.interval)
+            self._stop.wait(self._next_wait())
+
+    def _next_wait(self) -> float:
+        """Seconds until the next poll. Doubles per consecutive failure.
+
+        45s sits close to whatever ALData's rate limit is - a real cycle
+        returned 429 and recovered - so hammering the fixed interval through a
+        rate-limit response is the one thing guaranteed to prolong it. One
+        success returns to the configured interval."""
+        with self.lock:
+            fails = self.fails
+        if fails <= 0:
+            return self.interval
+        return min(self.interval * (2 ** min(fails, 10)), BOSS_BACKOFF_MAX_SEC)
 
     def _fetch(self) -> list:
         # A comma-separated type list is one request for all of them. Types
@@ -1028,11 +1078,12 @@ class BossWatch:
                 say(f"[bosses] ALData unreachable ({err}); serving cached rows")
             return False
 
-        seen = set()
+        seen, servers_seen = set(), set()
         for entry in data:
             k = self._record(entry)
             if k:
                 seen.add(k)
+                servers_seen.add((k[1], k[2]))     # guard 2: this server answered
         poll_t = now()
         with self.lock:
             for k, m in self.meta.items():
@@ -1046,7 +1097,7 @@ class BossWatch:
             # returned long before this, so a failed poll can never be read
             # as "every boss vanished".
             try:
-                self._transitions(poll_t, len(data))
+                self._transitions(poll_t, len(data), servers_seen)
             except Exception as e:
                 print(f"[bridge] boss transition pass failed: {e}")
         self._flush_events()          # file IO outside the lock
@@ -1091,6 +1142,12 @@ class BossWatch:
                         buf.clear()      # hp went UP: a new spawn, not damage
                     buf.append({"hp": hp, "seen_raw": seen_raw,
                                 "seen_ts": seen_ts, "at": t})
+            if hp:
+                f = self.fights.get(key)
+                if f is not None and f.get("alive"):
+                    mx = self.max_hp.get(mtype)
+                    f["last_hp"] = hp
+                    f["last_pct"] = round(hp / mx * 100.0, 2) if mx else None
             self.meta[key] = {
                 "entry": entry, "at": t, "hp": hp,
                 "target": entry.get("target") if has_target else None,
@@ -1140,24 +1197,23 @@ class BossWatch:
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
 
-    def _transitions(self, poll_t: float, n_entries: int) -> None:
+    def _transitions(self, poll_t: float, n_entries: int, servers_seen: set) -> None:
         """Compare this poll against the last and record spawns and deaths.
 
-        Called ONLY after a fully successful poll. Every guard here exists
-        because the alternative silently poisons the TTK statistics rather
-        than failing visibly."""
-        gap = poll_t - self._last_poll_t if self._last_poll_t else 0.0
-        conf = "high" if (self._last_poll_t
-                          and gap <= self.interval * BOSS_GAP_HIGH_CONF) else "low"
+        Reached ONLY from a fully successful fetch - guard 1. Everything else
+        here exists because the alternative silently poisons the TTK figures
+        rather than failing visibly, and plausible wrong numbers are worse
+        than a crash."""
+        def gap_for(f):
+            last = (f or {}).get("last_obs_t") or self._last_poll_t
+            return (poll_t - last) if last else 0.0
 
-        live_now = 0
-        for m in self.meta.values():
-            if m["present"] and m["hp"] and m["seen_raw"] is not None:
-                live_now += 1
+        def conf_for(gap):
+            return "high" if (self._last_poll_t and gap
+                              and gap <= self.interval * BOSS_GAP_HIGH_CONF) else "low"
 
-        # GUARD: an empty or near-empty answer while we were tracking live
-        # bosses is a partial response, not a world where everything died at
-        # once. Skip the whole comparison and leave state untouched.
+        # GUARD: an empty answer while live bosses are tracked is a partial
+        # response, not a world where everything died at once.
         prior_live = sum(1 for f in self.fights.values() if f.get("alive"))
         if n_entries == 0 and prior_live > 0:
             say(f"[bosses] empty response while tracking {prior_live} live - "
@@ -1165,8 +1221,7 @@ class BossWatch:
             return
 
         # GUARD: the first successful poll of a process has nothing to compare
-        # against. Seed and emit nothing, or every boss already up would be
-        # logged as having just spawned.
+        # against. Seed and emit nothing.
         seeding = not self._seeded
 
         for key, m in self.meta.items():
@@ -1178,21 +1233,28 @@ class BossWatch:
             alive = bool(present and m["hp"] and m["seen_raw"] is not None)
             er_raw = entry.get("estimatedRespawn")
             er = parse_ts(er_raw)
-            # "Reported dead" is POSITIVE evidence: listed, not alive, and
-            # carrying a respawn estimate. Absence is not this.
+            # Positive evidence of death: listed, not alive, carrying a
+            # respawn estimate. Absence is NOT this.
             dead_reported = bool(present and not alive and er_raw is not None)
+            # GUARD 2: did this server answer at all on this poll? "Server
+            # missing from the response" and "boss absent on a server that did
+            # respond" are different facts and only the second can be a death.
+            server_answered = (region, ident) in servers_seen
             f = self.fights.get(key)
 
             if seeding:
                 # spawn_t stays None for a boss already up: it may have been
-                # alive for hours, and a made-up spawn time would produce a
-                # made-up TTK, which is worse than no TTK.
-                self.fights[key] = {"alive": alive, "id": cur_id if alive else None,
-                                    "spawn_t": None, "last_alive_t": poll_t if alive else 0.0,
-                                    "absent": 0, "respawn_at": er if dead_reported else None}
+                # alive for hours, and an invented spawn time makes an
+                # invented TTK, which is worse than no TTK at all.
+                self.fights[key] = {
+                    "alive": alive, "id": cur_id if alive else None, "spawn_t": None,
+                    "last_alive_t": poll_t if alive else 0.0, "last_obs_t": poll_t,
+                    "absent": 0, "respawn_at": er if dead_reported else None,
+                    "last_hp": m["hp"] if alive else None, "last_pct": None}
                 continue
 
             if alive:
+                gap = gap_for(f)
                 new_instance = f is not None and f.get("alive") and f.get("id") != cur_id
                 if new_instance:
                     self._emit({"ev": "lost", "t": iso(poll_t), "type": mtype,
@@ -1200,67 +1262,79 @@ class BossWatch:
                                 "reason": "instance id changed without an observed death",
                                 "poll_gap_sec": round(gap), "confidence": "low"})
                 if f is None or not f.get("alive") or new_instance:
-                    # A spawn we can time precisely: we recorded this key's
-                    # respawn_at while it was dead, and it has just passed.
                     pending = f.get("respawn_at") if f else None
                     if pending and 0 <= poll_t - pending <= max(gap, self.interval) * 2:
-                        spawn_t, how = pending, "respawn_estimate"
+                        spawn_t, how, c = pending, "respawn_estimate", "high"
                     else:
-                        spawn_t, how = poll_t, "observed_poll"
+                        spawn_t, how, c = poll_t, "observed_poll", conf_for(gap)
                     self._emit({"ev": "spawn", "t": iso(spawn_t), "type": mtype,
                                 "server": server, "id": cur_id, "hp": m["hp"],
-                                "max_hp": self.max_hp.get(mtype),
-                                "method": how, "poll_gap_sec": round(gap),
-                                "confidence": conf if how == "observed_poll" else "high"})
-                    self.fights[key] = {"alive": True, "id": cur_id, "spawn_t": spawn_t,
-                                        "last_alive_t": poll_t, "absent": 0,
-                                        "respawn_at": None}
+                                "max_hp": self.max_hp.get(mtype), "method": how,
+                                "poll_gap_sec": round(gap), "confidence": c})
+                    mx = self.max_hp.get(mtype)
+                    self.fights[key] = {
+                        "alive": True, "id": cur_id, "spawn_t": spawn_t,
+                        "last_alive_t": poll_t, "last_obs_t": poll_t, "absent": 0,
+                        "respawn_at": None, "last_hp": m["hp"],
+                        "last_pct": round(m["hp"] / mx * 100.0, 2) if (mx and m["hp"]) else None}
                 else:
-                    f["last_alive_t"] = poll_t
+                    f["last_alive_t"] = f["last_obs_t"] = poll_t
                     f["absent"] = 0
                     f["id"] = cur_id
 
-            elif dead_reported:
+            elif dead_reported or (not present and server_answered
+                                   and f is not None and f.get("alive")):
+                # The second branch is guard 2 satisfied: the boss is gone from
+                # a server that DID answer. Confirmed over consecutive
+                # successful polls before it counts, because one partial body
+                # can still drop a single entry.
+                if not dead_reported:
+                    f["absent"] = f.get("absent", 0) + 1
+                    f["last_obs_t"] = poll_t
+                    if f["absent"] < BOSS_ABSENT_CONFIRM:
+                        continue
                 if f is not None and f.get("alive"):
+                    gap = gap_for(f)
                     rs = BOSS_RESPAWN_SEC.get(mtype)
                     if er is not None and rs:
-                        death_t, how = er - rs, "respawn_offset"
-                        dconf = conf
-                    else:
-                        # No constant for this type: all we know is that it
-                        # died between the last poll that saw it alive and
-                        # this one. Midpoint, and say so.
+                        death_t, how, dconf = er - rs, "respawn_offset", conf_for(gap)
+                    elif dead_reported:
                         lo = f.get("last_alive_t") or (poll_t - gap)
-                        death_t, how = (lo + poll_t) / 2.0, "poll_bracket"
-                        dconf = "low"
+                        death_t, how, dconf = (lo + poll_t) / 2.0, "poll_bracket", "low"
+                    else:
+                        lo = f.get("last_alive_t") or (poll_t - gap)
+                        death_t = (lo + poll_t) / 2.0
+                        how, dconf = "absent_on_responding_server", "low"
                     spawn_t = f.get("spawn_t")
-                    ttk = None
-                    if spawn_t and death_t > spawn_t:
-                        ttk = round(death_t - spawn_t)
-                    ev = {"ev": "death", "t": iso(death_t), "type": mtype,
-                          "server": server, "id": f.get("id"),
-                          "last_hp": m["hp"], "last_pct": None,
-                          "spawn_t": iso(spawn_t) if spawn_t else None,
-                          "ttk_sec": ttk, "method": how,
-                          "death_lo": iso(f.get("last_alive_t") or (poll_t - gap)),
-                          "death_hi": iso(poll_t),
-                          "estimated_respawn": er_raw,
-                          "poll_gap_sec": round(gap), "confidence": dconf}
-                    self._emit(ev)
-                self.fights[key] = {"alive": False, "id": None, "spawn_t": None,
-                                    "last_alive_t": (f or {}).get("last_alive_t", 0.0),
-                                    "absent": 0, "respawn_at": er}
+                    ttk = round(death_t - spawn_t) if (spawn_t and death_t > spawn_t) else None
+                    self._emit({
+                        "ev": "death", "t": iso(death_t), "type": mtype, "server": server,
+                        "id": f.get("id"), "last_hp": f.get("last_hp"),
+                        "last_pct": f.get("last_pct"),
+                        "spawn_t": iso(spawn_t) if spawn_t else None, "ttk_sec": ttk,
+                        "method": how,
+                        "death_lo": iso(f.get("last_alive_t") or (poll_t - gap)),
+                        "death_hi": iso(poll_t), "estimated_respawn": er_raw,
+                        "poll_gap_sec": round(gap), "confidence": dconf})
+                self.fights[key] = {
+                    "alive": False, "id": None, "spawn_t": None,
+                    "last_alive_t": (f or {}).get("last_alive_t", 0.0),
+                    "last_obs_t": poll_t, "absent": 0, "respawn_at": er,
+                    "last_hp": None, "last_pct": None}
 
             else:
-                # Absent, or present but unreadable. NOT a death.
+                # Absent while its server did NOT answer, or present but
+                # unreadable. Never a death - this is the 429 / partial-body
+                # case, and it recovers on its own.
                 if f is not None and f.get("alive"):
                     f["absent"] = f.get("absent", 0) + 1
                     if f["absent"] >= BOSS_ABSENT_CONFIRM:
-                        self._emit({"ev": "lost", "t": iso(poll_t), "type": mtype,
-                                    "server": server, "id": f.get("id"),
-                                    "reason": f"absent from {f['absent']} consecutive "
-                                              f"successful polls",
-                                    "poll_gap_sec": round(gap), "confidence": "low"})
+                        self._emit({
+                            "ev": "lost", "t": iso(poll_t), "type": mtype, "server": server,
+                            "id": f.get("id"),
+                            "reason": f"server {server} absent from "
+                                      f"{f['absent']} consecutive successful polls",
+                            "poll_gap_sec": round(gap_for(f)), "confidence": "low"})
                         f["alive"] = False
                         f["spawn_t"] = None
 
@@ -1401,6 +1475,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def _send_html(self, body: str, code=200):
+        raw = body.encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        # Same headers as _send. Serving the page from the bridge makes it
+        # same-origin with the JSON routes, so these are belt and braces.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
     def do_OPTIONS(self):
         self._send({"ok": True})
 
@@ -1462,12 +1551,27 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 500
             self._send({"now": iso(now()), "total": len(rows),
                         "returned": min(limit, len(rows)), "events": rows[-limit:]})
-        elif path == "/boss_stats":
+        elif path == "/boss_history":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
-            self._send(boss_stats(self.bosses.events_path,
-                                  (q.get("type") or [""])[0].strip().lower() or None,
-                                  (q.get("server") or [""])[0].strip().lower() or None))
+            self._send(boss_history(
+                self.bosses.events_path,
+                (q.get("type") or [""])[0].strip().lower() or None,
+                (q.get("server") or [""])[0].strip().lower() or None,
+                (q.get("since") or [""])[0].strip() or None,
+                (q.get("include_low") or [""])[0] in ("1", "true", "yes")))
+        elif path == "/boss_page":
+            # Served from disk rather than embedded, so the page stays a
+            # reviewable file in Codex/ and git sees its diffs. Resolved
+            # against this script's own directory, not the working one.
+            f = pathlib.Path(__file__).resolve().parent / "boss_timers.html"
+            try:
+                self._send_html(f.read_text(encoding="utf-8"))
+            except OSError as e:
+                self._send_html(
+                    "<!doctype html><meta charset=utf-8><title>missing</title>"
+                    f"<p>boss_timers.html not found next to market_bridge.py<br>"
+                    f"<code>{html_escape(str(f))}</code><br>{html_escape(str(e))}", 500)
         elif path == "/health":
             self._send({"ok": True, "service": "al-market-bridge"})
         else:
@@ -1525,8 +1629,13 @@ def main():
 
     Handler.store = Store(pathlib.Path(a.state) if a.state else None)
     Handler.ledger = Ledger(pathlib.Path(a.ledger))
-    Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses,
-                               pathlib.Path(a.boss_events) if a.boss_events else None)
+    _ev = pathlib.Path(a.boss_events) if a.boss_events else None
+    if _ev:
+        try:
+            _ev.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"[bridge] cannot create {_ev.parent}: {e}")
+    Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses, _ev)
     Handler.bosses.start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
@@ -1538,8 +1647,9 @@ def main():
     else:
         print(f"[bridge]   bosses       -> GET /bosses?type=&server="
               f" (ALData every {Handler.bosses.interval}s)")
-        print(f"[bridge]   kill log     -> GET /boss_events, /boss_stats"
+        print(f"[bridge]   kill log     -> GET /boss_events, /boss_history"
               f" ({a.boss_events or 'OFF'})")
+        print(f"[bridge]   page         -> http://{a.host}:{a.port}/boss_page")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
     print(f"[bridge]   logging {'off (--quiet)' if a.quiet else 'on - one line per scan and relayed message'}")
     try:

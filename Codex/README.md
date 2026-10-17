@@ -7,7 +7,7 @@ arbitrage executor that trades across shards.
 |---|---|
 | `al_market_watchlist.html` | The watchlist — market, summary, arbitrage, Ponty, trade ledger |
 | `aldata_explorer.html` | Full game-data explorer — items, monsters, drops, world, bank |
-| `boss_timers.html` | Boss status, respawn timers in America/New_York, and the kill log. Standalone, not built from the template |
+| `boss_timers.html` | The boss page the bridge serves at `/boss_page`. Not built from the template |
 | `market_bridge.py` | Local server: collects scans, coordinates scouts, keeps the trade ledger. Stdlib only |
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
 | `relay/` | For running a scout on a second computer — see its own README |
@@ -454,12 +454,22 @@ survive a bridge restart either. So the poller appends to
 `boss_events.jsonl` (`--boss-events`, next to `ledger.jsonl`; both are
 gitignored) at the instant it sees a transition.
 
-`respawn_sec` comes from the creator's `design/monsters.js` and is what makes
-the death time exact: ALData's `estimatedRespawn` is death plus the NOMINAL
-respawn, so subtracting it recovers the moment of death rather than the
-moment the poller noticed. Verified for `mrgreen` (94*60 = 5640s). Note the
-server randomises the real respawn (`node/server.js:13096`), so these
-constants decode a death; they do not predict a return.
+`respawn_sec` is what makes the death time exact: ALData's `estimatedRespawn`
+is death plus the NOMINAL respawn, so subtracting it recovers the moment of
+death rather than the moment the poller noticed. Verified for `mrgreen`
+(94*60 = 5640s). The server randomises the real respawn
+(`node/server.js:13096`), so these constants decode a death; they do not
+predict a return.
+
+**The table is measured from the deployed client, and must not be
+re-derived from the mongodb repo.** The two disagree: the source has
+`greenjr: 480 && 12*72*60` and `jr: 480 && 6*72*60`, which evaluate to 51840
+and 25920 in JavaScript, while the running client reports 480 for both.
+`mvampire`, a plain `18*60` in the source, agrees at 1080 — so they part
+company exactly where the source carries the `&&` form. `rimedjinn` is absent
+from the source file and the client reports 12. This file shipped the
+evaluated source values once; they were wrong, in precisely the way CLAUDE.md
+warns about.
 
 Three event types. `spawn` and `death` carry `id`, so a respawn under a new
 instance id cannot be mistaken for the same fight, and `death` carries
@@ -473,22 +483,63 @@ Four guards keep that out of the statistics:
 | Guard | Behaviour |
 |---|---|
 | Failed fetch | Returns before the comparison runs, so no transition is ever evaluated |
+| Server missing from the response | Never a death, however many polls it lasts. Logged `lost` instead |
+| Boss absent on a server that DID answer | A death, but only after 3 consecutive successful polls, and always `confidence: "low"` |
 | Empty response while live bosses are tracked | Whole pass skipped, state untouched |
 | First poll of a process | Seeds only. A boss already up gets `spawn_t: null`, so it can never produce an invented TTK |
-| Absence | Needs `BOSS_ABSENT_CONFIRM` (3) consecutive *successful* polls, and then logs `lost`, not a kill |
 
-A death is recorded only on POSITIVE evidence: the entry present, not alive,
-and carrying a respawn estimate.
+The second and third rows are the distinction that matters: "this server did
+not answer" and "this server answered and the boss was gone" look identical
+in the data and mean opposite things. A death is otherwise recorded only on
+POSITIVE evidence — the entry present, not alive, and carrying a respawn
+estimate.
 
-`GET /boss_stats` aggregates it per (type, server) and rolls up per server.
-`kill_rate` is kills ÷ **resolved** fights, not kills ÷ spawns — a boss that
-is up right now has not failed to die, and counting it as a miss would make a
-server look worse the moment it got busy. That table is for the home-server
-decision, which carries a 36-hour cooldown, so it is worth letting it
-accumulate rather than reading it after an hour.
+`poll_gap_sec` is per ENTRY, seconds since that entry was last observed, and
+`confidence` is `high` only when it is within 2x the poll interval.
 
-Open `boss_timers.html` to see all of it: live status with countdowns in
-America/New_York, the server ranking, and the raw log.
+**Rate limiting.** 45s sits close to whatever ALData's limit is; a real cycle
+returned `HTTP Error 429` and recovered on its own. Each consecutive failure
+doubles the wait (capped at `BOSS_BACKOFF_MAX_SEC`, 15 min) and one success
+returns to the configured interval.
+
+`GET /boss_history` aggregates per (type, server): `kills_logged`,
+`ttk_median_sec`, `ttk_p25_sec`/`ttk_p75_sec`, min/max, `kills_per_day`,
+`last_kill_t`, `last_spawn_t`, `stalled_count`, `observed_window_sec` and
+`confidence_counts`. Takes `?type=`, `?server=`, `?since=` and
+`?include_low=1`.
+
+Low-confidence kills are counted but kept OUT of the medians unless asked
+for. A kill whose timestamp is bounded only by a wide poll gap still proves
+the boss died there and says very little about how long it took.
+
+**`stalled_count` is the figure a median TTK cannot show,** and the reason
+the ranking is not just a TTK table. A stall is a spawn whose next same-type,
+same-server spawn arrives with no death in between: the boss spawned, got
+nibbled, and was abandoned. Measured 2026-10-17, ASIA I held 28,088,505 hp
+for 40+ minutes and US III 15,417,063 for 24+. That server produces no bad
+TTK, because it produces no TTK at all, and it is the worst possible home.
+
+## `GET /boss_page`
+
+The page, served from the bridge so it is same-origin with the JSON. Read off
+disk from `boss_timers.html` next to `market_bridge.py`, so it stays a
+reviewable file in git; opening that file directly also works, because it
+falls back to the absolute loopback address when the protocol is `file:`.
+
+Three views. **Now** — every (type, server), live-and-dying first, with
+either "respawns 12:43 PM" and a ticking countdown or "up, ~11 min left".
+**Timers** — the next window per server for one type. **Server ranking** —
+the decision view, sorted by kills per day, with the stall count and a sample
+column; anything under `BOSS_MIN_KILLS_FOR_TREND` (5) logged kills is greyed
+out and labelled, because a 1-kill server otherwise tops the table. `dps` is
+deliberately absent there: it is a trailing average that reads low on a
+ramping fight and would mislead a direct comparison.
+
+Every timestamp crosses the wire as ISO-8601 UTC and is rendered by
+`Intl.DateTimeFormat` with `timeZone: 'America/New_York'`. Nothing computes an
+offset server-side and nothing hardcodes `-04:00` — **US DST ends
+2026-11-01**, and a baked-in offset would go an hour wrong on every timer
+that night.
 
 ---
 
