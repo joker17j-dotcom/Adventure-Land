@@ -82,11 +82,51 @@ through Chrome" would stop a session that *can* push from ever trying.
   convention in `8026394`, and was caught by the file appearing in the sidebar
   rather than by anything deliberate. Open the existing file and edit it.
 
+## Who commits - hand it over by default
+
+**Both sessions, but the default differs.** The Claude Code session pushes with
+git and should simply do it. This session's web-editor route was MEASURED on
+2026-10-17 at ~14 minutes for one CLAUDE.md commit, ~8 with the recipe followed
+exactly, against under a minute for the operator by hand. So:
+
+- **DEFAULT: hand the commit to the operator.** Provide three things and stop -
+  the content, the commit message, and the extended description. Do not open
+  the web editor.
+- **Commit directly only when told to, for that commit.** Standing permission
+  to push is not a standing instruction to push.
+- **How the content is handed over depends on size.** Markdown and short text
+  go in a fenced block in the chat, copy-pasteable, tables preserved. A 400 KB
+  character script does not - send that as a file. Never paste a whole script
+  into the conversation.
+- **Hand it to the operator even when the file is large.** A character script is
+  already in their hands - they paste it into the CODE slot to deploy it - so
+  routing the commit through the other session moves the same change twice.
+- **The other session earns its keep on MULTI-FILE changes only.** The web
+  editor costs the operator roughly a minute per file, because each file is its
+  own open-edit-commit cycle, while a patch is one relay however many files it
+  touches; break-even is about three. Same for a large file the operator has no
+  other reason to hold - anything in `Codex/`, or a long document that never
+  goes to a CODE slot. In both cases send `git format-patch`, never the whole
+  file, per "Handing code to the other chat" below.
+- **Verification MOVES, it does not disappear.** The hash gates in the
+  web-editor route exist because a silent paste corruption has already happened
+  here. State the expected byte and line counts with the handoff, then confirm
+  after the commit: `git hash-object` of the local build against
+  `git show origin/main:<path> | git hash-object --stdin`. One call, ten
+  seconds, not optional. The 2026-10-17 commit was only provably correct
+  because its blob matched `ff76723a` exactly.
+- **Attribution stays on handed-over commits.** Operator's call 2026-10-17: the
+  session that did the work gets the credit, so every extended description ends
+  with the `Co-Authored-By: Claude Opus 5` and `Claude-Session:` lines even
+  though the operator is the committer.
+- **Routing commits away from this session is a cost accepted, not a demotion.**
+  It is the session that can read the live game and verify claims against it,
+  which is why it produces the content in the first place.
+
 ## Version headers
 
 - **Prepend to the header, never replace it.** Line 2 of each character script
-  accumulates version entries oldest-last; `Party/Priest.js` carries five.
-  Both
+  accumulates version entries oldest-last; `Party/Priest.js` carries five. Both
   sessions bump this line, so it is the one line that conflicts on almost every
   rebase - and resolving it by taking one side silently deletes the other
   side's history.
@@ -97,15 +137,13 @@ through Chrome" would stop a session that *can* push from ever trying.
   header resolution destroys. Lost once, in ba067df, restored after the other
   session caught it.
 - **`Party/Merchant.js` is the exception.** Its history was moved to
-  `Party/CHANGELOG.md`
-  on 2026-09-21 to stay under the CODE slot size cap, so line 2 there carries
-  only the current version and the entry goes in `Party/CHANGELOG.md`
-  instead. Do not
-  prepend to a header that deliberately does not accumulate. Verified
-  2026-10-17: `Party/Merchant.js` line 2 ends at `v97`, and
-  `Party/CHANGELOG.md` holds the rest. The v97 entry is deliberately NOT
-  written yet - the operator's 2026-10-17 call was to leave the bump in place
-  and fold v97's three changes (`parked: false`, `tracker` dropped from
+  `Party/CHANGELOG.md` on 2026-09-21 to stay under the CODE slot size cap, so
+  line 2 there carries only the current version and the entry goes in
+  `Party/CHANGELOG.md` instead. Do not prepend to a header that deliberately
+  does not accumulate. Verified 2026-10-17: `Party/Merchant.js` line 2 ends at
+  `v97`, and `Party/CHANGELOG.md` holds the rest. The v97 entry is deliberately
+  NOT written yet - the operator's 2026-10-17 call was to leave the bump in
+  place and fold v97's three changes (`parked: false`, `tracker` dropped from
   `pontyBuy.items`, eight key ids added) into the next change's entry.
 
 ## Handing code to the other chat
@@ -146,10 +184,9 @@ through Chrome" would stop a session that *can* push from ever trying.
   formatting.
 - **The loaded copy is allowed to be ahead.** That same check found the
   `Party/Merchant.js` version-header exception present in the loaded copy and
-  missing
-  here, which would have walked the other session into prepending to a header
-  that does not accumulate. It was carried into this file on 2026-09-25. Drift
-  is a two-way diff, not a one-way correction.
+  missing here, which would have walked the other session into prepending to a
+  header that does not accumulate. It was carried into this file on 2026-09-25.
+  Drift is a two-way diff, not a one-way correction.
 - **The loaded copy must never be auto-synced from this one.** A session that
   finds a difference reports it and stops, because this file is edited by both
   chat sessions and a difference may be something the user has not reviewed.
@@ -377,6 +414,20 @@ ask the other session to measure first.
 **Browser-driven session only** - it is the one that cannot `git push`.
 The Claude Code session commits with git and should never use this route.
 
+- **Build the whole new text, hash it, then dispatch ONCE.** Dispatching a
+  change array lets CodeMirror insert line by line, and it auto-indents every
+  newline it inserts. Measured 2026-10-17: 27 ops carrying 6 inserted newlines
+  came out 6 characters long, one extra leading space on each continuation
+  line, and the hash gate caught it before the commit. Splicing the same
+  offsets into a string and replacing `from: 0, to: doc.length` in one dispatch
+  has no such behaviour - which is what the edit-script bullet below already
+  says ("verify the new hash, THEN dispatch"), and deviating from that order is
+  what produced the fault. Deletions are never auto-indented, so removing the
+  stray spaces is the cheap repair if it happens anyway.
+- **A hash match proves fidelity, not quality.** The same commit shipped three
+  badly-wrapped orphan lines, because the gate confirms you wrote what you
+  intended and says nothing about whether it was right. Re-read the rendered
+  diff, or at least the paragraphs you touched, before committing.
 - **Set content with `view.dispatch`, not selectAll+paste.** The paste route
   silently APPENDED once - 27,816 chars where 16,181 was expected. Use
   `document.querySelector('.cm-content').cmTile.view.dispatch({changes:{from:0,
