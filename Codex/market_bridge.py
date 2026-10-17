@@ -29,8 +29,11 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import threading
 import time
+import urllib.request
+from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -68,6 +71,41 @@ ACTIVITY_HALFLIFE = 15 * 60
 MESSAGE_TTL = 10 * 60
 
 
+# ---------------------------------------------------------------- bosses
+#
+# Why the poller lives here and not in a character script: server.status
+# (parent.S) describes only the shard the character holding it is connected
+# to, so no script can see a boss on another server. ALData is the only
+# cross-server source. Running one poller in the bridge also means the hp
+# history survives a CODE restart or a character hop, and four characters
+# share one caller against a free third-party API instead of opening four.
+ALDATA_BASE = "https://aldata.earthiverse.ca"
+# Measured from a browser on 2026-10-17: ALData entries were 12-30s stale when
+# sampled, so polling much faster mostly re-reads the same cached value. At 45s
+# a 36M boss dying at ~22k dps still yields roughly 27 samples over its life.
+BOSS_POLL_SECONDS = 45
+BOSS_HTTP_TIMEOUT = 15
+# How far back a sample stays eligible for the dps window.
+BOSS_SAMPLE_WINDOW = 5 * 60
+# Hard cap per (type, server), so a long-lived boss cannot grow a buffer
+# without bound.
+BOSS_SAMPLE_CAP = 48
+# age_sec above this marks a row stale.
+BOSS_STALE_AFTER = 120
+
+# The 15 ids in allBosses plus the 6 cooperative monsters Ranger.js lists
+# separately in attackIfTargeted. Verified against Party/Ranger.js:186 and
+# :256 on 2026-10-17. ALData's README states cutebee and goldenbat are
+# excluded from its results; that exclusion was not re-checked from here, so
+# treat adding either as untested rather than as a fix.
+BOSS_TYPES = [
+    "bgoo", "bscorpion", "crabxx", "dragold", "ent", "franky", "greenjr",
+    "grinch", "icegolem", "jr", "mrgreen", "mrpumpkin", "phoenix", "rgoo",
+    "wabbit",
+    "pinkgoo", "rharpy", "rimedjinn", "slenderman", "snowman", "tiger",
+]
+
+
 QUIET = False
 
 
@@ -91,6 +129,40 @@ def iso(ts: float) -> str:
 
 def shard_key(region: str, name: str) -> str:
     return f"{region}{name}"
+
+def parse_ts(v) -> float | None:
+    """Seconds since the epoch from whatever shape a timestamp arrives in.
+
+    Returns None rather than guessing. The exact shape ALData uses for
+    lastSeen was not verified from the container that wrote this, so both the
+    numeric and the ISO-8601 readings are attempted and an unrecognised value
+    is reported as unknown. Silently becoming 1970 would turn a missing
+    timestamp into an enormous age_sec, which reads as a confident "very
+    stale" instead of "we do not know"."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        # Milliseconds if far larger than a plausible epoch second.
+        return float(v) / 1000.0 if v > 1e11 else float(v)
+    if not isinstance(v, str):
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    if s.endswith("Z") or s.endswith("z"):
+        s = s[:-1] + "+00:00"
+    # fromisoformat rejects more than 6 fractional digits before 3.11.
+    m = re.match(r"^(.*\.\d{6})\d+(.*)$", s)
+    if m:
+        s = m.group(1) + m.group(2)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
 
 
 # Trade ledger events, in the order a trade can move through them. "open" is a
@@ -668,9 +740,256 @@ class Store:
             }
 
 
+class BossWatch:
+    """Polls ALData for every boss type and keeps a short per-server hp history.
+
+    The history is the whole point. An hp percentage does NOT distinguish a
+    boss being actively killed from one abandoned half-dead. Measured
+    2026-10-17 from the game's own server.status: ASIA I held 28,088,505 hp at
+    10:16 and the identical value at 10:27 while sitting at 78%, and US III
+    was unchanged over 80s at 42.8%, while US V lost 1,075,988 hp in 47s
+    (22,866 aggregate dps) and EU III lost 2,836,886 in 132s (21,561). Three
+    servers looked part-killed; two were abandoned. A party sent on the
+    strength of a percentage arrives to solo a half-dead boss.
+
+    Only a delta over time, or a non-null target, separates those cases, so
+    this computes the delta once here rather than leaving four scripts to
+    each keep their own state across hops and CODE restarts."""
+
+    def __init__(self, types, interval: int = BOSS_POLL_SECONDS, enabled: bool = True):
+        self.lock = threading.Lock()
+        self.types = list(types)
+        self.interval = max(5, int(interval))
+        self.enabled = enabled
+        self.samples: dict[tuple, object] = {}   # (type, region, ident) -> deque
+        self.meta: dict[tuple, dict] = {}        # same key -> latest reading
+        self.max_hp: dict[str, float] = {}       # type -> largest hp seen since start
+        self.last_attempt = 0.0
+        self.last_success = 0.0
+        self.last_error: str | None = None
+        self.fails = 0
+        self.entries_last_poll = 0
+        self._stop = threading.Event()
+
+    # ------------------------------------------------------------- polling
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        threading.Thread(target=self._loop, name="bosswatch", daemon=True).start()
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.poll_once()
+            except Exception as e:
+                # A poller must never take the bridge down. /merchants, /msg and
+                # /trades are the live services here; boss data is an extra.
+                print(f"[bridge] boss poller error: {e}")
+            self._stop.wait(self.interval)
+
+    def _fetch(self) -> list:
+        # A comma-separated type list is one request for all of them. Types
+        # with nothing alive are simply absent from the response.
+        url = f"{ALDATA_BASE}/monsters/{','.join(self.types)}"
+        req = urllib.request.Request(url, headers={
+            "Accept": "application/json",
+            "User-Agent": "al-market-bridge",
+        })
+        with urllib.request.urlopen(req, timeout=BOSS_HTTP_TIMEOUT) as r:
+            code = getattr(r, "status", None) or r.getcode()
+            if code != 200:
+                raise RuntimeError(f"HTTP {code}")
+            raw = r.read()
+        data = json.loads(raw.decode("utf-8"))
+        if isinstance(data, dict):
+            return [data]
+        if not isinstance(data, list):
+            raise RuntimeError(f"expected a JSON array, got {type(data).__name__}")
+        return data
+
+    def poll_once(self) -> bool:
+        self.last_attempt = now()
+        try:
+            data = self._fetch()
+        except Exception as e:
+            with self.lock:
+                self.fails += 1
+                self.last_error = f"{type(e).__name__}: {e}"
+                first = self.fails == 1
+                err = self.last_error
+            # Logged on the transition only. At 45s a hard-down ALData would
+            # otherwise print ~80 identical lines an hour and bury the scan log.
+            if first:
+                say(f"[bosses] ALData unreachable ({err}); serving cached rows")
+            return False
+
+        seen = set()
+        for entry in data:
+            k = self._record(entry)
+            if k:
+                seen.add(k)
+        with self.lock:
+            for k, m in self.meta.items():
+                m["present"] = k in seen
+            recovered = self.fails > 0
+            self.fails = 0
+            self.last_error = None
+            self.last_success = now()
+            self.entries_last_poll = len(data)
+        if recovered:
+            say(f"[bosses] ALData back; {len(data)} entries")
+        return True
+
+    def _record(self, entry) -> tuple | None:
+        if not isinstance(entry, dict):
+            return None
+        mtype = entry.get("type")
+        if not mtype:
+            return None
+        key = (str(mtype), str(entry.get("serverRegion") or "?"),
+               str(entry.get("serverIdentifier") or "?"))
+        t = now()
+        hp = entry.get("hp")
+        hp = float(hp) if isinstance(hp, (int, float)) and not isinstance(hp, bool) else None
+        # 'target' was present on only 4 of 13 entries in the 2026-10-17 sample
+        # and non-null on 1, so absent and null are different answers and both
+        # are kept. Never index this blindly.
+        has_target = "target" in entry
+        seen_raw = entry.get("lastSeen")
+        seen_ts = parse_ts(seen_raw)
+
+        with self.lock:
+            if hp is not None:
+                prev = self.max_hp.get(mtype)
+                if prev is None or hp > prev:
+                    self.max_hp[mtype] = hp
+            buf = self.samples.get(key)
+            if buf is None:
+                buf = self.samples[key] = deque(maxlen=BOSS_SAMPLE_CAP)
+            # Only readings ALData itself refreshed count as observations.
+            # Re-reading its cache would otherwise look like a second
+            # measurement and turn "unknown" into a confident 0 dps - which is
+            # exactly the distinction this endpoint exists to preserve.
+            if hp is not None and seen_raw is not None:
+                prior = buf[-1] if buf else None
+                if prior is None or prior["seen_raw"] != seen_raw:
+                    if prior is not None and hp > prior["hp"]:
+                        buf.clear()      # hp went UP: a new spawn, not damage
+                    buf.append({"hp": hp, "seen_raw": seen_raw,
+                                "seen_ts": seen_ts, "at": t})
+            self.meta[key] = {
+                "entry": entry, "at": t, "hp": hp,
+                "target": entry.get("target") if has_target else None,
+                "has_target": has_target,
+                "seen_raw": seen_raw, "seen_ts": seen_ts,
+                "present": True,
+            }
+        return key
+
+    # -------------------------------------------------------------- output
+    @staticmethod
+    def _dps(buf):
+        """(dps, window_sec, samples). None and 0 are DIFFERENT answers.
+
+        None means fewer than two refreshed readings, so nothing is known. 0
+        means two readings that agree - the evidence that a boss is sitting
+        untouched, which is the case worth not walking into."""
+        n = len(buf) if buf else 0
+        if n < 2:
+            return None, None, n
+        t = now()
+        usable = [s for s in buf if t - s["at"] <= BOSS_SAMPLE_WINDOW]
+        if len(usable) < 2:
+            return None, None, len(usable)
+        a, b = usable[0], usable[-1]
+        # Prefer ALData's own timestamps: they are when it saw the boss, where
+        # ours are only when we read its cache.
+        if a["seen_ts"] is not None and b["seen_ts"] is not None:
+            dt = b["seen_ts"] - a["seen_ts"]
+        else:
+            dt = b["at"] - a["at"]
+        if dt <= 0:
+            return None, None, len(usable)
+        lost = a["hp"] - b["hp"]
+        if lost < 0:
+            return None, round(dt), len(usable)   # healed or respawned mid-window
+        return round(lost / dt, 1), round(dt), len(usable)
+
+    def rows(self, want_type: str | None = None, want_server: str | None = None) -> list[dict]:
+        t = now()
+        out = []
+        with self.lock:
+            for key, m in self.meta.items():
+                mtype, region, ident = key
+                if want_type and mtype.lower() != want_type:
+                    continue
+                server = f"{region} {ident}".strip()
+                if want_server and want_server not in (server.lower(), ident.lower()):
+                    continue
+                entry = m["entry"]
+                hp = m["hp"]
+                # max_hp is the largest hp this process has seen for the type,
+                # NOT a figure from game data - the bridge has none. A bridge
+                # started while every shard's boss was half dead will read high
+                # on pct until one respawns. Labelled so a caller can tell.
+                mx = self.max_hp.get(mtype)
+                pct = round(hp / mx * 100.0, 2) if (hp is not None and mx) else None
+                age = round(t - m["seen_ts"]) if m["seen_ts"] is not None else None
+                dps, win, nsamp = self._dps(self.samples.get(key))
+                eta = round(hp / dps) if (dps and dps > 0 and hp) else None
+                out.append({
+                    "type": mtype,
+                    "serverRegion": region,
+                    "serverIdentifier": ident,
+                    "server": server,
+                    "id": entry.get("id"),
+                    "map": entry.get("map"),
+                    "x": entry.get("x"),
+                    "y": entry.get("y"),
+                    "level": entry.get("level"),
+                    "s": entry.get("s"),
+                    "hp": hp,
+                    "max_hp": mx,
+                    "max_hp_source": "observed" if mx else None,
+                    "pct": pct,
+                    "target": m["target"],
+                    "has_target_field": m["has_target"],
+                    "lastSeen": m["seen_raw"],
+                    "age_sec": age,
+                    "dps": dps,
+                    "dps_window_sec": win,
+                    "dps_samples": nsamp,
+                    "eta_sec": eta,
+                    "stale": True if age is None else age > BOSS_STALE_AFTER,
+                    "live": bool(m["present"] and hp and m["seen_raw"] is not None),
+                    "estimated_respawn": entry.get("estimatedRespawn"),
+                    "observed_ago_sec": round(t - m["at"]),
+                })
+        out.sort(key=lambda r: (r["type"], r["serverRegion"], r["serverIdentifier"]))
+        return out
+
+    def health(self) -> dict:
+        t = now()
+        with self.lock:
+            return {
+                "enabled": self.enabled,
+                "interval_sec": self.interval,
+                "types": len(self.types),
+                "last_attempt": iso(self.last_attempt) if self.last_attempt else None,
+                "last_success": iso(self.last_success) if self.last_success else None,
+                "last_success_age_sec": (round(t - self.last_success)
+                                         if self.last_success else None),
+                "consecutive_failures": self.fails,
+                "last_error": self.last_error,
+                "entries_last_poll": self.entries_last_poll,
+                "tracked": len(self.meta),
+            }
+
+
 class Handler(BaseHTTPRequestHandler):
     store: Store = None            # set on the server instance below
     ledger: Ledger = None
+    bosses: "BossWatch" = None
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -727,6 +1046,19 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(self.store.ponty)
         elif path in ("/status", "/"):
             self._send(self.store.status())
+        elif path == "/bosses":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            wt = (q.get("type") or [""])[0].strip().lower() or None
+            ws = (q.get("server") or [""])[0].strip().lower() or None
+            rows = self.bosses.rows(wt, ws)
+            # Answers even when ALData is unreachable: cached rows, with the
+            # poller block carrying the staleness. Returning an error instead
+            # would make "the bridge is down" and "ALData is down" identical
+            # to the caller, and the caller is a game script with no other way
+            # to tell them apart.
+            self._send({"now": iso(now()), "poller": self.bosses.health(),
+                        "count": len(rows), "bosses": rows})
         elif path == "/health":
             self._send({"ok": True, "service": "al-market-bridge"})
         else:
@@ -770,6 +1102,10 @@ def main():
                     help="append-only trade history (default ./ledger.jsonl)")
     ap.add_argument("--quiet", action="store_true",
                     help="only print startup and errors, no per-event lines")
+    ap.add_argument("--no-bosses", action="store_true",
+                    help="do not poll ALData for boss hp")
+    ap.add_argument("--boss-interval", type=int, default=BOSS_POLL_SECONDS,
+                    help=f"seconds between ALData boss polls (default {BOSS_POLL_SECONDS})")
     a = ap.parse_args()
 
     global QUIET
@@ -777,11 +1113,18 @@ def main():
 
     Handler.store = Store(pathlib.Path(a.state) if a.state else None)
     Handler.ledger = Ledger(pathlib.Path(a.ledger))
+    Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses)
+    Handler.bosses.start()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
     print(f"[bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>")
     print(f"[bridge]   trades       -> POST /trade, GET /trades (raw=1 for events)")
+    if a.no_bosses:
+        print(f"[bridge]   bosses       -> GET /bosses (poller OFF, --no-bosses)")
+    else:
+        print(f"[bridge]   bosses       -> GET /bosses?type=&server="
+              f" (ALData every {Handler.bosses.interval}s)")
     print(f"[bridge]   status       -> http://{a.host}:{a.port}/status")
     print(f"[bridge]   logging {'off (--quiet)' if a.quiet else 'on - one line per scan and relayed message'}")
     try:
