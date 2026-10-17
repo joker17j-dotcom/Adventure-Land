@@ -4,27 +4,73 @@ Scripts for [Adventure Land](https://adventure.land), a code-based MMORPG where
 your characters are driven by JavaScript you write. Three of them farm; the
 fourth runs a cross-shard arbitrage business to pay for it.
 
+> **Reorganised 2026-10-17.** The character scripts moved from the repository
+> root into `Party/`. Any path in an older note, code comment or commit message
+> may still point at the old location.
+
+## The party
+
+Each file is pasted into that character's own CODE slot. Versions and sizes are
+as of 2026-10-17.
+
 | File | Character | Slot | Size |
 |---|---|---|---|
-| `Ranger.js` | Dexon — ranger, the damage | `CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB` | v51, 3.9k lines |
-| `Priest.js` | FatherToken — priest, keeps everyone alive | `CH_hae5t3g8gBezOVTdR6ToTagikbTbF` | v26, 2.9k lines |
-| `Mage.js` | MageofOz — mage | `CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom` | v50, 2.1k lines |
-| `Merchant.js` | Meltymerch — merchant, trader and mule | `CH_aLtHealaSgKdmOsDWpNl8scE9NhXk` | v47, 5.2k lines |
-| `OpenGifts.js` | — | run by hand | opens event boxes at Xyn |
+| `Party/Ranger.js` | Dexon — ranger, the damage, and the one that picks the farm spot | `CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB` | v82, 7.2k lines |
+| `Party/Priest.js` | FatherToken — priest, keeps everyone alive | `CH_hae5t3g8gBezOVTdR6ToTagikbTbF` | v47, 5.1k lines |
+| `Party/Mage.js` | MageofOz — mage | `CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom` | v70, 4.4k lines |
+| `Party/Merchant.js` | Meltymerch — merchant, trader and mule | `CH_aLtHealaSgKdmOsDWpNl8scE9NhXk` | v97, 9.5k lines |
 
-`Codex/` is the market tooling the merchant leans on: a local bridge, a
-watchlist page, a game-data explorer, a trade ledger. It has
-[its own README](Codex/README.md).
+Dexon chooses the farm spot and broadcasts it; the priest and mage adopt his
+`home`/`mobMap` and focus-fire his target rather than picking independently.
+
+`Party/Merchant.js` keeps only its current version on line 2 — its history lives
+in `Party/CHANGELOG.md`, to stay under the CODE slot size cap. The other three
+accumulate their version entries in the line-2 header.
+
+## Run by hand
+
+Standalone scripts, pasted into a slot when wanted rather than left running.
+
+| File | What it does |
+|---|---|
+| `CaveRun.js` | Cave of Many Dreams. The **same file** goes in all three combat slots; `caveLead(name)` picks the leader. Entry is manual by design — one visit per account per day, and an accidental `enter()` burns it. v13 |
+| `UpgradeCompound.js` | Works whatever is in **slot 0** up to its target level, upgrading or compounding. A stop is never a dead end: it fingerprints the situation and clears itself the moment the bag changes. v7 |
+| `Cleanout.js` | Sells an inventory down, to the best player bid or else to an NPC. v3 |
+| `OpenGifts.js` | Stands at the hub, opens anniversary boxes, sells the chaff. v8 |
+| `ExchangeQuest.js` | The complement of `OpenGifts.js` — exchanges the quest-routed exchangeables at their own NPCs. v1 |
+
+## Market tooling — `Codex/`
+
+The bridge, the watchlist page, the game-data explorer, the trade ledger, and
+the family's separate fleet. It has [its own README](Codex/README.md), and the
+second-computer relay has [another](Codex/relay/README.md).
+
+The bridge also polls ALData for every boss type and serves `GET /bosses`, which
+is how a character learns about a boss on a shard it is not connected to —
+`server.status` only ever describes the shard that character holds.
 
 ## Where the documentation lives
 
 | File | What it holds |
 |---|---|
 | `CLAUDE.md` | Conventions for AI sessions working on this repo. **Read first** |
-| `CHANGELOG.md` | What changed, why, and what was measured to justify it |
-| `TASKS.md` | Open problems, with enough context to pick up cold |
+| `Party/CHANGELOG.md` | `Merchant.js` version history, and what was measured to justify each change |
+| `Party/MerchantComments.md` | The long-form notes `Merchant.js` cites as `-> MerchantComments.md#anchor` |
 | `Codex/README.md` | The market tooling, the bridge, arbitrage safety rails |
-| `Codex/MerchantComments.md` | Long-form notes `Merchant.js` cites as `-> MerchantComments.md#anchor` |
+| `Codex/relay/README.md` | Running a scout on a second computer |
+| `REPORTS.md` | Named reports the operator asks for by phrase. Produced by Claude querying the live game, not by any script |
+| `Gear_Progression_Review.md` | Gear goals, the reasoning behind them, and the live state they were measured against |
+| `Archived/TASKS.md` | Retired task list, kept for the context in it |
+
+## Reference and archive
+
+- **`Crowns3bc/` is reference only — never edit it, never deploy from it.**
+  Another player's scripts, kept because the repository that hosted them went
+  away. Whatever was useful in them was folded into our own scripts many
+  versions ago. The files carry no extension and have spaces in their names, so
+  a `*.js` glob skips them silently — which also means `Crowns3bc/Ranger` and
+  `Party/Ranger.js` are different files, and a bare "Ranger" is ambiguous.
+- **`Archived/`** is retired work: `Archived/Upgrade` and `Archived/TASKS.md`.
 
 ## Deploying
 
@@ -67,15 +113,20 @@ flag is silently ignored. Close Chrome fully first, tray icon included.
 
 ## Current operational state
 
-- **Arbitrage is LIVE.** `CONFIG.arbitrage.dryRun` is `false` and it spends real
-  gold continuously. Safety rails are in `Codex/README.md`; read the flag, not a
-  document, before assuming otherwise.
-- **Scouting is OFF** — `CONFIG.scout.enabled: false`, deliberately and
-  temporarily. While it holds, the bridge's `/merchants` and `/ponty` answer
-  empty on every shard. That is configuration, not a broken bridge.
-- **Stand sales are OFF** — `CONFIG.standSales.enabled: false`, pending a
-  re-test. The feature worked; the rollback was based on a misreading of how
-  trade slots report when a stand is closed.
+Flags verified against `Party/Merchant.js` on 2026-10-17. **Read the flag, not
+this table** — it is the sort of thing that goes stale between releases, and
+has.
+
+- **Arbitrage is LIVE.** `CONFIG.arbitrage.enabled: true` and `dryRun: false`
+  (lines 407 and 410). It spends real gold continuously. Safety rails are in
+  `Codex/README.md`.
+- **Scouting is ON.** `CONFIG.scout.enabled: true` and `parked: false`
+  (lines 348 and 352) — the operator's standing preference since 2026-10-01.
+  This README said the opposite until 2026-10-17, which is exactly the failure
+  the comment beside `enabled` warns about: a stale "OFF, deliberately and
+  temporarily" sitting next to a value that is already `true`.
+- **Stand sales are OFF.** `CONFIG.standSales.enabled: false` (line 900),
+  disabled 2026-09-22 because listed goods vanish on a shard hop.
 
 ## A note on method
 

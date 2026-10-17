@@ -42,6 +42,10 @@ python3 market_bridge.py --host 0.0.0.0
 `--host 0.0.0.0` is the change: by default the bridge listens on loopback only
 and refuses connections from anywhere else.
 
+The bridge also polls ALData for boss hp every 45s from this machine. Add
+`--no-bosses` if you would rather it made no outbound calls; nothing in the
+relay path depends on it.
+
 Then find your LAN address — `ipconfig` on Windows, `ip addr` or `ifconfig`
 elsewhere. Something like `192.168.1.50`.
 
@@ -72,6 +76,10 @@ character listed in `CONFIG.roles`. Leave `CONFIG.bridge` alone.
 Open <http://127.0.0.1:8787/status> on the second computer. If you see the
 bridge's status, the path is working end to end. Your own bridge's log will
 start showing that scout's scans, tagged with its character name.
+
+The relay forwards the request path through unchanged, so every bridge route
+works from the second computer, not just the ones the scout uses — including
+`/trades` and `/bosses`.
 
 ---
 

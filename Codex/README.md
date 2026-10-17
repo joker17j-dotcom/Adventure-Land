@@ -11,10 +11,13 @@ arbitrage executor that trades across shards.
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
 | `relay/` | For running a scout on a second computer — see its own README |
 | `MerchantScout.js` | Standalone scout, for a fleet — see *Which file is the scout* |
-| `MerchantComments.md` | The long-form notes `Merchant.js` cross-references as `-> MerchantComments.md#anchor` |
 | `party_link.js` | Cross-shard party messaging — paste-in block for the four character scripts |
 | `FamilyFleet.js` | The family's separate fleet, on its own account. Nothing here reads it |
 | `_al_template.html`, `_tabs_*.js`, `build.py` | Sources for the two pages (see *Rebuilding*) |
+
+> **Moved 2026-10-17.** `MerchantComments.md` — the long-form notes
+> `Merchant.js` cites as `-> MerchantComments.md#anchor` — now lives at
+> `Party/MerchantComments.md`, alongside the character scripts.
 
 Both HTML files are fully self-contained. **You do not need any of this setup to
 use them** — open either one and it pulls live market data from
@@ -25,8 +28,9 @@ the public feed does not have: Ponty's stock, and the trade ledger.
 
 ## Which file is the scout
 
-`Merchant.js` in the repository root. Scouting was merged into the merchant, so
-one character both trades and scans. That is the only scout that has ever run.
+`Party/Merchant.js` — at the repository root until the 2026-10-17 reorg.
+Scouting was merged into the merchant, so one character both trades and scans.
+That is the only scout that has ever run.
 
 `MerchantScout.js` is the standalone version, for adding scouts beyond the
 merchant. It scans, hands over, confirms and only then hops — the same ordering
@@ -57,6 +61,7 @@ python3 market_bridge.py
 [bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty
 [bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>
 [bridge]   trades       -> POST /trade, GET /trades (raw=1 for events)
+[bridge]   bosses       -> GET /bosses?type=&server= (ALData every 45s)
 [bridge]   status       -> http://127.0.0.1:8787/status
 ```
 
@@ -69,7 +74,7 @@ is meant to age out.
 ### 2. Run the merchant
 
 1. Open <https://adventure.land> **in a browser tab** and log the character in.
-2. Open its **CODE** tab, paste the whole of `Merchant.js`, start it.
+2. Open its **CODE** tab, paste the whole of `Party/Merchant.js`, start it.
 
 > **Browser tab, not Mainframe.** `parent.X.servers` and `change_server()` are
 > page globals Mainframe's sandbox does not expose. Without them there is no
@@ -81,19 +86,24 @@ Log lines to expect:
 [probe] v27 / arb.4 ... loaded (0 stored entries) - arbProbeHelp() for commands
 ```
 
-> **Scouting is currently OFF.** `CONFIG.scout.enabled` is `false` and
-> `parked` is `true`, both marked "deliberately and temporarily" in the file.
-> While that holds, the merchant never scans and never posts, so the bridge's
-> `/merchants` and `/ponty` answer empty on every shard and `/status` shows
-> `stands: 0, listings: 0` everywhere. **That is the configuration working, not
-> the bridge failing** - a distinction that has already cost one wrong
-> diagnosis. Turn scouting back on and these appear:
+> **Scouting is ON.** Verified 2026-10-17: `CONFIG.scout.enabled` is `true`
+> (`Party/Merchant.js:348`) and `parked` is `false` (`:352`), the operator's
+> standing preference since 2026-10-01. So expect these:
 >
 > ```
 > [scout] bridge up - scouting enabled
 > [scout] 7 stands on USII - confirmed
 > [scout] Ponty: 23 items on USII
 > ```
+>
+> This section said the opposite until 2026-10-17, and had done since the
+> values were flipped. The comment beside `enabled` in the file warns about
+> exactly that: a stale "OFF, deliberately and temporarily" sitting next to a
+> value that is already `true` is the sort of line a later reader fixes the
+> wrong way. **Read the flag, not this README.** When scouting IS off, empty
+> `/merchants` and `/ponty` on every shard are the configuration working rather
+> than the bridge failing - a distinction that has already cost one wrong
+> diagnosis.
 
 ### 3. Point the page at it
 
@@ -375,10 +385,70 @@ row.
 
 ---
 
+## Boss watch — `GET /bosses`
+
+The bridge polls ALData for every boss type every 45s and serves the result,
+filterable by `?type=mrgreen` and `?server=EU+III`.
+
+**Why the bridge and not a character script.** `server.status` (`parent.S`)
+describes only the shard the character holding it is connected to, so no script
+can see a boss on another server. ALData is the only cross-server source.
+Running one poller here also keeps the hp history across CODE restarts and
+shard hops, and has one caller hit a free third-party API instead of four.
+
+**An hp percentage does not tell you whether a boss is being killed.** Measured
+2026-10-17 from the game's own `server.status`:
+
+| shard | observation | reading |
+|---|---|---|
+| ASIA I | 28,088,505 hp at 10:16 and the identical value at 10:27 | 78%, **abandoned** |
+| US III | unchanged over 80s | 42.8%, **abandoned** |
+| US V | lost 1,075,988 hp in 47s | 22,866 aggregate dps, **active** |
+| EU III | lost 2,836,886 hp in 132s | 21,561 aggregate dps, **active** |
+
+Three servers looked part-killed; two were abandoned. A party sent on the
+strength of a percentage arrives to solo a half-dead boss. Only a delta over
+time, or a non-null `target`, separates those cases, so the endpoint computes
+the delta rather than leaving every caller to keep its own state.
+
+Each row carries `hp`, `max_hp`, `pct`, `target`, `lastSeen`, `age_sec`, `dps`,
+`eta_sec`, `stale`, `live` and `estimated_respawn`, plus a `poller` health
+block on the response.
+
+Two things about it that are easy to get wrong:
+
+- **`dps: null` and `dps: 0` are different answers.** `null` means fewer than
+  two refreshed readings — nothing is known. `0` means two readings that agree,
+  which is the *evidence* a boss is sitting untouched, and the case worth not
+  walking into. It therefore needs two readings ALData itself refreshed:
+  samples dedupe on `lastSeen`, because re-reading its cache (entries measured
+  12–30s stale) is one observation reported twice. An hp *increase* is treated
+  as a respawn and clears the buffer rather than scoring as negative damage.
+- **`max_hp` is observed, not game data.** It is the largest value the bridge
+  has seen for that type since it started, labelled `max_hp_source:
+  "observed"`. A bridge started while every shard's boss was half dead reads
+  high on `pct` until one respawns.
+
+The response schema is sparse. In the 2026-10-17 sample `target` was present on
+4 of 13 entries and non-null on 1, and servers with nothing alive carried
+`estimatedRespawn` with no `lastSeen` at all. Absent and null are kept apart
+(`has_target_field`), and an unparseable timestamp reports `age_sec: null`
+rather than becoming 1970 and reading as confidently stale.
+
+If ALData is unreachable the route still answers, from cache, with the
+staleness in the `poller` block — so "the bridge is down" and "ALData is down"
+stay distinguishable to a game script that has no other way to tell.
+
+Covered types are the 15 in `allBosses` plus the 6 cooperative monsters
+`Party/Ranger.js` lists separately in `attackIfTargeted`. ALData's README
+states `cutebee` and `goldenbat` are excluded from its results.
+
+---
+
 ## Verifying it works
 
 <http://127.0.0.1:8787/status> for the market side, <http://127.0.0.1:8787/trades>
-for the ledger. From the game console:
+for the ledger, <http://127.0.0.1:8787/bosses> for the boss watch. From the game console:
 
 ```js
 arbProbeBuild()                     // which build, and can it spend gold
@@ -400,10 +470,10 @@ down entirely, which starved the bridge the probe was meant to be reading.
 not running. ALData is the floor; the bridge is a bonus.
 
 **Bridge reachable but `stands: 0`** — nothing is posting. Check
-`CONFIG.scout.enabled` FIRST: it is currently `false`, and while it is, empty is
-the correct answer on every shard and says nothing about the bridge's health.
-Otherwise it is usually a probe hold with the merchant away from the scan spot,
-or the merchant stopped. `/trades` and the party relay keep working throughout —
+`CONFIG.scout.enabled` FIRST: while it is `false`, empty is the correct answer
+on every shard and says nothing about the bridge's health. It is `true` as of
+2026-10-17, so empty is a real fault now - usually a probe hold with the
+merchant away from the scan spot, or the merchant stopped. `/trades` and the party relay keep working throughout —
 an empty `/merchants` is not evidence of a dead bridge.
 
 **Finders return `SOURCE: in-view scan only`** — neither ALData nor the bridge
@@ -417,7 +487,7 @@ that have already gone. This is normal and why both legs verify before trading;
 
 ## Tuning
 
-Merchant (`Merchant.js`, `CONFIG.scout`):
+Merchant (`Party/Merchant.js`, `CONFIG.scout`):
 
 | Setting | Default | Effect |
 |---|---|---|
@@ -465,6 +535,10 @@ Bridge (`market_bridge.py`):
 | `REASSIGN_MARGIN` | 1.25 | How much better a shard must be to trigger a move |
 | `ACTIVITY_HALFLIFE` | 15 min | How fast an activity observation decays |
 | `MESSAGE_TTL` | 10 min | Party relay retention |
+| `BOSS_POLL_SECONDS` | 45s | ALData boss poll interval (`--boss-interval`, `--no-bosses`) |
+| `BOSS_SAMPLE_WINDOW` | 5 min | How far back a sample counts toward the dps delta |
+| `BOSS_SAMPLE_CAP` | 48 | Ring-buffer bound per (type, server) |
+| `BOSS_STALE_AFTER` | 120s | `age_sec` above this marks a `/bosses` row stale |
 
 ---
 
