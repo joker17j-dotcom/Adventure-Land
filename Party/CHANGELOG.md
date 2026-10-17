@@ -2193,7 +2193,7 @@ Measured 2026-09-27, 29 hours after v57 shipped: 79 merchants permanently
 excluded, every one of them with a `changed map N times` reason, accumulating
 at roughly 2.7 per hour with no expiry, against a market of 272 merged merchant
 rows. That is 29% of the market gone and still climbing - the same ratchet
-shape as the farm-spot blacklist in TASKS.md item 1.
+shape as the farm-spot blacklist in Archived/TASKS.md item 1.
 
 It had already cost trades. `arbProbeFindFlips` drops a blacklisted row whole,
 both its sells and its buys (`if (arbNeverBlocked(r.id)) continue;`), so a

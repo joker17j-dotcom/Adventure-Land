@@ -494,7 +494,7 @@ const CONFIG = {
 		   skipped rather than taken, because "we could not tell" is not the
 		   same as "we are home", and the instruction was to only do this at
 		   home. The field is character.home and its shape has NOT been
-		   confirmed live - see TASKS.md 5e. A wrong read presents as the kiss
+		   confirmed live - see Archived/TASKS.md 5e. A wrong read presents as the kiss
 		   never firing, with a log line saying exactly that, rather than as it
 		   firing everywhere. */
 		kissHomeOnly: true,
@@ -5180,7 +5180,7 @@ async function kissRound() {
 				kissState.skippedFor = name;
 				log(home === null
 					? `anniversary: skipping ${name} - cannot read character.home, and the `
-						+ `rule is home only. See TASKS.md 5e.`
+						+ `rule is home only. See Archived/TASKS.md 5e.`
 					: `anniversary: skipping ${name} - home is ${homeShard()}, we are on `
 						+ `${shardKey(currentShard())}`, '#8b98ab');
 			}

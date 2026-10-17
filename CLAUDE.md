@@ -38,10 +38,12 @@ root, so any path in an older note, comment or commit message may be stale.
   `git show fe70d60:TASKS.md`. Read it in the tree; there is no need to go
   digging in history for it, which is what this entry said to do until
   2026-10-17.
-  Three references still spell it as a root path and want the `Archived/`
-  prefix: `Codex/FamilyFleet.js:497` and `:5183` (both "TASKS.md 5e") and
-  `Party/CHANGELOG.md:2168` ("item 1"). The `README.md` entry already points
-  at the new path.
+  Every reference points at the new path as of 2026-10-17: the three that
+  still read `TASKS.md` were fixed in `Codex/FamilyFleet.js` (a comment and an
+  in-game log line, both "5e") and `Party/CHANGELOG.md` ("item 1"), and
+  `README.md` already did. Cite the file and its anchor rather than a line
+  number - the `Party/CHANGELOG.md` line this entry used to name drifted twice
+  in one day, 2112 to 2168 to 2196, as entries were added above it.
 
 ## Which session are you
 

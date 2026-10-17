@@ -150,10 +150,12 @@ ratchet from eating everything else.
 
 ## 2. Adopt the measured town NPC spot in the main party's scripts
 
-**Status:** **`Merchant.js` DONE** (`v33`). `Codex/FamilyFleet.js` and
-`Codex/MerchantScout.js` already used it. Still not applied to `Ranger.js`,
-`Priest.js` or `Mage.js` — those three were the "record it, don't roll it out"
-part and remain on hold.
+**Status:** **CLOSED 2026-10-17.** `Merchant.js` DONE (`v33`);
+`Codex/FamilyFleet.js` and `Codex/MerchantScout.js` already used it. The
+remaining part — `Ranger.js`, `Priest.js`, `Mage.js`, held back as "record it,
+don't roll it out" — is DROPPED, not pending: the operator's call on
+2026-10-17 is that the three combat characters do not need the town spot. Do
+not reopen this from the "still not applied" phrasing it used to carry.
 
 ### What went into Merchant.js
 
