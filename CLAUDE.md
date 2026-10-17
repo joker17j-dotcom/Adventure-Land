@@ -479,6 +479,20 @@ The Claude Code session commits with git and should never use this route.
   badly-wrapped orphan lines, because the gate confirms you wrote what you
   intended and says nothing about whether it was right. Re-read the rendered
   diff, or at least the paragraphs you touched, before committing.
+- **Hash COMPARABLE UNITS, or the gate cries wolf.** JS string length and
+  `charCodeAt` count UTF-16 code units; `wc -c`, Python `len(s.encode())` and
+  `git hash-object` count UTF-8 BYTES. They differ on every non-ASCII
+  character, so a container-side hash will never match a browser-side one on a
+  file containing any. Measured 2026-10-17, twice in one hour: CLAUDE.md read
+  29,778 in the editor against 29,782 expected, which is two em-dashes at
+  lines 173 and 185 at 3 bytes each; and `Codex/boss_timers.html` read 17,913
+  against 17,975, which is 32 non-ASCII characters, 29 of them em-dashes. Both
+  looked exactly like the file having moved underneath, and the first nearly
+  sent a session chasing a phantom conflict. Hash UTF-16 units on both sides
+  (Python: iterate the str, not the bytes), or encode to UTF-8 on both sides
+  with `TextEncoder`. Confirm a suspected mismatch against the blob hash
+  before believing it - `git rev-parse origin/main:<path>` settles whether the
+  file actually changed.
 - **Set content with `view.dispatch`, not selectAll+paste.** The paste route
   silently APPENDED once - 27,816 chars where 16,181 was expected. Use
   `document.querySelector('.cm-content').cmTile.view.dispatch({changes:{from:0,
