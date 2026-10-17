@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v98
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v99
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -4869,6 +4869,115 @@ function gatherPlanCandidates() {
 
 // Picks the cheapest-expected-cost AFFORDABLE candidate across the whole
 // plan (not just inventory order) and attempts exactly one step on it.
+// ----------------------------------------------------------------------------
+// LUCKY UPGRADE SLOT
+//
+// Meltymerch's lucky inventory slot is 13. Found 2026-10-17 by
+// LuckySlotFinder.js: 2,361 search rolls to a 99.92% posterior, then an
+// independent 300-roll confirm that produced 5 exact-zero rolls where an
+// ordinary slot expects 0.03 - P(>=5 | ordinary) = 2e-10.
+//
+// The server improves 60% of NORMAL upgrade rolls whose item_num matches
+// player.p.item_num (server.js:7279, result = max(random/1e4,
+// result*0.975-0.012), where LOWER is a success). Worth about +75% relative
+// at a 1% chance and roughly +3% at 50%, so it matters at the top of a ladder
+// and is near noise at the bottom.
+//
+// Verified 2026-10-17 that this is the only GAMEPLAY comparison of
+// p.item_num in the server. The other hit, server.js:12961, is the mainframe
+// admin "swap" command in cyberland - so an ordinary imove does NOT move the
+// lucky slot, and parking an item here is safe to repeat.
+//
+// It does NOT apply to:
+//   - compound (c_roll, server.js:6918)
+//   - the pscroll/stat path (u_roll, server.js:7410); nothing here uses a
+//     pscroll, every path is scroll0..4
+//   - CALCULATION MODE, which returns `probability` and never reads the
+//     modified `result`. upgrade(..., true) therefore reports the SAME
+//     chance whether or not the item sits in the lucky slot, which means the
+//     minimum-chance gate in this file UNDERSTATES the real odds for any
+//     roll that will happen there. That is conservative and deliberate. Do
+//     not "fix" it by parking for the calc call: it would change nothing and
+//     cost two inventory operations.
+//
+// Keyed per character so the other scripts no-op rather than forcing a slot
+// number that means nothing for them.
+const LUCKY_SLOTS = { Meltymerch: 13 };
+const LUCKY_SLOT = LUCKY_SLOTS[character.name];
+let luckySwapWarned = false;
+
+async function luckyDrain(ms) {
+	/* During an upgrade the item IS a "placeholder", and the server holds the
+	   queue slot for the whole animation AFTER answering the call. imove
+	   refuses a placeholder outright, so a swap fired the instant upgrade()
+	   resolves is rejected and the item is stranded in the lucky slot. */
+	const limit = (ms || 45000) / 100;
+	for (let i = 0; i < limit && character.q && character.q.upgrade; i++) {
+		await new Promise((r) => setTimeout(r, 100));
+	}
+}
+
+/* Runs fn(itemNum) with the item parked in the lucky slot and puts the bag
+   back afterwards, including on a throw or a timeout.
+
+   fn MUST re-derive its own scroll and offering slots from the item NAME.
+   They move when the item does: a scroll sitting in the lucky slot is
+   displaced by the park, and a scroll sitting in the item's own slot is
+   moved INTO the lucky slot - which would otherwise produce upgrade(13, 13)
+   and roll the scroll. */
+async function withLuckySlot(itemNum, fn) {
+	const it = character.items && character.items[itemNum];
+	/* `q` marks a stack, and imove MERGES rather than swaps when both slots
+	   hold the same stackable. Upgradable gear never carries q, so this only
+	   skips things that were never going to benefit. */
+	if (LUCKY_SLOT === undefined || itemNum === LUCKY_SLOT || !it || it.q) {
+		return await fn(itemNum);
+	}
+	/* typeof, never truthiness - an undeclared identifier THROWS, and this is
+	   the first call site for swap() in this file. A missing helper degrades
+	   to a normal roll and SAYS SO, because otherwise "swap is missing" and
+	   "the lucky slot did not help" are indistinguishable forever. */
+	if (typeof swap !== 'function') {
+		if (!luckySwapWarned) {
+			luckySwapWarned = true;
+			game_log('swap() is unavailable here - rolling in place, no lucky slot', 'orange');
+		}
+		return await fn(itemNum);
+	}
+	await luckyDrain();
+	try {
+		await swap(itemNum, LUCKY_SLOT);
+	} catch (e) {
+		game_log('could not park in the lucky slot (' + ((e && (e.reason || e.message)) || e)
+			+ ') - rolling in place', 'orange');
+		return await fn(itemNum);
+	}
+	/* Belt and braces. If the bag does not look the way a completed swap
+	   should, rolling now could roll the FORMER OCCUPANT of the lucky slot,
+	   so restore and throw instead - every call site is already inside a
+	   try/catch that logs and moves on, and a skipped step is cheap where
+	   upgrading the wrong item is not. */
+	const parked = character.items[LUCKY_SLOT];
+	if (!parked || parked.name !== it.name) {
+		try { await swap(LUCKY_SLOT, itemNum); } catch (e) { }
+		throw new Error('lucky-slot park did not land; skipped rather than risk rolling the wrong slot');
+	}
+	try {
+		return await fn(LUCKY_SLOT);
+	} finally {
+		/* A FAILED upgrade destroys the item and leaves the slot null. imove
+		   swaps nulls fine, so the former occupant still comes home, and
+		   both-null is a harmless no-op. */
+		await luckyDrain();
+		try {
+			await swap(LUCKY_SLOT, itemNum);
+		} catch (e) {
+			game_log('lucky-slot restore FAILED, item may still be in slot ' + LUCKY_SLOT
+				+ ': ' + ((e && (e.reason || e.message)) || e), 'red');
+		}
+	}
+}
+
 async function attemptBestPlanStep(currentGold) {
 	if (!canStartSpending(currentGold)) return false;
 	const candidates = gatherPlanCandidates();
@@ -4971,7 +5080,13 @@ async function attemptBestPlanStep(currentGold) {
 		if (best.candidate.method === 'compound') {
 			await compound(best.group[0], best.group[1], best.group[2], scrollSlot, offeringSlot);
 		} else {
-			await upgrade(best.candidate.inventoryIndex, scrollSlot, offeringSlot);
+			/* Parked in the lucky slot for the roll. The scroll and offering
+			   slots are re-derived INSIDE the callback because the park moves
+			   whatever was sitting in slot 13, and may move the scroll itself. */
+			await withLuckySlot(best.candidate.inventoryIndex, async (num) => await upgrade(
+				num,
+				locate_item(best.step.scrollName),
+				best.step.offeringName === 'none' ? null : locate_item(best.step.offeringName)));
 		}
 		const verb = best.candidate.method === 'compound' ? 'Compounding' : 'Upgrading';
 		game_log(`${verb} ${best.candidate.item.name} toward ${best.candidate.class} tier ${best.candidate.tier} target ${best.candidate.targetLevel} (${(best.step.chance * 100).toFixed(0)}% chance)`, '#00FF00');

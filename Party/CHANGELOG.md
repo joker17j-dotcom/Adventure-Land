@@ -28,6 +28,63 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v99
+
+Real upgrades now roll from Meltymerch's lucky inventory slot, 13.
+
+Found 2026-10-17 by `LuckySlotFinder.js`: 2,361 search rolls to a 99.92%
+posterior, then an independent 300-roll confirm that produced 5 exact-zero
+rolls where an ordinary slot expects 0.03, which is P(>=5 | ordinary) = 2e-10.
+The server improves 60% of NORMAL upgrade rolls whose `item_num` matches
+`player.p.item_num` (`server.js:7279`, `result = max(random/1e4,
+result*0.975-0.012)`, lower being a success). Worth roughly +75% relative at a
+1% chance and about +3% at 50%, so it earns its keep at the top of a ladder
+and is near noise at the bottom.
+
+**Only one call site here changes.** Of the four `upgrade`/`compound` calls in
+this file, `attemptBestPlanStep`'s `upgrade` is the single real upgrade; the
+two `compound` calls at the gear and group paths are untouched. Verified
+against the server source rather than taken on trust: there is exactly one
+GAMEPLAY comparison of `p.item_num`, and the compound path (`c_roll`,
+`server.js:6918`) and the pscroll/stat path (`u_roll`, `server.js:7410`) never
+reach it. Parking for a compound would buy nothing and cost two inventory
+operations.
+
+**Calculation mode gets nothing either, and this is the subtle one.** The
+lucky-slot line modifies `result`; calc mode returns `probability` and never
+reads it. So `upgrade(..., true)` reports the same chance whether or not the
+item sits in 13, and any minimum-chance gate now UNDERSTATES the true odds for
+rolls that will happen there. That is conservative, so the gates are left
+alone - the comment on the helper says so, to stop someone "fixing" it later.
+
+**Three traps, all in the `imove` handler and all guarded.** A swap with
+itself is refused outright, so an item already in 13 is a no-op. A placeholder
+cannot be swapped, and during an upgrade the item IS a placeholder with the
+server holding the queue slot for the whole animation AFTER answering - so
+`luckyDrain` waits out `character.q.upgrade` on both sides of the roll, or the
+restore is refused and the item is stranded in 13. And scroll and offering
+indices go stale across the park: if the scroll sits in 13 the park displaces
+it, and if it sits in the item's own slot the park moves it INTO 13, which
+would otherwise produce `upgrade(13, 13)` and roll the scroll. The callback
+re-derives both from the item NAME, after the swap.
+
+Two guards beyond the brief. `swap` is typeof-checked, because this is the
+first call site for it in this file and an undeclared identifier throws rather
+than evaluating undefined - it degrades to rolling in place and logs once.
+And the park is verified to have landed before the roll: if the bag does not
+look the way a completed swap should, it restores and throws instead of
+rolling, because rolling then would upgrade the FORMER OCCUPANT of slot 13.
+Every call site is already inside a try/catch, so a skipped step is cheap
+where upgrading the wrong item is not.
+
+A failed upgrade destroys the item and leaves slot 13 null; `imove` swaps
+nulls fine, so the occupant still comes home and both-null is a no-op.
+
+Verified with a 24-assertion stub harness that extracts the helper from this
+file rather than a copy of it, covering the no-op paths, restore after a
+throw, restore when the roll destroys the item, the post-swap scroll index,
+a missing `swap`, a refused park, stackables, and a non-Meltymerch character.
+
 ## v98
 
 Toggle comments describe what the toggle DOES, not what it is currently set

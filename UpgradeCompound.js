@@ -1,5 +1,5 @@
 // ============================================================================
-// UpgradeCompound.js - v7 (2026-10-07) TARGET_LEVELS gains bowofthedead +7 and talkingskull +3, and PRICE_FALLBACK gains both - from LIVE anchors, not vendor g. Measured 2026-10-07 off the bridge and aldata: bowofthedead+0 is on Ponty at 273,600 (USIV, 186s old; a fresh bridge ask agrees to the gold, and 273,600 is exactly 1.2x its g of 228,000), and talkingskull+0 has an aldata row at 464,868 - 4.8x its g of 96,000. The v6 warning below is why that matters: the first draft of this entry set 228,000 and 57,600 from g and 0.6xg, which would have under-priced the skull by eight times, in the one direction that loses items. WHY +7 FOR THE BOW: igrade is the grade at +0 and bowofthedead's grades are [0,5,10,12], so row 1 governs the whole ladder - scroll0 is REFUSED from +0, the path is scroll1 x5 then scroll2 x2, and +7 costs 30.5 expected bows / ~38.0M against +8 at 218 bows / 273M and +10 at 53,280 bows / 85.4bn. WHY talkingskull IS HERE AND NOT IN OpenGifts: its grades are [1,2,6,7], so a +2 is grade 2 and the last step needs cscroll2 at 9,200,000 - 23M of the ~67.9M total. jacko's grades are [2,4,6,7], so a jacko +2 is grade 1, and OpenGifts' CONFIG.jacko.maxScrollGrade of 1 is right for jacko but would have stalled talkingskull at +2 by returning null from jackoScrollFor, with nothing logged. DRY_RUN is still true - this version changes what would be PLANNED, not what is rolled. - v6 (2026-10-04) fallback prices that were copied from vendor g are replaced with live market anchors - a fallback below the real value tells the planner the copy is cheap and it rolls on instead of handing over; also drops a duplicate mshield key that silently shadowed the first - v5 (2026-10-04) the planner no longer divides by a probability the game allows to exceed 1, no longer plans on the retired offeringp/offeringx, and falls back to a shared price table instead of giving up - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
+// UpgradeCompound.js - v8 (2026-10-17) the upgrade arm of the roll is parked in Meltymerch's lucky inventory slot, 13, found by LuckySlotFinder.js (99.92% over 2,361 rolls, then 5 exact zeros in a 300-roll confirm against 0.03 expected). server.js:7279 improves 60% of NORMAL upgrade rolls whose item_num matches player.p.item_num. The COMPOUND arm is deliberately untouched - the compound path (c_roll, server.js:6918) never compares p.item_num - and so is calculation mode, which returns `probability` and never reads the modified `result`, so UC_CONFIG.MIN_CHANCE now understates the real odds for a roll that will happen in 13. Conservative, and left alone. ucNoHang stays INSIDE the callback so the bag is restored when it rejects, and sSlot/oSlot are re-derived with ucSlotOf after the park, because parking moves whatever sat in 13 and may move the scroll. - v7 (2026-10-07) TARGET_LEVELS gains bowofthedead +7 and talkingskull +3, and PRICE_FALLBACK gains both - from LIVE anchors, not vendor g. Measured 2026-10-07 off the bridge and aldata: bowofthedead+0 is on Ponty at 273,600 (USIV, 186s old; a fresh bridge ask agrees to the gold, and 273,600 is exactly 1.2x its g of 228,000), and talkingskull+0 has an aldata row at 464,868 - 4.8x its g of 96,000. The v6 warning below is why that matters: the first draft of this entry set 228,000 and 57,600 from g and 0.6xg, which would have under-priced the skull by eight times, in the one direction that loses items. WHY +7 FOR THE BOW: igrade is the grade at +0 and bowofthedead's grades are [0,5,10,12], so row 1 governs the whole ladder - scroll0 is REFUSED from +0, the path is scroll1 x5 then scroll2 x2, and +7 costs 30.5 expected bows / ~38.0M against +8 at 218 bows / 273M and +10 at 53,280 bows / 85.4bn. WHY talkingskull IS HERE AND NOT IN OpenGifts: its grades are [1,2,6,7], so a +2 is grade 2 and the last step needs cscroll2 at 9,200,000 - 23M of the ~67.9M total. jacko's grades are [2,4,6,7], so a jacko +2 is grade 1, and OpenGifts' CONFIG.jacko.maxScrollGrade of 1 is right for jacko but would have stalled talkingskull at +2 by returning null from jackoScrollFor, with nothing logged. DRY_RUN is still true - this version changes what would be PLANNED, not what is rolled. - v6 (2026-10-04) fallback prices that were copied from vendor g are replaced with live market anchors - a fallback below the real value tells the planner the copy is cheap and it rolls on instead of handing over; also drops a duplicate mshield key that silently shadowed the first - v5 (2026-10-04) the planner no longer divides by a probability the game allows to exceed 1, no longer plans on the retired offeringp/offeringx, and falls back to a shared price table instead of giving up - v4 (2026-09-29) a stop re-checks itself every tick and clears the moment the situation changes; every awaited game call is bounded, so a hung call costs one tick, not the run; a dry run buys nothing - v3 (2026-09-29) slot 0 is the item, compound copies come from the bag - v2 (2026-09-29) aldata rows over ten minutes old are historical pricing, not listings - v1 (2026-09-29) first version, forked from Upgrade.js - upgrade AND compound to a target level
 // at the lowest EXPECTED cost, counting the gear that failed rolls destroy.
 //
 // Runs on Meltymerch, inventory only, while the operator watches. The original
@@ -642,6 +642,115 @@ async function ucAcquire(name, how, cost) {
 }
 
 // --------------------------------------------------------------- executor
+// ----------------------------------------------------------------------------
+// LUCKY UPGRADE SLOT
+//
+// Meltymerch's lucky inventory slot is 13. Found 2026-10-17 by
+// LuckySlotFinder.js: 2,361 search rolls to a 99.92% posterior, then an
+// independent 300-roll confirm that produced 5 exact-zero rolls where an
+// ordinary slot expects 0.03 - P(>=5 | ordinary) = 2e-10.
+//
+// The server improves 60% of NORMAL upgrade rolls whose item_num matches
+// player.p.item_num (server.js:7279, result = max(random/1e4,
+// result*0.975-0.012), where LOWER is a success). Worth about +75% relative
+// at a 1% chance and roughly +3% at 50%, so it matters at the top of a ladder
+// and is near noise at the bottom.
+//
+// Verified 2026-10-17 that this is the only GAMEPLAY comparison of
+// p.item_num in the server. The other hit, server.js:12961, is the mainframe
+// admin "swap" command in cyberland - so an ordinary imove does NOT move the
+// lucky slot, and parking an item here is safe to repeat.
+//
+// It does NOT apply to:
+//   - compound (c_roll, server.js:6918)
+//   - the pscroll/stat path (u_roll, server.js:7410); nothing here uses a
+//     pscroll, every path is scroll0..4
+//   - CALCULATION MODE, which returns `probability` and never reads the
+//     modified `result`. upgrade(..., true) therefore reports the SAME
+//     chance whether or not the item sits in the lucky slot, which means the
+//     minimum-chance gate in this file UNDERSTATES the real odds for any
+//     roll that will happen there. That is conservative and deliberate. Do
+//     not "fix" it by parking for the calc call: it would change nothing and
+//     cost two inventory operations.
+//
+// Keyed per character so the other scripts no-op rather than forcing a slot
+// number that means nothing for them.
+const LUCKY_SLOTS = { Meltymerch: 13 };
+const LUCKY_SLOT = LUCKY_SLOTS[character.name];
+let luckySwapWarned = false;
+
+async function luckyDrain(ms) {
+	/* During an upgrade the item IS a "placeholder", and the server holds the
+	   queue slot for the whole animation AFTER answering the call. imove
+	   refuses a placeholder outright, so a swap fired the instant upgrade()
+	   resolves is rejected and the item is stranded in the lucky slot. */
+	const limit = (ms || 45000) / 100;
+	for (let i = 0; i < limit && character.q && character.q.upgrade; i++) {
+		await new Promise((r) => setTimeout(r, 100));
+	}
+}
+
+/* Runs fn(itemNum) with the item parked in the lucky slot and puts the bag
+   back afterwards, including on a throw or a timeout.
+
+   fn MUST re-derive its own scroll and offering slots from the item NAME.
+   They move when the item does: a scroll sitting in the lucky slot is
+   displaced by the park, and a scroll sitting in the item's own slot is
+   moved INTO the lucky slot - which would otherwise produce upgrade(13, 13)
+   and roll the scroll. */
+async function withLuckySlot(itemNum, fn) {
+	const it = character.items && character.items[itemNum];
+	/* `q` marks a stack, and imove MERGES rather than swaps when both slots
+	   hold the same stackable. Upgradable gear never carries q, so this only
+	   skips things that were never going to benefit. */
+	if (LUCKY_SLOT === undefined || itemNum === LUCKY_SLOT || !it || it.q) {
+		return await fn(itemNum);
+	}
+	/* typeof, never truthiness - an undeclared identifier THROWS, and this is
+	   the first call site for swap() in this file. A missing helper degrades
+	   to a normal roll and SAYS SO, because otherwise "swap is missing" and
+	   "the lucky slot did not help" are indistinguishable forever. */
+	if (typeof swap !== 'function') {
+		if (!luckySwapWarned) {
+			luckySwapWarned = true;
+			ucLog('swap() is unavailable here - rolling in place, no lucky slot', 'orange');
+		}
+		return await fn(itemNum);
+	}
+	await luckyDrain();
+	try {
+		await swap(itemNum, LUCKY_SLOT);
+	} catch (e) {
+		ucLog('could not park in the lucky slot (' + ((e && (e.reason || e.message)) || e)
+			+ ') - rolling in place', 'orange');
+		return await fn(itemNum);
+	}
+	/* Belt and braces. If the bag does not look the way a completed swap
+	   should, rolling now could roll the FORMER OCCUPANT of the lucky slot,
+	   so restore and throw instead - every call site is already inside a
+	   try/catch that logs and moves on, and a skipped step is cheap where
+	   upgrading the wrong item is not. */
+	const parked = character.items[LUCKY_SLOT];
+	if (!parked || parked.name !== it.name) {
+		try { await swap(LUCKY_SLOT, itemNum); } catch (e) { }
+		throw new Error('lucky-slot park did not land; skipped rather than risk rolling the wrong slot');
+	}
+	try {
+		return await fn(LUCKY_SLOT);
+	} finally {
+		/* A FAILED upgrade destroys the item and leaves the slot null. imove
+		   swaps nulls fine, so the former occupant still comes home, and
+		   both-null is a harmless no-op. */
+		await luckyDrain();
+		try {
+			await swap(LUCKY_SLOT, itemNum);
+		} catch (e) {
+			ucLog('lucky-slot restore FAILED, item may still be in slot ' + LUCKY_SLOT
+				+ ': ' + ((e && (e.reason || e.message)) || e), 'red');
+		}
+	}
+}
+
 async function ucTick() {
 	if (typeof character === 'undefined' || character.rip) return;
 	/* Backstop for a hang outside the three bounded calls. Everything awaited
@@ -742,7 +851,15 @@ async function ucTick() {
 			let res = null;
 			try {
 				res = plan.mode === 'upgrade'
-					? await ucNoHang(upgrade(front.slots[0], sSlot, oSlot >= 0 ? oSlot : null), 'the roll', UC_CONFIG.ROLL_HANG_MS)
+					/* ucNoHang stays INSIDE the callback so withLuckySlot's
+					   finally restores the bag when it rejects. Scroll and
+					   offering slots are re-derived post-park: parking moves
+					   whatever was in slot 13, possibly the scroll. */
+					? await withLuckySlot(front.slots[0], async (num) => {
+						const s2 = ucSlotOf(step.scroll);
+						const o2 = step.offering ? ucSlotOf(step.offering) : -1;
+						return await ucNoHang(upgrade(num, s2, o2 >= 0 ? o2 : null), 'the roll', UC_CONFIG.ROLL_HANG_MS);
+					})
 					: await ucNoHang(compound(front.slots[0], front.slots[1], front.slots[2], sSlot, oSlot >= 0 ? oSlot : null), 'the roll', UC_CONFIG.ROLL_HANG_MS);
 			} catch (e) {
 				/* A refused roll changed nothing and is worth retrying. A roll that
