@@ -38,6 +38,7 @@ Standalone scripts, pasted into a slot when wanted rather than left running.
 | `Cleanout.js` | Sells an inventory down, to the best player bid or else to an NPC. v3 |
 | `OpenGifts.js` | Stands at the hub, opens anniversary boxes, sells the chaff. v8 |
 | `ExchangeQuest.js` | The complement of `OpenGifts.js` — exchanges the quest-routed exchangeables at their own NPCs. v1 |
+| `LuckySlotFinder.js` | Finds **this character's** lucky upgrade slot. `p.item_num` is rolled once per character and never reassigned, and in that slot 60% of upgrade rolls are compressed downward. Measures the roll distribution rather than the success rate, because accumulated grace drifts the latter and the roll's distribution does not. Normal upgrades only — the comparison does not exist on the compound or pscroll paths, so compounding gains nothing from it. Parks at the newupgrade NPC, which reaches buy, upgrade and sell without moving. Loading it **stops whatever was running in that slot.** |
 
 ## Market tooling — `Codex/`
 

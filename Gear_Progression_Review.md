@@ -1,8 +1,15 @@
 # Gear Progression Tracker
 
-Live state as of 2026-10-10 18:30 ET. Companion to `Gear_Progression_Review.md`,
-which holds the reasoning and the measurements behind these goals. This file is
-the part that goes stale, so it is kept separate and short.
+One file, holding both the live state and the reasoning behind it. It used to
+open by calling itself the companion to `Gear_Progression_Review.md` — which is
+this file — and describing itself as kept separate and short, at 219 lines. The
+split it described never existed in the repo; confirmed 2026-10-17 by the
+operator.
+
+**Live state is as of 2026-10-10 18:30 ET and goes stale.** That applies to
+Treasury, the action scoreboard, the ordered next-up list and the per-character
+gaps. The Long term section below is reasoning and measurement, and ages far
+more slowly.
 
 Everything below was measured on the running clients and from `G` at game
 version 17665, not inferred. Figures carried over from the review are marked.
