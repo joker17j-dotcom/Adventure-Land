@@ -213,6 +213,25 @@ each other and cannot agree who sits where.
 hands each parked scout a different one, and removes a shard from the pool the
 moment it is handed out, so two parked scouts can never collide.
 
+**A roamer's beat covers every shard, not only the scanned ones.** Until
+2026-10-17 the beat was built from the bridge's `activity` table, which only
+a completed scan writes — a closed loop, because a shard entered the beat
+once it had been scanned and was scanned only once it was in the beat.
+Whatever happened to be in the table when the beat first filled became the
+roamer's whole world; measured on the live merchant, it was cycling **three
+shards out of eleven**. The beat is now seeded from the full server list, and
+unseen shards lead it for free because `staleness()` scores an absent entry
+at `t - 0`. `GET /status` carries a `shardList` block so the list in use is
+visible rather than inferred.
+
+Fixed here rather than in the client on purpose. `scoutNextShard` in
+`Party/Merchant.js` already prepends never-seen shards in its *rotation*
+branch, but a roamer takes the *beat* branch above it — and patching that one
+would have every roamer chase the same unscanned shard until the first scan
+landed. Dealing them out round-robin on the bridge gives each roamer
+different ones. Parked assignment is deliberately untouched and still draws
+only on shards with real activity.
+
 **Roamers are given a beat each.** The unparked shards are dealt out between
 however many roamers are live, so no two ever walk the same one. Before this,
 every roamer received the same staleness-ordered rotation and took its head —

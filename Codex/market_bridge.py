@@ -202,6 +202,15 @@ SCHEDULE_SEED_SERVERS = [
     "US I", "US II", "US III", "US IV", "US PVP", "US V",
 ]
 
+# Shards a scout is never sent to. Mirrors CONFIG.scout.skipServers in
+# Party/Merchant.js; the README's reason is that a parked scout on PVP is a
+# free kill. The client filters too, so this is belt and braces - but it also
+# keeps PVP out of the PARKED assignment pool below, which the client cannot
+# do for itself.
+SCOUT_SKIP_SHARDS = {"PVP"}
+# How often the shard list is re-read from the page.
+SHARD_LIST_REFRESH_SEC = 6 * 60 * 60
+
 # A server needs at least this many logged kills before its ranking row counts
 # as a trend rather than an anecdote. The page greys out anything below it.
 BOSS_MIN_KILLS_FOR_TREND = 5
@@ -275,6 +284,64 @@ def now() -> float:
 
 def iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------- the shard list
+#
+# Shared by the boss poller and the scout planner, and READ-ONLY where it
+# matters: _plan() runs inside the Store lock, so it must never do I/O. This
+# is pre-seeded from the measured list, refreshed off the lock by a daemon,
+# and simply read by the planner.
+_SHARD_KEYS: dict = {"keys": [], "source": "seed", "at": 0.0}
+_SHARD_LOCK = threading.Lock()
+
+
+def shard_keys() -> list:
+    with _SHARD_LOCK:
+        return list(_SHARD_KEYS["keys"])
+
+
+def shard_list_state() -> dict:
+    with _SHARD_LOCK:
+        return {"source": _SHARD_KEYS["source"], "count": len(_SHARD_KEYS["keys"]),
+                "age_sec": round(now() - _SHARD_KEYS["at"]) if _SHARD_KEYS["at"] else None}
+
+
+def set_shard_keys(servers, source: str) -> None:
+    """Publish a server list. An empty one is ignored, so a failed fetch
+    leaves the seed in place rather than emptying the pool."""
+    keys = [shard_key(str(sv.get("region")), str(sv.get("name")))
+            for sv in (servers or [])
+            if sv.get("region") and sv.get("name")
+            and str(sv.get("name")) not in SCOUT_SKIP_SHARDS]
+    if not keys:
+        return
+    with _SHARD_LOCK:
+        _SHARD_KEYS.update({"keys": keys, "source": source, "at": now()})
+
+
+def fetch_shard_list() -> list:
+    """The live list from the page. Caller runs this OFF the Store lock."""
+    req = urllib.request.Request(SI_SERVER_LIST_URL,
+                                 headers={"User-Agent": "al-market-bridge"})
+    with urllib.request.urlopen(req, timeout=SI_HTTP_TIMEOUT) as r:
+        return servers_from_html(r.read().decode("utf-8", "replace"))
+
+
+def shard_list_refresher(stop_evt) -> None:
+    while True:
+        try:
+            rows = fetch_shard_list()
+            if rows:
+                set_shard_keys(rows, SI_SERVER_LIST_URL)
+                say("[scout] shard list: %d from %s" % (len(shard_keys()), SI_SERVER_LIST_URL))
+            else:
+                say("[scout] shard list: page gave none, keeping %d" % len(shard_keys()))
+        except Exception as e:
+            say("[scout] shard list: %s: %s - keeping %d"
+                % (type(e).__name__, e, len(shard_keys())))
+        if stop_evt.wait(SHARD_LIST_REFRESH_SEC):
+            return
 
 
 def html_escape(s: str) -> str:
@@ -760,7 +827,26 @@ class Store:
             # Round-robin rather than contiguous blocks so the beats stay within
             # one shard of each other in size.
             roamers = sorted([c for c, b in live.items() if b.get("role") == "roamer"])
-            free = sorted(k for k in known if k not in parked_shards)
+            # EVERY shard, not only the ones already scanned. `known` comes
+            # from self.activity, which only a completed scan writes, so a
+            # beat built from it alone is a closed loop: a shard enters the
+            # beat once it has been scanned, and is scanned only once it is in
+            # the beat. Whatever happened to be in the table when the beat
+            # first filled became the merchant's whole world - measured
+            # 2026-10-17, it was cycling three shards out of eleven.
+            #
+            # The rotation branch in Merchant.js's scoutNextShard already
+            # prepends never-seen shards for exactly this reason, but a roamer
+            # takes the BEAT branch above it and that one had no equivalent.
+            # Fixing it here rather than there also avoids a race: dealing the
+            # unseen shards out round-robin below means two roamers are handed
+            # different ones, where a client-side fix would have every roamer
+            # chase the same unscanned shard until the first scan landed.
+            #
+            # Unseen shards lead the beat for free: staleness() scores an
+            # absent entry at `t - 0`, which sorts first.
+            free = sorted({k for k in known if k not in parked_shards}
+                          | {k for k in shard_keys() if k not in parked_shards})
             beat: list[str] = []
             if roamers and free:
                 i = roamers.index(char) if char in roamers else 0
@@ -875,6 +961,7 @@ class Store:
                 "now": iso(t),
                 "merchants": len(self.merchants),
                 "listings": sum(len(m.get("slots") or {}) for m in self.merchants.values()),
+                "shardList": shard_list_state(),
                 "shards": {k: {**v, "score": round(self._score(k, t), 1),
                                "seenAgo": round(t - v.get("at", 0))}
                            for k, v in sorted(self.activity.items())},
@@ -1471,6 +1558,7 @@ class BossWatch:
                 rows = servers_from_html(r.read().decode("utf-8", "replace"))
             if rows:
                 say("[bosses] server list: %d from %s" % (len(rows), SI_SERVER_LIST_URL))
+                set_shard_keys(rows, SI_SERVER_LIST_URL)   # shared with the scout planner
                 return rows
             say("[bosses] server list: page gave none, using the %d seeded"
                 % len(SI_SEED_SERVERS))
@@ -2180,6 +2268,11 @@ def main():
     Handler.bosses = BossWatch(BOSS_TYPES, a.boss_interval, not a.no_bosses, _ev,
                                a.boss_source)
     Handler.bosses.start()
+    _shard_stop = threading.Event()
+    set_shard_keys(SI_SEED_SERVERS, "seed")
+    threading.Thread(target=shard_list_refresher, args=(_shard_stop,),
+                     name="shardlist", daemon=True).start()
+
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     print(f"[bridge] listening on http://{a.host}:{a.port}")
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
