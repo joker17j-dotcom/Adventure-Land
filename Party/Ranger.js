@@ -1,4 +1,7 @@
 // ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v83 (`also` on an achievement entry now reaches the attack filter, and that is the whole change. achvApply() has always read `also`, added those monsters to PERMANENT_WHITELIST so the economics check could not drop the spot, and fed them to ragePullTypes() for the one-at-a-time puller - but shouldAttackMob never consulted the list. Traced in the shipped file: `also` reaches achvApply, ragePullTypes and the farm_spot message, and no attack decision anywhere. So a snake at the osnake spot was pulled, whitelisted, and then shot only while it happened to be targeting FatherToken - the targetPriority fallback on the last line of shouldAttackMob. The new check sits next to `mob.mtype === home` at the same precedence, and NOT in CONFIG.combat.alwaysAttack, which was the obvious-looking fix and is wrong twice over: that set is a sort key in updateCache as well as a filter, so snake there would rank every snake ABOVE the osnakes the achievement is counting, and it is global, so it would also commit the party to snakes on every other map. The osnake queue entry gains `also: ['snake']`. Entries without `also` are untouched - rageAlso is empty everywhere else, and the guard short-circuits on length. Priest and Mage need no change: they carry rageAlso for the puller but have no shouldAttackMob of their own, and follow the leader's target. TDZ checked - rageAlso is declared below shouldAttackMob, but the only module-scope call before that point is plProbe(), which awaits a bridge health fetch and cannot reach the combat path.)
+// ==========================================================================
+// ==========================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v82 (The hunt sent the whole party to the dead centre of a rage box and wedged it there twice in one morning. mhEvaluate's spot is the boundary centre, and for a rage-boxed pack the rage rectangle IS the boundary, so the one point rageRoute must refuse is exactly the one the hunt asked for: rage_route_blocked, 1419 units short, travel attempt 1033. Measured live - mummy@spookytown centre (255.5,-1432), then booboo@spookytown centre (415,-702): two monsters, one arithmetic, which rules out anything mummy-specific. All three characters blocked independently. Dexon computes the spot and sendFarmSpot broadcasts destination.x/y verbatim; Priest.js and Mage.js carry the full rage machinery and NO mh* functions, so they inherit the coordinate and fail on it themselves - one source, three consumers, which is why this is Ranger-only and the other two need no redeploy. THE FIX IS A LOOKUP, NOT A COMPUTATION. rageEscape() was the obvious move and was wrong: it returns the nearest point outside the rectangle and knows nothing about walls, the exact mistake v80 was spent correcting, where (415,-986) was geometrically fine and genuinely unreachable. The problem is also small - G holds SEVEN rage boxes in the whole game and isMapSafeForFarming already excludes three (spider_instance is instance:true), leaving four a hunt can reach: mummy@spookytown, booboo@spookytown x2, d_wiz@d2. The queue already has verified points for the first three. BUT THE QUEUE IS NOT UNIFORMLY TRUSTWORTHY, which is the part worth remembering: entry 0 is a real park point - (290,-990), rageHit null, 140 from the mummy RAGE rectangle [-124,-1631,614,-1130] and 148 from booboo's, reproducing v80's figures once measured against rage rather than boundary - while entry 18 is booboo @ (415,-702), gap 0, rageHit 'booboo', INSIDE the box. The coordinate that wedged the party was sitting in the queue looking like an answer, and first-match-wins picks entry 0 today only because it is first. So huntParkPoint validates instead of trusting: rageHit() must place the candidate outside EVERY box, and rectGap must put it within HUNT_PARK_MAX_GAP of THIS pack - 400, against measured 140/148 for the right pack and 861 for the wrong one. Nearest qualifying entry wins, so ordering stops mattering, and a rageHit that throws disqualifies rather than passes. No qualifying point means the spot is skipped and the hunt declined, which costs one slot; guessing cost an hour, twice. d_wiz@d2 has no entry and stays refused until someone stands there and measures. Also fixes the two config comments v81 left inverted.)
 // ==========================================================================
 // ==========================================================================
@@ -658,7 +661,7 @@ const CONFIG = {
 			{ m: 'booboo',     map: 'spookytown',  x:  415, y:  -702, rung: 100000 },
 			{ m: 'scorpion',   map: 'main',        x: 1578, y:  -168, rung: 100000 },
 			{ m: 'gscorpion',  map: 'desertland',  x:  391, y: -1422, rung: 100000 },
-			{ m: 'osnake',     map: 'halloween',   x: -509, y:  -626, rung: 100000 },
+			{ m: 'osnake',     map: 'halloween',   x: -509, y:  -626, rung: 100000, also: ['snake'] },
 		],
 	},
 
@@ -826,6 +829,18 @@ const shouldAttackMob = (mob) => {
 	   credit. Flip ignoreAddsDuringCrabxx to false to go back to the swarm. */
 	if (mob.mtype === 'crabx' && CONFIG.combat.ignoreAddsDuringCrabxx && parent?.S?.crabxx?.live) return false;
 	if (mob.mtype === home) return true;
+	/* `also` monsters from the achievement entry are farmed alongside `home`.
+	   achvApply() has always read the list, whitelisted them against the
+	   economics check and fed them to ragePullTypes() - so a snake at the
+	   osnake spot was pulled and protected, and then never shot, because the
+	   attack filter did not look at the list. It fell through to the
+	   targetPriority fallback at the bottom, which only says yes while the mob
+	   is hitting FatherToken. Checked HERE, at the same precedence as `home`,
+	   and deliberately NOT by adding it to CONFIG.combat.alwaysAttack: that set
+	   is a SORT KEY in updateCache as well as a filter, so snake there would
+	   rank every snake above the osnakes the achievement is counting, and would
+	   do it on every map rather than only at the spot. */
+	if (rageAlso.length && rageAlso.indexOf(mob.mtype) >= 0) return true;
 	if (COMBAT_SETS.alwaysAttack.has(mob.mtype)) return true;
 	if (COMBAT_SETS.attackIfTargeted.has(mob.mtype)) {
 		return mob.target !== null && mob.target !== undefined;
