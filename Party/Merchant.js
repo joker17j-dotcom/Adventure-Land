@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v97
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v98
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -337,17 +337,23 @@ const CONFIG = {
 		},
 	},
 	scout: {
-		// ON. The operator's standing preference, 2026-10-01: keep scouting
-		// enabled and keep `parked` true. This REPLACES the earlier arrangement,
-		// where a release carried these two at their defaults and the operator
-		// flipped them by hand after deploying - `true` is the default now, so do
-		// not reset it on a push. The comment this replaces said "OFF,
-		// deliberately and temporarily" while the value next to it was already
-		// true, which is the sort of line a later reader fixes the wrong way.
+		// Master switch for scanning. Off, the merchant never scans, never posts
+		// to the bridge and stays out of scoutGoHome, so the only thing moving
+		// the character is the trade executor - which is what makes a watched
+		// arbitrage run attributable.
+		//
+		// Arbitrage does NOT depend on this either way: the flip finder reads
+		// the market from the bridge and ALData, neither of which needs THIS
+		// character to have scanned. CONFIG.arbitrage.enabled is the switch for
+		// trading.
 		// -> MerchantComments.md#enabled
 		enabled: true,
-		// PARKED - hold the party's home shard and never hop just to scout.
-		// Standing preference 2026-10-01: keep this true, same as `enabled`.
+		// Scan beat. True holds CONFIG.homeServer, rescans it every townScanMs,
+		// and still scans wherever else the script legitimately takes it - it
+		// just never travels FOR a scan. False runs the full roaming rotation,
+		// which costs a change_server per hop and risks stranding deliveries,
+		// the stand and an in-flight trade behind a page load. Inert while
+		// `enabled` is off.
 		// -> MerchantComments.md#parked
 		parked: false,
 		bridge: 'http://127.0.0.1:8787',
@@ -897,7 +903,10 @@ const CONFIG = {
 	// Vendor-bound goods shown on the stand instead of sold to an NPC.
 	// -> see the STAND SALES block for the measured facts behind these.
 	standSales: {
-		enabled: false,   // DISABLED 2026-09-22: listed goods vanish on a shard hop, see CHANGELOG
+		// Listed goods vanish on a shard hop, so this does not mix with shard
+		// hopping - which is what arbitrage and an unparked scout both do. See
+		// the STAND SALES block and CHANGELOG 2026-09-22.
+		enabled: false,
 		slots: [1, 2, 3, 4, 5],      // trade slots this feature owns (1-indexed)
 		revalueEveryMs: 5 * 60 * 1000,
 		undercutBy: 1,               // be the cheapest listing, by exactly this
@@ -911,7 +920,7 @@ const CONFIG = {
 	/* GEAR TRIPWIRE - refuses gear steps that are not worth doing.
 	   -> MerchantComments.md#gearTripwire
 
-	   mode: 'off'      nothing happens; gear behaves exactly as before (DEFAULT)
+	   mode: 'off'      nothing happens; gear behaves exactly as before
 	         'observe'  every step is judged and logged, but nothing is blocked
 	         'enforce'  blocked steps are skipped
 	   Start in 'observe', read gearProbeTripwire(), then move to 'enforce'. */
@@ -932,11 +941,10 @@ const CONFIG = {
 		maxStepsPerVisit: 12,
 	},
 
-	// ANNIVERSARY KISS HUNTER - works on Mainframe (primary source is
-	// parent.S.anniversary, confirmed reliable via live testing
-	// 2026-09-17). Enabled by default.
+	// ANNIVERSARY KISS HUNTER - works on Mainframe. Primary source is
+	// parent.S.anniversary, confirmed reliable via live testing 2026-09-17.
 	anniversaryKiss: {
-		enabled: true, // primary source is now parent.S.anniversary - confirmed reliable via live testing 2026-09-17
+		enabled: true,
 		checkIntervalMs: 5000,
 		townMap: 'main', // only hunts while already in town, not mid-delivery/farm-support travel
 		// When this character IS the featured player there is nobody to go and

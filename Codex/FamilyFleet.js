@@ -126,8 +126,8 @@ const CONFIG = {
 		},
 		pontyEveryMs: 10 * 60 * 1000,
 		pontyTimeoutMs: 8000,
-		// Logs the field names in Ponty's first reply, once per read. Leave on
-		// until prices map correctly, then turn off.
+		// Logs the field names in Ponty's first reply, once per read. Worth
+		// having on while the price mapping is being confirmed; noise once it is.
 		debugPonty: true,
 		skipServers: ['PVP'],
 	},

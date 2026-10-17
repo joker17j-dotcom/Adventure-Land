@@ -28,6 +28,62 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v98
+
+Toggle comments describe what the toggle DOES, not what it is currently set
+to. Operator's call 2026-10-17: these are toggles, they are meant to be
+toggled, and the state is maintained in the repo and in game rather than
+narrated beside the value.
+
+**Why it needed doing.** `scout.parked` carried "Standing preference
+2026-10-01: keep this true, same as `enabled`" directly above `parked: false`
+- a comment instructing the next reader to undo the setting. `scout.enabled`
+was eight lines of provenance beginning "ON." The irony is that those eight
+lines existed *because* an earlier comment had said "OFF, deliberately and
+temporarily" beside a value that was already true; the repair restated the
+state rather than removing the class of error, so it went stale again within
+the month. `Codex/MerchantScout.js` had the same shape independently:
+"Left on by default" above `driftBetweenSpots: false`.
+
+Rewritten to effect, both branches, no current value:
+`scout.enabled`, `scout.parked`, `standSales.enabled`, `anniversaryKiss`
+(dropped "Enabled by default"), `gearTripwire.mode` (dropped the "(DEFAULT)"
+annotation), `MerchantScout.debugPonty` and `driftBetweenSpots`, and
+`FamilyFleet.debugPonty`. The long-form notes the code points at carried the
+same claims and are fixed with them: `MerchantComments.md#enabled` still read
+"OFF, deliberately and temporarily", `#parked` opened on the state, and
+`#dryRun` opened "NOW FALSE". The measurements in them are kept; only the
+assertions of current value are gone.
+
+Deliberately NOT touched: runtime state initialisers - `state.standOpen`,
+`state.sellingOff`, `PROBE.hold`, `standSuppressed`, `arrivedAtSpot`,
+`skinReady`, `fleetState.parked`. They are not operator toggles and their
+comments correctly describe what the flag means while the script runs. 174 of
+the 179 boolean settings in these scripts already described effect and were
+left alone.
+
+**Comment-only.** Verified by stripping comments from all three files and
+diffing: the code is byte-identical to v97, and all three still pass
+`node --check`.
+
+**v97's three changes, folded in here as agreed 2026-10-17** (its entry was
+deliberately left unwritten): `scout.parked` set to `false`, `tracker`
+dropped from `pontyBuy.items`, and eight key ids added to the same list
+(`dkey`, `bkey`, `ukey`, `cryptkey`, `frozenkey`, `spiderkey`, `stonekey`,
+`tombkey`).
+
+**One interaction worth recording, found while checking the toggles against
+each other.** `standSales.enabled` and shard hopping are not merely "disabled
+for a reason" - the guard that looks like it covers them does not.
+`mHopTo()` calls `ensureStandClosed()` before every `change_server`, but
+`ensureStandClosed()` only calls `close_stand()`; it does not unlist the
+trade slots. Listed goods live in `character.slots.tradeN`, and `ssUnlist()`
+- the only thing that returns them to inventory - is reachable only from the
+stand-sales re-price pass. So turning `standSales.enabled` on while anything
+hops reproduces the 2026-09-22 loss, and `arbitrage.enabled` hops on nearly
+every trade. Fixing it means unlisting every owned trade slot in `mHopTo`
+before the hop, not just closing the stand.
+
 ## v96
 
 Move `arbNoHang` out of `arbAdvance()`. It had never been reachable from the

@@ -24,23 +24,24 @@ Stamp where the sender is standing. Doing it here rather than at each
 
 ## enabled
 
-OFF, deliberately and temporarily.
+Master switch for scanning.
 
-	   Turned off by the operator while the live arbitrage run is being
-	   watched: it keeps the merchant off the scan beat, off the bridge and
-	   out of scoutGoHome, so the only thing moving the character is the
-	   trade executor and anything it does is attributable.
+	   Off, it keeps the merchant off the scan beat, off the bridge and out
+	   of scoutGoHome, so the only thing moving the character is the trade
+	   executor and anything it does is attributable. That is what it is for
+	   during a watched arbitrage run.
 
-	   ARBITRAGE IS UNAFFECTED. It reads the market from the bridge and
-	   ALData, both of which other scouts fill - nothing in the flip finder
-	   needs THIS character to have scanned. Turning scouting off does not
-	   turn trading off; CONFIG.arbitrage.enabled is the switch for that.
+	   ARBITRAGE IS UNAFFECTED either way. It reads the market from the
+	   bridge and ALData, both of which other scouts fill - nothing in the
+	   flip finder needs THIS character to have scanned. Scouting off does
+	   not mean trading off; CONFIG.arbitrage.enabled is the switch for that.
 
-	   Set back to true to resume. Everything below stays configured.
+	   Everything below stays configured while it is off, so turning it back
+	   on resumes rather than reconfigures.
 
 ## parked
 
-PARKED - hold the party's home shard and never hop just to scout.
+Scan beat: hold the party's home shard, or run the full roaming rotation.
 
 	   The family's MerchantScout fleet now covers the rotation, so the
 	   merchant's shard-hopping was duplicating work it is much worse at: a
@@ -49,10 +50,11 @@ PARKED - hold the party's home shard and never hop just to scout.
 	   pays that cost for nothing else; the merchant pays it with the party's
 	   economy on its back.
 
-	   Parked, it holds CONFIG.homeServer, rescans it every townScanMs, and
+	   True, it holds CONFIG.homeServer, rescans it every townScanMs, and
 	   still scans wherever else the script legitimately takes it - arbitrage,
-	   deliveries - it just never travels FOR a scan. Set false to restore
-	   the old roaming rotation.
+	   deliveries - it just never travels FOR a scan. False restores the old
+	   roaming rotation. Either way it is inert while `enabled` is off, which
+	   gates the whole scout path.
 
 ## aldata
 
@@ -168,9 +170,9 @@ path is exercised too - a rehearsal that skipped it would not be
 testing the thing most likely to be wrong. The bridge keeps them out
 of realised P/L.
 
-NOW FALSE - the rehearsal is over and the operator has taken this
-live, having watched a run and confirmed it working. As of the
-handover: 8 closed live trades, 60,469,850 spent, 21,063,085 net.
+The rehearsal has already been run and the operator has had this
+live: as of the handover, 8 closed live trades, 60,469,850 spent and
+21,063,085 net. So `false` is a tested path, not an untried one.
 
 This MUST live in source rather than be set at runtime. mHopTo()
 calls change_server, which reloads the page, and hopping to the buy
