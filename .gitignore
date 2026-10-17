@@ -9,3 +9,12 @@ scouts.json
 Codex/scouts.json
 # Atomic-save scratch file from the same writer.
 *.tmp
+
+# Bridge runtime data. market_bridge.py appends these in whatever directory it
+# is started from, so a bridge run inside the clone would otherwise offer them
+# up as untracked files. They are the operator's data, not source: ledger.jsonl
+# is the trade history and boss_events.jsonl the boss spawn/kill log, and both
+# are meaningless in anyone else's clone.
+ledger.jsonl
+boss_events.jsonl
+Codex/data/

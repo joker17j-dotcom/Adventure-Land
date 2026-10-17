@@ -7,6 +7,7 @@ arbitrage executor that trades across shards.
 |---|---|
 | `al_market_watchlist.html` | The watchlist — market, summary, arbitrage, Ponty, trade ledger |
 | `aldata_explorer.html` | Full game-data explorer — items, monsters, drops, world, bank |
+| `boss_timers.html` | Boss status, respawn timers in America/New_York, and the kill log. Standalone, not built from the template |
 | `market_bridge.py` | Local server: collects scans, coordinates scouts, keeps the trade ledger. Stdlib only |
 | `PHASE0_PROBE.md` | The hand-driven probe procedure that measured the trade API |
 | `relay/` | For running a scout on a second computer — see its own README |
@@ -412,8 +413,8 @@ time, or a non-null `target`, separates those cases, so the endpoint computes
 the delta rather than leaving every caller to keep its own state.
 
 Each row carries `hp`, `max_hp`, `pct`, `target`, `lastSeen`, `age_sec`, `dps`,
-`eta_sec`, `stale`, `live` and `estimated_respawn`, plus a `poller` health
-block on the response.
+`eta_sec`, `stale`, `live`, `estimated_respawn` and `respawn_sec`, plus a
+`poller` health block on the response.
 
 Two things about it that are easy to get wrong:
 
@@ -442,6 +443,52 @@ stay distinguishable to a game script that has no other way to tell.
 Covered types are the 15 in `allBosses` plus the 6 cooperative monsters
 `Party/Ranger.js` lists separately in `attackIfTargeted`. ALData's README
 states `cutebee` and `goldenbat` are excluded from its results.
+
+### The kill log — `GET /boss_events`, `GET /boss_stats`
+
+**A kill cannot be reconstructed after the fact, which is the whole reason
+this is a file.** While a boss is dead its death time is recoverable as
+`estimated_respawn - respawn_sec`; the moment it respawns that field goes
+null, `lastSeen` with it, and the kill is gone. In-memory state would not
+survive a bridge restart either. So the poller appends to
+`boss_events.jsonl` (`--boss-events`, next to `ledger.jsonl`; both are
+gitignored) at the instant it sees a transition.
+
+`respawn_sec` comes from the creator's `design/monsters.js` and is what makes
+the death time exact: ALData's `estimatedRespawn` is death plus the NOMINAL
+respawn, so subtracting it recovers the moment of death rather than the
+moment the poller noticed. Verified for `mrgreen` (94*60 = 5640s). Note the
+server randomises the real respawn (`node/server.js:13096`), so these
+constants decode a death; they do not predict a return.
+
+Three event types. `spawn` and `death` carry `id`, so a respawn under a new
+instance id cannot be mistaken for the same fight, and `death` carries
+`ttk_sec`, `method` and a `death_lo`/`death_hi` bracket.
+
+**`lost` is the third, and it is never counted as a kill.** A boss vanishing
+from the response is not a death — a 429 or a partial answer looks identical,
+and one was observed on a real cycle (`HTTP Error 429`, recovered by itself).
+Four guards keep that out of the statistics:
+
+| Guard | Behaviour |
+|---|---|
+| Failed fetch | Returns before the comparison runs, so no transition is ever evaluated |
+| Empty response while live bosses are tracked | Whole pass skipped, state untouched |
+| First poll of a process | Seeds only. A boss already up gets `spawn_t: null`, so it can never produce an invented TTK |
+| Absence | Needs `BOSS_ABSENT_CONFIRM` (3) consecutive *successful* polls, and then logs `lost`, not a kill |
+
+A death is recorded only on POSITIVE evidence: the entry present, not alive,
+and carrying a respawn estimate.
+
+`GET /boss_stats` aggregates it per (type, server) and rolls up per server.
+`kill_rate` is kills ÷ **resolved** fights, not kills ÷ spawns — a boss that
+is up right now has not failed to die, and counting it as a miss would make a
+server look worse the moment it got busy. That table is for the home-server
+decision, which carries a 36-hour cooldown, so it is worth letting it
+accumulate rather than reading it after an hour.
+
+Open `boss_timers.html` to see all of it: live status with countdowns in
+America/New_York, the server ranking, and the raw log.
 
 ---
 

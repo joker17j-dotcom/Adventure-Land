@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Boss timers &amp; kill log</title>
+<!--
+  Standalone. Open it from disk - it fetches everything from the bridge on
+  127.0.0.1:8787, which answers Access-Control-Allow-Origin: *. Deliberately
+  NOT built from _al_template.html: that template exists to pull game data
+  from the creator's repo and carries the whole aldata loader with it, none
+  of which this page needs.
+
+  The point of the Servers tab is the home-server decision, which carries a
+  36-hour cooldown. It ranks on whether a boss actually DIES on a server, not
+  on whether one is up: a boss sitting at 78% for eleven minutes is a server
+  with nobody killing it, and that reads identically to a healthy one if you
+  only look at hp.
+-->
+<style>
+  :root {
+    --bg:#11151c; --panel:#171d26; --line:#242d3a; --txt:#d7dee8; --dim:#8b98ab;
+    --up:#7FD98A; --dead:#e2605a; --warn:#e8b457; --accent:#6fb3e0; --hot:#c58bd6;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:10px 16px; border-bottom:1px solid var(--line);
+           display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:14px; margin:0; font-weight:600; letter-spacing:.02em; }
+  .tabs { display:flex; gap:4px; }
+  .tab { padding:4px 11px; border:1px solid var(--line); border-radius:4px;
+         cursor:pointer; color:var(--dim); background:none; font:inherit; }
+  .tab.on { color:var(--txt); border-color:var(--accent); background:#1b2430; }
+  .grow { flex:1; }
+  #status { color:var(--dim); font-size:12px; }
+  #status.bad { color:var(--dead); }
+  main { padding:12px 16px 40px; }
+  table { border-collapse:collapse; width:100%; }
+  th { text-align:left; font-weight:600; color:var(--dim); font-size:11px;
+       text-transform:uppercase; letter-spacing:.05em; padding:6px 10px;
+       border-bottom:1px solid var(--line); white-space:nowrap; }
+  td { padding:5px 10px; border-bottom:1px solid #1c2531; white-space:nowrap; }
+  tr:hover td { background:#1a212c; }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  .dim { color:var(--dim); }
+  .up { color:var(--up); } .dead { color:var(--dead); } .warn { color:var(--warn); }
+  .bar { position:relative; width:110px; height:9px; background:#232c38;
+         border-radius:2px; overflow:hidden; display:inline-block;
+         vertical-align:middle; }
+  .bar i { position:absolute; inset:0 auto 0 0; background:var(--up); }
+  .bar.low i { background:var(--warn); } .bar.crit i { background:var(--dead); }
+  .pill { padding:1px 6px; border-radius:3px; font-size:11px; border:1px solid; }
+  .pill.up { border-color:#2f5e3a; background:#16301d; }
+  .pill.dead { border-color:#5e2f2f; background:#301616; }
+  .pill.stale { border-color:#5e4f2f; background:#302716; color:var(--warn); }
+  .note { color:var(--dim); margin:0 0 10px; max-width:70ch; }
+  .best td { background:#152a1c; }
+  .empty { color:var(--dim); padding:24px 10px; }
+  code { color:var(--hot); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Boss timers</h1>
+  <div class="tabs">
+    <button class="tab on" data-v="live">Live</button>
+    <button class="tab" data-v="servers">Servers</button>
+    <button class="tab" data-v="log">Kill log</button>
+  </div>
+  <span class="grow"></span>
+  <span id="status">connecting…</span>
+</header>
+<main><div id="view"></div></main>
+
+<script>
+const BRIDGE = "http://127.0.0.1:8787";
+const TZ = "America/New_York";
+let VIEW = "live", BOSSES = null, STATS = null, EVENTS = null, ERR = null;
+
+const fmtTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ, hour:"2-digit", minute:"2-digit", second:"2-digit", hour12:false });
+const fmtDay = new Intl.DateTimeFormat("en-US", {
+  timeZone: TZ, month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false });
+
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+  ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+function dur(sec) {                       // 3445 -> "57m25s"
+  if (sec == null || !isFinite(sec)) return "—";
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return h ? `${h}h${String(m).padStart(2,"0")}m` : m ? `${m}m${String(r).padStart(2,"0")}s` : `${r}s`;
+}
+const et = iso => iso ? fmtTime.format(new Date(iso)) : "—";
+const etDay = iso => iso ? fmtDay.format(new Date(iso)) : "—";
+const num = n => n == null ? "—" : Math.round(n).toLocaleString("en-US");
+
+async function grab(path) {
+  const r = await fetch(BRIDGE + path, { cache: "no-store" });
+  if (!r.ok) throw new Error(path + " -> HTTP " + r.status);
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const [b, s, e] = await Promise.all([
+      grab("/bosses"), grab("/boss_stats"), grab("/boss_events?limit=300")]);
+    BOSSES = b; STATS = s; EVENTS = e; ERR = null;
+  } catch (x) { ERR = x.message; }
+  paint();
+}
+
+function statusLine() {
+  const el = document.getElementById("status");
+  if (ERR) { el.className = "bad"; el.textContent = "bridge unreachable — " + ERR; return; }
+  const p = BOSSES.poller;
+  const bits = [];
+  if (!p.enabled) bits.push("poller OFF");
+  else if (p.last_error) bits.push(`ALData failing (${p.consecutive_failures}×)`);
+  else bits.push(`polled ${p.last_success_age_sec ?? "?"}s ago`);
+  bits.push(`${BOSSES.count} tracked`);
+  bits.push(`${p.events_written} events this run`);
+  if (p.events_error) bits.push("LOG WRITE FAILING");
+  el.className = (p.last_error || p.events_error || !p.enabled) ? "bad" : "";
+  el.textContent = bits.join(" · ");
+}
+
+/* ------------------------------------------------------------------ live */
+function liveView() {
+  const rows = (BOSSES.bosses || []).slice().sort((a, b) => {
+    if (a.live !== b.live) return a.live ? -1 : 1;         // up first
+    if (a.live) return (a.eta_sec ?? 1e12) - (b.eta_sec ?? 1e12);
+    return (respawnIn(a) ?? 1e12) - (respawnIn(b) ?? 1e12); // soonest back first
+  });
+  if (!rows.length) return `<p class="empty">Nothing tracked yet. The poller seeds on its first successful ALData call.</p>`;
+  return `<p class="note">All times America/New_York. <code>dps 0</code> is measured &mdash;
+    somebody looked and nothing is happening &mdash; while <code>—</code> means not enough
+    refreshed readings yet. Those are different answers.</p>
+  <table><thead><tr>
+    <th>Boss</th><th>Server</th><th>Status</th><th>HP</th><th class="num">HP left</th>
+    <th class="num">dps</th><th class="num">ETA</th><th>Target</th>
+    <th class="num">Back at</th><th class="num">In</th><th class="num">Seen</th>
+  </tr></thead><tbody>${rows.map(liveRow).join("")}</tbody></table>`;
+}
+function respawnIn(r) {
+  if (!r.estimated_respawn) return null;
+  return (new Date(r.estimated_respawn).getTime() - Date.now()) / 1000;
+}
+function liveRow(r) {
+  const pct = r.pct == null ? null : Math.max(0, Math.min(100, r.pct));
+  const cls = pct == null ? "" : pct < 15 ? " crit" : pct < 50 ? " low" : "";
+  const back = respawnIn(r);
+  let pill = r.live ? `<span class="pill up">UP</span>`
+                    : r.estimated_respawn ? `<span class="pill dead">DEAD</span>`
+                    : `<span class="pill stale">?</span>`;
+  if (r.live && r.stale) pill += ` <span class="warn" title="age_sec over the stale threshold">stale</span>`;
+  return `<tr>
+    <td>${esc(r.type)}</td>
+    <td>${esc(r.server)}</td>
+    <td>${pill}</td>
+    <td>${pct == null ? '<span class="dim">—</span>'
+         : `<span class="bar${cls}"><i style="width:${pct}%"></i></span> <span class="dim">${pct.toFixed(1)}%</span>`}</td>
+    <td class="num">${num(r.hp)}</td>
+    <td class="num ${r.dps === 0 ? "warn" : ""}">${r.dps == null ? "—" : num(r.dps)}</td>
+    <td class="num">${r.live ? dur(r.eta_sec) : "—"}</td>
+    <td>${r.target ? esc(r.target) : '<span class="dim">—</span>'}</td>
+    <td class="num">${r.estimated_respawn ? et(r.estimated_respawn) : "—"}</td>
+    <td class="num ${back != null && back < 300 ? "warn" : ""}">${back == null ? "—" : back <= 0 ? "due" : dur(back)}</td>
+    <td class="num dim">${r.age_sec == null ? "—" : dur(r.age_sec)}</td>
+  </tr>`;
+}
+
+/* --------------------------------------------------------------- servers */
+function serversView() {
+  const srv = STATS.by_server || [];
+  if (!srv.length) return `<p class="empty">No resolved fights logged yet. The log fills as the poller
+    watches bosses spawn and die &mdash; it cannot be backfilled, because a death is unrecoverable
+    once the boss respawns.</p>`;
+  const best = srv[0];
+  return `<p class="note">Ranked by kills, then by the faster typical kill. <b>kill rate</b> is
+    kills &divide; resolved fights &mdash; a boss that is up right now has not failed to die, so it
+    does not vote. This is the table for the home-server decision; the 36-hour cooldown is the
+    reason it is worth letting it accumulate rather than reading it after an hour.</p>
+  <table><thead><tr>
+    <th>Server</th><th class="num">Kills</th><th class="num">Lost</th><th class="num">Kill rate</th>
+    <th class="num">Types killed</th><th class="num">Median TTK</th><th class="num">Last kill</th>
+  </tr></thead><tbody>${srv.map(s => `<tr class="${s === best ? "best" : ""}">
+    <td>${esc(s.server)}</td>
+    <td class="num up">${s.kills}</td>
+    <td class="num ${s.lost ? "dead" : "dim"}">${s.lost}</td>
+    <td class="num">${s.kill_rate == null ? "—" : (s.kill_rate * 100).toFixed(0) + "%"}</td>
+    <td class="num">${s.types_killed}</td>
+    <td class="num">${dur(s.ttk_median_sec)}</td>
+    <td class="num dim">${etDay(s.last_kill)}</td>
+  </tr>`).join("")}</tbody></table>
+
+  <h1 style="margin:22px 0 8px">Per boss, per server</h1>
+  <table><thead><tr>
+    <th>Boss</th><th>Server</th><th class="num">Spawns</th><th class="num">Kills</th>
+    <th class="num">Lost</th><th class="num">Kill rate</th><th class="num">Median TTK</th>
+    <th class="num">Fastest</th><th class="num">Slowest</th><th class="num">Last kill</th>
+  </tr></thead><tbody>${(STATS.by_server_type || []).map(r => `<tr>
+    <td>${esc(r.type)}</td><td>${esc(r.server)}</td>
+    <td class="num dim">${r.spawns}</td>
+    <td class="num up">${r.kills}${r.low_confidence_kills
+        ? ` <span class="warn" title="${r.low_confidence_kills} logged with low confidence">*</span>` : ""}</td>
+    <td class="num ${r.lost ? "dead" : "dim"}">${r.lost}</td>
+    <td class="num">${r.kill_rate == null ? "—" : (r.kill_rate * 100).toFixed(0) + "%"}</td>
+    <td class="num">${dur(r.ttk_median_sec)}</td>
+    <td class="num dim">${dur(r.ttk_min_sec)}</td>
+    <td class="num dim">${dur(r.ttk_max_sec)}</td>
+    <td class="num dim">${etDay(r.last_kill)}</td>
+  </tr>`).join("")}</tbody></table>`;
+}
+
+/* ------------------------------------------------------------------- log */
+function logView() {
+  const evs = (EVENTS.events || []).slice().reverse();
+  if (!evs.length) return `<p class="empty">The log is empty.</p>`;
+  return `<p class="note">Newest first, ${EVENTS.returned} of ${EVENTS.total}.
+    <code>lost</code> is never counted as a kill &mdash; it records that a fight stopped being
+    observable, which a failed poll or a partial ALData answer can cause.</p>
+  <table><thead><tr>
+    <th>When (ET)</th><th>Event</th><th>Boss</th><th>Server</th><th class="num">TTK</th>
+    <th>Confidence</th><th>How</th><th>Detail</th>
+  </tr></thead><tbody>${evs.map(e => `<tr>
+    <td class="dim">${etDay(e.t)}</td>
+    <td class="${e.ev === "death" ? "up" : e.ev === "lost" ? "dead" : "dim"}">${esc(e.ev)}</td>
+    <td>${esc(e.type)}</td><td>${esc(e.server)}</td>
+    <td class="num">${e.ev === "death" ? dur(e.ttk_sec) : ""}</td>
+    <td class="${e.confidence === "high" ? "dim" : "warn"}">${esc(e.confidence)}</td>
+    <td class="dim">${esc(e.method || "")}</td>
+    <td class="dim">${esc(e.reason || (e.last_hp != null ? "last hp " + num(e.last_hp) : ""))}</td>
+  </tr>`).join("")}</tbody></table>`;
+}
+
+function paint() {
+  statusLine();
+  const el = document.getElementById("view");
+  if (ERR && !BOSSES) { el.innerHTML = `<p class="empty">No data. Is the bridge running?
+    <code>python3 market_bridge.py</code></p>`; return; }
+  el.innerHTML = VIEW === "live" ? liveView() : VIEW === "servers" ? serversView() : logView();
+}
+
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
+  VIEW = b.dataset.v; paint();
+});
+refresh();
+setInterval(refresh, 15000);
+// Re-render between fetches so the countdowns move rather than stepping 15s.
+setInterval(() => { if (VIEW === "live" && BOSSES) paint(); }, 1000);
+</script>
+</body>
+</html>
