@@ -21,6 +21,59 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v96
+
+Make the join branch portable so the followers can carry it verbatim.
+
+**NOT DEPLOYED.** Live slots run v91/v52/v75 as of the last confirmed deploy,
+so this is a PRE-DEPLOY catch rather than a live incident - but it would have
+become one the moment Ranger v94 or v95 was deployed without the followers.
+
+**v94 shipped the walk to the leader alone.** `bossTaxiWalkable` and the
+bossApproach fall-through went into `Party/Ranger.js` and nowhere else; Priest
+and Mage kept the pre-v94 unconditional bail, comment and all: `if
+(character.s && character.s.hopsickness) { bossNote('hopsick - cannot join ' +
+name + ' yet'); return; }`
+
+**IT STRANDS THEM, IT DOES NOT MERELY DELAY THEM, AND COHESION CANNOT COVER
+IT.** The follower main loop reads `if (shouldHandleEvents()) {
+handleEvents(); } else if (CONFIG.movement.enabled) { ... holdCohesion() ...
+}`, and `shouldHandleEvents()` is `holidaySpirit || !!bossPick() ||
+!!bossState.trip`. Once the leader's broadcast sets `bossState.trip` it stays
+true, the event path owns movement, and holdCohesion sits in the `else` where
+it never runs. bossApproach then declines to move. The follower is pinned
+where it landed for up to `maxTripMs` while the leader walks to the boss.
+
+**That is a failure this repo has already had twice**, reached a third way.
+Priest.js:2327 records centralising the DECISION after "crabxx was in the
+ranger's list alone - he joined it while the other two kept farming, boss-side
+with no healer". v94 centralised nothing and diverged on whether the target is
+REACHABLE, which produces the same outcome. CLAUDE.md records losing Dexon on
+2026-10-17 to the older form of it. Dexon solo is 2605 dps against franky's
+120,000,000 hp and 2910 magical attack - he cannot finish it and takes
+sustained damage with no priest.
+
+**The branch is now BYTE-IDENTICAL in all three files**, 1,949 bytes, md5
+e4409f5208b7, and so are `bossTaxiWalkable` and `BOSS_JOIN_SPOTS`. Identity
+rather than equivalence is deliberate: it is what lets a suite assert it. The
+one genuinely leader-only line, the walk-in-sick probe, is typeof-guarded
+rather than omitted, so the followers run the same text and simply do not
+declare `taxiProbeNote`.
+
+**THE TEST THAT SHOULD HAVE CAUGHT IT NOW EXISTS**, in `suite_relay.js` rather
+than `suite_bosshop.js` - every assertion in the latter is about Ranger, so
+nothing there could ever have seen this. It asserts the branch is identical
+across the three, that none of them carries an unconditional hopsick bail,
+that each gates it on `bossTaxiWalkable`, and that the predicate and its table
+are the same function and the same table. Verified to FAIL on the pre-fix tree
+- reverting Priest alone produces three failures - rather than only to pass on
+the fixed one.
+
+**Credit where it is due:** the browser session found this live and proposed
+exactly this test, naming bossApproach as belonging in the same divergence set
+as the relay block and bossHopFollow. That framing is right and is why the
+assertion went where it did.
+
 ## v95
 
 The operator picks the priority; the selectors stop inferring one.

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v76
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v77
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2544,6 +2544,30 @@ async function bossPosture(mon) {
 	await safeMove(mon.x - dx * f, mon.y - dy * f);
 }
 
+/* TRUE when the join is a TAXI to somewhere reachable on foot, which is the
+   only case where being refused the join still leaves the fight available.
+
+   NOT the same question as isJoinEvent(). Measured against upstream 2148cf25
+   at node/server.js:12659-12676, five events carry join:true and they split
+   two ways: crabxx (main), franky (level2w) and icegolem (winterland) are
+   transports to ordinary walkable maps, skipped entirely if you are already
+   within 200 units - so the join saves a walk and nothing more. goobrawl's
+   map has `doors: []` and no walkable entrance, and abtesting assigns teams
+   and can answer join_too_late; for those two the join IS the only way in and
+   refusing while sick is correct.
+
+   Derived rather than listed: BOSS_JOIN_SPOTS gives goobrawl null coords
+   because the server supplies no x/y for it, and G decides whether the
+   destination map has doors. A map that gains or loses doors changes this
+   answer without an edit here. */
+function bossTaxiWalkable(name) {
+	const spot = BOSS_JOIN_SPOTS[name];
+	if (!spot || typeof spot.x !== 'number') return false;
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const m = g && g.maps && g.maps[spot.map];
+	return !!(m && m.doors && m.doors.length);
+}
+
 function bossWalkTarget(name) {
 	const d = (parent.S || {})[name];
 	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
@@ -2557,13 +2581,36 @@ async function bossApproach(name) {
 	const mon = get_nearest_monster({ type: bossMonsterType(name) });
 	if (mon) { await bossPosture(mon); return; }
 	if (BOSS_JOIN_SPOTS[name]) {
-		// hopsickness is the one refusal worth naming: it is temporary, and the
-		// alternative reading - "join is broken" - would send us walking to a
-		// destination the teleport reaches for free.
-		if (character.s && character.s.hopsickness) { bossNote('hopsick - cannot join ' + name + ' yet'); return; }
-		bossNote('joining ' + name);
-		try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
-		return;
+		/* THE TELEPORT IS STILL PREFERRED. When it is available it costs
+		   nothing and reaches the spot for free, which is what the previous
+		   wording here was protecting and it was right to.
+		   What changed in v94: being refused the join no longer means the
+		   FIGHT is unreachable. The server refuses it while hop-sick
+		   (node/server.js:12653) and the refusal is about the TAXI - for a
+		   walkable destination the boss is still there to be walked to, and
+		   credit while sick costs 5x in dwell rather than being denied.
+		   So: not sick, teleport. Sick and walkable, fall through to the walk
+		   below. Sick and NOT walkable (goobrawl, abtesting), still bail,
+		   because for those the join really is the only way in. */
+		if (!(character.s && character.s.hopsickness)) {
+			bossNote('joining ' + name);
+			try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
+			return;
+		}
+		if (!bossTaxiWalkable(name)) { bossNote('hopsick - ' + name + ' has no walkable entrance, waiting it out'); return; }
+		bossNote('hopsick - walking to ' + name + ' instead of joining');
+		/* The probe is DEXON'S - he is the one whose credit is in question -
+		   but the guard keeps this branch byte-identical in all three files,
+		   which is what lets suite_relay.js assert they have not diverged.
+		   v94 shipped the walk to Ranger alone and left the followers on the
+		   unconditional bail; because shouldHandleEvents() owns movement
+		   while a trip is live and holdCohesion() sits in its else, that
+		   stranded them where they stood while the leader walked to the boss
+		   - the 2026-09-26 "leader boss-side with no healer" failure reached
+		   by a new route. The identity is the guard against the next one. */
+		if (typeof taxiProbeNote === 'function') {
+			taxiProbeNote(name, { walkedAt: Date.now(), sickMsAtWalk: bossHop.hopsickRemainingMs() });
+		}
 	}
 	if (smart.moving) return;
 	const where = bossWalkTarget(name);

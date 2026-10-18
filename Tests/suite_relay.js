@@ -98,6 +98,49 @@ module.exports = [
 	t.eq('no silent catch left in it', (b.match(/catch \(e\) \{\s*\}/g) || []).length, 0);
 } },
 
+{ name: 'bossApproach has not diverged - the branch that strands followers', fn(t) {
+	/* WHY THIS SUITE AND NOT suite_bosshop.js. v94 taught the leader to WALK
+	   to a taxi-join boss when hop sickness refuses the lift, and shipped it
+	   to Ranger alone. The followers kept the unconditional bail, and because
+	   shouldHandleEvents() owns movement while a trip is live - holdCohesion()
+	   sits in its `else` - they were pinned where they stood for up to
+	   maxTripMs while the leader walked to the boss. Leader boss-side with no
+	   healer, which is the 2026-09-26 failure reached by a new route, and
+	   Dexon was lost to its older form on 2026-10-17.
+	   Nothing in suite_bosshop.js could see it: every assertion there is about
+	   Ranger. Divergence is only visible from a suite that reads all three. */
+	const { extract } = require('./lift');
+	const FILES3 = ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js'];
+
+	const approach = FILES3.map((f) => extract(f, 'bossApproach'));
+	const i0 = approach[0].indexOf('if (BOSS_JOIN_SPOTS[name]) {');
+	const branch = approach.map((a) => {
+		const i = a.indexOf('if (BOSS_JOIN_SPOTS[name]) {');
+		return i < 0 ? null : a.slice(i, a.indexOf('\n\t}\n', i));
+	});
+	t.that('all three have the join branch', branch.every((b) => b !== null), branch.map((b) => b === null));
+	t.eq('the branch is byte-identical in all three',
+		branch.every((b) => b === branch[0]), true);
+	t.note(`${Buffer.byteLength(branch[0] || '')} bytes in each`);
+
+	for (let i = 0; i < FILES3.length; i++) {
+		const b = branch[i] || '';
+		/* The specific regression, named rather than implied: an
+		   unconditional bail on hopsickness is what v94 removed from Ranger
+		   and left in the other two. */
+		t.eq(`${FILES3[i]}: no unconditional hopsick bail`,
+			/hopsickness\)\s*\{\s*bossNote\('hopsick - cannot join/.test(b), false);
+		t.that(`${FILES3[i]}: the bail is gated on bossTaxiWalkable`,
+			/if \(!bossTaxiWalkable\(name\)\)/.test(b), b.slice(0, 80));
+	}
+
+	/* The predicate itself has to be the same function, not merely present. */
+	const walk = FILES3.map((f) => extract(f, 'bossTaxiWalkable'));
+	t.eq('bossTaxiWalkable is identical in all three', walk.every((w) => w === walk[0]), true);
+	const spots = FILES3.map((f) => extract(f, 'BOSS_JOIN_SPOTS'));
+	t.eq('and so is the table it reads', spots.every((x) => x === spots[0]), true);
+} },
+
 { name: 'the relay block has not diverged across the three scripts', fn(t) {
 	/* Merchant fixed this bug in v68 and it took three weeks to reach the
 	   other three. Keeping the block identical is what makes the next fix

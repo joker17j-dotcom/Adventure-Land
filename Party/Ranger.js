@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v95
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v96
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2500,7 +2500,18 @@ async function bossApproach(name) {
 		}
 		if (!bossTaxiWalkable(name)) { bossNote('hopsick - ' + name + ' has no walkable entrance, waiting it out'); return; }
 		bossNote('hopsick - walking to ' + name + ' instead of joining');
-		taxiProbeNote(name, { walkedAt: Date.now(), sickMsAtWalk: bossHop.hopsickRemainingMs() });
+		/* The probe is DEXON'S - he is the one whose credit is in question -
+		   but the guard keeps this branch byte-identical in all three files,
+		   which is what lets suite_relay.js assert they have not diverged.
+		   v94 shipped the walk to Ranger alone and left the followers on the
+		   unconditional bail; because shouldHandleEvents() owns movement
+		   while a trip is live and holdCohesion() sits in its else, that
+		   stranded them where they stood while the leader walked to the boss
+		   - the 2026-09-26 "leader boss-side with no healer" failure reached
+		   by a new route. The identity is the guard against the next one. */
+		if (typeof taxiProbeNote === 'function') {
+			taxiProbeNote(name, { walkedAt: Date.now(), sickMsAtWalk: bossHop.hopsickRemainingMs() });
+		}
 	}
 	if (smart.moving) return;
 	const where = bossWalkTarget(name);
