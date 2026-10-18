@@ -1,4 +1,5 @@
 // ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v86 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. Dexon is running v82. This records live configuration rather than changing behaviour. Five lines of the LIVE slot had drifted from the repo and none of them were in git, so every paste of a repo build was silently reverting the operator's own settings - and the deployment markers only ever record the repo being AHEAD of a slot, with no marker for the reverse, which is the direction that bites. Found by block-hashing codemirror_render.getValue() against v82 (372,989 UTF-16 units live against 372,979 committed, same line count), then hashing lines within the three differing blocks, which located five lines in a 7,217-line file. ADOPTED FROM LIVE: 'mole' joins singleTargetMobs; the achievement queue's enabled becomes true, which is the mode the party has actually been in all day; and the booboo park point (290,-990) is commented out rather than deleted, because that is the entry the operator uncomments when booboo IS wanted. DELETED: the second booboo entry, (415,-702). v82 measured it at gap 0, rageHit 'booboo', INSIDE the rage box - it is the coordinate that wedged the whole party twice in one morning - and it was kept then only in case the achievement path used it differently. It does not. Two booboo entries where only one is ever enabled is how the wrong one gets uncommented, and huntParkPoint validates by rageHit and rectGap with nearest-qualifying-wins, so nothing indexes the queue and removing an entry shifts nothing. NOT ADOPTED: monsterHunt.enabled stays true against live's false. Operator's call - the repo carries it enabled, so a deploy turns monster hunt back on by intent, and that is the one line to flip by hand after a paste if ordinary farming is wanted instead. ALSO, A THIRD STALE TOGGLE COMMENT. The achievements comment opened "OFF, with monsterHunt above ON - the operator's 2026-10-12 choice", which is a state claim of exactly the kind the standing rule forbids and which this version would have made false, and it closed by justifying the entry this version deletes. Merchant v98's sweep and the pair fixed in v85 both missed it because it never says "currently ON".)
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v85 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v82. The dwell gate is PER-BOSS, not a constant, which is the one substantive defect in v84. requiredDwellMs was a single 60s number and pickTarget() applied its 76.5s floor to all seven targets; it was calibrated on mrgreen, which is the only boss it fits. What has to be out-weighed is the total damage every OTHER contributor banks across the whole fight, and that is the boss's entire hp pool, so the requirement scales as maxHp^0.65. One constant was therefore wrong in both directions at once. snowman (1,200 hp) and crabxx (960,000) could NEVER be picked - their whole-health secsToDeath is 0.06s and 48.0s, both under 76.5s at any dps - and those are the two CHEAPEST rungs on the board, 60 kills to resistance +3 and 70 to luck +1. franky meanwhile was admitted when it earns nothing: it needs 167s at 40 contributors and the gate passed anything over 76.5s, so the party paid 12 minutes of hop sickness for no credit. THE FIX IS IN THREE PARTS. candidates() now emits maxHp alongside hp, because secsToDeath correctly asks when the boss will die while the dwell requirement needs the full pool - contributors' points for damage dealt before Dexon lands are still in total at the award. The G lookup is hoisted out of the pre-spawn branch into maxHpOf()/gameData() so both paths see it, keeping the typeof guard: optional chaining does NOT save an undeclared identifier from throwing. requiredDwellSec(maxHp, contributors, hopsick, mtype) implements the share model directly - others deal the whole pool split K ways, contributing K^(1-E) * maxHp^E to total, and Dexon clears THR/(1-THR) of that. contributors() derives K from observed dps over typicalPlayerDps, clamped to [5,200], since no feed reports one; it is self-consistent rather than accurate, because more dps means both more players and a faster death and both push the gate the same way. isHopsick() reads character.s live. AND THE SINGLE FLOOR SPLITS INTO TWO TESTS, which is what unblocks snowman: a LIVE boss must outlast the trip (secsToDeath >= arriveSec) while a PENDING one is exempt, since we land before it exists and catch the whole fight; then enough must remain AFTER landing (remainingSec >= requiredDwellSec). Conflating the two is exactly what rejected snowman, which needs ~0s of dwell but dies far inside the hop latency and is only ever reachable pre-spawn. localTarget() gets test (2) as well - v84 let it commit FIGHTING to a boss whose share was unreachable, a quarter of an hour spent for nothing - with hopsick read live, because a clean party's requirement is 5x smaller and that is precisely when a boss standing in front of him is most worth taking. Unknown hp does NOT reject a local boss: there is nothing to lose by trying and the alternative is hopping away from a free fight on missing data. CONFIG: requiredDwellMs is DROPPED rather than left as a dead knob that looks live; dexonDps 2605, typicalPlayerDps 2000, minContributors 5, maxContributors 200 added, with an optional per-target dexonDps override. The 2605 is a magical-resistance figure measured against mrgreen (resistance 900, apiercing 122) and is a first approximation elsewhere - crabxx is armor 320 physical, franky lists no resistance - mattering least where the maxHp term dominates and most at mrgreen, where a 2x error moves the gate from 50s to 100s. Per-boss figures want measuring. ShowBossHop now prints maxHp, contributors, requiredDwellSec, remainingSec and a rejectedBecause string per row, plus the live hopsick flag and arriveSec: with a per-boss gate the reason for a rejection stopped being guessable, since one 76.5s number no longer explains every one of them. VERIFIED by lifting the shipped methods out of the file and running them, not by re-deriving: requiredDwellSec reproduces the browser session's independent seven-boss table at K=10/40/80 to better than 0.9%, the residual being rounding and well inside the uncertainty on dexonDps; hop sickness is exactly 5.000x on all seven; crabxx flips from rejected to picked; snowman is rejected live and picked pre-spawn; a near-dead franky on a busy shard flips from picked to rejected while a full-health one and the same fight with a clean party both stay picked.)
 // ==========================================================================
 // ==========================================================================
@@ -233,7 +234,7 @@ const CONFIG = {
 		focusFire: {
 			enabled: true,
 			preferSingleTarget: false,
-			singleTargetMobs: ['cgoo', 'bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer', 'boar', 'cutebee'],
+			singleTargetMobs: ['cgoo', 'bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer', 'boar', 'cutebee', 'mole'],
 			leaderPicksLowestHp: true
 		},
 		targetPriority: ['FatherToken'],
@@ -686,14 +687,14 @@ const CONFIG = {
 	},
 
 	achievements: {
-		/* OFF, with monsterHunt above ON - the operator's 2026-10-12 choice, and
-		   the reverse of what this comment claimed through v81. The queue below
-		   stays live either way; see huntParkPoint(). Entry 18 (booboo at
-		   415,-702) is a boundary centre, not a park point - it is inside the
-		   rage box and huntParkPoint rejects it. Left in place rather than
-		   deleted because the achievement path may use it differently; do not
-		   copy it as a travel target. */
-		enabled: false,
+		/* -> ACHIEVEMENT QUEUE below. The queue stays live whether or not this
+		   is on; see huntParkPoint(). The booboo boundary centre (415,-702)
+		   that used to sit in the queue was removed in v86 - inside the rage
+		   box, rejected by huntParkPoint, and the achievement path never did
+		   use it differently. The booboo entry that remains is the verified
+		   park point (290,-990), commented out by default; uncomment it to
+		   run booboo. */
+		enabled: true,
 		/* Consecutive failed travel attempts to an achievement spot before the
 		   override is released. Needed because the breaker in the farm loop
 		   blacklists a spot, and an achievement spot is whitelisted against
@@ -737,7 +738,7 @@ const CONFIG = {
 			   because booboo respawns every 48s against mummy's 24 and would otherwise
 			   idle most of the trip; the rung still tracks `m`. rung null means run
 			   until the toggle goes off or achvStop(). */
-			{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
+			//{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
 			{ m: 'stoneworm',  map: 'spookytown',  x:  677, y:   129, rung: 100000 },
 			{ m: 'mole',       map: 'tunnel',      x:   14, y: -1072, rung: 10000  },
 			{ m: 'armadillo',  map: 'main',        x:  526, y:  1846, rung: 100000 },
@@ -755,7 +756,6 @@ const CONFIG = {
 			{ m: 'spider',     map: 'main',        x:  948, y:  -144, rung: 100000 },
 			{ m: 'ghost',      map: 'halloween',   x: -405, y: -1642, rung: 100000 },
 			{ m: 'wolfie',     map: 'winterland',  x: -169, y: -2026, rung: 100000 },
-			{ m: 'booboo',     map: 'spookytown',  x:  415, y:  -702, rung: 100000 },
 			{ m: 'scorpion',   map: 'main',        x: 1578, y:  -168, rung: 100000 },
 			{ m: 'gscorpion',  map: 'desertland',  x:  391, y: -1422, rung: 100000 },
 			{ m: 'osnake',     map: 'halloween',   x: -509, y:  -626, rung: 100000, also: ['snake'] },
