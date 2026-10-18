@@ -1038,9 +1038,34 @@ The Claude Code session commits with git and should never use this route.
 
 ## Testing
 
-- **There is no test harness in this repo.** Both missing-helper bugs above
-  were invisible to reading and obvious the instant anything executed. Any
-  harness that merely runs the file would have caught them.
+- **There IS one now: `node Tests/run.js`.** This section said there was no
+  harness until 2026-10-18, and the reasoning it gave is why there is one:
+  both missing-helper bugs above were invisible to reading and obvious the
+  instant anything executed. Neither is reachable by a static check. 114
+  assertions across three suites, no framework and no dependency, exit 1 on
+  any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
+- **Suites lift the code out of the COMMITTED file, never a copy.**
+  `Tests/lift.js` pulls a named declaration by brace-matching and evaluates
+  it in a vm context; the only edit is `function x` -> `globalThis.x =
+  function x`. So a passing suite is a statement about the file that ships.
+  Write the stubs, not the subject.
+- **It was built because the throwaway versions kept being rebuilt and kept
+  being wrong.** Seventeen harnesses were written in the scratchpad on
+  2026-10-18 alone, and two had counting bugs in the lifting machinery
+  itself - one spun forever on a terminator that did not match, the other
+  counted a brace inside a log message. Both looked exactly like the code
+  under test being broken. The committed matcher ignores strings, template
+  literals and comments.
+- **A harness that passes for the wrong reason is worse than one that
+  fails.** The first run of `suite_relay.js` asserted on the bare word
+  `change_server` and matched a doc comment 1,700 bytes before the call; the
+  code was right and the assertion was not. That is the failure mode to
+  watch for here. Assert against the mechanism where you can.
+- **The divergence checks are the ones most likely to earn their keep.**
+  `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
+  relay block or `bossHopFollow` stop being identical. Merchant fixed the
+  replay bug in v68 and it took three weeks and a live reload loop to reach
+  the other three; a suite checking only one would not have noticed.
 
 ## Claiming a character in a manageable tab
 
