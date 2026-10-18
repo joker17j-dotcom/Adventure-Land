@@ -151,26 +151,47 @@ browser-driven route and does not apply to the other.
 
 ## Version headers
 
-- **Prepend to the header, never replace it.** Line 2 of each character script
-  accumulates version entries oldest-last; `Party/Priest.js` carries five. Both
-  sessions bump this line, so it is the one line that conflicts on almost every
-  rebase - and resolving it by taking one side silently deletes the other
-  side's history.
-- **Watch for the deployment markers in there.** A note like "Not deployed to
-  the live slot: Meltymerch stays on his older build" is the only in-file
-  record that repo HEAD is ahead of what a character is actually running. It is
-  exactly what someone needs before deploying, and exactly what a careless
-  header resolution destroys. Lost once, in ba067df, restored after the other
-  session caught it.
-- **`Party/Merchant.js` is the exception.** Its history was moved to
-  `Party/CHANGELOG.md` on 2026-09-21 to stay under the CODE slot size cap, so
-  line 2 there carries only the current version and the entry goes in
-  `Party/CHANGELOG.md` instead. Do not prepend to a header that deliberately
-  does not accumulate. Verified 2026-10-17: `Party/Merchant.js` line 2 ends at
-  `v97`, and `Party/CHANGELOG.md` holds the rest. The v97 entry is deliberately
-  NOT written yet - the operator's 2026-10-17 call was to leave the bump in
-  place and fold v97's three changes (`parked: false`, `tracker` dropped from
-  `pontyBuy.items`, eight key ids added) into the next change's entry.
+**THE RULE INVERTED ON 2026-10-18. NO CHARACTER SCRIPT ACCUMULATES HISTORY IN
+LINE 2 ANY MORE.** This section used to say "prepend to the header, never
+replace it", with `Party/Merchant.js` named as the sole exception. All four are
+now the same shape, so there is no exception and no prepending. A session
+working from the old rule would put 60 KB back into a header that was just
+emptied, which is the single most expensive mistake this file can cause.
+
+- **Line 2 carries the CURRENT VERSION ONLY.** No parenthetical body, no
+  history. Each script has its own changelog beside it:
+  `Party/RangerChangelog.md`, `Party/PriestChangelog.md`,
+  `Party/MageChangelog.md`, and the Merchant's (the browser session is renaming
+  `Party/CHANGELOG.md` to `Party/MerchantChangelog.md` to match). Prepend the
+  new entry THERE, newest first, never rewrite an old one, and bump line 2 in
+  the same commit.
+- **Why it changed.** Measured 2026-10-18 before the move: Ranger's header was
+  86,133 bytes, 21% of the whole file, and ONE line of it was 64,673
+  characters; Priest 45,771 and Mage 45,801. Extracting all three dropped
+  Ranger 409 KB -> 282 KB, Priest 254 -> 186, Mage 236 -> 168. That is real
+  headroom against the CODE slot ceiling, which is the same reason Merchant was
+  emptied on 2026-09-21.
+- **Long rationale lives beside the script too.** A line ending
+  `-> <Name>Comments.md#anchor` is a SUMMARY; the measurements, the dates and
+  the theories that were tried and discarded are in
+  `Party/RangerComments.md`, `Party/PriestComments.md`, `Party/MageComments.md`
+  and `Party/MerchantComments.md`. Read the anchor before changing the code it
+  sits on, and update it in the same commit. The split rule used: if a reader
+  editing that function would need it in front of them it stayed in the source;
+  if it is archaeology it moved.
+- **Watch for the deployment markers.** A note like "Not deployed to the live
+  slot: Meltymerch stays on his older build" is the only record that repo HEAD
+  is ahead of what a character is actually running. These now live in the
+  changelog entry rather than line 2, so look there before deploying. Lost
+  once, in ba067df, restored after the other session caught it. A LIVE SLOT CAN
+  ALSO BE AHEAD OF THE REPO and nothing records that at all - see "Deploying a
+  code slot".
+- **No comment may state a flag's current or default value.** The operator
+  flips these; a comment asserting a value is stale the moment they do, and one
+  already was - Mage's "MULING (disabled by default)" sat above
+  `CONFIG.muling.enabled: true`. Describe what each state DOES and who owns the
+  choice. Merchant's "Inert while `enabled` is off" is the model: it describes
+  behaviour in a state without claiming the flag is in it.
 
 ## Handing code to the other chat
 

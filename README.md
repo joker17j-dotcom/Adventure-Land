@@ -23,9 +23,12 @@ as of 2026-10-17.
 Dexon chooses the farm spot and broadcasts it; the priest and mage adopt his
 `home`/`mobMap` and focus-fire his target rather than picking independently.
 
-`Party/Merchant.js` keeps only its current version on line 2 — its history lives
-in `Party/CHANGELOG.md`, to stay under the CODE slot size cap. The other three
-accumulate their version entries in the line-2 header.
+**No character script keeps version history in its header.** Each one carries
+only its current version on line 2, with the history in its own changelog
+beside it and the long rationale in its own comments file. Merchant was done
+first, on 2026-09-21; the other three followed on 2026-10-18, which took
+Ranger's header from 86,133 bytes to 2,186 and its longest line from 64,673
+characters to 367. The reason in every case is the CODE slot size cap.
 
 ## Run by hand
 
@@ -57,6 +60,12 @@ is how a character learns about a boss on a shard it is not connected to —
 | `CLAUDE.md` | Conventions for AI sessions working on this repo. **Read first** |
 | `Party/CHANGELOG.md` | `Merchant.js` version history, and what was measured to justify each change |
 | `Party/MerchantComments.md` | The long-form notes `Merchant.js` cites as `-> MerchantComments.md#anchor` |
+| `Party/RangerChangelog.md` | `Ranger.js` version history, v88 back to v50 |
+| `Party/RangerComments.md` | The long-form notes `Ranger.js` cites as `-> RangerComments.md#anchor` |
+| `Party/PriestChangelog.md` | `Priest.js` version history, v49 back to v25 |
+| `Party/PriestComments.md` | The long-form notes `Priest.js` cites as `-> PriestComments.md#anchor` |
+| `Party/MageChangelog.md` | `Mage.js` version history, v72 back to v49 |
+| `Party/MageComments.md` | The long-form notes `Mage.js` cites as `-> MageComments.md#anchor` |
 | `Codex/README.md` | The market tooling, the bridge, arbitrage safety rails |
 | `Codex/relay/README.md` | Running a scout on a second computer |
 | `REPORTS.md` | Named reports the operator asks for by phrase. Produced by Claude querying the live game, not by any script |
