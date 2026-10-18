@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v94
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v95
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1647,6 +1647,43 @@ const BOSS_JOIN_SPOTS = {
 /* goobrawl is the ONE joinable event whose parent.S key is an EVENT name and
    not a monster name.
    -> RangerComments.md#goobrawl-is-the-one-joinable-event-whose */
+/* THE OPERATOR'S PRIORITY, 2026-10-18. Equal numbers mean equal priority.
+
+   WHAT IT DECIDES AND WHAT IT DOES NOT. Operator's words: "The bosses worth
+   hopping do not change - this is priority to pick while multiple are alive,
+   either on the same server or for the ones already identified as worth
+   hopping for." So it is a TIE-BREAK ON THE ELIGIBLE SET, never an
+   eligibility test. Nothing here admits a boss that requiredDwellSec, the
+   arrival test or the join-window test rejected, and nothing here adds or
+   removes a hop target - CONFIG.bossHop.targets still decides that.
+
+   WHY IT REPLACED WHAT WAS THERE. The three selectors were each ordering by
+   something that was never a statement about worth: bossPick by lowest hp
+   ratio (finish whatever is nearest dead), and both bossHop selectors by
+   kills_to_rung, which measures ACHIEVEMENT DISTANCE. Neither had been given
+   a priority, so each inferred one. This is the given one.
+
+   KEYED BY THE parent.S NAME, which is the event name where one exists -
+   goobrawl, not rgoo - because that is what bossLiveNames() yields and what
+   bossPick compares. bossMonsterType() maps it the other way for the fight.
+
+   UNRANKED IS 6, the operator's "all others", so an unlisted boss sorts last
+   rather than being excluded. snowman is ranked but is NOT in allBosses, so
+   it can never reach these selectors today; the entry is harmless and costs
+   nothing if it is ever added. */
+const BOSS_RANK = {
+	dragold: 1,
+	franky: 2,
+	crabxx: 3, wabbit: 3, goobrawl: 3,
+	mrgreen: 4,
+	snowman: 5, grinch: 5, mrpumpkin: 5,
+};
+const BOSS_RANK_DEFAULT = 6;
+function bossRank(name) {
+	const r = BOSS_RANK[name];
+	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;
+}
+
 const BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' };
 function bossMonsterType(name) { return BOSS_FIGHT_TYPE[name] || name; }
 
@@ -2326,14 +2363,32 @@ function bossPick() {
 		const d = (parent.S || {})[n];
 		if (d && d.live) return { name: n, src: 'leader' };
 	}
+	/* RANK FIRST, then the hp ratio this used to lead on. Lowest remaining hp
+	   is a sensible way to choose between two bosses of EQUAL worth - finish
+	   the one nearest dead - and a poor way to choose between unequal ones,
+	   which is what it was doing: a half-dead greenjr beat a fresh mrgreen
+	   every time.
+
+	   THE INCUMBENT WINS A TIE, and that is a behaviour change worth naming.
+	   The caller switches trips whenever this returns a different name, so
+	   with a continuously-moving key like hp ratio two equally-ranked bosses
+	   could trade the trip back and forth as their ratios crossed. Rank is
+	   static, so rank-first already makes switching rarer; holding the
+	   current trip on an exact tie closes the rest. A higher-ranked boss
+	   going live still takes the trip, which is the point of a priority. */
+	const held = bossState.trip && bossState.trip.name;
 	let best = null;
 	for (const n of bossLiveNames()) {
 		if (!bossEligible(n).ok) continue;
 		const d = parent.S[n];
 		const ratio = (d && d.max_hp) ? (d.hp / d.max_hp) : 1;
-		if (!best || ratio < best.ratio - 1e-9 || (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name)) {
-			best = { name: n, ratio: ratio };
-		}
+		const cand = { name: n, ratio: ratio, rank: bossRank(n) };
+		if (!best) { best = cand; continue; }
+		if (cand.rank !== best.rank) { if (cand.rank < best.rank) best = cand; continue; }
+		if (cand.name === held) { best = cand; continue; }
+		if (best.name === held) continue;
+		if (ratio < best.ratio - 1e-9) { best = cand; continue; }
+		if (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name) best = cand;
 	}
 	return best ? { name: best.name, src: 'own' } : null;
 }
@@ -3011,9 +3066,9 @@ const bossHop = {
 		return parent?.S?.[mtype]?.live === true;
 	},
 
-	/* Any target boss live in this shard right now, lowest kills_to_rung
-	   first. Checked before any hop: a boss standing here costs no latency and
-	   no hop sickness, so it always wins. */
+	/* Any target boss live in this shard right now, by the operator's rank.
+	   Checked before any hop: a boss standing here costs no latency and no
+	   hop sickness, so it always wins. */
 	localTarget() {
 		/* No latency and no NEW hop sickness, so test (2) only - but it is
 		   still a test. v84 let this path commit FIGHTING to a boss whose
@@ -3044,7 +3099,22 @@ const bossHop = {
 				const need = this.requiredDwellSec(maxHp, k, hopsick, t.mtype);
 				if (hp / this.shardDps(cur, t.mtype) < need) continue;
 			}
-			if (!best || t.kills_to_rung < best.kills_to_rung) best = t;
+			/* Rank, then the operator's delegated tie-break: cheapest dwell
+			   first, because banking the cheap one does not cost the other,
+			   then kills_to_rung LAST - it is achievement distance, not
+			   worth, and leading on it is what this replaces.
+			   No change against today's three targets, whose kills_to_rung
+			   order happens to match their rank; it stops the NEXT target
+			   added from silently inheriting an ordering nobody chose. */
+			const need = (hp > 0 && maxHp > 0)
+				? this.requiredDwellSec(maxHp, this.contributors(cur, t.mtype), hopsick, t.mtype)
+				: Infinity;
+			const cand = { mtype: t.mtype, kills_to_rung: t.kills_to_rung, rank: bossRank(t.mtype), need };
+			if (!best
+				|| cand.rank < best.rank
+				|| (cand.rank === best.rank && cand.need < best.need)
+				|| (cand.rank === best.rank && cand.need === best.need
+					&& cand.kills_to_rung < best.kills_to_rung)) best = cand;
 		}
 		return best?.mtype ?? null;
 	},
@@ -3150,8 +3220,18 @@ const bossHop = {
 			return x.remainingSec >= x.requiredDwellSec;
 		});
 		if (!eligible.length) return null;
+		/* Rank, then the operator's delegated tie-break - cheapest dwell,
+		   then earliest deadline, then kills_to_rung last. secsToDeath used
+		   to lead, which answered "which dies soonest" rather than "which is
+		   worth most"; it is still the right SECOND question and keeps its
+		   place. No change against today's candidate set: dragold is inert
+		   with lunarnewyear off, and no two event bosses can be live at once
+		   because no two windows overlap. */
 		eligible.sort((a, b) =>
-			a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung);
+			bossRank(a.mtype) - bossRank(b.mtype)
+			|| a.requiredDwellSec - b.requiredDwellSec
+			|| a.secsToDeath - b.secsToDeath
+			|| a.kills_to_rung - b.kills_to_rung);
 		return eligible[0];
 	},
 

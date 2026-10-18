@@ -21,6 +21,73 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v95
+
+The operator picks the priority; the selectors stop inferring one.
+
+**NOT DEPLOYED.** Live slots run v91/v52/v75.
+
+**The operator's priority, 2026-10-18, applied to all three selectors that
+choose between live bosses.** Their words: "The bosses worth hopping do not
+change - this is priority to pick while multiple are alive, either on the same
+server or for the ones already identified as worth hopping for." So it is a
+TIE-BREAK ON THE ELIGIBLE SET and nothing more. No eligibility test is
+relaxed, no hop target is added or removed, and `requiredDwellSec`, the
+arrival test and the join-window test all decide exactly what they decided
+before.
+
+**Rank: dragold 1, franky 2, crabxx/wabbit/goobrawl 3, mrgreen 4,
+snowman/grinch/mrpumpkin 5, everything else 6.** Keyed by the `parent.S` name,
+which is the EVENT name where one exists - `goobrawl`, never `rgoo` - because
+that is what `bossLiveNames()` yields. Unranked falls to 6 rather than being
+excluded. snowman is ranked and is NOT in `allBosses`, so it can never reach
+these selectors today; the entry costs nothing and is there if it is added.
+
+**THE LIVE EFFECT IS IN bossPick, NOT IN bossHop.** Worth saying plainly
+because the opposite would be easy to assume. bossPick chose by LOWEST HP
+RATIO - finish whatever is nearest dead - which is a reasonable way to choose
+between two bosses of equal worth and a poor way to choose between unequal
+ones. A half-dead greenjr beat a fresh mrgreen every time. That is the change.
+
+**In bossHop it is future-proofing and changes nothing today**, by two
+independent arguments, both asserted rather than claimed. localTarget ordered
+by `kills_to_rung`, and today's three targets - dragold 1, franky 68, crabxx
+70 - happen to rank in exactly that order, so the output is identical; the
+suite asserts the two orderings agree so the day they stop agreeing is
+visible. pickTarget ordered by earliest deadline, and its candidates cannot
+contend: dragold is inert with lunarnewyear off, and no two event windows
+overlap, so two event bosses are never live at once. What it buys is that the
+NEXT target added cannot silently inherit an ordering nobody chose -
+`kills_to_rung` is achievement distance, not worth, and leading on it was an
+inference rather than an instruction.
+
+**THE INCUMBENT NOW WINS A TIE IN bossPick, which is a real behaviour change
+and the one to watch.** The caller switches trips whenever bossPick returns a
+different name (`bossEnd('switching to ...')`), so with a continuously-moving
+key like hp ratio two equally-ranked bosses could trade the trip back and
+forth as their ratios crossed. Rank is static, so rank-first already makes
+switching rarer; holding the current trip on an exact tie closes the rest. A
+higher-ranked boss going live still takes the trip - that is what a priority
+is for - and a lower-ranked one never does.
+
+**The delegated tie-break, where the data exists for it.** Within a rank:
+cheapest required dwell first, because banking the cheap one does not cost the
+other; then earliest deadline; then `kills_to_rung` LAST. bossPick keeps hp
+ratio as its within-rank key, since it computes no dwell - the three selectors
+were never really in conflict about order, they were each inferring a priority
+none of them had been given, and now only the secondary keys differ.
+
+**Demonstrated: 20 new assertions, 63 in suite_bosshop.js, 195 across the
+harness** (175 before this change).
+The rank table including goobrawl keyed by event name and two kinds of
+unranked; localTarget preferring franky over crabxx with both live, plus the
+assertion that rank order equals kills_to_rung order for the current targets;
+pickTarget taking a higher-ranked franky over a sooner-dying crabxx, and the
+cheaper dwell winning within a rank; and bossPick's five cases - a fresh
+mrgreen beating a half-dead greenjr, franky beating mrgreen regardless of hp,
+equal rank still falling back to hp ratio, the incumbent holding against an
+equal rank, and a higher rank still taking the trip.
+
 ## v94
 
 A refused join blocks the taxi, not the fight - plus a probe to prove it.

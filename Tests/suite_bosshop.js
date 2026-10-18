@@ -33,8 +33,8 @@ function ranger(over = {}) {
 		TAXI_PROBE_KEY: 'taxi_probe', TAXI_PROBE_MAX: 30,
 		parent: { G: G_BASE, S: over.S || {} },
 	}, over));
-	lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'bossTaxiWalkable', 'taxiProbeRead', 'taxiProbeWrite',
-		'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
+	lift(w, RANGER, ['BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
+		'taxiProbeRead', 'taxiProbeWrite', 'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
 	w.bossHop.shardDps = () => 5000;
 	w.bossHop.localBossLive = (t) => (over.live || []).includes(t);
 	return w;
@@ -163,6 +163,108 @@ module.exports = [
 	w.bossHop.idleSince = Date.now() - 600000;
 	await w.bossHop.goHomeIfIdle('USIV');
 	t.eq('nothing local: still goes home as before', hopped, true);
+} },
+
+{ name: "the operator's rank orders the eligible set, and only orders it", fn(t) {
+	const w = ranger();
+	t.eq('dragold 1', w.bossRank('dragold'), 1);
+	t.eq('franky 2', w.bossRank('franky'), 2);
+	t.eq('crabxx, wabbit and goobrawl all 3',
+		['crabxx', 'wabbit', 'goobrawl'].map(w.bossRank), [3, 3, 3]);
+	t.eq('mrgreen 4', w.bossRank('mrgreen'), 4);
+	t.eq('grinch and mrpumpkin 5', ['grinch', 'mrpumpkin'].map(w.bossRank), [5, 5]);
+	t.eq('anything unranked is 6, the operator\'s "all others"', w.bossRank('phoenix'), 6);
+	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 6);
+	/* Keyed by the parent.S name, which is the EVENT name where one exists -
+	   bossLiveNames() yields goobrawl, never rgoo. */
+	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), 6);
+} },
+
+{ name: 'localTarget ranks, and the ranking changes nothing today', fn(t) {
+	/* Two targets live at once is the case the rank exists for. It cannot
+	   actually arise for these two - no two event windows overlap - but the
+	   ordering has to be right before a target is added that can. */
+	let h = ranger({ live: ['crabxx', 'franky'] });
+	t.eq('franky (2) beats crabxx (3) when both are live here', h.bossHop.localTarget(), 'franky');
+
+	h = ranger({ live: ['crabxx'] });
+	t.eq('one live target is still taken', h.bossHop.localTarget(), 'crabxx');
+
+	/* The no-op claim, asserted rather than asserted-about: today's three
+	   targets rank in the same order their kills_to_rung already produced. */
+	const w = ranger();
+	const byRank = [...w.CONFIG.bossHop.targets].sort((a, b) => w.bossRank(a.mtype) - w.bossRank(b.mtype));
+	const byRung = [...w.CONFIG.bossHop.targets].sort((a, b) => a.kills_to_rung - b.kills_to_rung);
+	t.eq('rank order == kills_to_rung order for the current targets',
+		byRank.map((x) => x.mtype), byRung.map((x) => x.mtype));
+	t.note('so this change is future-proofing for bossHop; the live effect is in bossPick');
+} },
+
+{ name: 'pickTarget sorts by rank before deadline', fn(t) {
+	const h = ranger();
+	h.bossHop.contributors = () => 40;
+	h.bossHop.requiredDwellSec = () => 2;
+	h.bossHop.maxHpOf = (m) => (m === 'crabxx' ? 960000 : 120000000);
+	h.bossHop.eventWindowMs = () => 2400000;
+	/* crabxx dies SOONER, franky ranks HIGHER. Before the change the earliest
+	   deadline won; now the rank does. */
+	h.bossHop.candidates = () => [
+		{ shard: 'EUI', mtype: 'crabxx', hp: 960000, maxHp: 960000, live: true, secsToDeath: 300, kills_to_rung: 70 },
+		{ shard: 'USII', mtype: 'franky', hp: 120000000, maxHp: 120000000, live: true, secsToDeath: 1500, kills_to_rung: 68 },
+	];
+	t.eq('franky (2) wins over a sooner-dying crabxx (3)', h.bossHop.pickTarget().mtype, 'franky');
+
+	/* Within one rank the delegated tie-break applies: cheapest dwell first. */
+	const h2 = ranger();
+	h2.bossHop.contributors = () => 40;
+	h2.bossHop.maxHpOf = () => 960000;
+	h2.bossHop.eventWindowMs = () => 2400000;
+	h2.bossHop.requiredDwellSec = (maxHp, k, sick, mtype) => (mtype === 'wabbit' ? 1 : 50);
+	h2.bossHop.candidates = () => [
+		{ shard: 'EUI', mtype: 'crabxx', hp: 960000, maxHp: 960000, live: true, secsToDeath: 200, kills_to_rung: 70 },
+		{ shard: 'USII', mtype: 'wabbit', hp: 960000, maxHp: 960000, live: true, secsToDeath: 1500, kills_to_rung: 99 },
+	];
+	t.eq('equal rank: the cheaper dwell wins even though it dies later',
+		h2.bossHop.pickTarget().mtype, 'wabbit');
+} },
+
+{ name: 'bossPick: rank leads, and the incumbent holds a tie', fn(t) {
+	function picker(live, held) {
+		const w = ranger();
+		/* bossPick's own preamble - forced pick, then a leader's call - is
+		   not what this suite is about, so both are empty and we are the
+		   leader, which drops straight through to the ranked scan. */
+		w.bossState = { trip: held ? { name: held } : null, forced: null, fromLeader: null };
+		w.bossIsLeader = () => true;
+		w.bossEligible = () => ({ ok: true });
+		w.bossLiveNames = () => Object.keys(live);
+		w.parent.S = live;
+		w.CONFIG.bossEvents = { leaderTrustMs: 60000 };
+		lift(w, RANGER, ['bossPick']);
+		return w.bossPick();
+	}
+	const full = (hp) => ({ live: true, hp, max_hp: 100 });
+
+	/* THE CASE THAT CHANGES. Before: lowest hp ratio won, so a nearly-dead
+	   low-rank boss beat a fresh high-rank one. */
+	t.eq('a fresh mrgreen (4) beats a half-dead greenjr (unranked 6)',
+		picker({ mrgreen: full(100), greenjr: full(3) }).name, 'mrgreen');
+	t.eq('franky (2) beats mrgreen (4) regardless of hp',
+		picker({ franky: full(100), mrgreen: full(1) }).name, 'franky');
+
+	/* Within a rank the old key still decides. */
+	t.eq('equal rank falls back to lowest hp ratio',
+		picker({ crabxx: full(80), wabbit: full(20) }).name, 'wabbit');
+
+	/* Invariant: never abandon for an EQUAL rank. */
+	t.eq('the incumbent holds against an equal-rank boss with less hp',
+		picker({ crabxx: full(80), wabbit: full(20) }, 'crabxx').name, 'crabxx');
+	t.eq('but a HIGHER rank still takes the trip',
+		picker({ crabxx: full(80), franky: full(99) }, 'crabxx').name, 'franky');
+	t.eq('and a lower rank never does',
+		picker({ crabxx: full(99), mrgreen: full(1) }, 'crabxx').name, 'crabxx');
+
+	t.eq('nothing live -> null', picker({}), null);
 } },
 
 { name: 'the hop lock: one boss_hop per hop, not a burst of five', async fn(t) {
