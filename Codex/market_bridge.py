@@ -224,7 +224,7 @@ SHARD_LIST_REFRESH_SEC = 6 * 60 * 60
 # server. Either number alone argues the wrong move.
 POPULATION_SAMPLE_SEC = 15 * 60
 POPULATION_PATH = "./data/population.jsonl"
-POPULATION_MAX_ROWS = 40000          # ~14 months at 96/day; trimmed on startup
+POPULATION_MAX_ROWS = 40000          # ~14 months at 96/day; population_trim() at startup
 
 # A server needs at least this many logged kills before its ranking row counts
 # as a trend rather than an anecdote. The page greys out anything below it.
@@ -403,6 +403,38 @@ def population_append(row: dict, path: str) -> None:
     except Exception as e:
         say("[pop] append failed: %s: %s" % (type(e).__name__, e))
 
+
+def population_trim(path: str, max_rows: int) -> int:
+    """Cap the ledger at max_rows, keeping the NEWEST. Returns rows dropped.
+
+    POPULATION_MAX_ROWS declared this and nothing performed it, so the comment
+    described a trim that did not exist and the file grew without bound. Called
+    once at startup rather than per append: 96 samples a day cannot cross the
+    cap between two restarts, and rewriting the file on every sample would turn
+    an append-only log into a whole-file write 96 times a day.
+
+    Rewrites through a temp file in the same directory and os.replace()s it, so
+    an interrupted trim leaves the original intact - the same reason the ledger
+    is opened per write rather than held."""
+    try:
+        p = pathlib.Path(path)
+        if not p.exists():
+            return 0
+        with p.open("r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if len(lines) <= max_rows:
+            return 0
+        keep = lines[-max_rows:]
+        tmp = p.with_suffix(p.suffix + ".trim")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.writelines(keep)
+        os.replace(str(tmp), str(p))
+        dropped = len(lines) - len(keep)
+        say("[pop] trimmed %d old sample(s), keeping %d" % (dropped, len(keep)))
+        return dropped
+    except Exception as e:
+        say("[pop] trim failed: %s: %s" % (type(e).__name__, e))
+        return 0
 
 def population_read(path: str, hours: float | None = None) -> list:
     """Rows newest-last. A short file is read whole; hours trims the window.
@@ -2459,6 +2491,7 @@ def main():
     Handler.bosses.start()
     _shard_stop = threading.Event()
     set_shard_keys(SI_SEED_SERVERS, "seed")
+    population_trim(POPULATION_PATH, POPULATION_MAX_ROWS)
     threading.Thread(target=population_sampler, args=(_shard_stop,),
                      name="pop-sampler", daemon=True).start()
     threading.Thread(target=shard_list_refresher, args=(_shard_stop,),
