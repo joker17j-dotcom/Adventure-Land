@@ -376,9 +376,10 @@ first - this section is what it was learned on.
   `has_home_server_bonus(` appears twice): `mnet *= 5` at `server.js:13365`,
   guarded two lines above by `if (!m.cooperative) return;`, and the
   `monsters_home_server` drop table at `:2361`. NOT gold, NOT luck. See the
-  Kill credit section for what the x5 does to required dwell.
+  "Kill credit, achievement score and drop rolls" for what the x5 does to
+  required dwell, and for why the home-only drop table is worth little.
 
-## Kill credit and achievement score
+## Kill credit, achievement score and drop rolls
 
 **Both sessions.** Server-source reads plus live measurement, 2026-10-17.
 
