@@ -506,6 +506,24 @@ summary of it.
   5 funtokens a kill solo, 18.8 at 40 contributors, 30.4 at 80. A busy shard
   is BETTER for a funtoken run, which is the opposite of the obvious instinct.
 
+- **THE HOME-ONLY DROP TABLES ARE WORTH ABOUT A FIFTH OF ONE ITEM PER KILL,
+  WHICH IS THE NUMBER BEHIND THE OPERATOR'S "NOT WORTH PLANNING AROUND".**
+  They use rates near `1.0`, not crabxx's `1000`s, so they go through the
+  same `share * luckm` modifier and are NOT guaranteed. crabxx's
+  `[1.0, "reefglass", 3]` at `luckm` 1.5, equal contributions:
+  0.300 expected at K=5 and K=10, 0.225 at K=20, 0.188 at K=40, 0.169 at
+  K=80, 0.160 at K=150. dragold's `essenceoffire` is identical (same rate)
+  and its `embercore` at 0.005 is ~0.001. So the entire home-server bonus on
+  a crabxx run is worth roughly one fifth of one reefglass per credited kill,
+  against 19-30 funtokens from the normal table - which closes the chaining
+  question: going off-home costs that fifth of a reefglass and the
+  cooperative x5 on points, and nothing else.
+  Verified 2026-10-18 by bracket-matching the whole `monsters_home_server`
+  object rather than regexing it: exactly EIGHT entries as this file already
+  claims, and no `funtoken` line in any of them. Two regex reads of that
+  object disagreed first - one truncated at the first `]`, the other had
+  dragold's two items reversed.
+
 ## Stopping and restarting a character's CODE
 
 **Browser-driven session only.** Needs a live character tab.
@@ -613,6 +631,17 @@ summary of it.
   and useless for any question about history: no blame, no "when did this
   change", no comparing two revisions. `git fetch --unshallow` first if the
   question is a historical one.
+- **SHALLOWNESS DOES NOT INVALIDATE A DISTANCE WHEN THE BOUNDARY IS THE
+  COMMIT YOU ARE MEASURING FROM.** Measured 2026-10-18 on the browser
+  container's fork clone: `.git/shallow` contained its OWN HEAD (`9005216`),
+  so truncation was entirely BELOW it and the upstream fetch supplied the
+  whole chain above it - which is why the 330 figure above is the true
+  distance and not an artefact. The one-call cross-check is
+  `git rev-list --count <upstream>` equalling distance + 1 (331 here); dates
+  bracket it independently, HEAD 2026-09-21 against upstream 2026-10-07.
+  Without this, a reader meets "shallow" in the bullet above and "330" three
+  bullets up and concludes one of them is wrong. A session nearly sent a
+  correction retracting a sound number on exactly that reasoning.
 
 ## Browser tabs - the keeper
 
