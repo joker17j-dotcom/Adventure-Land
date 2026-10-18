@@ -324,6 +324,16 @@ first - this section is what it was learned on.
   said the opposite, because it was reasoning from the dead declaration's
   `p.entries`-based gate; `p` itself is indeed absent client-side, but the one
   field that matters is mirrored.
+- **The PVP exemption is real and is NOT an invitation.** `server_name !=
+  "PVP"` does mean a PVP shard costs no Hop Sickness, but
+  `issue_player_award` runs `if (is_in_pvp(target)) drop_something_pvp(...)`
+  on any PLAYER kill there: 50% per equipped item, 30% mainhand and offhand,
+  80% per non-stacking inventory item, 50% per stack, all into a chest the
+  killer can take. Nothing is destroyed - the destroy branch is commented out
+  - and monster deaths, instances (`generated_entry` bails first) and
+  self-kills are all exempt. Verified from source 2026-10-18. Operator's
+  call: PVP is off the table, so do not read the sickness exemption as a
+  free staging shard.
 - **Two cures, and both are instant.** Snakeoil, and `set_home` - which does
   `delete player.s.hopsickness` outright, but carries a 36-hour cooldown
   (`p.dt.last_homeset`, refused under `hsince < 36`), so it is not a routine
