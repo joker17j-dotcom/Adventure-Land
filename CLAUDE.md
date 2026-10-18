@@ -608,6 +608,28 @@ Claude Code session stops after `browser_code_eval`.
 - **`load_code` serves a cached copy.** After `save_code` the character keeps
   running the old build until the page is FULLY reloaded. Verify by feature-
   detecting something only the new build has, not by the slot version number.
+  The next two bullets are what "feature-detect" has to mean in practice;
+  both measured by the browser session on 2026-10-18, on the same character,
+  in the same probe.
+- **Feature-detect FUNCTIONS, never persisted state.** CODE storage outlives
+  the script that wrote it - which is the exact property the relay-cursor fix
+  in Ranger v91 / Priest v52 / Mage v75 RELIES on - so a persisted key proves
+  nothing about what is running. Measured: `get("pl_cursor")` returned 210 on
+  Meltymerch while `plStatus`, `pontyStatus`, `arbNeverList`, `mluckOppDump`
+  and `gearProbeTripwire` were every one undefined. The value was a leftover
+  from the last time `Party/Merchant.js` ran. The same durability that makes
+  the fix work makes its own key worthless as evidence of it.
+- **Absence of a feature can mean a DIFFERENT SCRIPT, not an older build.**
+  Same character, same probe: no Merchant symbol resolved because
+  `Party/Merchant.js` was not loaded at all - Meltymerch was running the Xyn
+  exchange script, whose CONFIG keys are `boxes`, `minFreeSlots`, `autoSell`,
+  `sellEvery`, `compound`, `bow`, `hub`, `maxConsecutiveFailures`.
+  `CONFIG.homeServer` and `parent.MERCHANT_VER` coming back undefined read
+  exactly like a stale pre-v100 merchant and were nothing of the kind; the
+  slot held v103 throughout. Establish WHICH SCRIPT is loaded before
+  concluding anything about WHICH VERSION - one positive identification of
+  the running script beats any number of negative version probes. The browser
+  session got this wrong in a paste block and retracted it.
 - **The MCP `save_code` cannot carry a character script.** It is whole-slot
   REPLACE with no patch or append verb, and `code` is a single inline string,
   so the entire file has to be emitted as one tool argument. Measured
