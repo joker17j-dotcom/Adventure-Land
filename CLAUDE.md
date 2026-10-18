@@ -469,6 +469,32 @@ summary of it.
   clean or hop-sick, and the lines cannot degrade while credit is being
   earned at all. Hop Sickness never touches `luckm`; its `-80 luck` does not
   enter this path.
+- **A DROP TABLE IS ASSEMBLED AT MODULE LOAD, SO READ THE ASSEMBLED OBJECT,
+  NOT THE LITERAL.** `design/drops.js` ends with ~26 `push` calls, a
+  delete-and-reassign reorder loop, and a run of assignments that add to or
+  REPLACE tables declared higher up. From a character tab the assembled
+  state is `G.drops.monsters[type]`; the literal is safe only for a monster
+  confirmed unmutated.
+- **No regex over that file is sound, because the mutations take four
+  shapes.** `drops["monsters"]["cutebee"]`, `drops.monsters.xmagex`,
+  `drops.monsters.cave_spider`, and - the one that defeats any name search -
+  `for (var cave_monster of [...]) drops.monsters[cave_monster] = ...`,
+  where the name never appears beside `drops.monsters` at all. Measured
+  2026-10-18: one session's scan found six tables, a second found one, then
+  two; the true set is twelve-plus. Both scans were the method failing, not
+  the reader. Named: `cave_broodmother`, `cave_scorpion`, `cave_snake`,
+  `cave_spider`, `cutebee`, `xmagex`. Loop-assigned and invisible to a name
+  search: `cave_bat`, `cave_rat`, `cave_crab`, `cave_guard`, `cave_wolf`.
+- **The boss tables quoted above are complete, but by luck.** None of
+  `dragold`, `franky`, `crabxx`, `icegolem`, `mrgreen`, `mrpumpkin`, `rgoo`
+  or `bgoo` is mutated at load, so every figure here survives - it just was
+  not established by a sound method. Two consequences that are not luck:
+  the only funtoken sources in the whole file are crabxx (rates
+  1000/1000/1000/10/10), rgoo (20), bgoo (0.25) and `cutebee` (1, added by
+  a push), and FOUR of the mutated tables are `cave_*`, so anything
+  reasoning about cave drops from the literal is reading a partial table.
+  `cave_snake` carries `snakeoil` at 0.03 - the Hop Sickness cure, from a
+  table a literal read would miss.
 - **CROWDING MULTIPLIES THE ROLLS, ON COOPERATIVE MONSTERS ONLY.**
   `B.drop_table_multiplier = parseInt(1 + Math.floor(total_characters / 10))`
   at `:2734`, where `total_characters` counts contributors with
