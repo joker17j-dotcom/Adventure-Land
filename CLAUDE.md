@@ -34,9 +34,16 @@ root, so any path in an older note, comment or commit message may be stale.
 - **`Archived/` is retired work**: `Archived/Upgrade` and `Archived/TASKS.md`.
 - **`TASKS.md` is at `Archived/TASKS.md`.** It was deleted from the root on
   2026-10-17 and restored under `Archived/` the same day in `aa409aa`, byte
-  for byte: blob `a3b2965a`, 649 lines, identical to
-  `git show fe70d60:TASKS.md`. Read it in the tree; there is no need to go
-  digging in history for it, which is what this entry said to do until
+  for byte AT THAT MOMENT: blob `a3b2965a`, 649 lines, identical to
+  `git show fe70d60:TASKS.md`. **It is no longer that file**, and this entry
+  claimed otherwise until 2026-10-18. `93e8035` rewrote task 2's Status block
+  two hours after the restore, so the tree copy is blob `37660b87`, 651
+  lines, 33,906 bytes. The difference is not cosmetic: task 2 now reads
+  "DROPPED, not pending" where the deleted original read "remain on hold" -
+  opposite meaning, reached by trusting a note that promised the two were the
+  same file. Read the tree copy for the CURRENT state and
+  `git show fe70d60:TASKS.md` for the pre-archive wording; there is still no
+  need to go digging in history, which is what this entry said to do until
   2026-10-17.
   Every reference points at the new path as of 2026-10-17: the three that
   still read `TASKS.md` were fixed in `Codex/FamilyFleet.js` (a comment and an
@@ -161,10 +168,11 @@ emptied, which is the single most expensive mistake this file can cause.
 - **Line 2 carries the CURRENT VERSION ONLY.** No parenthetical body, no
   history. Each script has its own changelog beside it:
   `Party/RangerChangelog.md`, `Party/PriestChangelog.md`,
-  `Party/MageChangelog.md`, and the Merchant's (the browser session is renaming
-  `Party/MerchantChangelog.md` to `Party/MerchantChangelog.md` to match). Prepend the
-  new entry THERE, newest first, never rewrite an old one, and bump line 2 in
-  the same commit.
+  `Party/MageChangelog.md` and `Party/MerchantChangelog.md`. That last one was
+  `Party/CHANGELOG.md` until 2026-10-18 and the rename is DONE - an older note
+  describing it as in progress, or a reference to the old path, is stale.
+  Prepend the new entry THERE, newest first, never rewrite an old one, and
+  bump line 2 in the same commit.
 - **Why it changed.** Measured 2026-10-18 before the move: Ranger's header was
   86,133 bytes, 21% of the whole file, and ONE line of it was 64,673
   characters; Priest 45,771 and Mage 45,801. Extracting all three dropped
@@ -212,6 +220,43 @@ emptied, which is the single most expensive mistake this file can cause.
   never write an inferred claim into a code comment — in the file, it reads as
   documentation. This holds for `adventureland_mongodb` as well: it is the
   server source, not a mirror of the deployed client.
+- **A FUNCTION IN THAT SOURCE MAY BE DECLARED TWICE, AND THE LATER ONE IS THE
+  LIVE ONE.** Grep for the DECLARATION and check the COUNT before reading any
+  body. `serverhop_logic` is the worked example: two bare top-level
+  `function serverhop_logic(player)` declarations in
+  `node/server_functions.js`, same file, same scope, no conditional wrapper
+  (`:1043` and `:1097` in one clone, `:1002` and `:1056` in another - the line
+  numbers move, the duplication does not), and one call site. JavaScript takes
+  the last, confirmed empirically rather than from the spec:
+  `function f(){return 'FIRST'} function f(){return 'SECOND'}` gives SECOND.
+  The first `serverhop_logic` is 60-odd lines of elaborate quadratic
+  hop-sickness logic that has never run.
+- **Why it is a trap rather than a curiosity.** Both sessions nearly acted on
+  the dead one in October 2026, and it would have rewritten a correct constant
+  to match a formula the server does not evaluate. Nothing in a printed line
+  window hints that a second declaration exists eleven lines further on, and
+  the dead body is longer and more detailed than the live one, so it reads as
+  the more authoritative of the two.
+
+## A comment is a claim, and claims rot
+
+**Both sessions.** Added 2026-10-18 after the fifth instance.
+
+- **An assertion in a comment or in this file needs checking as much as a
+  branch does.** It is not commentary; a reader acts on it. Five recorded
+  instances, all of them text that was TRUE WHEN WRITTEN: `bossSetSwapEnabled`
+  described as read when nothing read it, `MERCHANT_VER`, `POPULATION_MAX_ROWS`
+  promising a trim that did not exist, the v89 header that was never bumped,
+  and the `Archived/TASKS.md` byte-for-byte claim above.
+- **The strongest-looking claims rot too.** The TASKS.md entry cited a blob
+  hash, a line count and a byte count - the most checkable form an assertion
+  can take - and all three were wrong within two hours of being written,
+  falsified by the very next commit to that file. Precision is not durability.
+- **So re-verify rather than re-read.** `git hash-object <file>` against
+  `git rev-parse origin/main:<file>` settles a file claim in one call; a
+  `typeof` check settles a helper claim; an AST pass settles a "nothing reads
+  this" claim where a regex does not (a regex counts the `// CONFIG.<path>`
+  annotations in the TOGGLES blocks and reports a dead flag as live).
 
 ## Server hopping, home bonus and Realm Fatigue
 
@@ -254,6 +299,65 @@ character tab, with the operator's go-ahead for a disruptive test hop.
   scale with how many shards get visited - its whole cost is delaying the home
   bonus resuming once back. Hop Sickness is the expensive one; see below.
 
+Server-source reads, 2026-10-18, from `kaansoral/adventureland_mongodb`. Read
+the double-declaration warning under "Claims about the live game client"
+first - this section is what it was learned on.
+
+- **The live Hop Sickness gate is three terms and nothing else.** From the
+  SECOND `serverhop_logic`: `p.home != region + server_name && level >= 60 &&
+  server_name != "PVP"`. There is no hop counting - `p.entries` is RESET to a
+  single entry on every hop, so no accumulated history can exist - and the
+  first line early-returns when `entries[0][0]` already names the shard being
+  joined, so a reconnect to the same shard never re-applies it. `p.home` is
+  the BEAN-SET home. A `main`-by-accumulated-hours gate appears only in the
+  dead declaration.
+- **`add_condition(player, "hopsickness")` passes no overrides**, so G's
+  values are the real ones, not a worst case: duration 720000 (12 minutes
+  flat), `luck/gold/xp -80`, `output -20`. The 12 minutes is online play and
+  does not tick down while the character is offline.
+- **WHETHER A HOP WILL MAKE YOU SICK IS COMPUTABLE BEFORE HOPPING.**
+  `node/server.js` sends `cdata.home = player.p.home` in the login payload and
+  `js/game.js` assigns it to `character.home`, updating it again on a
+  `home_set` response - so the gate's own value is readable from a tab or from
+  CODE: `character.home !== (parent.server_region + parent.server_identifier)
+  && character.level >= 60 && server_name !== 'PVP'`. An earlier note here
+  said the opposite, because it was reasoning from the dead declaration's
+  `p.entries`-based gate; `p` itself is indeed absent client-side, but the one
+  field that matters is mirrored.
+- **Two cures, and both are instant.** Snakeoil, and `set_home` - which does
+  `delete player.s.hopsickness` outright, but carries a 36-hour cooldown
+  (`p.dt.last_homeset`, refused under `hsince < 36`), so it is not a routine
+  tool. Returning to the home shard also clears it, as measured above.
+- **Snakeoil IS a Hop Sickness cure, and cannot touch Realm Fatigue.** The
+  mechanism is generic and never names the item, which is why grepping for
+  "snakeoil" in the server finds nothing: the use handler runs
+  `if (def.debuff) { for (var c in player.s) { if (G.conditions[c] &&
+  G.conditions[c].debuff && (!G.conditions[c].persistent ||
+  c == "hopsickness")) delete player.s[c]; } }`. `debuff: true` on an ITEM
+  means "clears debuffs", not "is one", and snakeoil is the ONLY item in
+  `design/items.js` carrying it. Hopsickness is persistent and would be
+  excluded, so it is carved out BY NAME. Its `gives: [["hp", -100]]` is the
+  PRICE, not a penalty.
+  `realmfatigue` has NO `debuff` flag, so the loop never considers it - Realm
+  Fatigue remains the irreducible cost of a hop, 30 minutes, flat in the
+  number of hops, which is still the argument for batching.
+  The same drink clears the 23 non-persistent debuffs (frozen, poisoned,
+  stunned, cursed, deepfreezed, sundered and the rest), so it is a combat
+  panic button too; of the six PERSISTENT debuffs - withdrawal, xshotted,
+  notverified, authfail, hopsickness, block - only hopsickness is carved out.
+- **Realm Fatigue's own G entry**: duration 1800000, persistent, and NO
+  penalty fields at all - it is purely the home-bonus and kiss block described
+  above. `realmfatigue_logic` opens
+  `if (player.type == "merchant") { delete ...; return; }`, so the merchant
+  exemption measured live is in the source too.
+- **What the home bonus is worth, and what it is not.** Exactly two call
+  sites, pinned by the creator's own test
+  (`node/test/home_server_bonus.test.js:102` asserts
+  `has_home_server_bonus(` appears twice): `mnet *= 5` at `server.js:13365`,
+  guarded two lines above by `if (!m.cooperative) return;`, and the
+  `monsters_home_server` drop table at `:2361`. NOT gold, NOT luck. See the
+  Kill credit section for what the x5 does to required dwell.
+
 ## Kill credit and achievement score
 
 **Both sessions.** Server-source reads plus live measurement, 2026-10-17.
@@ -268,7 +372,12 @@ character tab, with the operator's go-ahead for a disruptive test hop.
 - **Share formula.** `total = SUM(points^0.65)`;
   `share = points^0.65 / total`; credit if `share > 0.0025`. `points` is
   accumulated `mnet`, with `mnet /= 4` under Hop Sickness and `mnet *= 5` with
-  the home-server bonus.
+  the home-server bonus. **The x5 is COOPERATIVE MONSTERS ONLY** - the call
+  site returns early on `if (!m.cooperative)` - and the home bonus's only
+  other effect is the `monsters_home_server` drop table. It is not a gold or
+  luck multiplier; verified from source 2026-10-18 and pinned by the
+  creator's own test. So on a non-cooperative boss, being home changes the
+  dwell requirement not at all.
 - **Hop Sickness costs 5x in required participation time, not 4x.** `/4` on
   points AND `output: -20` on damage dealt gives a 0.2 factor. Because share
   scales as `(factor * T)^0.65`, that is 2.46x in share at a fixed dwell and

@@ -9,9 +9,10 @@ evaluating and says nothing about it. The header had reached 46,046 bytes,
 None of that is load-bearing for the script and all of it was costing budget
 against the CODE slot ceiling.
 
-The ceiling is NOT a known number - see Party/CHANGELOG.md, which records a
-build 6% past the figure once quoted as the cap evaluating and running fine.
-Keeping these files lean is still worth doing; just do not quote a limit.
+The ceiling is NOT a known number - see Party/MerchantChangelog.md, which
+records a build 6% past the figure once quoted as the cap evaluating and
+running fine. Keeping these files lean is still worth doing; just do not
+quote a limit.
 
 Entries below are VERBATIM from the header they replaced. Only the line
 wrapping is new - no wording was changed, nothing was summarised, and the
