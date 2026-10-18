@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v90
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v91
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -206,19 +206,97 @@ async function plPoll() {
 		return;
 	}
 	try {
-		const r = await plFetch(`/msg?to=${encodeURIComponent(plName())}&since=${plCursor}`);
-		plCursor = r.cursor || plCursor;
+		const since = plCursor;
+		const r = await plFetch(`/msg?to=${encodeURIComponent(plName())}&since=${since}`);
+		/* The one failure a remembered cursor introduces: the bridge restarts,
+		   its seq begins again at 0, and a cursor from the old numbering sits
+		   above every new message - starving us in silence. Its own cursor
+		   going backwards is the tell, and re-reading the window once is the
+		   cheap, safe answer. */
+		if (typeof r.cursor === 'number' && r.cursor < since) {
+			plLog('bridge seq went backwards (' + since + ' -> ' + r.cursor + ') - it restarted; reading from 0', 'orange');
+			plCursor = 0;
+			plSaveCursor(0);
+			return;
+		}
 		for (const m of (r.messages || [])) {
 			// Straight into the script's existing handler, so relayed and in-game
 			// messages take exactly the same path. plFirstTime drops whichever
 			// copy arrives second.
 			try { on_cm(m.frm, m.payload); } catch (e) { plLog('handler error: ' + e, 'orange'); }
+			/* COMMITTED PER MESSAGE, which is the deliberate difference from
+			   Merchant's per-BATCH commit. A batch-level commit cannot survive a
+			   handler that reloads the page: change_server never returns, so the
+			   cursor for the whole batch is never written and the window replays.
+			   Per message, the only thing that can replay is the single message
+			   that reloaded, and the acted-list below absorbs exactly that one.
+			   The cost is the same one Merchant accepted in the other direction -
+			   a message handled but not committed is re-read, never lost. */
+			if (typeof m.seq === 'number' && m.seq > plCursor) {
+				plCursor = m.seq;
+				plSaveCursor(plCursor);
+			}
+		}
+		/* r.cursor can run ahead of the last message addressed to us, since the
+		   seq is shared with the other characters' traffic. */
+		const end = Math.max(plCursor, Number(r.cursor) || 0);
+		if (end !== plCursor) {
+			plCursor = end;
+			plSaveCursor(plCursor);
 		}
 	} catch (e) {
 		plUp = false;
 		plProbed = Date.now();
 		plLog('bridge lost - send_cm only until it returns', 'orange');
 	}
+}
+
+/* -- RELAY REPLAY PROTECTION ---------------------------------------
+   change_server() RELOADS THE PAGE, and the reload resets plCursor to 0 and
+   empties plSeen. The bridge serves everything newer than `since` for
+   MESSAGE_TTL (10 minutes), so a character that hops comes back asking from
+   0 and is handed the whole window again - including the message that made
+   it hop, which makes it hop again.
+
+   MEASURED on the live party 2026-10-18: FatherToken and MageofOz reloading
+   in place on US V, each "hopping" to the shard it was already standing on,
+   both cursors climbing 0 -> ~19,700 inside three minutes. Dexon was
+   unaffected because he SENDS boss_hop and never receives it. The loop
+   ended on its own only because the stale message aged out of the 10-minute
+   window; the next hop would have re-armed it.
+
+   Merchant hit the identical loop with potion requests on 2026-09-25 - 278
+   to 10,563 mpot1 on one genuine request - and fixed it in v68. This is that
+   fix ported, with one deliberate difference recorded at plPoll.
+   CODE storage is the only state a hop cannot erase. */
+const PL_CURSOR_KEY = 'pl_cursor';
+const PL_ACTED_KEY = 'pl_acted';
+const PL_ACTED_MAX = 20;
+
+function plSaveCursor(n) {
+	try { set(PL_CURSOR_KEY, n); }
+	catch (e) { plLog('could not persist the relay cursor (' + n + ') - a hop will replay the backlog', 'red'); }
+}
+try { plCursor = Number(get(PL_CURSOR_KEY)) || 0; } catch (e) { plCursor = 0; }
+if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog replay', '#7FD98A');
+
+/* plSeen cannot do this job: it is in memory, and the whole problem is that
+   the page dies between acting on a message and remembering that we did.
+   Capped because it only has to outlive the MESSAGE_TTL window. */
+function plActed(id) {
+	if (!id) return false;
+	try { return (get(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
+	catch (e) { plLog('acted-list read failed: ' + e, 'orange'); return false; }
+}
+
+function plMarkActed(id) {
+	if (!id) return;
+	try {
+		const list = get(PL_ACTED_KEY) || [];
+		if (list.indexOf(id) === -1) list.push(id);
+		while (list.length > PL_ACTED_MAX) list.shift();
+		set(PL_ACTED_KEY, list);
+	} catch (e) { plLog('could not record ' + id + ' as acted - it may replay', 'red'); }
 }
 
 function plStatus() {
