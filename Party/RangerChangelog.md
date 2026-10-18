@@ -21,6 +21,76 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v93
+
+The hop burst: 2-5 boss_hop per hop, because the lock was released too early.
+
+**NOT DEPLOYED.** The live slots run v91/v52/v75. This is a leader-side fix
+for a defect the followers were absorbing; nothing is broken while it waits.
+
+**The burst was real and the cause was not re-entrancy.** The browser session
+read both followers' acted-lists and found 2-5 boss_hop ids per hop episode,
+~105ms apart, with sequential plSeq inside one Dexon page life. Their
+hypothesis was that tick() is async and re-entrant, so several ticks pass the
+`if (this.hopping) return 'block'` guard before any of them sets the flag
+inside changeServer. It is not that: mainLoop awaits `bossHop.tick()` and only
+then schedules the next one, so exactly one tick runs at a time.
+
+**It was `this.hopping = false` on the line after `change_server`.**
+change_server does not block - it starts a navigation and returns, and the
+page keeps running for a few hundred ms. So the flag was cleared, tick
+returned, and 100ms later the next tick found state HOPPING with
+`currentShard()` still reporting the OLD shard, called changeServer again and
+sent another boss_hop. Repeat until the teardown lands. ~105ms is
+TICK_RATE.main, which is 100 - that number was the tell and it was in the file
+the whole time. The comment directly above the plSend states the assumption
+that was wrong: "it reloads the page, so anything after it in this function
+may never run". MAY never run. It does run, for about as long as a teardown
+takes.
+
+**The fix is to not clear the flag on the success path.** The page is going
+away; there is nothing to clear it for. The only reason it was ever cleared
+there is the same assumption.
+
+**That introduces a hazard, so it is bounded.** With nothing clearing the flag
+on the normal path, a navigation that never arrives would wedge it on, and
+because tick() answers 'block' while it is set, that stalls the WHOLE main
+loop rather than just bossHop - farming, potions and everything below the
+bossHop call in mainLoop. `hopWatchdog()` releases the lock after
+HOP_RELOAD_GRACE_MS, 15000. Only a page teardown has to fit inside that
+window, which is hundreds of ms, so the margin is two orders of magnitude.
+
+**What it was costing, and why it was worth fixing anyway.** Nothing was
+breaking. The followers' same-shard guard refused every burst message after
+the first, since they name the shard the follower has now arrived on, and the
+acted-list could not have helped - each burst id is distinct, so plActed
+returns false for all of them. But every burst message burned one of the 20
+entries in PL_ACTED_MAX, at a quarter of the cap per hop, and an id evicted
+while still inside the bridge's 10-minute window can be served again, pass
+plActed and cause a real reload. That is the failure the acted-list exists to
+stop, reached by eviction instead of by memory loss. The cap is staying at 20:
+at one id per hop the eviction case needs 20 hops inside ten minutes, and each
+hop costs twelve minutes of Hop Sickness.
+
+**Credit where it is due.** The browser session's reading of the follower
+state is what surfaced this - it is invisible from the leader side, since the
+burst leaves no trace on Dexon's own page once it reloads. Their mechanism was
+wrong and their observation was exact, and the observation is the part that
+could not be got any other way.
+
+**Demonstrated.** The real bossHop object is lifted out of the committed file
+and driven through a simulated teardown with a fake clock, everything it
+touches stubbed, its own code unmodified. Ten checks pass. With the old
+eager-clear restored as a wrapper: 5 boss_hop, all naming the same shard,
+spaced exactly 100ms - the live burst reproduced. Without it: exactly one, and
+the lock still held when the page dies. With the navigation never arriving:
+still one message inside the grace window, then the watchdog releases at 15s
+and the hop retries once by 20s rather than bursting or wedging. One test
+assertion was wrong again - I asserted the lock reads false after the watchdog
+fires, when the retry correctly re-takes it. Third time the harness has been
+wrong rather than the code, which is worth more than it costs but is worth
+saying.
+
 ## v92
 
 Relay helpers: say why plActed/plMarkActed are unreferenced here.

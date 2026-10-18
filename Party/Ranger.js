@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v92
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v93
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2683,11 +2683,16 @@ const SCAN_STALE_MS = 5 * 60 * 1000;
    never picks anything else. */
 const HOP_ATTEMPT_CAP = 3;
 
+/* How long to hold the hop lock after change_server before deciding the
+   navigation is not coming. Only a page teardown has to fit inside it. */
+const HOP_RELOAD_GRACE_MS = 15000;
+
 const bossHop = {
 	state: 'IDLE',
 	targetShard: null,
 	targetType: null,
 	hopping: false,
+	hoppingSince: 0,
 	hopAttempts: 0,
 	arrivedAt: 0,
 	fightStart: 0,
@@ -3064,6 +3069,7 @@ const bossHop = {
 		}
 		game_log(`🐉 Hopping to ${shard} for ${mtype}`, '#FFD700');
 		this.hopping = true;
+		this.hoppingSince = Date.now();
 		try {
 			/* Tell the followers BEFORE change_server: it reloads the page, so
 			   anything after it in this function may never run. The leader
@@ -3076,18 +3082,48 @@ const bossHop = {
 				name: parsed.name
 			});
 			change_server(parsed.region, parsed.name);
-			this.hopping = false;
+			/* `hopping` DELIBERATELY STAYS TRUE HERE. change_server does not
+			   block: it starts a navigation and returns, and this page keeps
+			   running for a few hundred ms more. Clearing the flag on this
+			   line - which is what it used to do - let the next mainLoop tick
+			   100ms later find state HOPPING with currentShard() still
+			   reporting the OLD shard, call changeServer again, and send
+			   another boss_hop. Measured on the live party 2026-10-18 off the
+			   followers' acted-list: 2-5 boss_hop per hop episode, ~105ms
+			   apart, which is TICK_RATE.main exactly. The followers' same-shard
+			   guard absorbed every one of them, so nothing broke, but each
+			   burst message burned an entry of their 20-id acted-list.
+			   Nothing after a real navigation runs, so leaving it true costs
+			   nothing; hopWatchdog() below covers a navigation that never
+			   arrives. */
 			return true;
 		} catch (e) {
 			game_log(`bossHop: server change failed — ${e}`, 'red');
 			this.hopping = false;
+			this.hoppingSince = 0;
 			return false;
 		}
 	},
 
+	/* `hopping` is held across the navigation change_server starts, so on the
+	   normal path nothing clears it - the page goes away instead. That makes
+	   a navigation which never arrives wedge the flag on, and because tick()
+	   answers 'block' while it is set, that would stall the WHOLE main loop,
+	   not just bossHop. So bound it. The window only has to outlast a page
+	   teardown, measured in hundreds of ms; 15s is far beyond that and still
+	   short enough that a stall is a blip rather than an outage. */
+	hopWatchdog() {
+		if (!this.hopping) return false;
+		if (Date.now() - this.hoppingSince < HOP_RELOAD_GRACE_MS) return true;
+		game_log(`bossHop: no reload ${Math.round(HOP_RELOAD_GRACE_MS / 1000)}s after change_server - releasing the hop lock`, 'orange');
+		this.hopping = false;
+		this.hoppingSince = 0;
+		return false;
+	},
+
 	async tick() {
 		if (!CONFIG.bossHop.enabled) return 'continue';
-		if (this.hopping) return 'block';
+		if (this.hopWatchdog()) return 'block';
 
 		const cur = this.currentShard();
 
