@@ -1,11 +1,44 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v88
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v90
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
 // file is the record. Prepend new entries there, newest first, never rewrite
 // an old one, and bump the version on the line above in the same commit.
 //
+// CONSOLE COMMANDS - type these in the game console. They have no internal
+// callers BY DESIGN; a static scan will report every one as dead and it is
+// wrong. Do not delete them.
+//   achvStatus()              achievement queue, current target and progress
+//   achvStop()                stand the queue down and hand the spot back to the scorer
+//   achvResume()              undo achvStop()
+//   achvSkip()                abandon the current achievement and take the next
+//   achvReset(i)              reset progress on queue entry i
+//   bossJoin(name)            join the named boss fight, bypassing the gate
+//   bossHome()                abandon the boss trip and go back to the farm spot
+//   bossStatus()              boss gate, current pick and trip state
+//   crabxxReport()            the crabxx contribution log, runs and damage
+//   listBlacklist()           farm spots currently blacklisted, with why and when
+//   clearBlacklist()          empty the blacklist
+//   removeFromBlacklist(key)  un-blacklist one spot
+//   farmFearReport()          the stored fear log
+//   clearFearReport()         empty it
+//   farmUiDiag()              why the farm panel is or is not on screen
+//   mhOn()                    take monster hunts from now on
+//   mhOff()                   stop taking them and hand the spot back
+//   mhForget()                drop the stored choice and obey CONFIG again
+//   mhSkip()                  abandon the current hunt
+//   plStatus()                party-link state
+//   rageStatus()              rage boxes on the current map
+//   removeChestId(id)         drop one chest id from the persisted chest map
+//   restockNow()              clear the potion-restock backoff so the next empty tick travels
+//
+// Also typeable, but these HAVE internal callers, so a dead-code scan
+// would not flag them and they are listed for reference rather than
+// protection:
+//   mhStatus()           monster-hunt state for this character and the party
+//   restockStatus()      potion vendor, backoff and last attempt
+//   fearRecentSummary()  fear over the recent sample windows
 // COMMENTS: a line ending "-> RangerComments.md#anchor" is a SUMMARY, not the
 // whole comment. The reasoning behind it - what was measured, what was tried
 // and discarded, why a number is that number - lives in Party/RangerComments.md
@@ -197,14 +230,67 @@ setInterval(plPoll, PARTY_LINK.pollMs);
 
 const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'greenjr', 'grinch', 'icegolem', 'jr', 'mrgreen', 'mrpumpkin', 'phoenix', 'rgoo', 'wabbit'];
 
+/* -- TOGGLES -------------------------------------------------------
+   Every on/off switch in this file, in one place, so flipping one does not
+   mean hunting through CONFIG for it. Each is read ONCE, when CONFIG is
+   constructed below, and the value still lives at its original CONFIG path -
+   no read site changed, so `cfg.enabled` after `const cfg = CONFIG.x`
+   resolves exactly as it did.
+
+   EDITING A VALUE HERE AND RELOADING changes behaviour. ASSIGNING TO
+   `TOGGLES` AT RUNTIME DOES NOT - the subsystem already copied the value.
+   Runtime flips still go to the CONFIG path they always did, which is what
+   mhOn()/mhOff() and the other console commands above already do. */
+const TOGGLES = {
+	combat:                          true,   // CONFIG.combat.enabled
+	scare:                           true,   // CONFIG.combat.scare.enabled
+	focusFire:                       true,   // CONFIG.combat.focusFire.enabled
+	focusFirePreferSingleTarget:     false,  // CONFIG.combat.focusFire.preferSingleTarget
+	focusFireLeaderPicksLowestHp:    true,   // CONFIG.combat.focusFire.leaderPicksLowestHp
+	combatIgnoreAddsDuringCrabxx:    true,   // CONFIG.combat.ignoreAddsDuringCrabxx
+	combatUseHuntersMark:            true,   // CONFIG.combat.useHuntersMark
+	combatUseSupershot:              true,   // CONFIG.combat.useSupershot
+	movement:                        true,   // CONFIG.movement.enabled
+	movementCircleWalk:              true,   // CONFIG.movement.circleWalk
+	rangedKiting:                    true,   // CONFIG.movement.rangedKiting.enabled
+	rangedKitingAutoBySpeed:         false,  // CONFIG.movement.rangedKiting.autoBySpeed
+	rangedKitingDisengageOnCourage:  true,   // CONFIG.movement.rangedKiting.disengageOnCourage
+	rangedKitingDebug:               false,  // CONFIG.movement.rangedKiting.debug
+	equipmentCapeSwapEnabled:        false,  // CONFIG.equipment.capeSwapEnabled
+	equipmentCoatSwapEnabled:        true,   // CONFIG.equipment.coatSwapEnabled
+	equipmentBossSetSwapEnabled:     true,   // CONFIG.equipment.bossSetSwapEnabled
+	equipmentXpSetSwapEnabled:       false,  // CONFIG.equipment.xpSetSwapEnabled
+	equipmentUseLicence:             false,  // CONFIG.equipment.useLicence
+	potionsAutoBuy:                  true,   // CONFIG.potions.autoBuy
+	partyAutoManage:                 true,   // CONFIG.party.autoManage
+	looting:                         true,   // CONFIG.looting.enabled
+	selling:                         true,   // CONFIG.selling.enabled
+	upgrading:                       false,  // CONFIG.upgrading.enabled
+	combining:                       false,  // CONFIG.combining.enabled
+	characterStarter:                false,  // CONFIG.characterStarter.enabled
+	inventoryRelief:                 true,   // CONFIG.inventoryRelief.enabled
+	locationBroadcast:               true,   // CONFIG.locationBroadcast.enabled
+	bossHop:                         true,   // CONFIG.bossHop.enabled
+	bossHopReturnHome:               true,   // CONFIG.bossHop.returnHome
+	bossEvents:                      true,   // CONFIG.bossEvents.enabled
+	bossEventsCooperativeOnly:       true,   // CONFIG.bossEvents.cooperativeOnly
+	monsterHunt:                     false,  // CONFIG.monsterHunt.enabled
+	monsterHuntTurnInImmediately:    true,   // CONFIG.monsterHunt.turnInImmediately
+	monsterHuntReAcceptAtDaisy:      true,   // CONFIG.monsterHunt.reAcceptAtDaisy
+	achievements:                    true,   // CONFIG.achievements.enabled
+	achievementsPull:                true,   // CONFIG.achievements.pull.enabled
+	achievementsPullRespectCourage:  true,   // CONFIG.achievements.pull.respectCourage
+	muling:                          true,   // CONFIG.muling.enabled
+};
+
 const CONFIG = {
 	combat: {
-		enabled: true,
+		enabled: TOGGLES.combat,
 		/* Scare clears everything currently targeting us. Needs a jacko in the bag
 		   (it equips, casts, then swaps the previous orb back): 50 mp, 5s cooldown.
 		   courageOffset shifts the trigger relative to character.courage - 0 fires
 		   at courage itself, +1 waits until fear has already begun. */
-		scare: { enabled: true, courageOffset: 0, minHeldMs: 250 },
+		scare: { enabled: TOGGLES.scare, courageOffset: 0, minHeldMs: 250 },
 		/* Focus fire. preferSingleTarget skips the AoE branches entirely: 5shot
 		   lands at a 0.5 damage multiplier and 3shot at 0.7, so against cgoo's
 		   2,400 hp a 5shot needs 5.5 casts per target where single-target needs
@@ -220,16 +306,16 @@ const CONFIG = {
 		   remove it once it stops being one.
 		   -> RangerComments.md#singletargetmobs-is-a-curated-list-maintained-by */
 		focusFire: {
-			enabled: true,
-			preferSingleTarget: false,
+			enabled: TOGGLES.focusFire,
+			preferSingleTarget: TOGGLES.focusFirePreferSingleTarget,
 			singleTargetMobs: ['cgoo', 'bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer', 'boar', 'cutebee', 'mole'],
-			leaderPicksLowestHp: true
+			leaderPicksLowestHp: TOGGLES.focusFireLeaderPicksLowestHp
 		},
 		targetPriority: ['FatherToken'],
 		alwaysAttack: ['crabx', 'wabbit'],
 		// See shouldAttackMob: while crabxx is live the 1,000 crabx adds are
 		// ignored so the shots land on the boss instead of the swarm.
-		ignoreAddsDuringCrabxx: true,
+		ignoreAddsDuringCrabxx: TOGGLES.combatIgnoreAddsDuringCrabxx,
 		/* COOPERATIVE BOSSES ARE ENGAGED ONLY ONCE SOMEBODY ELSE IS ON THEM.
 		   attackIfTargeted resolves to `mob.target != null`, which is exactly the
 		   operator's rule: credit on a cooperative boss is shared by damage dealt,
@@ -238,8 +324,8 @@ const CONFIG = {
 		attackIfTargeted: [...allBosses, 'phoenix',
 			'pinkgoo', 'rharpy', 'rimedjinn', 'slenderman', 'snowman', 'tiger'],
 		neverAttack: ['nerfedmummy', 'target_ar500red', 'target_ar900', 'target', 'target_a500', 'target_a750', 'target_r500', 'target_r750'],
-		useHuntersMark: true,
-		useSupershot: true,
+		useHuntersMark: TOGGLES.combatUseHuntersMark,
+		useSupershot: TOGGLES.combatUseSupershot,
 		minTargetsFor5Shot: 4,
 		minTargetsFor3Shot: 2,
 	},
@@ -261,8 +347,8 @@ const CONFIG = {
 				[270, -1060]
 			]
 		},
-		enabled: true,
-		circleWalk: true,
+		enabled: TOGGLES.movement,
+		circleWalk: TOGGLES.movementCircleWalk,
 		circleRadius: 75,
 		clumpRadius: 85,
 		/* Per-spot standing position, overriding the spawn-boundary centre that
@@ -278,7 +364,7 @@ const CONFIG = {
 			'cgoo@level2s': { x: -86, y: 683 }
 		},
 		rangedKiting: {
-			enabled: true,
+			enabled: TOGGLES.rangedKiting,
 			/* Hand-tuned list - authoritative, never derived. See kiteThreatRadius(). */
 			targets: ['bscorpion'],
 			overrides: {
@@ -294,7 +380,7 @@ const CONFIG = {
 			   13 and made `targets` authoritative in name only. Measured on the live
 			   slot 2026-09-28: the operator had already turned it off there. Turn it
 			   back on only alongside a measurement of what the derived list adds. */
-			autoBySpeed: false,
+			autoBySpeed: TOGGLES.rangedKitingAutoBySpeed,
 			speedRatio: 1.3,
 			attackMargin: 15,
 			/* Disengage abandons the hold band once this many monsters are on us.
@@ -302,7 +388,7 @@ const CONFIG = {
 			   and actions stop. Holding optD is right against one monster and fatal
 			   against nine - measured 2026-09-26, nearest went 92 to 10 while
 			   attackers went 3 to 9, and he died at the band's own threshold. */
-			disengageOnCourage: true,
+			disengageOnCourage: TOGGLES.rangedKitingDisengageOnCourage,
 			disengageDistance: 60,
 			/* Fallbacks only - per-target values come from kiteBand(). */
 			minDistance: 155,
@@ -314,7 +400,7 @@ const CONFIG = {
 			moveDistance: 30,
 			repositionThreshold: 20,
 			maxKiteRange: 400,
-			debug: false
+			debug: TOGGLES.rangedKitingDebug
 		}
 	},
 
@@ -330,20 +416,20 @@ const CONFIG = {
 		mpThresholds: { upper: 1700, lower: 2100 },
 		chestThreshold: 12,
 		swapCooldown: 500,
-		capeSwapEnabled: false,
-		coatSwapEnabled: true,
+		capeSwapEnabled: TOGGLES.equipmentCapeSwapEnabled,
+		coatSwapEnabled: TOGGLES.equipmentCoatSwapEnabled,
 		/* NOT IMPLEMENTED - no boss-set swap code exists anywhere in this file.
 		   The knob is kept deliberately: the swap is planned now that boss
 		   hopping is live. Reading it as working config is the trap. */
-		bossSetSwapEnabled: true,
-		xpSetSwapEnabled: false,
+		bossSetSwapEnabled: TOGGLES.equipmentBossSetSwapEnabled,
+		xpSetSwapEnabled: TOGGLES.equipmentXpSetSwapEnabled,
 		xpMonsters: ['sparkbot'],
 		xpMobHpThreshold: 12000,
-		useLicence: false,
+		useLicence: TOGGLES.equipmentUseLicence,
 	},
 
 	potions: {
-		autoBuy: true,
+		autoBuy: TOGGLES.potionsAutoBuy,
 		hpThreshold: 400,
 		mpThreshold: 500,
 		minStock: 1000,
@@ -371,12 +457,12 @@ const CONFIG = {
 	},
 
 	party: {
-		autoManage: true,
+		autoManage: TOGGLES.partyAutoManage,
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken', 'Meltymerch']
 	},
 
 	looting: {
-		enabled: true,
+		enabled: TOGGLES.looting,
 		delayMs: 180000,
 		// Bounds one pass so draining a large backlog cannot become a single
 		// unbroken chain of socket calls. 25 x 4 passes/sec = 100 loots/sec.
@@ -384,7 +470,7 @@ const CONFIG = {
 	},
 
 	selling: {
-		enabled: true,
+		enabled: TOGGLES.selling,
 		whitelist: [
 			'angelwings', 'candycanesword', 'carrotsword', 'coat1',
 			'crabclaw', 'cupid', 'dexring', 'eears', 'eggnog', 'epyjamas', 'eslippers',
@@ -401,9 +487,9 @@ const CONFIG = {
 		],
 	},
 
-	upgrading: { enabled: false, whitelist: {} },
+	upgrading: { enabled: TOGGLES.upgrading, whitelist: {} },
 	combining: {
-		enabled: false,
+		enabled: TOGGLES.combining,
 		whitelist: {
 			dexamulet: { targetLevel: 3, primling: 3, prim: 4 },
 			intamulet: { targetLevel: 3, primling: 3, prim: 4 },
@@ -412,7 +498,7 @@ const CONFIG = {
 	},
 
 	characterStarter: {
-		enabled: false,
+		enabled: TOGGLES.characterStarter,
 		characters: {
 			MERCHANT: { name: 'Meltymerch', codeSlot: 'CH_aLtHealaSgKdmOsDWpNl8scE9NhXk' },
 			PRIEST: { name: 'FatherToken', codeSlot: 'CH_hae5t3g8gBezOVTdR6ToTagikbTbF' },
@@ -428,7 +514,7 @@ const CONFIG = {
 	   price is a poor guide to whether you wanted to keep it, which is exactly
 	   why "sell the cheapest" needs a floor under it rather than a sort alone. */
 	inventoryRelief: {
-		enabled: true,
+		enabled: TOGGLES.inventoryRelief,
 		// How long the pack must stay full, with the merchant unreachable,
 		// before selling. Long enough that a merchant mid-hop or mid-trade gets
 		// to arrive first; this is a last resort, not a first response.
@@ -447,7 +533,7 @@ const CONFIG = {
 	},
 
 	locationBroadcast: {
-		enabled: true,
+		enabled: TOGGLES.locationBroadcast,
 		targetPlayer: 'Meltymerch',
 		checkInterval: 1000,
 		lowInventorySlots: 3,
@@ -480,7 +566,7 @@ const CONFIG = {
 		   EITHER WAY, CHANGING IT NEEDS A RELOAD, not just an edit:
 		   startScanning() runs once at load and returns early while the flag is
 		   false, so the sockets never open and tick() has nothing to pick from. */
-		enabled: true,
+		enabled: TOGGLES.bossHop,
 		preSpawnBuffer: 3000,
 		/* Extra lead time on top of hop sickness for a join-type event, so the
 		   clock is actually clear when the event opens rather than clearing on
@@ -495,7 +581,7 @@ const CONFIG = {
 		   table. This is NOT the between-kills routing v86 removed; that stays
 		   removed. returnHomeAfterMs debounces it, so a boss flickering across
 		   the eligibility floor cannot ping-pong the party between shards. */
-		returnHome: true,
+		returnHome: TOGGLES.bossHopReturnHome,
 		returnHomeAfterMs: 90 * 1000,
 		/* Dexon's own dps, the denominator of requiredDwellSec(). Measured
 		   against mrgreen, which is a MAGICAL-resistance fight - resistance
@@ -533,11 +619,11 @@ const CONFIG = {
 	/* BOSS EVENTS - the operator's rule, 2026-09-30: cooperative bosses only,
 	   fought from maximum range, never expecting the kill. -> bossTick */
 	bossEvents: {
-		enabled: true,
+		enabled: TOGGLES.bossEvents,
 		// G.monsters[x].cooperative - the game's own "credit is shared by damage
 		// dealt" flag, and the only class of boss where chipping from range is a
 		// strategy rather than a waste. An unknown monster is NOT cooperative.
-		cooperativeOnly: true,
+		cooperativeOnly: TOGGLES.bossEventsCooperativeOnly,
 		// abtesting is team PvP with a 120s join window, not a boss.
 		// slenderman is excluded because he cannot be WALKED to, not because he is
 		// not worth fighting. The server broadcasts his MAP and nothing else -
@@ -575,7 +661,7 @@ const CONFIG = {
 	   the scorer.
 	   mhOn() and mhOff() flip 'enabled' at runtime. */
 	monsterHunt: {
-		enabled: false,
+		enabled: TOGGLES.monsterHunt,
 		/* The backstop on waiting for everyone, NOT the rule. The rule is in
 		   mhSettled(): a member holding an unexpired hunt counts as settled,
 		   because the server answers monsterhunt_already and leaves it
@@ -604,7 +690,7 @@ const CONFIG = {
 		   how much clock to keep spare for it. Immediate turn-in removes the guess
 		   and the risk together, at the cost of one trip per hunt rather than one
 		   per batch. Set false to go back to batching. */
-		turnInImmediately: true,
+		turnInImmediately: TOGGLES.monsterHuntTurnInImmediately,
 		/* Ask for the next hunt without leaving Daisy. Accepting and turning in are
 		   THE SAME CALL - parent.socket.emit('monsterhunt') with no arguments - and
 		   the server decides which one it means from whether a finished hunt is
@@ -617,7 +703,7 @@ const CONFIG = {
 		   of the PANEL, not of the server: closing and reopening is simply how you
 		   make npc_right_click fire a second time. There is no dialog state to
 		   reset, and nothing for this path to reopen. */
-		reAcceptAtDaisy: true,
+		reAcceptAtDaisy: TOGGLES.monsterHuntReAcceptAtDaisy,
 		/* Only consulted while turnInImmediately is false - see above. */
 		turnInMarginMs: 7 * 60 * 1000,  // clock kept spare to bank what is already done
 		retryMs: 5 * 60 * 1000,         // after a cycle with nothing viable, hold off this long
@@ -631,7 +717,7 @@ const CONFIG = {
 		   use it differently. The booboo entry that remains is the verified
 		   park point (290,-990), shipped commented out; uncomment it to run
 		   booboo. */
-		enabled: true,
+		enabled: TOGGLES.achievements,
 		/* Consecutive failed travel attempts to an achievement spot before the
 		   override is released. Needed because the breaker in the farm loop
 		   blacklists a spot, and an achievement spot is whitelisted against
@@ -646,7 +732,7 @@ const CONFIG = {
 		   ceiling is roughly four before healing loses. Raise it a step at a time;
 		   courage still caps attackers on any one character independently. */
 		pull: {
-			enabled: true,
+			enabled: TOGGLES.achievementsPull,
 			concurrent: 1,
 			margin: 4,           // margin + step must stay <= 9 - see rageCfg
 			guardMargin: 0,      // the guard trips only on a REAL breach - see rageCfg
@@ -655,7 +741,7 @@ const CONFIG = {
 			parkWithin: 45,
 			pullTimeoutMs: 20000,
 			repullGapMs: 1200,
-			respectCourage: true,
+			respectCourage: TOGGLES.achievementsPullRespectCourage,
 		},
 		/* Each entry: the monster, where to stand, and the rung to stop at. rung is
 		   the threshold out of G.monsters[m].achievements[0][0]; coordinates are the
@@ -700,7 +786,7 @@ const CONFIG = {
 	},
 
 	muling: {
-		enabled: true,
+		enabled: TOGGLES.muling,
 		muleName: 'Meltymerch',
 		goldReserve: 500000,
 		excludeItems: new Set(['hpot1', 'mpot1', 'tracker', 'luckbooster', 'xpbooster', 'pumpkinspice', 'xptome']),

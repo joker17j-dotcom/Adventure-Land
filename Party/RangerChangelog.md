@@ -20,6 +20,79 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v90
+
+A TOGGLES block and a console-command header - the treatment Priest, Mage and
+Merchant already had. Additive only: no read site changed and no behaviour
+changed.
+
+**TOGGLES.** All 39 on/off switches in CONFIG collected into one `const
+TOGGLES` immediately before `const CONFIG`, with CONFIG referencing each. The
+value still lives at its original CONFIG path, so a local alias and any
+runtime assignment both resolve exactly as before. This is the largest of the
+four blocks; Merchant has 20, Priest 28, Mage 23. `enabled` appears 18 times
+here, so every key is namespaced: `<subsystem>` for an `enabled`,
+`<subsystem><Key>` for anything else. Values replaced by AST offset rather
+than by line, because several CONFIG lines carry two booleans at once. The
+current live settings are preserved as written - bossHop on, monsterHunt off -
+since hoisting copies the value, it does not choose one.
+
+The block's comment carries the runtime caveat: the value is read ONCE when
+CONFIG is constructed, so assigning to TOGGLES at runtime does NOT propagate,
+while mhOn()/mhOff() and the other console commands still work because they
+assign to the CONFIG path.
+
+**CONSOLE COMMANDS header.** 23 commands with their signatures, under the note
+that they have no internal callers BY DESIGN and that a static scan will call
+every one of them dead. Derived with an AST walk - top-level functions with
+zero bare, zero dotted and zero string-literal references, excluding on_*
+handlers - not from a list.
+
+A SECOND, SEPARATELY LABELLED GROUP lists 3 more: functions an operator can
+also type, but which HAVE internal callers, so a dead-code scan would never
+flag them. They are reference, not protection, and the split keeps visible
+which names would actually be at risk if their caller disappeared. The
+operator's call, 2026-10-18: the header is an operator reference, not a scan
+shield.
+
+
+## v89
+
+A join-type event cannot be entered hop-sick, so stop arriving that way.
+
+RECONSTRUCTED 2026-10-18 from commit 1a4a341, which shipped the code but
+bumped neither line 2 nor this file - the first entry to go missing since the
+convention changed. The text below is that commit's own message, not a
+summary written after the fact.
+
+crabxx is in CONFIG.bossHop.targets and boss hopping is live, so this was
+costing hops that could never pay. G.events.crabxx.join is true, meaning
+arrival is an event JOIN rather than a walk, and the server refuses a join
+while hop-sick: "You can't do this when you are sick!". Hopping re-stamps hop
+sickness on arrival, so a hop timed to land at spawn lands unable to join at
+all - every time.
+
+Two separate failures, both fixed. (1) localTarget() would pick a crabxx
+standing on our own shard while hop-sick and then fail the join; it is now
+skipped until the clock clears. (2) candidates() admitted a pre-spawn hop at
+preSpawnBuffer, 3 seconds - for a join event the lead time has to exceed the
+whole hop-sickness duration, so join events now use hopsickMs() +
+joinClearMarginMs.
+
+pickTarget() additionally requires that enough of the event window remains
+AFTER hop sickness clears to satisfy the dwell, so we do not hop for a crab
+that will close before we can touch it. spawnTime is now carried through
+candidates() to make that computable.
+
+Everything is read from the game rather than hardcoded - hopsickMs() from
+G.conditions.hopsickness.duration, isJoinEvent() from G.events[x].join,
+eventWindowMs() from G.events[x].duration - so a new daily behaves correctly
+without editing a list here.
+
+Measured 2026-10-18: hop sickness 720,000ms; crabxx window 2,400s. Waiting out
+the sickness inside the window is affordable only because of that gap -
+roughly 28 minutes of crab remain after the 12-minute wait.
+
 ## v88
 
 NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18, BUT ITS TWO BEHAVIOUR FLAGS
