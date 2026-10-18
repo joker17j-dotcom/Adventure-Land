@@ -1,5 +1,5 @@
 // ============================================================================
-// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v9 (2026-10-17) the bowofthedead roll is parked in Meltymerch's lucky inventory slot, 13, for the duration. Found by LuckySlotFinder.js at a 99.92% posterior over 2,361 rolls plus a 300-roll confirm; the server improves 60% of NORMAL upgrade rolls landing in player.p.item_num (server.js:7279), worth about +75% relative at a 1% chance. ONLY the real roll moves - the calculation-mode call above it stays on the original slot deliberately, because calc mode returns `probability` and never reads the modified `result`, so parking for it would change nothing; the consequence is that CONFIG.bow.minChance now understates the true odds for a roll that will happen in 13, which is conservative and left alone. The compound ladder is untouched: the compound path never compares p.item_num at all. The existing Promise.race timeout moved INSIDE the callback so the restore in withLuckySlot's finally covers a timeout too, and the scroll and offering slots are re-derived after the park, because parking displaces whatever was in 13 and can move the scroll itself. - v8 (2026-10-07) the compound ladder takes a LIST, so talkingskull +3 climbs alongside jacko +3. maxScrollGrade MOVED PER TARGET rather than being bumped to 2 globally, and that is the point of the change: talkingskull's grades are [1,2,6,7] so its +2 is grade 2 and the last step needs cscroll2 at 9,200,000, while jacko's [2,4,6,7] put a +2 at grade 1 and cscroll1 at 240,000 carries its whole 0..3 ladder. A single global 2 would have served the skull and simultaneously deleted jacko's guard against a mis-derived grade quietly spending nine million gold - which is the exact thing that guard was added for. jacko stays at 1, talkingskull gets 2, and neither can reach for the other's scroll. A BLOCKED TARGET NOW SKIPS INSTEAD OF STOPPING THE LADDER: with one item, a scroll above maxScrollGrade or a max_level refusal could only mean 'done', so breaking was right; with two it would abandon a ready triple of the other item, and re-deriving the same blocked group every pass would spin forever. cmpGroup takes a skip set for that, keyed item+level. Renamed jacko* to cmp* throughout because the helpers are no longer about jacko - the old console names stay exported as aliases. goldFloor raised from 1,000,000 to 10,000,000, sized to the dearest scroll the list can now buy: at the old floor a run could spend down to one million while a single cscroll2 costs nine. Verified by a 60-assertion sandbox harness including a jacko-only regression, confirming the single-item behaviour this replaces is unchanged. OpenGifts now runs three ladders: compound jacko +3, compound talkingskull +3, upgrade bowofthedead +7. - v7 (2026-10-07) upgrades bowofthedead to +7 DURING the box run, as a second ladder alongside the jacko compound. THE TWO ARE NOT THE SAME MECHANIC, and the differences are where this would have gone wrong. (1) SCROLL GRADE: bowofthedead's grades are [0,5,10,12], so a +0 is ALREADY grade 1 - scroll0 is refused on the very first roll - and a +5 is grade 2, needing scroll2 at 1,600,000. jacko's grades are [2,4,6,7], so its whole 0..3 ladder runs on cscroll1; CONFIG.bow.maxScrollGrade is therefore 2 where the jacko block's is 1, and copying the 1 across stalls the bow at +5 returning null with nothing logged. bowGradeAt is a separate function from jackoGradeAt for the same reason - one shared helper is how two ladders come to share one wrong answer. Verified against the game's own item_grade: +0..+4 grade 1, +5..+9 grade 2, +10..+11 grade 3. (2) WHICH COPY: the ladder always takes the HIGHEST bow below target, the opposite of jackoGroup's lowest-first. A compound needs three at the same level so it must consolidate from the bottom; an upgrade needs one, and spreading scrolls over a shelf of +0s buys nothing when only a single copy has to reach +7. (3) SLOTS: an upgrade is slot-neutral, so this is deliberately NOT a rung in the anti-stall ladder - it cannot free a slot, and putting it there would only spend gold during a stall. (4) LOSS: a failed upgrade DESTROYS the bow, so maxFailures counts destroyed copies in a row, kept separate from refusals, and stops the ladder before a bad streak eats the shelf. The chance gate is the game's own calculation mode - upgrade(item, scroll, offering, true) - which consumes nothing and includes grace; a `distance` refusal from it is the honest signal that the hub spot has drifted out of the shrine's range, and the ladder stops rather than rolling blind. COST at +7, measured 2026-10-07 off UpgradeCompound.js's ucPlan against the live Ponty ask of 273,600: 30.5 expected bows and ~38.0M gold, path scroll1 x5 then scroll2 x2, no offering at any step (`offering` is 27,420,000 against a bow worth 273,600). +8 would be 218 bows and 273M, which is why the target is 7. The same target also sits in UpgradeCompound.js TARGET_LEVELS for the standalone slot; the two are independent and neither reads the other. - v6 (2026-10-07) bowofthedead comes OFF autoSell - he is on the gear plan now, upgrading to +7, and that target lives in UpgradeCompound.js's TARGET_LEVELS rather than here. NOTHING ELSE MOVED, and deliberately: talkingskull +3 was asked for at the same time and does NOT belong in this file. jackoScrollFor derives the scroll from the item's own grade but then refuses anything above CONFIG.jacko.maxScrollGrade, which is 1 - correct for jacko, whose grades are [2,4,6,7] so a +2 is grade 1 and cscroll1 carries the whole 0..3 ladder. talkingskull's grades are [1,2,6,7], so ITS +2 is grade 2 and the last step needs cscroll2 at 9,200,000; the guard would return null and the ladder would stop at +2 with nothing logged - the same shape of silent stall this file keeps being bitten by. The jacko helpers are single-item by construction too (CONFIG.jacko.item is read as one string in six places), so a second target would mean generalising all six. Measured 2026-10-07. If talkingskull is ever wanted here, raise maxScrollGrade to 2 AND make the helpers take a list - doing only the first still breaks, and doing only the second spends nine million gold a roll without meaning to. - v5 (the jacko compound now runs DURING the box loop, any time three jackos share a level below the target, instead of once after it. v4 had it as an end-of-run phase, which was the wrong shape for what it is for: three jackos become one, so a compound is a net +2 slots, and the whole reason it exists is to stop the run stalling on a full bag. Running it only at the end meant the stall happened first and the fix arrived after the run had already given up. Three places now trigger it: after every box opened, on the slot-pressure check at the top of the loop, and in the inventory_full refusal path. The last two used to sell and then give up; they now try the whole ladder - sell for gold, compound for two slots per three jackos, bank the finished +3s - and only stop when none of the three can free anything. Banking is the last resort there because it is the only step that walks off the hub. compoundJackos(quiet) suppresses the phase header when called from inside the loop, so the log stays readable; the end-of-run pass still prints in full and still does the banking.) - v4 (compounds jacko to +3 after the box run and banks the finished ones. Jacko is the commonest thing the candy exchanges produce, so it accumulates faster than anything else here. THE HUB ALREADY MADE THIS FREE: hubAnchors() has always included G.maps.main.compound and requireMerchants is ['scrolls'], so the standing spot is already within range of the compound NPC AND of Lucas, who sells the cscrolls - the compound phase needs no movement at all, and neither does restocking. Only the bank trip moves. THE SCROLL GRADE STEPS UP MID-LADDER AND THIS IS THE EASY THING TO GET WRONG: jacko's grades are [2,4,6,7], so a +0 and a +1 are grade 0 and take cscroll0 at 6,400, but a +2 is grade 1 and needs cscroll1 at 240,000 - the server refuses the cheap scroll with compound_incompatible_scroll, because it checks grade > scroll_def.grade. jackoScrollFor() derives the scroll from the item's own grade rather than hardcoding one. COST, so the defaults can be argued with: the chances are igrade 0 from G.compounds, 0.99 / 0.75 / 0.40 for +1 / +2 / +3, and a failure destroys all three inputs - so a finished +3 costs about 91 jacko+0, not the 27 that 3^3 suggests, plus roughly 858,000 in scrolls. Grace makes the real figure better than that; it is a floor, not a forecast. Banking is gated on a nearly-full bag and takes ONLY jackos at the target level, which is what was asked for.) - v3 (opens EVERYTHING Xyn takes, not just the three anniversary boxes. boxes goes from 3 to 33, derived by listing G.items entries with an "e" and no "quest" - def.quest is what routes an exchange away from G.maps.main.exchange, and these have none, so one standing position covers all 33. sixcake and 5bucks are excluded on purpose: they carry an "e" but have NO entry in design/drops.js, and the handler gates on !D.drops[dropId], so they fail as "invalid" - an unhandled reason that would burn three consecutive-failure slots and stop the run. Found by parsing drops.js rather than by trying it. findBox now skips a stack smaller than the item's e, because candypop (10) and ornament (20) consume a whole stack and the server refuses a short one with "exchange_notenough", also unhandled. autoSell goes from 7 entries to 45, built from the 148 distinct rewards across those 32 tables and filtered on gear plan, exchangeability, type, live market price >= 50,000 and vendor >= 100,000. THE MARKET TEST IS WHAT MAKES IT SAFE: cxjar vendors for 1 and sells for 1,000,000, tshirt3 vendors for 72 and sells for 200,000,000, and both sort to the top of a cheapest-first vendor list. ftrinket keeps 2 alongside poker's 3 - FatherToken wears ftrinket+2. angelwings, puppyer, tshirt7, talkingskull and tristone were removed from the sell list by the operator after review; the classifier will keep proposing them, so do not re-add them from a fresh run) - v2
+// OpenGifts - stand at the hub, open anniversary boxes, sell the chaff - v10 (2026-10-18) THREE CHANGES, all of them things the run was paying for and did not have to. (1) THE THREE SERVER QUEUES ARE INDEPENDENT AND THE RUN NOW USES THAT. q.exchange, q.upgrade and q.compound are separate fields and every handler guards only on its own - verified against upstream 2148cf25 at node/server.js:6635, :6893 and :7157, none of the three cross-checks the others. So a box, a compound and an upgrade can all be in flight at once, where the loop used to pay 3-6s for the box and then a further 10s for the compound. The synchronisation point is q.exchange APPEARING, not the exchange finishing: the server claims the reward slot at exchange start with add_item(player,"placeholder") at :6672 and fills that same slot at the end, so once q.exchange exists the bag has already taken its one shape-change and the ladders can read indices safely. Starting them any earlier would race the placeholder. The ladders are extracted into runLadders(), which NEVER THROWS, because it is launched without an await and an escaping throw would be an unhandled rejection with no caller - the run would carry on as though the ladder had worked. The in-flight promise gets its handlers attached immediately for the same reason, and a finally awaits the ladders so none can run on into the next iteration and read a bag the next exchange is already changing. Selling stays OUTSIDE the overlap deliberately: it moves many slots at once rather than the single reserved one, and is the one combination that could invalidate an index a ladder is holding. Measured in a sandbox against the real runLadders: 201ms overlapped against 402ms serial for two 200ms actions. (2) MERCHANT BUFF SKILLS, GATED ON LEVEL AGAINST G RATHER THAN A HARDCODED NUMBER, so the script is correct on any merchant and the ++ pair starts being used the moment one reaches the level without an edit here. massexchange halves the next exchange and massexchangepp divides it by ten; massproduction and massproductionpp do the same for the next compound or upgrade. castBuff fires AT MOST ONE of a pair, preferring the ++ form: they have separate 50s cooldowns and spending them on two different actions beats stacking both on one, 6.3s per 50s against 4.3s, because a second halving of an already-shrunk number is worth less than a first halving of a full one - and preferring the stronger ready skill produces that spread with no scheduling. regen_mp funds all of it at 100 MP per 4s free, against 450 MP per 50s for all four at full rate, so no potion is ever needed; mpReserve keeps a fraction of the pool back rather than draining it. Everything is typeof-guarded and skillReport() prints what this character can actually use at startup, because "the skills did nothing" and "the skills are not available" look identical in a log that only reports successes. At level 69 Meltymerch gets massexchange, massproduction and massproductionpp; massexchangepp needs 70 and the box run awards no XP, so it will not arrive during a run. (3) THE BOW LADDER MAKES AS MANY +7s AS IT CAN, where it used to stop at the first. Operator's call 2026-10-18: the finished copies are FODDER for manual +8 and +9 attempts, each of which destroys one. bowDone() is replaced by bowAtTarget(), a count, and its three gates are gone - the phase entry, the in-loop break and the lock step. bowPick() was always the right termination and is now the only one: it skips anything at or above target and anything locked, so it returns null exactly when no copy is left to work on. The TARGET is unchanged and nothing rolls a copy past it; the operator raises it by hand when the ranger's own bow moves up. NO CAP on how many are made, deliberately - enough bows is a long way off and a cap would be a second number to keep in step with the first. maxFailures still counts destroyed copies in a row, which meant "a bad streak is eating the shelf" when one copy was the goal and now means something closer to expected variance; left alone pending a measurement of what a real streak looks like across many copies. VERIFIED: node --check clean, plus 27 sandbox assertions driving the real functions lifted out of this file - 16 on the skills (level gates at 35/69/70, one cast per action, a cooldown on the ++ form falling through to the base, the reserve blocking a cast, regen funding one that was otherwise unaffordable, a missing use_skill reported rather than silent, runLadders swallowing two throwing ladders and logging both, exchangeStarted returning early on a settled call) and 11 on the bow and the overlap. NOT DEPLOYED at time of commit. - v9 (2026-10-17) the bowofthedead roll is parked in Meltymerch's lucky inventory slot, 13, for the duration. Found by LuckySlotFinder.js at a 99.92% posterior over 2,361 rolls plus a 300-roll confirm; the server improves 60% of NORMAL upgrade rolls landing in player.p.item_num (server.js:7279), worth about +75% relative at a 1% chance. ONLY the real roll moves - the calculation-mode call above it stays on the original slot deliberately, because calc mode returns `probability` and never reads the modified `result`, so parking for it would change nothing; the consequence is that CONFIG.bow.minChance now understates the true odds for a roll that will happen in 13, which is conservative and left alone. The compound ladder is untouched: the compound path never compares p.item_num at all. The existing Promise.race timeout moved INSIDE the callback so the restore in withLuckySlot's finally covers a timeout too, and the scroll and offering slots are re-derived after the park, because parking displaces whatever was in 13 and can move the scroll itself. - v8 (2026-10-07) the compound ladder takes a LIST, so talkingskull +3 climbs alongside jacko +3. maxScrollGrade MOVED PER TARGET rather than being bumped to 2 globally, and that is the point of the change: talkingskull's grades are [1,2,6,7] so its +2 is grade 2 and the last step needs cscroll2 at 9,200,000, while jacko's [2,4,6,7] put a +2 at grade 1 and cscroll1 at 240,000 carries its whole 0..3 ladder. A single global 2 would have served the skull and simultaneously deleted jacko's guard against a mis-derived grade quietly spending nine million gold - which is the exact thing that guard was added for. jacko stays at 1, talkingskull gets 2, and neither can reach for the other's scroll. A BLOCKED TARGET NOW SKIPS INSTEAD OF STOPPING THE LADDER: with one item, a scroll above maxScrollGrade or a max_level refusal could only mean 'done', so breaking was right; with two it would abandon a ready triple of the other item, and re-deriving the same blocked group every pass would spin forever. cmpGroup takes a skip set for that, keyed item+level. Renamed jacko* to cmp* throughout because the helpers are no longer about jacko - the old console names stay exported as aliases. goldFloor raised from 1,000,000 to 10,000,000, sized to the dearest scroll the list can now buy: at the old floor a run could spend down to one million while a single cscroll2 costs nine. Verified by a 60-assertion sandbox harness including a jacko-only regression, confirming the single-item behaviour this replaces is unchanged. OpenGifts now runs three ladders: compound jacko +3, compound talkingskull +3, upgrade bowofthedead +7. - v7 (2026-10-07) upgrades bowofthedead to +7 DURING the box run, as a second ladder alongside the jacko compound. THE TWO ARE NOT THE SAME MECHANIC, and the differences are where this would have gone wrong. (1) SCROLL GRADE: bowofthedead's grades are [0,5,10,12], so a +0 is ALREADY grade 1 - scroll0 is refused on the very first roll - and a +5 is grade 2, needing scroll2 at 1,600,000. jacko's grades are [2,4,6,7], so its whole 0..3 ladder runs on cscroll1; CONFIG.bow.maxScrollGrade is therefore 2 where the jacko block's is 1, and copying the 1 across stalls the bow at +5 returning null with nothing logged. bowGradeAt is a separate function from jackoGradeAt for the same reason - one shared helper is how two ladders come to share one wrong answer. Verified against the game's own item_grade: +0..+4 grade 1, +5..+9 grade 2, +10..+11 grade 3. (2) WHICH COPY: the ladder always takes the HIGHEST bow below target, the opposite of jackoGroup's lowest-first. A compound needs three at the same level so it must consolidate from the bottom; an upgrade needs one, and spreading scrolls over a shelf of +0s buys nothing when only a single copy has to reach +7. (3) SLOTS: an upgrade is slot-neutral, so this is deliberately NOT a rung in the anti-stall ladder - it cannot free a slot, and putting it there would only spend gold during a stall. (4) LOSS: a failed upgrade DESTROYS the bow, so maxFailures counts destroyed copies in a row, kept separate from refusals, and stops the ladder before a bad streak eats the shelf. The chance gate is the game's own calculation mode - upgrade(item, scroll, offering, true) - which consumes nothing and includes grace; a `distance` refusal from it is the honest signal that the hub spot has drifted out of the shrine's range, and the ladder stops rather than rolling blind. COST at +7, measured 2026-10-07 off UpgradeCompound.js's ucPlan against the live Ponty ask of 273,600: 30.5 expected bows and ~38.0M gold, path scroll1 x5 then scroll2 x2, no offering at any step (`offering` is 27,420,000 against a bow worth 273,600). +8 would be 218 bows and 273M, which is why the target is 7. The same target also sits in UpgradeCompound.js TARGET_LEVELS for the standalone slot; the two are independent and neither reads the other. - v6 (2026-10-07) bowofthedead comes OFF autoSell - he is on the gear plan now, upgrading to +7, and that target lives in UpgradeCompound.js's TARGET_LEVELS rather than here. NOTHING ELSE MOVED, and deliberately: talkingskull +3 was asked for at the same time and does NOT belong in this file. jackoScrollFor derives the scroll from the item's own grade but then refuses anything above CONFIG.jacko.maxScrollGrade, which is 1 - correct for jacko, whose grades are [2,4,6,7] so a +2 is grade 1 and cscroll1 carries the whole 0..3 ladder. talkingskull's grades are [1,2,6,7], so ITS +2 is grade 2 and the last step needs cscroll2 at 9,200,000; the guard would return null and the ladder would stop at +2 with nothing logged - the same shape of silent stall this file keeps being bitten by. The jacko helpers are single-item by construction too (CONFIG.jacko.item is read as one string in six places), so a second target would mean generalising all six. Measured 2026-10-07. If talkingskull is ever wanted here, raise maxScrollGrade to 2 AND make the helpers take a list - doing only the first still breaks, and doing only the second spends nine million gold a roll without meaning to. - v5 (the jacko compound now runs DURING the box loop, any time three jackos share a level below the target, instead of once after it. v4 had it as an end-of-run phase, which was the wrong shape for what it is for: three jackos become one, so a compound is a net +2 slots, and the whole reason it exists is to stop the run stalling on a full bag. Running it only at the end meant the stall happened first and the fix arrived after the run had already given up. Three places now trigger it: after every box opened, on the slot-pressure check at the top of the loop, and in the inventory_full refusal path. The last two used to sell and then give up; they now try the whole ladder - sell for gold, compound for two slots per three jackos, bank the finished +3s - and only stop when none of the three can free anything. Banking is the last resort there because it is the only step that walks off the hub. compoundJackos(quiet) suppresses the phase header when called from inside the loop, so the log stays readable; the end-of-run pass still prints in full and still does the banking.) - v4 (compounds jacko to +3 after the box run and banks the finished ones. Jacko is the commonest thing the candy exchanges produce, so it accumulates faster than anything else here. THE HUB ALREADY MADE THIS FREE: hubAnchors() has always included G.maps.main.compound and requireMerchants is ['scrolls'], so the standing spot is already within range of the compound NPC AND of Lucas, who sells the cscrolls - the compound phase needs no movement at all, and neither does restocking. Only the bank trip moves. THE SCROLL GRADE STEPS UP MID-LADDER AND THIS IS THE EASY THING TO GET WRONG: jacko's grades are [2,4,6,7], so a +0 and a +1 are grade 0 and take cscroll0 at 6,400, but a +2 is grade 1 and needs cscroll1 at 240,000 - the server refuses the cheap scroll with compound_incompatible_scroll, because it checks grade > scroll_def.grade. jackoScrollFor() derives the scroll from the item's own grade rather than hardcoding one. COST, so the defaults can be argued with: the chances are igrade 0 from G.compounds, 0.99 / 0.75 / 0.40 for +1 / +2 / +3, and a failure destroys all three inputs - so a finished +3 costs about 91 jacko+0, not the 27 that 3^3 suggests, plus roughly 858,000 in scrolls. Grace makes the real figure better than that; it is a floor, not a forecast. Banking is gated on a nearly-full bag and takes ONLY jackos at the target level, which is what was asked for.) - v3 (opens EVERYTHING Xyn takes, not just the three anniversary boxes. boxes goes from 3 to 33, derived by listing G.items entries with an "e" and no "quest" - def.quest is what routes an exchange away from G.maps.main.exchange, and these have none, so one standing position covers all 33. sixcake and 5bucks are excluded on purpose: they carry an "e" but have NO entry in design/drops.js, and the handler gates on !D.drops[dropId], so they fail as "invalid" - an unhandled reason that would burn three consecutive-failure slots and stop the run. Found by parsing drops.js rather than by trying it. findBox now skips a stack smaller than the item's e, because candypop (10) and ornament (20) consume a whole stack and the server refuses a short one with "exchange_notenough", also unhandled. autoSell goes from 7 entries to 45, built from the 148 distinct rewards across those 32 tables and filtered on gear plan, exchangeability, type, live market price >= 50,000 and vendor >= 100,000. THE MARKET TEST IS WHAT MAKES IT SAFE: cxjar vendors for 1 and sells for 1,000,000, tshirt3 vendors for 72 and sells for 200,000,000, and both sort to the top of a cheapest-first vendor list. ftrinket keeps 2 alongside poker's 3 - FatherToken wears ftrinket+2. angelwings, puppyer, tshirt7, talkingskull and tristone were removed from the sell list by the operator after review; the classifier will keep proposing them, so do not re-add them from a fresh run) - v2
 // ============================================================================
 // Everything below is read from the game's own data at runtime, or was read
 // out of the server source rather than remembered. The numbers that matter:
@@ -260,6 +260,51 @@ const CONFIG = {
 		lockWhenDone: true,
 
 		maxConsecutiveFailures: 3,
+	},
+
+	/* MERCHANT BUFF SKILLS. Each one is a 1-time-use buff lasting 10s that
+	   shortens the NEXT action of its kind, and each has its own 50s
+	   cooldown - so the cooldown, not the buff, is what caps the saving.
+
+	   GATED ON character.level AGAINST G, NOT ON A HARDCODED NUMBER, so the
+	   script behaves correctly on any merchant and the ++ pair starts being
+	   used the moment one reaches the level for them without an edit here.
+	   G.skills carries level, mp and the shared-cooldown key; reading them
+	   there means a design change cannot leave a stale copy in this file. */
+	skills: {
+		/* Off: no skill is ever cast and the run behaves exactly as it did
+		   before this block existed. On: each sub-toggle below applies. */
+		enabled: true,
+
+		/* massexchange halves the next exchange, massexchangepp divides it by
+		   ten. They are SEPARATE cooldowns, and spending them on two
+		   different exchanges beats stacking both on one - a second halving
+		   of an already-shrunk number is worth less than a first halving of a
+		   full one. castBuff() therefore fires at most ONE per action,
+		   preferring the ++ form, which spreads them automatically. */
+		exchange: true,
+
+		/* massproduction and massproductionpp do the same for the next
+		   upgrade OR compound. A compound holds its queue slot for a full 10
+		   seconds against an exchange's 3-6, so a ++ here is worth more per
+		   use than a ++ on an exchange. */
+		production: true,
+
+		/* regen_mp restores 100 MP on a 4s cooldown at no cost, and it is
+		   what funds the above: all four skills at full rate come to 450 MP
+		   per 50s against regen's 1,250, so no potion is needed. It shares
+		   the potion cooldown group, which is free for a merchant parked at
+		   the hub and would not be anywhere he needs HP. */
+		regen: true,
+
+		/* Fraction of max MP to hold back. A cast is skipped rather than
+		   draining the pool, so nothing else that needs MP is starved. */
+		mpReserve: 0.15,
+
+		/* How long to keep topping up with regen_mp while waiting for enough
+		   MP for a cast. Bounded so a character who cannot afford a skill
+		   never stalls the run waiting for one. */
+		regenWaitMs: 2000,
 	},
 
 	hub: {
@@ -621,6 +666,9 @@ async function compoundAll(quiet) {
 		const [a, b, c] = group.indices;
 		attempts++;
 		try {
+			/* Buff BEFORE the call, not after: the buff is consumed when the
+			   server starts the action, and it expires 10s after casting. */
+			await buffProduction();
 			const p = compound(a, b, c, scrollSlot, offeringSlot);
 			const res = await Promise.race([
 				Promise.resolve(p),
@@ -731,13 +779,22 @@ function bowCount() {
 	return out;
 }
 
-/* One finished copy is the whole goal, so the ladder stops the moment one
-   exists - locked or not. */
-function bowDone() {
+/* COUNT, not a boolean, since v10. Until then this was bowDone() and the
+   ladder stopped the moment one finished copy existed, because one was the
+   whole goal. It is not any more: the finished copies are FODDER for manual
+   +8 and +9 attempts, each of which destroys one, so the ladder keeps making
+   them. The target itself is unchanged at CONFIG.bow.target - nothing here
+   ever rolls a copy past it, and the operator raises the target by hand when
+   the ranger's own bow moves up a level.
+   There is deliberately NO cap on how many are made: the operator's call
+   2026-10-18 is that enough bows is a long way off, and a cap would be a
+   second number to keep in step with the first. */
+function bowAtTarget() {
+	let n = 0;
 	for (const it of (character.items || [])) {
-		if (it && it.name === CONFIG.bow.item && (it.level || 0) >= CONFIG.bow.target) return true;
+		if (it && it.name === CONFIG.bow.item && (it.level || 0) >= CONFIG.bow.target) n++;
 	}
-	return false;
+	return n;
 }
 
 /* Climbs ONE bow as far as the scrolls and the dice allow, then stops. Unlike
@@ -780,6 +837,121 @@ function bowDone() {
 const LUCKY_SLOTS = { Meltymerch: 13 };
 const LUCKY_SLOT = LUCKY_SLOTS[character.name];
 let luckySwapWarned = false;
+let skillWarned = false;
+
+/* ---- MERCHANT BUFF SKILLS -------------------------------------------------
+
+   Everything here reads its own requirements out of G rather than carrying a
+   copy, so the only numbers in this file are the ones G does not supply.
+
+   Measured from the server source 2026-10-18 (node/server.js:6670): an
+   exchange is 3000 + random(0..3000) ms, massexchange halves it, and
+   massexchangepp divides it by ten, each consuming its buff. The three
+   action queues - q.exchange, q.upgrade and q.compound - are independent:
+   every handler guards only on its OWN field and none cross-checks the
+   others, which is what makes the overlap in openGifts() legal. */
+
+function skillDef(name) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	return (g && g.skills && g.skills[name]) || null;
+}
+
+/* ms until `name` may be cast again, or 0. The game's own next_skill is the
+   source; a skill with a `share` key sits on a shared group timer and is read
+   under that key instead - regen_mp shares "use_mp" with the HP/MP potions. */
+function skillReadyIn(name) {
+	const def = skillDef(name);
+	const key = (def && def.share) || name;
+	try {
+		const ns = (typeof parent !== 'undefined' && parent.next_skill) ? parent.next_skill[key] : null;
+		if (!ns) return 0;
+		return Math.max(0, new Date(ns).getTime() - Date.now());
+	} catch (e) {
+		/* A catch that returns a default must say so, or "next_skill is
+		   missing" and "the skill is ready" stay indistinguishable. */
+		if (!skillWarned) { skillWarned = true; log('next_skill unreadable (' + e + ') - treating skills as ready', 'orange'); }
+		return 0;
+	}
+}
+
+/* Level, MP and availability, in that order. Returns a reason rather than a
+   bare false so a skipped cast can say WHY once instead of looking like the
+   feature silently doing nothing. */
+function skillBlocked(name) {
+	if (!CONFIG.skills.enabled) return 'disabled';
+	if (typeof use_skill !== 'function') return 'use_skill unavailable';
+	const def = skillDef(name);
+	if (!def) return 'not in G';
+	if ((character.level || 0) < (def.level || 0)) return 'level ' + def.level + ' required';
+	if (skillReadyIn(name) > 0) return 'cooldown';
+	const need = (def.mp || 0) + Math.ceil((character.max_mp || 0) * CONFIG.skills.mpReserve);
+	if ((character.mp || 0) < need) return 'mp';
+	return null;
+}
+
+/* regen_mp is free and on a 4s timer, so topping up is almost always
+   available. Bounded by regenWaitMs: a character who cannot reach the cost is
+   never allowed to stall the run waiting for MP he will not get. */
+async function topUpMp(target) {
+	if (!CONFIG.skills.enabled || !CONFIG.skills.regen) return;
+	if (typeof use_skill !== 'function') return;
+	const until = Date.now() + CONFIG.skills.regenWaitMs;
+	while ((character.mp || 0) < target && Date.now() < until) {
+		if (skillReadyIn('regen_mp') > 0) { await sleep(100); continue; }
+		try { await use_skill('regen_mp'); } catch (e) { return; }
+		await sleep(100);
+	}
+}
+
+/* Casts at most ONE of a pair, preferring the ++ form. Deliberately not both:
+   the two have separate cooldowns, and spending them on separate actions
+   saves more than stacking them on one - 6.3s per 50s against 4.3s for an
+   exchange pair. Firing only the stronger one that is ready produces that
+   spread without any scheduling. */
+async function castBuff(pair, what) {
+	if (!CONFIG.skills.enabled) return null;
+	for (const name of pair) {
+		const def = skillDef(name);
+		if (def && CONFIG.skills.regen && (character.level || 0) >= (def.level || 0)) {
+			await topUpMp((def.mp || 0) + Math.ceil((character.max_mp || 0) * CONFIG.skills.mpReserve));
+		}
+		if (skillBlocked(name)) continue;
+		try {
+			await use_skill(name);
+			return name;
+		} catch (e) {
+			log(name + ' refused (' + ((e && (e.reason || e.message)) || e) + ')', 'orange');
+		}
+	}
+	return null;
+}
+
+async function buffExchange() {
+	if (!CONFIG.skills.enabled || !CONFIG.skills.exchange) return null;
+	return await castBuff(['massexchangepp', 'massexchange'], 'exchange');
+}
+
+async function buffProduction() {
+	if (!CONFIG.skills.enabled || !CONFIG.skills.production) return null;
+	return await castBuff(['massproductionpp', 'massproduction'], 'production');
+}
+
+/* One line at startup saying what this character can actually use, because
+   "the skills did nothing" and "the skills are not available" look identical
+   in a log that only reports successes. */
+function skillReport() {
+	if (!CONFIG.skills.enabled) { log('buff skills: disabled', '#8b98ab'); return; }
+	if (typeof use_skill !== 'function') { log('buff skills: use_skill() is unavailable in this context - none will be cast', 'orange'); return; }
+	const have = [], lack = [];
+	for (const n of ['massexchangepp', 'massexchange', 'massproductionpp', 'massproduction', 'regen_mp']) {
+		const def = skillDef(n);
+		if (!def) { lack.push(n + ' (not in G)'); continue; }
+		if ((character.level || 0) < (def.level || 0)) lack.push(n + ' (needs ' + def.level + ')');
+		else have.push(n);
+	}
+	log('buff skills at level ' + character.level + ': ' + (have.join(', ') || 'none'), '#7FD98A');
+	if (lack.length) log('not yet available: ' + lack.join(', '), '#8b98ab');
+}
 
 async function luckyDrain(ms) {
 	/* During an upgrade the item IS a "placeholder", and the server holds the
@@ -857,10 +1029,6 @@ async function upgradeBows(quiet) {
 	const nil = { attempts: 0, made: 0, lost: 0 };
 	if (!CONFIG.bow.enabled) return nil;
 	if (typeof upgrade !== 'function') { log('upgrade() not available in this context', 'orange'); return nil; }
-	if (bowDone()) {
-		if (!quiet) log('bow: already holding a +' + CONFIG.bow.target + ' - ladder idle', '#7FD98A');
-		return { attempts: 0, made: 0, lost: 0, done: true };
-	}
 
 	const before = bowCount();
 	if (!quiet) {
@@ -870,7 +1038,11 @@ async function upgradeBows(quiet) {
 
 	let attempts = 0, made = 0, lost = 0, lostStreak = 0, refusals = 0;
 	while (true) {
-		if (bowDone()) break;
+		/* bowPick() is now the only termination, and it was always the right
+		   one: it skips anything already AT target and anything locked, so it
+		   returns null exactly when no copy is left to work on. The
+		   bowDone() break that used to sit here stopped the whole ladder as
+		   soon as ONE copy finished, which is the behaviour v10 removes. */
 		const pick = bowPick();
 		if (!pick) break;
 
@@ -914,6 +1086,11 @@ async function upgradeBows(quiet) {
 			   restores the bag on a timeout too. Scroll and offering slots are
 			   re-derived here: the park moves whatever was in slot 13, and
 			   ensureScroll already ran, so this only locates, never buys. */
+			/* Outside withLuckySlot deliberately: casting is instant and the
+			   buff lasts 10s, so it costs nothing here and keeps the parked
+			   window - the one place a concurrent reward could land in the
+			   lucky slot - as short as it already was. */
+			await buffProduction();
 			const res = await withLuckySlot(pick.slot, async (num) => {
 				let sSlot = scrollSlot, oSlot = offeringSlot;
 				try { const v = locate_item(scrollName); if (v !== null && v >= 0) sSlot = v; } catch (e) { }
@@ -977,9 +1154,11 @@ async function upgradeBows(quiet) {
 		}
 	}
 
-	/* Lock it the moment it exists, so nothing downstream can sell or re-roll
-	   what 30-odd bows paid for. */
-	if (bowDone() && CONFIG.bow.lockWhenDone && typeof lock_item === 'function') {
+	/* Lock every finished copy as it appears, so nothing downstream can sell
+	   or re-roll what 30-odd bows apiece paid for. The loop already covered
+	   every match; only the bowDone() gate in front of it assumed there would
+	   be at most one. */
+	if (CONFIG.bow.lockWhenDone && typeof lock_item === 'function') {
 		for (let i = 0; i < (character.items || []).length; i++) {
 			const it = character.items[i];
 			if (it && it.name === CONFIG.bow.item && (it.level || 0) >= CONFIG.bow.target && !it.l) {
@@ -1073,6 +1252,53 @@ async function bankFinished(spot) {
 	return stored;
 }
 
+/* THE TWO LADDERS, as one call so openGifts() can run them either overlapped
+   with an exchange in flight or serially when it could not start one.
+
+   NEVER THROWS. It is launched without an await on the overlap path, so a
+   throw escaping here would be an unhandled rejection with no caller to
+   catch it, and the run would carry on as if the ladder had succeeded. */
+async function runLadders(cmpDuring, bowDuring) {
+	try {
+		if (CONFIG.compound.enabled && cmpGroup()) {
+			const j = await compoundAll(true);
+			cmpDuring.attempts += j.attempts;
+			for (const L in (j.made || {})) cmpDuring.made[L] = (cmpDuring.made[L] || 0) + j.made[L];
+		}
+	} catch (e) {
+		log('compound ladder threw: ' + ((e && (e.reason || e.message)) || e), 'orange');
+	}
+	try {
+		if (CONFIG.bow.enabled && bowPick()) {
+			const b = await upgradeBows(true);
+			bowDuring.attempts += b.attempts;
+			bowDuring.made += b.made;
+			bowDuring.lost += b.lost;
+		}
+	} catch (e) {
+		log('bow ladder threw: ' + ((e && (e.reason || e.message)) || e), 'orange');
+	}
+}
+
+/* Resolves once the server has ACCEPTED the exchange - q.exchange appearing
+   is the signal - or early if the call already settled, which is what a
+   refusal looks like from here.
+
+   WHY WAIT AT ALL, rather than starting the ladders immediately: the server
+   claims the reward slot at exchange START (add_item(player,"placeholder"),
+   node/server.js:6672) and fills that same slot at the end. So once
+   q.exchange exists the bag has already taken its one shape-change for this
+   exchange and the ladders can read indices safely. Starting them before
+   that would race the placeholder. */
+async function exchangeStarted(flight) {
+	for (let i = 0; i < 20; i++) {
+		if (character.q && character.q.exchange) return true;
+		if (flight.done) return false;
+		await sleep(50);
+	}
+	return !!(character.q && character.q.exchange);
+}
+
 async function openGifts() {
 	const spot = solveHub();
 
@@ -1096,6 +1322,7 @@ async function openGifts() {
 	let opened = 0, failures = 0, goldFromSales = 0;
 	const started = Date.now();
 	log('starting with ' + countBoxes() + ' box(es) and ' + character.esize + ' free slot(s)', '#55BDF0');
+	skillReport();
 
 	while (true) {
 		if (character.esize <= CONFIG.minFreeSlots) {
@@ -1135,42 +1362,52 @@ async function openGifts() {
 		if (idx < 0) { log('no boxes left', '#7FD98A'); break; }
 
 		try {
-			// Awaited, not polled by us: this resolves the instant the server
-			// finishes, which is somewhere between 3 and 6 seconds and is not
-			// knowable in advance.
-			const r = await exchange(idx);
+			/* THE OVERLAP, new in v10. q.exchange, q.upgrade and q.compound are
+			   INDEPENDENT server-side: each handler guards only on its own
+			   field and none cross-checks the others (node/server.js :6635,
+			   :6893, :7157 - verified 2026-10-18 against upstream 2148cf25).
+			   So an exchange, a compound and an upgrade can all be in flight
+			   at once, and the run no longer pays 3-6s for a box PLUS 10s for
+			   a compound when it could pay the larger of the two.
+
+			   Buff first: the buff is consumed when the server starts the
+			   action, so it has to be cast before the call, and it expires
+			   10s after casting. */
+			await buffExchange();
+			const flight = { done: false };
+			const inFlight = exchange(idx);
+			/* Attached immediately. Without it, a refusal while the ladders
+			   are running is an unhandled rejection before anything awaits
+			   it; the await below still re-throws into this same catch. */
+			inFlight.then(function () { flight.done = true; },
+				function () { flight.done = true; });
+
+			const started = await exchangeStarted(flight);
+			const ladders = started ? runLadders(cmpDuring, bowDuring) : null;
+
+			let r;
+			try {
+				r = await inFlight;
+			} finally {
+				/* Never leave a ladder running into the next iteration - it
+				   would read a bag the next exchange is already changing. */
+				if (ladders) await ladders;
+			}
+			if (!started) await runLadders(cmpDuring, bowDuring);
+
 			failures = 0;
 			opened++;
 			const got = (r && r.reward) || 'something the client did not name';
 			rewards[got] = (rewards[got] || 0) + 1;
 			log('opened ' + opened + ': ' + got, '#7FD98A');
 
+			/* Selling stays OUTSIDE the overlap. It moves many slots at once
+			   rather than the single reserved one, so running it against an
+			   exchange in flight is the one combination that could invalidate
+			   an index the ladders are holding. */
 			if (CONFIG.sellEvery > 0 && opened % CONFIG.sellEvery === 0) {
 				const s = await sellChaff(soldTally);
 				goldFromSales += s.gold;
-			}
-
-			/* THE TRIGGER. Any time three copies of ANY target share a level below
-			   that target's own ceiling, compound them, right here, mid-run.
-			   Checked after every box because a box is what produces them, so this
-			   is the first moment a new triple can exist. cmpGroup() is a cheap
-			   inventory scan across the whole list; the compound itself only
-			   happens when it returns something. */
-			if (CONFIG.compound.enabled && cmpGroup()) {
-				const j = await compoundAll(true);
-				cmpDuring.attempts += j.attempts;
-				for (const L in (j.made || {})) cmpDuring.made[L] = (cmpDuring.made[L] || 0) + j.made[L];
-			}
-
-			/* THE BOW TRIGGER, same reasoning as the compound one above: a box is what
-			   produces a bow, so this is the first moment a new one can exist.
-			   bowPick() is a cheap inventory scan and bowDone() short-circuits the
-			   whole thing once a +7 is in hand, so the common case costs nothing. */
-			if (CONFIG.bow.enabled && !bowDone() && bowPick()) {
-				const b = await upgradeBows(true);
-				bowDuring.attempts += b.attempts;
-				bowDuring.made += b.made;
-				bowDuring.lost += b.lost;
 			}
 		} catch (e) {
 			const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
