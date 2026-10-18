@@ -290,21 +290,30 @@ function rankView() {
     bosses, which is the number that matters for achievement score per hour. mrpumpkin
     respawns on a 54-minute cycle against mrgreen's 94, with the same 36,000,000 hp and the
     same 7 achievement rungs — so switch the selector and compare rather than assuming the
-    bigger name is the better target.</p>`;
+    bigger name is the better target.</p>
+    <p class="note">DESPAWNS ARE NOT KILLS. A timed event boss that reaches the end of its
+    window unfinished leaves the shard without dying, and until 2026-10-18 the poller logged
+    that as a kill - 20 of 37 event-boss "deaths" in the log were despawns. The column
+    separates them, which is what tells a shard where the boss is regularly FINISHED from one
+    where it merely spawns and expires, and both of those from a shard where it never spawned
+    at all. An arrow marks rows reclassified on read rather than logged that way.</p>`;
   if (!rows.length) return head + `<p class="empty">No ${esc(TYPE)} history logged yet.
     The log cannot be backfilled — a death is unrecoverable once the boss respawns — so
     this fills as the poller watches.</p>`;
   return head + `<table><thead><tr>
     <th>Server</th><th class="num">Kills/day</th><th class="num">Kills logged</th>
+    <th class="num">Despawns</th>
     <th class="num">Sample</th><th class="num">Stalls</th><th class="num">Median TTK</th>
     <th class="num">p25</th><th class="num">p75</th><th class="num">Last kill</th>
-    <th class="num">Window</th>
+    <th class="num">Last despawn</th><th class="num">Window</th>
   </tr></thead><tbody>${rows.map(r => `<tr class="${r.enough_data ? "" : "thin"}">
     <td>${esc(r.server)}${r.enough_data ? "" :
        ` <span class="warn" title="fewer than ${min} kills logged">thin</span>`}</td>
     <td class="num up">${r.kills_per_day == null ? "—" : r.kills_per_day.toFixed(2)}${
        r.rate_capped ? ` <span class="warn" title="raw ${r.kills_per_day_raw} exceeds the physical ceiling of ${r.kills_per_day_cap} for this respawn">capped</span>` : ""}</td>
     <td class="num">${r.kills_logged}</td>
+    <td class="num ${r.despawns ? "warn" : "dim"}">${r.despawns == null ? "—" : r.despawns}${
+       r.despawns_reclassified ? ` <span class="warn" title="${r.despawns_reclassified} of these were logged as kills before the despawn test existed and are reclassified on read, not rewritten on disk">\u2191</span>` : ""}</td>
     <td class="num dim">${r.ttk_sample}${r.confidence_counts.low
        ? ` <span class="warn" title="${r.confidence_counts.low} low-confidence kills, excluded from medians">*</span>` : ""}</td>
     <td class="num ${r.stalled_count ? "dead" : "dim"}">${r.stalled_count}</td>
@@ -312,6 +321,7 @@ function rankView() {
     <td class="num dim">${dur(r.ttk_p25_sec)}</td>
     <td class="num dim">${dur(r.ttk_p75_sec)}</td>
     <td class="num dim">${stamp(r.last_kill_t)}</td>
+    <td class="num dim">${stamp(r.last_despawn_t)}</td>
     <td class="num dim">${dur(r.observed_window_sec)}</td>
   </tr>`).join("")}</tbody></table>`;
 }

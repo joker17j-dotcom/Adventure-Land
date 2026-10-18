@@ -240,6 +240,58 @@ BOSS_DESPAWN_WINDOW_CEILING = 300
 # than reclassified, so the ambiguity is visible to anything reading the log
 # instead of being decided silently here. Unknown hp also reads low.
 BOSS_DESPAWN_ALIVE_PCT = 5.0
+# SCHEDULE_EVENT_SEC is keyed by EVENT name, and the poller only ever sees
+# MONSTER types. For four of the five they are the same word, which is why the
+# first version of the despawn test worked at all - but goobrawl spawns `rgoo`
+# and `bgoo`, so `SCHEDULE_EVENT_SEC.get("rgoo")` is None, `win` is None, and
+# an rgoo despawn was still logged as a kill. Measured 2026-10-18: one such row
+# in the log, US III, 565s elapsed against a 540s window. The character scripts
+# already carry this mapping as BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' }; the
+# bridge lacked it. Key by what the poller actually has.
+EVENT_WINDOW_SEC = {
+    "crabxx": SCHEDULE_EVENT_SEC["crabxx"],
+    "franky": SCHEDULE_EVENT_SEC["franky"],
+    "icegolem": SCHEDULE_EVENT_SEC["icegolem"],
+    "rgoo": SCHEDULE_EVENT_SEC["goobrawl"],
+    "bgoo": SCHEDULE_EVENT_SEC["goobrawl"],
+}
+
+
+def despawn_window_hit(mtype, elapsed_sec) -> bool:
+    """Is `elapsed_sec` inside the band around this type's window close?
+
+    The one place the band is expressed, so the write path and the read path
+    below cannot drift apart - which is the whole reason this is a function
+    and not two copies of an inequality.
+    """
+    win = EVENT_WINDOW_SEC.get(mtype)
+    if not win or not isinstance(elapsed_sec, (int, float)):
+        return False
+    return win - BOSS_DESPAWN_WINDOW_SLACK <= elapsed_sec <= win + BOSS_DESPAWN_WINDOW_CEILING
+
+
+def stored_row_is_despawn(d: dict) -> bool:
+    """A logged `death` that the despawn test would now call a despawn.
+
+    THE FIX AT WRITE TIME DOES NOT REACH THE ROWS ALREADY ON DISK, and those
+    rows are what a chain planner reads to decide which shards actually FINISH
+    a boss. Measured 2026-10-18 over the whole log: of 37 event-boss deaths, 20
+    are despawns - 9 crabxx, 5 franky, 5 icegolem, 1 rgoo - across eleven
+    shards. Left alone, `kills_logged` and `kills_per_day` say 20 kills that
+    never happened.
+
+    Everything the band needs is already on a stored death row, so this is a
+    READ-TIME reclassification and the append-only log is never rewritten:
+    `ttk_sec` is the elapsed seconds, absent `estimated_respawn` is the `er is
+    None` arm, and `method` identifies the ambiguous branch a real kill with a
+    respawn estimate never reaches. A row with no `ttk_sec` had no spawn time,
+    so nothing is claimed about it - same rule as the write path.
+    """
+    if d.get("ev") != "death" or d.get("estimated_respawn"):
+        return False
+    if d.get("method") != "absent_on_responding_server":
+        return False
+    return despawn_window_hit(d.get("type"), d.get("ttk_sec"))
 # Seed list for servers the poller has not seen yet. Measured by the browser
 # session 2026-10-17; the live set from ALData is preferred whenever there is
 # one.
@@ -1374,7 +1426,8 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         k = (mtype, server)
         a = agg.setdefault(k, {
             "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
-            "lost": 0, "despawns": 0, "ttks": [], "last_kill_t": None,
+            "lost": 0, "despawns": 0, "despawns_reclassified": 0,
+            "ttks": [], "last_kill_t": None,
             "last_spawn_t": None, "last_despawn_t": None,
             "first_t": None, "last_t": None,
             "confidence_counts": {"high": 0, "low": 0},
@@ -1386,7 +1439,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
                 a["first_t"] = t
             if a["last_t"] is None or t > a["last_t"]:
                 a["last_t"] = t
+        # A row logged before the write-time fix is reclassified HERE rather
+        # than on disk - see stored_row_is_despawn. The raw log keeps saying
+        # "death"; every derived number stops doing so.
         ev = d.get("ev")
+        if ev == "death" and stored_row_is_despawn(d):
+            ev = "despawn"
+            a["despawns_reclassified"] += 1
         if ev == "spawn":
             a["spawns"] += 1
             if t and (a["last_spawn_t"] is None or t > a["last_spawn_t"]):
@@ -1462,10 +1521,17 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         "min_kills_for_trend": BOSS_MIN_KILLS_FOR_TREND,
         "medians_include_low_confidence": bool(include_low),
         "events": len(rows),
-        "deaths": sum(1 for d in rows if d.get("ev") == "death"),
+        # Effective, not raw: a pre-fix row counts where it belongs. The
+        # summary has always counted the WHOLE log rather than the filtered
+        # type - `?type=` narrows `history`, never these - so dragold and
+        # franky both reported 688/800 and neither was wrong about itself.
+        # Named here because it reads like a bug and is not one.
+        "deaths": sum(1 for d in rows
+                      if d.get("ev") == "death" and not stored_row_is_despawn(d)),
         "spawns": sum(1 for d in rows if d.get("ev") == "spawn"),
         "lost": sum(1 for d in rows if d.get("ev") == "lost"),
-        "despawns": sum(1 for d in rows if d.get("ev") == "despawn"),
+        "despawns": sum(1 for d in rows if d.get("ev") == "despawn"
+                        or stored_row_is_despawn(d)),
         "first_event": rows[0].get("t") if rows else None,
         "last_event": rows[-1].get("t") if rows else None,
         "history": out,
@@ -2148,7 +2214,7 @@ class BossWatch:
                     gap = gap_for(f)
                     rs = BOSS_RESPAWN_SEC.get(mtype)
                     spawn_t = f.get("spawn_t")
-                    win = SCHEDULE_EVENT_SEC.get(mtype)
+                    win = EVENT_WINDOW_SEC.get(mtype)
                     elapsed = (poll_t - spawn_t) if spawn_t else None
                     # A timed event boss gone at the close of its window with no
                     # respawn estimate DESPAWNED; it was not killed. Positive
@@ -2156,8 +2222,7 @@ class BossWatch:
                     despawned = bool(
                         er is None and not dead_reported and win
                         and elapsed is not None
-                        and win - BOSS_DESPAWN_WINDOW_SLACK <= elapsed
-                        <= win + BOSS_DESPAWN_WINDOW_CEILING)
+                        and despawn_window_hit(mtype, elapsed))
                     if despawned:
                         self._emit({
                             "ev": "despawn", "t": iso(poll_t), "type": mtype,
