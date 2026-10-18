@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v93
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v94
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1596,6 +1596,47 @@ function getNumChests() {
 // The reasoning and the measurements behind every number are in this version's
 // entry in the header above; what follows is what the code needs.
 // -> RangerComments.md#boss-events-go-contribute-from-maximum-range
+/* TAXI PROBE. The claim this whole mechanism rests on - that a hop-sick
+   character can WALK to a join event and still earn credit - is derived from
+   the server source and has never been observed. This records each episode
+   so it can be, and persists to CODE storage because a hop reloads the page
+   and wipes anything in memory. Read it with ShowTaxiProbe().
+   -> RangerComments.md#taxiWalkProbe */
+const TAXI_PROBE_KEY = 'taxi_probe';
+const TAXI_PROBE_MAX = 30;
+
+function taxiProbeRead() {
+	try { return get(TAXI_PROBE_KEY) || []; }
+	catch (e) { bossLog('taxi probe read failed: ' + e, 'orange'); return []; }
+}
+
+function taxiProbeWrite(list) {
+	try {
+		while (list.length > TAXI_PROBE_MAX) list.shift();
+		set(TAXI_PROBE_KEY, list);
+	} catch (e) { bossLog('taxi probe write failed: ' + e, 'orange'); }
+}
+
+/* One row per walk-in-sick episode, keyed on event+shard+spawn so a reload
+   mid-fight updates the row it already started rather than opening a new
+   one. */
+function taxiProbeNote(name, fields) {
+	const shard = (typeof parent !== 'undefined')
+		? (parent.server_region + parent.server_identifier) : '?';
+	const list = taxiProbeRead();
+	let row = null;
+	for (let i = list.length - 1; i >= 0; i--) {
+		if (list[i].name === name && list[i].shard === shard && !list[i].closed) { row = list[i]; break; }
+	}
+	if (!row) {
+		row = { name, shard, started: Date.now(), closed: false };
+		list.push(row);
+	}
+	for (const k in fields) row[k] = fields[k];
+	taxiProbeWrite(list);
+	return row;
+}
+
 const BOSS_JOIN_SPOTS = {
 	goobrawl: { map: 'goobrawl', x: null, y: null },
 	crabxx: { map: 'main', x: -1000, y: 1700 },
@@ -2322,6 +2363,57 @@ async function bossPosture(mon) {
 	await safeMove(mon.x - dx * f, mon.y - dy * f);
 }
 
+/* TRUE when the join is a TAXI to somewhere reachable on foot, which is the
+   only case where being refused the join still leaves the fight available.
+
+   NOT the same question as isJoinEvent(). Measured against upstream 2148cf25
+   at node/server.js:12659-12676, five events carry join:true and they split
+   two ways: crabxx (main), franky (level2w) and icegolem (winterland) are
+   transports to ordinary walkable maps, skipped entirely if you are already
+   within 200 units - so the join saves a walk and nothing more. goobrawl's
+   map has `doors: []` and no walkable entrance, and abtesting assigns teams
+   and can answer join_too_late; for those two the join IS the only way in and
+   refusing while sick is correct.
+
+   Derived rather than listed: BOSS_JOIN_SPOTS gives goobrawl null coords
+   because the server supplies no x/y for it, and G decides whether the
+   destination map has doors. A map that gains or loses doors changes this
+   answer without an edit here. */
+function bossTaxiWalkable(name) {
+	const spot = BOSS_JOIN_SPOTS[name];
+	if (!spot || typeof spot.x !== 'number') return false;
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+	const m = g && g.maps && g.maps[spot.map];
+	return !!(m && m.doors && m.doors.length);
+}
+
+/* Closes the open row for `name` on THIS shard, if a walk-in-sick opened
+   one. Records what the episode is actually evidence for: that we were still
+   present when it died, how long we had been there, and whether we were
+   still sick at the end. Credit itself is awarded server-side and is not
+   visible from here - compare the row against the tracker's kill count for
+   that monster if you want the final confirmation. */
+function taxiProbeClose(name, dwellMs) {
+	const shard = (typeof parent !== 'undefined')
+		? (parent.server_region + parent.server_identifier) : '?';
+	const list = taxiProbeRead();
+	for (let i = list.length - 1; i >= 0; i--) {
+		const r = list[i];
+		if (r.name === name && r.shard === shard && !r.closed && r.walkedAt) {
+			r.closed = true;
+			r.diedAt = Date.now();
+			r.presentAtDeath = true;
+			r.dwellSec = Math.round((dwellMs || 0) / 1000);
+			r.sickMsAtDeath = bossHop.hopsickRemainingMs();
+			r.sickThroughout = r.sickMsAtDeath > 0;
+			taxiProbeWrite(list);
+			bossLog('taxi probe: present at ' + name + ' death after ' + r.dwellSec
+				+ 's, ' + (r.sickThroughout ? 'still hop-sick' : 'sickness had cleared'), '#7FD98A');
+			return;
+		}
+	}
+}
+
 function bossWalkTarget(name) {
 	const d = (parent.S || {})[name];
 	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
@@ -2335,13 +2427,25 @@ async function bossApproach(name) {
 	const mon = get_nearest_monster({ type: bossMonsterType(name) });
 	if (mon) { await bossPosture(mon); return; }
 	if (BOSS_JOIN_SPOTS[name]) {
-		// hopsickness is the one refusal worth naming: it is temporary, and the
-		// alternative reading - "join is broken" - would send us walking to a
-		// destination the teleport reaches for free.
-		if (character.s && character.s.hopsickness) { bossNote('hopsick - cannot join ' + name + ' yet'); return; }
-		bossNote('joining ' + name);
-		try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
-		return;
+		/* THE TELEPORT IS STILL PREFERRED. When it is available it costs
+		   nothing and reaches the spot for free, which is what the previous
+		   wording here was protecting and it was right to.
+		   What changed in v94: being refused the join no longer means the
+		   FIGHT is unreachable. The server refuses it while hop-sick
+		   (node/server.js:12653) and the refusal is about the TAXI - for a
+		   walkable destination the boss is still there to be walked to, and
+		   credit while sick costs 5x in dwell rather than being denied.
+		   So: not sick, teleport. Sick and walkable, fall through to the walk
+		   below. Sick and NOT walkable (goobrawl, abtesting), still bail,
+		   because for those the join really is the only way in. */
+		if (!(character.s && character.s.hopsickness)) {
+			bossNote('joining ' + name);
+			try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
+			return;
+		}
+		if (!bossTaxiWalkable(name)) { bossNote('hopsick - ' + name + ' has no walkable entrance, waiting it out'); return; }
+		bossNote('hopsick - walking to ' + name + ' instead of joining');
+		taxiProbeNote(name, { walkedAt: Date.now(), sickMsAtWalk: bossHop.hopsickRemainingMs() });
 	}
 	if (smart.moving) return;
 	const where = bossWalkTarget(name);
@@ -2882,6 +2986,27 @@ const bossHop = {
 		return !!s.hopsickness;
 	},
 
+	/* What is ACTUALLY left, not the full duration. hopsickMs() returns G's
+	   720000 whatever the clock says, so a character 80% of the way through
+	   was being charged the whole twelve minutes by every gate that used it.
+	   The live field is on the condition itself; falls back to the full
+	   duration when it is absent, which is the conservative direction. */
+	hopsickRemainingMs() {
+		const s = (typeof character !== 'undefined' && character && character.s) || {};
+		const h = s.hopsickness;
+		if (!h) return 0;
+		return (typeof h.ms === 'number' && h.ms >= 0) ? h.ms : this.hopsickMs();
+	},
+
+	/* A join whose refusal does NOT put the fight out of reach - see
+	   bossTaxiWalkable() for why this is a different question from
+	   isJoinEvent(). The gates below use THIS one; isJoinEvent stays because
+	   it answers its own question correctly and is deliberately open-ended
+	   over G, which is exactly why it must not be the predicate here. */
+	isTaxiJoin(mtype) {
+		return this.isJoinEvent(mtype) && bossTaxiWalkable(mtype);
+	},
+
 	localBossLive(mtype) {
 		return parent?.S?.[mtype]?.live === true;
 	},
@@ -2900,11 +3025,13 @@ const bossHop = {
 		let best = null;
 		for (const t of CONFIG.bossHop.targets) {
 			if (!this.localBossLive(t.mtype)) continue;
-			/* Standing right here and still unreachable: the join is refused
-			   while hop-sick, so take it only once the clock has run out.
-			   Skipping beats attempting and logging a server refusal.
+			/* Only skip when the join is the ONLY way in. For a taxi join the
+			   refusal costs the lift, not the fight: the boss is on a walkable
+			   map and bossApproach walks to it. Skipping here was the worst of
+			   the three over-restrictions this gate had - it walked the party
+			   away from a live boss standing in front of them.
 			   -> RangerComments.md#joinWhileHopsick */
-			if (hopsick && this.isJoinEvent(t.mtype)) continue;
+			if (hopsick && this.isJoinEvent(t.mtype) && !this.isTaxiJoin(t.mtype)) continue;
 			const cur = this.currentShard();
 			const st = parent?.S?.[t.mtype];
 			const hp = typeof st?.hp === 'number' ? st.hp : null;
@@ -2953,8 +3080,8 @@ const bossHop = {
 				   for its whole duration, so landing hopsickMs + margin ahead
 				   means the clock clears about when the event opens.
 				   -> RangerComments.md#joinWhileHopsick */
-				const buffer = this.isJoinEvent(r.mtype)
-					? this.hopsickMs() + CONFIG.bossHop.joinClearMarginMs
+				const buffer = (this.isJoinEvent(r.mtype) && !this.isTaxiJoin(r.mtype))
+					? this.hopsickRemainingMs() + CONFIG.bossHop.joinClearMarginMs
 					: CONFIG.bossHop.preSpawnBuffer;
 				if (untilSpawn <= 0 || untilSpawn > buffer) continue;
 				hp = this.maxHpOf(r.mtype, r.maxHp);
@@ -3006,7 +3133,14 @@ const bossHop = {
 			if (this.isJoinEvent(x.mtype)) {
 				const win = this.eventWindowMs(x.mtype);
 				if (win) {
-					const joinableAt = Date.now() + c.hopLatencyMs + c.safetyMarginMs + this.hopsickMs();
+					/* A TAXI join charges no sickness wait: we walk in sick and
+					   pay 5x in dwell, which every one of these windows
+					   absorbs - franky at 200 contributors needs 398s of 2400.
+					   Only a join with no walkable entrance has to wait the
+					   clock out, and only what REMAINS of it, not the full
+					   duration. */
+					const wait = this.isTaxiJoin(x.mtype) ? 0 : this.hopsickRemainingMs();
+					const joinableAt = Date.now() + c.hopLatencyMs + c.safetyMarginMs + wait;
 					const closesAt = (x.live ? Date.now() : (x.spawnTime || Date.now())) + win;
 					if ((closesAt - joinableAt) / 1000 < x.requiredDwellSec) return false;
 				}
@@ -3032,6 +3166,17 @@ const bossHop = {
 	   followers are told first and come along. */
 	async goHomeIfIdle(cur) {
 		const c = CONFIG.bossHop;
+		/* NEVER leave a boss that is live where we stand. candidates() opens
+		   with `if (r.shard === cur) continue;`, so a locally-live target is
+		   structurally invisible to pickTarget - which means "nothing
+		   eligible anywhere" can be true of the picker while a boss is on
+		   screen. Before v94 the two gates between them produced exactly
+		   that: the local gate skipped a sick taxi join, the picker could not
+		   see it, and 90s later the party hopped home, clearing the sickness
+		   instantly and abandoning a boss still running on the shard it just
+		   left. Fixing the taxi gates narrows this; it does not close it,
+		   because any future local-only case has the same shape. */
+		if (this.localTarget()) { this.idleSince = 0; return 'continue'; }
 		if (!c.returnHome) { this.idleSince = 0; return 'continue'; }
 		const home = (typeof character !== 'undefined' && character && character.home) || null;
 		if (!home || cur === home) { this.idleSince = 0; return 'continue'; }
@@ -3194,6 +3339,11 @@ const bossHop = {
 				}
 				const dwell = Date.now() - (this.arrivedAt || this.fightStart);
 				game_log(`🐉 ${this.targetType} dead on ${this.targetShard} after ${Math.round(dwell / 1000)}s here — next target`, '#FFD700');
+				/* PRESENT AT DEATH is the thing credit actually requires, and
+				   this branch is the only place we know it happened. Only
+				   closes a row an earlier walk-in-sick opened, so an ordinary
+				   teleported fight records nothing. */
+				taxiProbeClose(this.targetType, dwell);
 				/* Straight back to IDLE, NOT home - see NO HOME ROUTING above.
 				   Credit was already awarded where it died. */
 				this.reset();
@@ -4480,6 +4630,37 @@ function topButtons() {
 	   target list now spans seven bosses with unrelated calendars, so the
 	   gate is the feature's own switch. */
 	if (CONFIG.bossHop.enabled) {
+		/* The probe is the only thing that can turn "the source says a sick
+		   character can walk in and still earn credit" into something
+		   observed. Each row is one walk-in-sick episode. */
+		add_top_button('ShowTaxiProbe', '🚶', () => {
+			const rows = taxiProbeRead();
+			if (!rows.length) {
+				game_log('taxi probe: no walk-in-sick episodes recorded yet', '#8b98ab');
+				return { episodes: 0 };
+			}
+			const out = rows.map(r => ({
+				boss: r.name,
+				shard: r.shard,
+				walked: r.walkedAt ? new Date(r.walkedAt).toISOString().slice(11, 19) : null,
+				sickMinAtWalk: r.sickMsAtWalk != null ? +(r.sickMsAtWalk / 60000).toFixed(1) : null,
+				presentAtDeath: !!r.presentAtDeath,
+				dwellSec: r.dwellSec != null ? r.dwellSec : null,
+				sickThroughout: r.sickThroughout === true,
+				open: !r.closed,
+			}));
+			const closed = out.filter(r => !r.open);
+			const present = closed.filter(r => r.presentAtDeath).length;
+			game_log(`taxi probe: ${out.length} episode(s), ${closed.length} closed, `
+				+ `${present} present at death`, '#FFD700');
+			/* The sick-throughout rows are the ones that prove the point: a
+			   death we attended while the sickness never cleared. */
+			const proof = closed.filter(r => r.presentAtDeath && r.sickThroughout).length;
+			game_log(`  ${proof} of those were still hop-sick at the kill`,
+				proof ? '#7FD98A' : '#8b98ab');
+			return { episodes: out.length, closed: closed.length, presentAtDeath: present, sickAtKill: proof, rows: out };
+		});
+
 		add_top_button('ShowBossHop', '🐉', () => {
 			const now = Date.now();
 			const c = CONFIG.bossHop;

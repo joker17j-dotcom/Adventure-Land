@@ -18,6 +18,108 @@ Anchors match the `-> RangerComments.md#anchor` pointers in the source.
 
 ---
 
+## joinWhileHopsick
+
+Three call sites point here and the section did not exist until 2026-10-18 -
+the reference was written when the rule was a one-liner and never grew a home.
+What it used to mean: the server refuses `join` while hop-sick, so a hop timed
+to land at spawn lands unable to join at all, which is what v87 did for crabxx
+every time.
+
+That much is still true. The inference drawn from it was not. A REFUSED JOIN
+MEANS THE TAXI IS UNAVAILABLE, NOT THAT THE BOSS IS. Read the handler
+(node/server.js:12645-12676 at upstream 2148cf25): after the hopsickness
+refusal at :12653 it dispatches on the event name, and three of the five
+branches are a `transport_player_to` and nothing else -
+
+    crabxx    -> main,       (-1000, 1700), skipped if already within 200
+    franky    -> level2w,    (-300, 150),   skipped if already within 200
+    icegolem  -> winterland, (820, 425),    skipped if already within 100
+
+No team assignment, no instance, no flag, no state. Compare the abtesting
+branch eight lines later, which assigns `player.team` and can answer
+`join_too_late`; that is what a real join looks like. crabxx is not one: its
+spawn is an ordinary main-map entry in design/maps.js:624, `{ type: "crabxx",
+boundary: [-1256, 1520, -712, 2004], count: 0 }`, inside the `main` block, and
+there is no G.maps.crabxx. The taxi drops you into a box the party already
+farms.
+
+So the cost of being sick at one of those three is the lift, not the fight.
+Walk in and the only penalty is the one on the award path: `mnet /= 4` plus
+`output: -20`, a 0.2 factor on points, which is 5x in required dwell.
+
+WHICH IS AFFORDABLE, AND NOT MARGINALLY. All three taxi events carry the same
+2,400s window (design/events.js, duration 60*40). Against the share model at
+Dexon's 2,605 dps:
+
+    boss     sick dwell          wait-then-clean    spare after walking
+    crabxx   1.3s   (K=40)       720.3s             2,398.7s
+    franky   167.3s (K=40)       753.5s             2,232.7s
+    franky   398.0s (K=200)      799.6s             2,002.0s
+
+There is no contributor count at which waiting wins. The 720s sickness is a
+flat floor; the sick dwell only reaches it somewhere past K=1000. The binding
+constraint is the window, and the window is six times the worst case.
+
+THE TWO THAT STILL HAVE TO WAIT. goobrawl's map is `doors: []` - no walkable
+entrance exists, so the join really is the only way in and refusing while sick
+is correct. abtesting is the real join described above. This is why the gates
+use `isTaxiJoin()` and not `isJoinEvent()`: the latter reads
+`G.events[mtype].join` and is deliberately open-ended so a new daily behaves
+correctly without an edit, which is exactly the property that would make a
+blanket relaxation wrong. `bossTaxiWalkable()` derives the answer instead -
+BOSS_JOIN_SPOTS supplies coordinates only for the events the server gives
+coordinates for, and G decides whether the destination map has doors, so a map
+that gains or loses them changes the answer with no edit here.
+
+WHAT v94 CHANGED, in four places. bossApproach now falls through to the walk
+when sick and the destination is walkable, instead of returning; the teleport
+is still preferred whenever it is available, which is what the previous
+comment there was protecting and was right to. localTarget no longer skips a
+sick taxi join - that one was the worst, because it walked the party away from
+a live boss standing in front of them. pickTarget's window test and
+candidates' pre-spawn buffer charge no sickness wait for a taxi join, and for
+the other two charge only what REMAINS rather than the full duration.
+
+THE REMAINING-MS POINT IS SEPARATE AND WAS ITS OWN BUG. hopsickMs() returns
+G's 720000 whatever the clock says, so every gate using it charged a character
+80% of the way through the full twelve minutes. hopsickRemainingMs() reads
+`character.s.hopsickness.ms` - measured live at 531,630 then 451,765 on
+2026-10-17 - and falls back to the full duration when the field is absent,
+which is the conservative direction.
+
+## taxiWalkProbe
+
+The claim the whole of the above rests on - that a hop-sick character can walk
+to a taxi join and still be credited - is derived from the server source and
+has never been watched happening. The probe exists to close that, and it is
+deliberately narrow: it records only what it can actually observe.
+
+One row per walk-in-sick episode, keyed on event plus shard so a mid-fight
+reload updates the row it already opened rather than starting a second.
+Written to CODE storage, because a hop reloads the page and anything in memory
+dies with it - the same property the relay-cursor work in v91 depends on.
+Capped at 30 rows.
+
+A row opens in bossApproach the moment a sick walk is chosen, carrying the
+remaining sickness at that point. It closes in the FIGHTING branch of
+bossHop.tick, which is the one place the script knows a boss died WHILE WE
+WERE STILL THERE - presence at death being the thing credit actually requires
+(the award loop resolves contributors through players[name_to_id[name]] and
+silently skips anyone who has left). The closing row records dwell in seconds
+and the sickness remaining at the kill.
+
+THE ROW THAT PROVES THE POINT is one with presentAtDeath true AND
+sickThroughout true: a kill we attended from a walk, with the sickness never
+having cleared. ShowTaxiProbe() counts those separately for that reason.
+
+WHAT IT DOES NOT PROVE. Credit is awarded server-side and is not visible from
+the client, so the probe shows participation, not payment. To close the last
+step, compare a row against the tracker's kill count for that monster before
+and after - socket.emit('tracker'), per CLAUDE.md. An ordinary teleported
+fight records nothing at all, so the log stays quiet unless the new path is
+actually being exercised.
+
 ## singletargetmobs-is-a-curated-list-maintained-by
 
 singleTargetMobs is a curated list, maintained by hand: add a monster when

@@ -21,6 +21,96 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v94
+
+A refused join blocks the taxi, not the fight - plus a probe to prove it.
+
+**NOT DEPLOYED.** Live slots run v91/v52/v75.
+
+**A refused join means the TAXI is unavailable, not the boss.** That inference
+was the defect, and it was mine in v89. The server refuses `join` while
+hop-sick (node/server.js:12653, upstream 2148cf25) - true, measured, and still
+true. What does not follow is that the fight is out of reach. Three of the
+five join events dispatch to a bare `transport_player_to` and nothing else:
+crabxx to main (-1000, 1700), franky to level2w (-300, 150), icegolem to
+winterland (820, 425), each skipped outright if you are already within 200
+units (100 for icegolem). No team, no instance, no flag. crabxx's spawn is an
+ordinary main-map box at design/maps.js:624 and there is no G.maps.crabxx at
+all - the taxi drops you where the party already farms.
+
+**It was hitting two of three current targets.** `targets` is dragold, franky,
+crabxx, and franky and crabxx are both taxi joins.
+
+**Walking in sick is affordable by a wide margin.** All three taxi events
+share a 2,400s window. At Dexon's 2,605 dps the sick dwell is 1.3s for crabxx
+at 40 contributors and 398.0s for franky at 200, against a flat 720s to wait
+the sickness out. There is no contributor count where waiting wins - the 720s
+is a floor and the sick dwell only reaches it past roughly K=1000. The window,
+not the 5x penalty, is the binding constraint, and it is six times the worst
+case.
+
+**The predicate is `isTaxiJoin`, NOT `isJoinEvent`, and the distinction is the
+whole fix.** goobrawl's map is `doors: []` - no walkable entrance, so for it
+the join really is the only way in and refusing while sick stays correct.
+abtesting is the real join, with teams and `join_too_late`. `isJoinEvent`
+reads `G.events[mtype].join` and is deliberately open-ended so a new daily
+behaves without an edit, which is exactly what would make a blanket relaxation
+wrong. `bossTaxiWalkable()` derives it instead: BOSS_JOIN_SPOTS carries
+coordinates only where the server supplies them (goobrawl's are null), and G
+decides whether the destination map has doors. A map that gains or loses doors
+changes the answer with no edit here.
+
+**Four places changed.** bossApproach falls through to the walk when sick and
+the destination is walkable - THE TELEPORT IS STILL PREFERRED whenever it is
+available, which is what the comment there was protecting and was right to;
+only the sick branch changed, from `return` to a walk. localTarget no longer
+skips a sick taxi join, which was the worst of the three because it walked the
+party away from a live boss standing in front of them. pickTarget's window
+test and candidates' pre-spawn buffer charge no sickness wait for a taxi join.
+
+**A separate bug found on the way: hopsickMs() is the full duration, always.**
+Every gate using it charged a character 80% of the way through the whole
+twelve minutes. `hopsickRemainingMs()` reads `character.s.hopsickness.ms` -
+measured live at 531,630 then 451,765 on 2026-10-17 - and falls back to the
+full duration when absent, which is the conservative direction. That is what
+makes the two non-taxi gates correct rather than merely less strict.
+
+**goHomeIfIdle no longer abandons a boss that is live where we stand.**
+candidates() opens with `if (r.shard === cur) continue;`, so a locally-live
+target is structurally invisible to pickTarget - "nothing eligible anywhere"
+could be true of the picker while a boss was on screen. The two gates together
+produced exactly that: the local gate skipped a sick taxi join, the picker
+could not see it, and 90s later the party hopped home, clearing the sickness
+instantly and leaving a boss still running on the shard it had just left.
+Fixing the taxi gates narrows this; the guard closes it, and closes any future
+local-only case with the same shape.
+
+**THE PROBE, because none of the above has been observed.** Everything here is
+read off the server source. ShowTaxiProbe() records one row per walk-in-sick
+episode - keyed on event plus shard, written to CODE storage so a hop's reload
+does not erase it, capped at 30. A row opens when a sick walk is chosen and
+closes in the FIGHTING branch, the one place the script knows a boss died
+while we were still present, which is what credit actually requires. The row
+that proves the point is presentAtDeath AND sickThroughout: a kill attended
+from a walk with the sickness never clearing, and those are counted
+separately. It shows participation, not payment - credit is awarded
+server-side and is not visible from the client, so the last step is comparing
+a row against the tracker's kill count. An ordinary teleported fight records
+nothing, so the log stays quiet unless the new path is being used.
+
+**Demonstrated, 34 assertions against the real functions lifted from the
+committed file.** 23 on the predicate and the probe: all three taxi joins
+recognised, goobrawl and abtesting refused, a destination that LOSES its doors
+ceasing to be a taxi join, remaining-ms read and its fallback, a second note
+updating a row rather than opening one, a later walk opening a new row, an
+ordinary fight recording nothing, and a storage write failure degrading rather
+than throwing. 11 on the gates: hop-sick with crabxx live here now taken and
+with goobrawl live here still skipped, both unchanged when not sick; crabxx
+eligible at 1,500s remaining while sick; goobrawl refused with 700s of
+sickness against a 540s window but ELIGIBLE with only 60s left, which is the
+remaining-ms fix observable from outside; and goHomeIfIdle holding for a live
+local boss while still going home when there is none.
+
 ## v93
 
 The hop burst: 2-5 boss_hop per hop, because the lock was released too early.
