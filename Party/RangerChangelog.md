@@ -21,6 +21,42 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v92
+
+Relay helpers: say why plActed/plMarkActed are unreferenced here.
+
+**NOT DEPLOYED.** The live slots were loaded with v91/v52/v75 at ~14:56 on
+2026-10-18 and confirmed running by feature detection. This is the review
+round on top of that; repo HEAD is ahead of all three until the operator
+pushes again.
+
+A comment, no behaviour change.
+
+plActed and plMarkActed are declared in this file and never called, which the
+browser session flagged as exactly the declared-and-unreferenced shape the
+dead-code pass removed elsewhere and a future AST scan will flag again. They
+are staying, and the comment now says why rather than leaving the next reader
+to work it out or delete them.
+
+The two helpers exist to stop a handler that RELOADS THE PAGE from acting on
+the same message twice. Dexon has no such handler: `on_cm` takes six message
+types - boss, mh_report, dps_report, blacklist_spot, come_to_merchant,
+merchant_done - and none of them reaches `change_server`, whose only call site
+is in the bossHop driver. So the in-memory plFirstTime covers the
+in-game/relay duplicate and the persisted cursor covers the reload, and the
+durable acted-list has nothing to do here.
+
+They stay for two reasons. The relay block is identical in all three files, so
+the next fix to it ports once instead of three times - the Merchant v68 fix
+not reaching these three is precisely what cost the followers a reload loop in
+the first place. And if a Dexon handler that hops is ever added, the helpers
+are already there; the comment names bossHopFollow in Priest.js and Mage.js as
+the shape to copy.
+
+Third option considered and rejected: dropping them from Ranger only. That
+makes the relay block diverge per file, which is the condition that produced
+the bug being fixed.
+
 ## v91
 
 Relay replay protection, ported from Merchant v68.

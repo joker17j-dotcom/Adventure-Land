@@ -21,6 +21,44 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v76
+
+Review round: the same-shard guard no longer fails silently.
+
+**NOT DEPLOYED.** The live slots were loaded with v91/v52/v75 at ~14:56 on
+2026-10-18 and confirmed running by feature detection. This is the review
+round on top of that; repo HEAD is ahead of all three until the operator
+pushes again.
+
+Two findings from the browser session's review of the reload-loop fix. Neither
+is a behaviour change on the path that was broken.
+
+**The same-shard guard's catch was silent.** `try { here =
+parent.server_region + parent.server_identifier; } catch (e) { }` - if that
+throws, `here` stays null, the guard never fires, and nothing says so. It was
+the only silent catch in bossHopFollow while plActed and plMarkActed both
+logged theirs, which is exactly the antipattern this repo's own rule names: a
+catch that returns a default must log, or "the helper is missing" and "the
+default is correct" stay indistinguishable. Now logs, and says in the message
+that the acted-list still applies, so the line reads as a degraded layer
+rather than a failure.
+
+**The `parent.` prefix is load-bearing and now says so.** Measured live
+2026-10-18 by the browser session: bare `server_region` is UNDEFINED in the
+CODE context and only the parent-window form resolves. Anyone tidying the
+prefix away would disable the guard with nothing visible changing. Recorded in
+the comment above the read for that reason.
+
+Also confirmed live in the same review, and the reason neither finding is
+urgent: CODE storage round-trips a real Array through the game's own
+`set`/`get` - `isArray` true, `push` and `indexOf` both functions - so
+plMarkActed's `(get(k) || []).push(...)` works against the real API and not
+only against a harness stub. `get('pl_acted')` is null before first use, which
+`|| []` handles.
+
+bossHopFollow stays byte-identical between the two files: 2,228 bytes, md5
+1c53a7a2c5cf41090876825cbb7e278f.
+
 ## v75
 
 The follower reload loop: a hop replays the message that caused it.

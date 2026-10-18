@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v75
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v76
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3334,9 +3334,14 @@ function bossHopFollow(data) {
 	   page reload, and the reload is what re-reads the backlog that sent us
 	   here - so without this the message becomes its own cause. This is the
 	   shape the operator actually saw on 2026-10-18: two followers on US V,
-	   each "hopping" to US V, reloading in place. */
+	   each "hopping" to US V, reloading in place.
+	   The `parent.` prefix is REQUIRED, not stylistic: measured live
+	   2026-10-18, bare `server_region` is undefined in the CODE context and
+	   only the parent-window form resolves. Simplifying it away would turn
+	   this guard off without changing anything visible. */
 	let here = null;
-	try { here = parent.server_region + parent.server_identifier; } catch (e) { }
+	try { here = parent.server_region + parent.server_identifier; }
+	catch (e) { game_log(`boss_hop: cannot read the current shard (${e}) - same-shard guard off for this message, the acted-list below still applies`, 'orange'); }
 	if (here && here === shard) {
 		game_log(`boss_hop to ${shard} ignored - already there`, '#8b98ab');
 		return;

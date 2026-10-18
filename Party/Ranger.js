@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v91
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v92
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -283,6 +283,16 @@ if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog rep
 /* plSeen cannot do this job: it is in memory, and the whole problem is that
    the page dies between acting on a message and remembering that we did.
    Capped because it only has to outlive the MESSAGE_TTL window. */
+/* DELIBERATELY UNREFERENCED IN THIS FILE, and a dead-code scan will say so.
+   plActed/plMarkActed exist to stop a handler that RELOADS THE PAGE from
+   acting on the same message twice. Dexon has no such handler: on_cm takes
+   six message types and none of them reaches change_server, whose only call
+   site is in the bossHop driver. The in-memory plFirstTime covers the
+   in-game/relay duplicate, and the persisted cursor above covers the reload.
+   They stay so the relay block is the same in all three files - the next fix
+   ports once rather than three times - and so that a future Dexon handler
+   that does hop has them to hand. If one is added, bracket it exactly as
+   bossHopFollow does in Priest.js and Mage.js. */
 function plActed(id) {
 	if (!id) return false;
 	try { return (get(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
