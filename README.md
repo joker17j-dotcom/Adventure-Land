@@ -58,7 +58,7 @@ is how a character learns about a boss on a shard it is not connected to —
 | File | What it holds |
 |---|---|
 | `CLAUDE.md` | Conventions for AI sessions working on this repo. **Read first** |
-| `Party/CHANGELOG.md` | `Merchant.js` version history, and what was measured to justify each change |
+| `Party/MerchantChangelog.md` | `Merchant.js` version history, and what was measured to justify each change |
 | `Party/MerchantComments.md` | The long-form notes `Merchant.js` cites as `-> MerchantComments.md#anchor` |
 | `Party/RangerChangelog.md` | `Ranger.js` version history, v88 back to v50 |
 | `Party/RangerComments.md` | The long-form notes `Ranger.js` cites as `-> RangerComments.md#anchor` |
