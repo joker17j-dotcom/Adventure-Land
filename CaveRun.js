@@ -1,4 +1,10 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v13 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v14 (TEST BUILD)
+// v14 2026-10-18 travel leash tightens to 120/60 while walking and reverts to
+//                180/120 whenever anyone is fighting; a localStorage trouble
+//                beacon carries fear, which is self-only and readable nowhere
+//                else; the leader cancels its in-flight path and waits when a
+//                member is too far back or in trouble, bounded at 20s; an
+//                unseen follower no longer counts as a close one
 // v13 2026-10-12 crypt: retaliate against anything that starts it, except the
 //                three that would win; caveOnly/caveNever set it at runtime
 // v12 2026-10-12 crypt mode: operator drives the leader, followers cohere and
@@ -139,7 +145,101 @@ const MOVE = {
 	closeStepMax: 110,
 	staleSlack: 60,
 	smartMoveMaxMs: 8000,
+
+	/* TRAVEL LEASH - v14. Tighter while the party is walking, the numbers above
+	   the moment anyone is fighting. See the v14 block below for why the band
+	   stays 60u wide and why the ceiling only ever comes down. */
+	tighten: true,
+	travelCloseAt: 120,
+	travelReleaseAt: 60,
+	travelCeiling: 135,
 };
+
+/* ---------------------------------------------------------------- v14 -----
+   THE TRAVEL LEASH, THE TROUBLE BEACON AND THE LEADER HOLD. Three changes
+   that only work as one: a tighter leash on its own just moves where the
+   follower gives up, because this file already measures that a follower
+   CANNOT converge on a faster leader. The leader holding is what makes a
+   tight band reachable, and the beacon is what tells the leader to hold.
+
+   HYSTERESIS IS PRESERVED EXACTLY. 120-60 is the same 60u band as 180-120,
+   and that margin exists because it must stay comfortably above kiteStep
+   (55) or v6's oscillation returns - 2,064 close steps against 486 kite
+   steps, cancelling each other out. travelCeiling keeps closeAt's +15
+   relationship for the same reason: a kite step free to push to 195 while
+   the band closes at 120 would re-latch recovering on the next tick, every
+   tick.
+
+   THE CEILING NEVER GOES UP. 195 is already inside the priest's measured
+   201 heal range with no margin to spare; travel tightens it to 135. */
+const TROUBLE = {
+	hpAt: 0.55,            // at or below this fraction of max_hp, a member needs help
+	atkAt: 3,              // monsters on one member before it counts as mobbed
+	staleMs: 3000,         // a beacon older than this tells us nothing - see mateTrouble
+	/* NOT MEASURED, deliberately conservative. One ~160 byte localStorage write
+	   per character per beaconMs; at 250ms that is 12/s across three tabs. No
+	   cost was observed, but none was measured either, so it is a knob rather
+	   than a hardcoded tick. Anything comfortably under staleMs is safe. */
+	beaconMs: 250,
+};
+
+/* THE LEADER HOLD. The leader has no script-driven movement inside the Cave -
+   moveTick returns at the isLeader() line, and the crypt block says in as many
+   words that the operator drives. So "stop and wait" cannot mean declining to
+   issue a move; it means CANCELLING one the operator already started. Measured
+   2026-10-18 on the live leader: character.moving was true and
+   character.going_x / going_y carried the in-flight target, so a move() to the
+   character's own position stops it and the remembered target re-issues it.
+
+   WHAT THIS CANNOT DO, stated so nobody has to find out. going_x/going_y is
+   the CURRENT leg, not the whole journey: a click that paths over several legs
+   loses its remainder and the operator re-clicks. character.destination does
+   not exist on the character - checked, not assumed.
+
+   BOUNDED, BECAUSE AN UNBOUNDED WAIT IS THE TRAVEL DEADLOCK WEARING A HAT.
+   maxMs then gives up, says so loudly, and resumes - the same shape as
+   restockGaveUp, and for the same reason: three characters standing still
+   forever is the failure least likely to be noticed, because everything
+   still looks alive.
+
+   OFF IN CRYPT, ON PURPOSE. There the operator's driving is the safety
+   mechanism that keeps the party away from Marceline, and this file already
+   refuses to put a geofence in its way. */
+const HOLD = {
+	enabled: true,
+	inCrypt: false,
+	maxMs: 20000,
+};
+
+/* FEAR IS SELF-ONLY, AND THAT IS THE ENTIRE REASON THIS BEACON EXISTS.
+   Measured 2026-10-18 in the live CODE context: character.fear is a number on
+   the character and it is on NOTHING else. Not parent.party, which carries
+   only cx/gold/in/l/level/luck/map/pdps/share/skin/type/x/y. Not
+   parent.entities[mate]. Not even parent.entities[own name]. hp/max_hp ARE on
+   a visible entity, so HP reads remotely and fear does not. A feared member
+   stops acting and cannot catch up, which is exactly the state the leader
+   needs to see, so each character publishes its own.
+
+   parent.party IS ALSO USELESS FOR DISTANCE, measured the same day: every
+   member's x/y sat frozen for a 20.7s sample while the characters walked
+   hundreds of units, and the leader's own entry was 396u from his real
+   position. On a band that is 120u wide that is not a rounding error. This is
+   why leaderPos() tries the ENTITY first and party only as a fallback, and why
+   followerGaps does the same.
+
+   WHY localStorage AND NOT send_cm. caveSay is leader-gated and the cm handler
+   drops anything whose sender is not the leader, so followers have no upward
+   channel at all without changing that protocol. localStorage is shared across
+   every adventure.land tab - this file already depends on that for cave_leader
+   - and it is synchronous, which matters at a 250ms tick where a ~1s cm round
+   trip would leave a quarter of the decision stale.
+
+   CTYPE IN THE KEY, NEVER THE NAME. The same rule as TEL_KEY and for the same
+   measured reason: a key containing "Token" is redacted by output filters on
+   the reading side. The name goes in the VALUE, where tel already puts it. */
+const ST_PREFIX = 'cave_st_';
+const ST_KEY = ST_PREFIX + character.ctype;
+
 
 /* CRYPT MODE, AND WHY IT IS NOT JUST dry.
 
@@ -221,6 +321,110 @@ let recovering = false;
 let aim = null;
 let smartFlight = 0;
 
+let troubleNow = [];
+let leashNow = null;
+let holdFrom = 0;
+let holdGoing = null;
+let holdDone = false;
+
+let beaconAt = 0;
+function beaconWrite() {
+	if (Date.now() - beaconAt < TROUBLE.beaconMs) return;
+	beaconAt = Date.now();
+	try {
+		parent.localStorage.setItem(ST_KEY, JSON.stringify({
+			name: character.name,
+			t: Date.now(),
+			map: character.map,
+			x: Math.round(character.real_x),
+			y: Math.round(character.real_y),
+			hpFrac: character.max_hp ? Math.round((character.hp / character.max_hp) * 1000) / 1000 : 1,
+			fear: character.fear || 0,
+			atk: attackersOnMe(),
+			rip: !!character.rip,
+		}));
+	} catch (e) { bump('beaconWriteFail'); }
+}
+function beacons() {
+	const out = {};
+	try {
+		const ls = parent.localStorage;
+		for (let i = 0; i < ls.length; i++) {
+			const k = ls.key(i);
+			if (!k || k.indexOf(ST_PREFIX) !== 0) continue;
+			let v = null;
+			try { v = JSON.parse(ls.getItem(k)); } catch (e) { continue; }
+			if (v && v.name) out[v.name] = v;
+		}
+	} catch (e) {}
+	return out;
+}
+/* RIP IS NOT TROUBLE, and the two readers must agree about that or the leader
+   holds for a corpse. Trouble means "needs help AND can still be helped": you
+   hold to stop someone dying, and once they have died holding achieves
+   nothing - they respawn in town, far from here, and deathTick owns getting
+   them back. followerGaps reports a dead mate as gap 0 for the same reason, so
+   neither path strands the run on a body. Caught by the harness; reading it
+   twice had not. */
+function troubleOf(st) {
+	if (!st) return null;
+	if (st.rip) return null;
+	if (st.hpFrac <= TROUBLE.hpAt) return 'hp';
+	if (st.fear > 0) return 'fear';
+	if (st.atk >= TROUBLE.atkAt) return 'mobbed';
+	return null;
+}
+/* A STALE BEACON IS NOT TROUBLE, AND IT IS NOT SAFETY EITHER. Getting that
+   wrong is worse than never reading it. Chrome clamps a hidden tab's timers to
+   ~1s and then to about one tick a minute, so a backgrounded member's beacon
+   ages while nothing at all is wrong. Read stale as trouble and the leader
+   never moves again; read it as fine and the party walks away from someone
+   dying. So stale falls back to what can be seen locally - entity hp, which is
+   real whenever the member is in range - and FEAR IS SIMPLY UNKNOWN while
+   stale, reported as such rather than guessed at. */
+function mateTrouble() {
+	const now = Date.now(), bs = beacons(), out = [];
+	for (const nm of TEAM) {
+		if (nm === character.name) continue;
+		const st = bs[nm];
+		if (st && now - st.t <= TROUBLE.staleMs) {
+			const why = troubleOf(st);
+			if (why) out.push({ who: nm, why: why });
+			continue;
+		}
+		const e = (parent.entities || {})[nm];
+		if (here(e) && e.max_hp && e.hp / e.max_hp <= TROUBLE.hpAt) out.push({ who: nm, why: 'hp/entity' });
+	}
+	return out;
+}
+/* IS THE HOLD GOING TO BACK THIS UP. The tight band and the leader hold are
+   one change, not two, and the tight band is the half that hurts on its own:
+   this file measures that a follower CANNOT converge on a faster leader, so a
+   120u band with nobody waiting just latches the slowest member into
+   recovering and leaves it there - and recovering is uninterruptible, so it
+   also stops kiting and looting. Worse than the 180 it replaced. Measured
+   2026-10-18: mage 57 against leader 65, which is 8u/s of bleed, so 60u of
+   band is gone in 7.5s and never comes back while the leader walks. So travel
+   numbers apply only where a hold will actually stop the leader. */
+function holdActive() { return HOLD.enabled && !(mode === 'crypt' && !HOLD.inCrypt); }
+function computeLeash() {
+	const base = { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling, mode: 'combat' };
+	if (!MOVE.tighten || !holdActive()) { base.mode = MOVE.tighten ? 'base/nohold' : 'base'; return base; }
+	if (engaged() || attackersOnMe() || troubleNow.length) return base;
+	return { closeAt: MOVE.travelCloseAt, releaseAt: MOVE.travelReleaseAt, ceiling: MOVE.travelCeiling, mode: 'travel' };
+}
+function leash() { return leashNow || computeLeash(); }
+/* ONE SCAN PER TICK. mateTrouble walks localStorage, and leash() is asked
+   three times a tick - by moveTick, kiteStep and recoverStep. */
+function senseTick() {
+	beaconWrite();
+	troubleNow = mateTrouble();
+	leashNow = computeLeash();
+	if (leashNow.mode === 'travel') bump('travelLeashTicks');
+	if (troubleNow.length) bump('troubleTicks');
+}
+
+
 const isFn = (f) => typeof f === 'function';
 function clog(m, c) { try { game_log('[cave] ' + m, c || '#8b98ab'); } catch (e) {} try { console.log('[cave] ' + m); } catch (e) {} }
 function throttleLog(m) { if (Date.now() - lastLog < CFG.logEveryMs) return; lastLog = Date.now(); clog(m); }
@@ -299,9 +503,15 @@ function monsterOnParty() {
 }
 function attackersOnMe() { let n = 0; for (const m of threats()) if (m.target === character.name) n++; return n; }
 
+/* A MEMBER IN TROUBLE COUNTS AS THE PARTY BEING ENGAGED, which is what makes
+   the other two assist instead of walking on. monsterOnParty only sees
+   monsters in the reader's OWN entity list, so the one case that matters - a
+   member mobbed far enough back to be out of range - is invisible to it. The
+   beacon is not, and holding the engagement open keeps pickTarget unlocked and
+   the leash on its combat numbers until it is sorted out. */
 function noteEngagement() {
 	const e = leaderEntity();
-	if ((e && e.target) || monsterOnParty()) engagedUntil = Date.now() + CFG.engageHoldMs;
+	if ((e && e.target) || monsterOnParty() || troubleNow.length) engagedUntil = Date.now() + CFG.engageHoldMs;
 }
 function engaged() { return Date.now() < engagedUntil; }
 
@@ -522,6 +732,7 @@ async function combatTick() {
 
 // ------------------------------------------------------------ movement -----
 function kiteStep(lp) {
+	const L = leash();
 	const hurt = character.hp / character.max_hp < 0.5;
 	const near = threats()
 		.filter((m) => dist(character, m) < MOVE.kiteRadius)
@@ -542,8 +753,8 @@ function kiteStep(lp) {
 		   tangential instead of a slow retreat. */
 		if (lp) {
 			const gapNew = Math.hypot(nx - lp.x, ny - lp.y);
-			if (gapNew > MOVE.ceiling) continue;
-			if (gapNow > MOVE.releaseAt && gapNew > gapNow + 1) continue;
+			if (gapNew > L.ceiling) continue;
+			if (gapNow > L.releaseAt && gapNew > gapNow + 1) continue;
 		}
 		let minD = Infinity;
 		for (const m of near) minD = Math.min(minD, Math.hypot(nx - (m.real_x !== undefined ? m.real_x : m.x), ny - (m.real_y !== undefined ? m.real_y : m.y)));
@@ -626,7 +837,7 @@ async function recoverStep(lp, gap) {
 	if (!aim || Math.hypot(aim.x - lp.x, aim.y - lp.y) > MOVE.staleSlack) aim = { x: lp.x, y: lp.y };
 	const direct = !isFn(can_move_to) || can_move_to(aim.x, aim.y);
 	if (direct) {
-		const step = Math.min(MOVE.closeStepMax, Math.max(30, gap - MOVE.releaseAt * 0.6));
+		const step = Math.min(MOVE.closeStepMax, Math.max(30, gap - leash().releaseAt * 0.6));
 		const a = Math.atan2(aim.y - character.real_y, aim.x - character.real_x);
 		const nx = character.real_x + Math.cos(a) * step, ny = character.real_y + Math.sin(a) * step;
 		try { if (!isFn(can_move_to) || can_move_to(nx, ny)) { move(nx, ny); bump('closeSteps'); } } catch (e) {}
@@ -659,13 +870,14 @@ async function moveTick() {
 
 	const lp = leaderPos();
 	if (!lp) { if (await followFloor()) return; return; }
+	const L = leash();
 	const gap = Math.hypot(lp.x - character.real_x, lp.y - character.real_y);
 	tel.maxDistLeader = Math.max(tel.maxDistLeader, Math.round(gap));
-	if (gap > MOVE.closeAt) tel.msBeyondLeash += CFG.tickMs;
+	if (gap > L.closeAt) tel.msBeyondLeash += CFG.tickMs;
 
 	// --- the latch ---
-	if (!recovering && gap > MOVE.closeAt) { recovering = true; aim = null; bump('recoveries'); ev('recover', { gap: Math.round(gap) }); }
-	else if (recovering && gap <= MOVE.releaseAt) { recovering = false; aim = null; ev('recovered', { gap: Math.round(gap) }); }
+	if (!recovering && gap > L.closeAt) { recovering = true; aim = null; bump('recoveries'); ev('recover', { gap: Math.round(gap), leash: L.mode }); }
+	else if (recovering && gap <= L.releaseAt) { recovering = false; aim = null; ev('recovered', { gap: Math.round(gap), leash: L.mode }); }
 
 	if (recovering) { tel.msRecovering += CFG.tickMs; await recoverStep(lp, gap); return; }
 
@@ -678,18 +890,103 @@ async function moveTick() {
 
 /* The driver is the only one who can fix an over-extension, and v6 surfaced it
    nowhere - the priest sat 230 seconds outside the leash with no indication in
-   game. */
+   game. v14 stops merely surfacing it and acts, under HOLD above. */
+
+/* AN INVISIBLE FOLLOWER USED TO COUNT AS A CLOSE ONE. v13 skipped any mate
+   that failed here(), so the single worst case - a member far enough back to
+   have dropped out of the entity list, or left behind on the previous floor -
+   produced a worst gap of 0 and no warning whatsoever. That is the exact state
+   this work exists to catch. An unseen mate now reports Infinity, and the
+   beacon is consulted first so a member merely out of render range still
+   yields a real distance. A dead one reports 0 deliberately: holding for a
+   corpse helps nobody, and deathTick owns the respawn. */
+function followerGaps() {
+	const bs = beacons(), now = Date.now(), out = [];
+	for (const nm of followers()) {
+		const e = (parent.entities || {})[nm];
+		if (here(e)) { out.push({ who: nm, gap: dist(character, e), src: 'entity' }); continue; }
+		const st = bs[nm];
+		if (st && st.rip) { out.push({ who: nm, gap: 0, src: 'rip' }); continue; }
+		if (st && now - st.t <= TROUBLE.staleMs && st.map === character.map) {
+			out.push({ who: nm, gap: Math.hypot(st.x - character.real_x, st.y - character.real_y), src: 'beacon' });
+			continue;
+		}
+		out.push({ who: nm, gap: Infinity, src: st ? 'offmap' : 'unseen' });
+	}
+	return out;
+}
+function holdResume() {
+	const g = holdGoing;
+	holdFrom = 0; holdGoing = null;
+	if (!g) return;
+	try {
+		move(g.x, g.y);
+		bump('holdResumes');
+		clog('party is back - resuming toward ' + Math.round(g.x) + ',' + Math.round(g.y), '#5ED6A8');
+		ev('holdResume', { x: Math.round(g.x), y: Math.round(g.y) });
+	} catch (e) { bump('holdResumeFail'); }
+}
 function warnOutrun() {
 	try {
-		let worst = 0, who = '';
-		for (const nm of followers()) {
-			const e = (parent.entities || {})[nm];
-			if (!here(e)) continue;
-			const d = dist(character, e);
-			if (d > worst) { worst = d; who = nm; }
+		let worst = 0, who = '', src = '';
+		for (const g of followerGaps()) if (g.gap > worst) { worst = g.gap; who = g.who; src = g.src; }
+		const L = leash();
+		const shown = worst === Infinity ? 'OUT OF SIGHT (' + src + ')' : Math.round(worst) + 'u';
+		if (worst > L.closeAt) { bump('outrunWarnTicks'); throttleLog('OUTRUNNING PARTY - ' + who + ' is ' + shown + ' back (close at ' + L.closeAt + ')'); }
+		if (troubleNow.length) { bump('troubleWarnTicks'); throttleLog('PARTY IN TROUBLE - ' + troubleNow.map((t) => t.who + ':' + t.why).join(', ')); }
+
+		if (!HOLD.enabled) return;
+		if (mode === 'crypt' && !HOLD.inCrypt) return;
+
+		/* THE HOLD LATCHES ON THE SAME TWO NUMBERS AS COHESION. It begins past
+		   closeAt and does not let go until releaseAt, because releasing at the
+		   same number it caught on is how you get a leader that stutters one
+		   step at a time down a corridor. */
+		const need = (holdFrom ? worst > L.releaseAt : worst > L.closeAt) || troubleNow.length > 0;
+		if (!need) { holdDone = false; if (holdFrom) holdResume(); return; }
+		if (holdDone) return;
+
+		if (!holdFrom) {
+			holdFrom = Date.now();
+			holdGoing = (character.moving && character.going_x != null)
+				? { x: character.going_x, y: character.going_y } : null;
+			bump('holds');
+			clog('HOLDING - ' + (troubleNow.length ? troubleNow.map((t) => t.who + ':' + t.why).join(', ') : who + ' ' + shown + ' back')
+				+ (holdGoing ? ' - path cancelled, will resume' : ' - was not moving'), '#FFD700');
+			ev('hold', { who: who, src: src, gap: worst === Infinity ? null : Math.round(worst),
+				trouble: troubleNow, resume: !!holdGoing });
 		}
-		if (worst > MOVE.closeAt) { bump('outrunWarnTicks'); throttleLog('OUTRUNNING PARTY - ' + who + ' is ' + Math.round(worst) + 'u back (close at ' + MOVE.closeAt + ')'); }
+		if (Date.now() - holdFrom > HOLD.maxMs) {
+			holdDone = true;
+			bump('holdGaveUp');
+			clog('HOLD GAVE UP after ' + Math.round((Date.now() - holdFrom) / 1000) + 's - ' + who + ' still ' + shown
+				+ ' back. Moving on so the run cannot deadlock here.', 'orange');
+			ev('holdGaveUp', { who: who, src: src, trouble: troubleNow });
+			holdResume();
+			return;
+		}
+		tel.msHolding += CFG.tickMs;
+		try { if (character.moving) { move(character.real_x, character.real_y); bump('holdStops'); } } catch (e) {}
 	} catch (e) {}
+}
+
+/* Read the leash in force, or retune it live: caveLeash({travelCloseAt:140}). */
+function caveLeash(patch) {
+	if (patch && typeof patch === 'object') {
+		for (const k in patch) { if (k in MOVE) MOVE[k] = patch[k]; else if (k in HOLD) HOLD[k] = patch[k]; else if (k in TROUBLE) TROUBLE[k] = patch[k]; }
+		leashNow = computeLeash();
+	}
+	const L = leash();
+	clog('leash ' + L.mode + ' - close ' + L.closeAt + ' release ' + L.releaseAt + ' ceiling ' + L.ceiling
+		+ (troubleNow.length ? ' | TROUBLE ' + troubleNow.map((t) => t.who + ':' + t.why).join(',') : ''), '#7FD1FF');
+	return {
+		mode: L.mode, closeAt: L.closeAt, releaseAt: L.releaseAt, ceiling: L.ceiling, tighten: MOVE.tighten,
+		travel: { closeAt: MOVE.travelCloseAt, releaseAt: MOVE.travelReleaseAt, ceiling: MOVE.travelCeiling },
+		combat: { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling },
+		hold: { enabled: HOLD.enabled, inCrypt: HOLD.inCrypt, active: holdActive(), maxMs: HOLD.maxMs, holding: !!holdFrom, gaveUp: holdDone },
+		trouble: troubleNow,
+		gaps: isLeader() ? followerGaps().map((g) => g.who + ':' + (g.gap === Infinity ? 'unseen' : Math.round(g.gap)) + '/' + g.src) : null,
+	};
 }
 
 // ------------------------------------------------------------- restock -----
@@ -1238,7 +1535,7 @@ const TEL_KEEP = 5;
 const TEL_ARCHIVE_MS = 30000;
 
 const tel = {
-	ver: 13, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
+	ver: 14, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -1251,7 +1548,9 @@ const tel = {
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
 		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
 		buys: 0, buyErr: 0, restockBroke: 0, restockGaveUp: 0, restockMoveFail: 0,
-		pausedLootSkipped: 0, lootRested: 0, lootGaveUp: 0, lootOutOfRange: 0 },
+		pausedLootSkipped: 0, lootRested: 0, lootGaveUp: 0, lootOutOfRange: 0,
+		travelLeashTicks: 0, troubleTicks: 0, troubleWarnTicks: 0, beaconWriteFail: 0,
+		holds: 0, holdStops: 0, holdResumes: 0, holdResumeFail: 0, holdGaveUp: 0 },
 	skills: {}, skillFail: {}, skillFailWhy: {},
 	/* EVERY response reason, counted. v6 filtered them through TEL_REASONS
 	   before recording, so distance / not_ready / no_mp / cooldown never
@@ -1266,7 +1565,7 @@ const tel = {
 	doors: [],             // v11 recon: one entry per transport() attempt
 	objButtons: null,      // v9 recon: the top-bar buttons, read-only
 	objFns: null,
-	maxDistLeader: 0, msBeyondLeash: 0, msRecovering: 0, helpers: {}, events: [],
+	maxDistLeader: 0, msBeyondLeash: 0, msRecovering: 0, msHolding: 0, helpers: {}, events: [],
 };
 function bump(k, n) { tel.counters[k] = (tel.counters[k] || 0) + (n || 1); }
 function bumpReason(r, place) {
@@ -1426,7 +1725,7 @@ function caveCrypt() {
 	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
 	clog('CRYPT MODE as ' + role() + ' - hunting: ' + CRYPT.only.join(', ')
 		+ ' | will answer anything that starts it EXCEPT ' + CRYPT.never.join(', '), '#FFD700');
-	clog('leader is operator-driven; followers cohere at ' + MOVE.closeAt + 'u', '#FFD700');
+	clog('leader is operator-driven; followers cohere at ' + leash().closeAt + 'u (' + leash().mode + '); hold is ' + (holdActive() ? 'ON' : 'off here'), '#FFD700');
 	return { mode: mode, role: role(), leader: leaderName(),
 		only: CRYPT.only.slice(), never: CRYPT.never.slice() };
 }
@@ -1516,7 +1815,7 @@ try {
 	window.caveGo = caveGo; window.caveDry = caveDry; window.caveLead = caveLead;
 	window.caveCrypt = caveCrypt; window.caveOnly = caveOnly; window.caveNever = caveNever;
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
-	window.caveDump = caveDump;
+	window.caveDump = caveDump; window.caveLeash = caveLeash;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
@@ -1541,6 +1840,7 @@ async function tick() {
 		potionTick();
 		partyTick();
 		lootTick();
+		senseTick();            // beacon out, trouble + leash in - before anything moves
 		await moveTick();
 		await combatTick();
 		telFlush();
@@ -1549,12 +1849,12 @@ async function tick() {
 }
 function voteLoop() { try { voteTick(); } catch (e) { clog('vote: ' + e, 'red'); } if (alive()) setTimeout(voteLoop, CFG.voteTickMs); }
 
-clog('v10 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
+clog('v14 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
 	+ '). Leader ' + leaderName() + '. caveDry() to rehearse on-map, caveGo() for a real run, caveLead(name) to retarget.', '#7FD98A');
 telCensus();
 telHook();
 hookPartyInvite();
-ev('load', { ver: 10, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
+ev('load', { ver: 14, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 tick();
 voteLoop();
