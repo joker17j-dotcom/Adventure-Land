@@ -248,21 +248,35 @@ SI_READ_SLACK = 5           # added to pingTimeout for the long-poll read
 SI_RECONNECT_BASE = 5
 SI_RECONNECT_MAX = 5 * 60
 SI_SERVER_LIST_URL = "https://adventure.land"
-# Seed list, measured 2026-10-17. The live list is fetched from the page
-# first - that is where the browser gets it, so it follows a new server - and
-# this is the fallback when that fetch fails.
+# Seed list. The live list is fetched from the page first - that is where the
+# browser gets it, so it follows a new server - and this is the fallback when
+# that fetch fails.
+#
+# PATHS RE-MEASURED 2026-10-18 against X.servers on the page itself, which is
+# the same source servers_from_html scrapes. SIX of the thirteen were wrong,
+# and wrong in the worst way: a stale path does not fail, it points at a
+# DIFFERENT shard. The seed said /ws4/ for US IV, which is US PVP today, and
+# /ws3/ for EU III, which is EU PVP - so a fallback would have opened a
+# ServerInfoClient against PVP and filed everything it heard under the wrong
+# shard name. Boss timers for US IV would have been US PVP's, silently.
+#
+# THIS LIST ROTS BY DESIGN and a date in a comment is not a guard. The right
+# fix is to persist the last known-good live list and prefer it over this one,
+# so the fallback is yesterday's truth rather than whenever-someone-last-
+# looked; that is NOT done here. Until it is, treat a "using the N seeded"
+# line in the log as a reason to re-measure, not as a healthy fallback.
 SI_SEED_SERVERS = [
     {"name": "I", "region": "EU", "address": "de.adventure.land", "path": "/ws1/"},
     {"name": "II", "region": "EU", "address": "de.adventure.land", "path": "/ws2/"},
-    {"name": "III", "region": "EU", "address": "de.adventure.land", "path": "/ws3/"},
-    {"name": "IV", "region": "EU", "address": "de.adventure.land", "path": "/ws4/"},
-    {"name": "PVP", "region": "EU", "address": "de.adventure.land", "path": "/wspvp/"},
+    {"name": "III", "region": "EU", "address": "de.adventure.land", "path": "/ws5/"},
+    {"name": "IV", "region": "EU", "address": "de.adventure.land", "path": "/ws6/"},
+    {"name": "PVP", "region": "EU", "address": "de.adventure.land", "path": "/ws3/"},
     {"name": "I", "region": "US", "address": "na2.adventure.land", "path": "/ws1/"},
     {"name": "II", "region": "US", "address": "na2.adventure.land", "path": "/ws2/"},
     {"name": "III", "region": "US", "address": "na2.adventure.land", "path": "/ws3/"},
-    {"name": "IV", "region": "US", "address": "na2.adventure.land", "path": "/ws4/"},
-    {"name": "V", "region": "US", "address": "na2.adventure.land", "path": "/ws5/"},
-    {"name": "PVP", "region": "US", "address": "na2.adventure.land", "path": "/wspvp/"},
+    {"name": "IV", "region": "US", "address": "na2.adventure.land", "path": "/ws5/"},
+    {"name": "V", "region": "US", "address": "na2.adventure.land", "path": "/ws6/"},
+    {"name": "PVP", "region": "US", "address": "na2.adventure.land", "path": "/ws4/"},
     {"name": "I", "region": "ASIA", "address": "sg.adventure.land", "path": "/ws1/"},
     {"name": "II", "region": "ASIA", "address": "sg.adventure.land", "path": "/ws2/"},
 ]
@@ -1707,10 +1721,12 @@ class BossWatch:
                 say("[bosses] server list: %d from %s" % (len(rows), SI_SERVER_LIST_URL))
                 set_shard_keys(rows, SI_SERVER_LIST_URL)   # shared with the scout planner
                 return rows
-            say("[bosses] server list: page gave none, using the %d seeded"
+            say("[bosses] server list: page gave none - FALLING BACK to the %d "
+                "seeded, whose paths may be stale; re-measure X.servers"
                 % len(SI_SEED_SERVERS))
         except Exception as e:
-            say("[bosses] server list: %s: %s - using the %d seeded"
+            say("[bosses] server list: %s: %s - FALLING BACK to the %d seeded, "
+                "whose paths may be stale; re-measure X.servers"
                 % (type(e).__name__, e, len(SI_SEED_SERVERS)))
         return list(SI_SEED_SERVERS)
 
