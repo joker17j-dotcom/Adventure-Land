@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const DIR = __dirname;
 const want = process.argv.slice(2);
@@ -65,6 +66,34 @@ function makeT() {
 			}
 		}
 	}
+	/* ONE GATE, even though the bridge is Python. Tests/bridge/*.py imports
+	   the committed Codex/market_bridge.py and calls the real functions -
+	   the same "never copy the subject" rule this harness keeps, reached by
+	   a different route, because lifting JS into a vm cannot touch Python
+	   and porting the predicate across would break exactly that rule.
+	   Shelled out rather than ported, and SKIPPED rather than failed when
+	   python3 is absent: a missing interpreter is not a failing test, and
+	   reporting it as one would train people to ignore a red run. */
+	const py = fs.existsSync(path.join(DIR, 'bridge'))
+		? fs.readdirSync(path.join(DIR, 'bridge')).filter((f) => /^test_.*\.py$/.test(f)).sort()
+		: [];
+	for (const f of py) {
+		if (want.length && !want.some((w) => f.includes(w) || 'bridge'.includes(w))) continue;
+		const r = spawnSync('python3', [path.join(DIR, 'bridge', f)], { encoding: 'utf8' });
+		if (r.error && r.error.code === 'ENOENT') {
+			console.log('\n' + f + '   [SKIPPED - python3 not on PATH]');
+			continue;
+		}
+		const out = (r.stdout || '').trim();
+		console.log('\n' + f + '   [python]');
+		for (const line of out.split('\n')) if (line) console.log('  ' + line);
+		if (r.stderr && r.stderr.trim()) console.log('  ' + r.stderr.trim().split('\n').join('\n  '));
+		/* Its own count, folded in, so the final line is the whole gate. */
+		const m = /PASS (\d+)\s+FAIL (\d+)/.exec(out);
+		if (m) { total += Number(m[1]) + Number(m[2]); failed += Number(m[2]); }
+		else { total++; failed++; console.log('  (could not read a PASS/FAIL count - treating as a failure)'); }
+	}
+
 	console.log('\n' + (failed ? `${failed} FAILED of ${total}` : `all ${total} pass`));
 	process.exit(failed ? 1 : 0);
 })();

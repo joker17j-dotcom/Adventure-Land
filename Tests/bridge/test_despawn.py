@@ -132,6 +132,74 @@ chk("the US IV kill is NOT among them", b.stored_row_is_despawn(row("franky", 36
 chk("a row with no spawn time is declined, however it looks",
     b.stored_row_is_despawn(row("franky", None, 100)), False)
 
+# ------------------------------- elapsed is rebuilt, not read off ttk_sec
+# `ttk_sec` is death_t - spawn_t with death_t the BRACKET MIDPOINT, so it runs
+# short by (poll_t - last_alive_t)/2 - and that is NOT poll_gap_sec/2, because
+# gap_for() reads last_obs_t, which advances on every absent poll while
+# last_alive_t stays at the last ALIVE sighting. poll_gap_sec is 0 on all 37
+# live rows, so a gap-based correction would be a silent no-op.
+def srow(mtype, ttk, pct, hi=None, sp=None, **kw):
+    d = row(mtype, ttk, pct, **kw)
+    if hi: d["death_hi"] = hi
+    if sp: d["spawn_t"] = sp
+    return d
+
+T0 = "2026-10-18T12:00:00+00:00"
+chk("elapsed comes from death_hi - spawn_t, not ttk_sec",
+    b.stored_row_elapsed(srow("crabxx", 1950, 100, hi="2026-10-18T12:40:00+00:00", sp=T0)), 2400.0)
+chk("ttk_sec is the fallback when death_hi is absent",
+    b.stored_row_elapsed(row("crabxx", 2400, 100)), 2400)
+chk("no usable field at all -> None", b.stored_row_elapsed(row("crabxx", None, 100)), None)
+
+# The case the fix exists for: a wide absence makes ttk_sec read far short.
+wide = srow("crabxx", 1950, 100, hi="2026-10-18T12:40:00+00:00", sp=T0)
+chk("a despawn seen after a long absence IS reclassified", b.stored_row_is_despawn(wide), True)
+chk("and would have been DECLINED on ttk_sec alone",
+    b.despawn_window_hit("crabxx", wide["ttk_sec"]), False)
+
+# The live US III rgoo row, rebuilt: 633s against a 540s window.
+RGOO = srow("rgoo", 566, 4.96, hi="2026-10-18T12:10:33+00:00", sp=T0)
+chk("the live rgoo row rebuilds to 633s", round(b.stored_row_elapsed(RGOO)), 633)
+
+# NO IN-BAND VERDICT CHANGES ON TODAY'S DATA - the slack was absorbing the
+# skew, so this is a correctness fix against future backoff. Asserted so the
+# rebuild is not "simplified" back to ttk_sec on the grounds that it changes
+# nothing. (ttk, hi-sp) pairs are the live rows.
+LIVE = [("rgoo", 566, 633, 540, True), ("crabxx", 2422, 2490, 2400, True),
+        ("franky", 2254, 2414, 2400, True), ("franky", 2400, 2402, 2400, True),
+        ("crabxx", 4634, 4792, 2400, False), ("icegolem", 893, 894, 2400, False),
+        ("crabxx", 339, 407, 2400, False), ("crabxx", 972, 1130, 2400, False)]
+for mtype, ttk, hisp, win, want in LIVE:
+    chk(f"live {mtype} ttk {ttk} / rebuilt {hisp}: despawn={want} either way",
+        (b.despawn_window_hit(mtype, ttk), b.despawn_window_hit(mtype, hisp)), (want, want))
+
+# ---------------------------------------- hp grades the read path, as it does
+# the write path. A kill finished in the last minutes looks identical from the
+# listing, which is why hp sets CONFIDENCE rather than reclassifying - and a
+# read path that lost that distinction would bury exactly the rows the write
+# path takes care to flag. US III rgoo at 4.96% is such a row and is in the log.
+chk("plenty of hp left -> high", b.stored_row_despawn_confidence(row("crabxx", 2400, 100)), "high")
+chk("just above the threshold -> high", b.stored_row_despawn_confidence(row("crabxx", 2400, 5.01)), "high")
+chk("exactly at the threshold -> low", b.stored_row_despawn_confidence(row("crabxx", 2400, 5.0)), "low")
+chk("nearly dead -> low, it may have been a kill", b.stored_row_despawn_confidence(row("crabxx", 2400, 1.2)), "low")
+chk("UNKNOWN hp -> low; 7 of 37 live rows are missing fields",
+    b.stored_row_despawn_confidence(row("crabxx", 2400, None)), "low")
+chk("not a despawn at all -> None", b.stored_row_despawn_confidence(row("mrgreen", 2400, 100)), None)
+chk("the live rgoo row grades LOW", b.stored_row_despawn_confidence(RGOO), "low")
+
+# and boss_history separates the count
+fd, path = tempfile.mkstemp(suffix=".jsonl"); os.close(fd)
+with open(path, "w") as fh:
+    fh.write(json.dumps({"ev": "spawn", "t": "2026-10-18T11:00:00+00:00", "type": "crabxx",
+                         "server": "US II", "confidence": "high"}) + "\n")
+    fh.write(json.dumps(dict(row("crabxx", 2400, 100), t="2026-10-18T12:00:00+00:00")) + "\n")
+    fh.write(json.dumps(dict(row("crabxx", 2400, 2.0), t="2026-10-18T13:00:00+00:00")) + "\n")
+h = b.boss_history(path); r0 = h["history"][0]
+chk("both reclassify", r0["despawns_reclassified"], 2)
+chk("only the nearly-dead one is flagged uncertain", r0["despawns_reclassified_low"], 1)
+chk("neither counts as a kill", r0["kills_logged"], 0)
+os.unlink(path)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

@@ -270,6 +270,64 @@ def despawn_window_hit(mtype, elapsed_sec) -> bool:
     return win - BOSS_DESPAWN_WINDOW_SLACK <= elapsed_sec <= win + BOSS_DESPAWN_WINDOW_CEILING
 
 
+def stored_row_elapsed(d: dict):
+    """The elapsed the WRITE path would have measured, rebuilt from the row.
+
+    `ttk_sec` is NOT that quantity and using it was the first version of this
+    read path. The write path tests `poll_t - spawn_t`; `ttk_sec` is
+    `death_t - spawn_t` where `death_t = (last_alive_t + poll_t) / 2`, so it
+    runs short by `(poll_t - last_alive_t) / 2`.
+
+    THAT SKEW IS NOT BOUNDED BY ANYTHING THE ROW REPORTS, which is what makes
+    it worth rebuilding rather than correcting. `poll_gap_sec` comes from
+    `gap_for()`, which reads `last_obs_t` - and `last_obs_t` advances on every
+    absent poll while `last_alive_t` stays at the last ALIVE sighting, so the
+    two diverge by the whole confirmation period. Measured 2026-10-18:
+    `poll_gap_sec` is 0 on all 37 event-boss death rows in the log, so a
+    `ttk_sec + poll_gap_sec/2` correction would be a no-op that looks like it
+    works. EU I franky reads ttk 2254 where `death_hi - spawn_t` is 2414
+    against a 2400 window - a 160s skew with the reported gap at zero.
+
+    `death_hi` IS `iso(poll_t)` on every death row, so this reconstructs the
+    write path's own number exactly and the two paths finally measure the same
+    thing. `ttk_sec` stays as the fallback for completeness; measured on the
+    live log, 37 of 37 rows carry `death_hi` and the 7 without `spawn_t` are
+    the no-claim rows both versions decline anyway.
+
+    NO IN-BAND VERDICT CHANGES ON TODAY'S DATA - the 180s slack was absorbing
+    the skew. This is a correctness fix against future poller backoff, where
+    the skew grows past the slack and a despawn is silently declined. Asserted
+    as such so it is not "simplified" back.
+    """
+    hi, sp = parse_ts(d.get("death_hi")), parse_ts(d.get("spawn_t"))
+    if hi and sp and hi > sp:
+        return hi - sp
+    ttk = d.get("ttk_sec")
+    return ttk if isinstance(ttk, (int, float)) else None
+
+
+def stored_row_despawn_confidence(d: dict):
+    """None if the row is not a reclassifiable despawn, else "high" or "low".
+
+    THE WRITE PATH GRADES A DESPAWN ON REMAINING HP AND THE READ PATH MUST
+    TOO. At or below BOSS_DESPAWN_ALIVE_PCT a despawn is marked low, because a
+    kill finished in the last minutes of a window looks identical from the
+    listing - and the whole reason hp sets confidence rather than
+    reclassifying is to keep that ambiguity visible. A read path that
+    reclassified every in-band row into one undifferentiated count would bury
+    exactly the rows the write path takes care to flag.
+
+    There is such a row in the log already: US III rgoo, 633s elapsed against
+    a 540s window at 4.96% hp - the single most likely real goobrawl kill
+    there is. Unknown hp also reads low, which matters because missing fields
+    are common here: 7 of 37 event-boss rows carry no spawn time at all.
+    """
+    if not stored_row_is_despawn(d):
+        return None
+    pct = d.get("last_pct")
+    return "high" if (isinstance(pct, (int, float)) and pct > BOSS_DESPAWN_ALIVE_PCT) else "low"
+
+
 def stored_row_is_despawn(d: dict) -> bool:
     """A logged `death` that the despawn test would now call a despawn.
 
@@ -291,7 +349,7 @@ def stored_row_is_despawn(d: dict) -> bool:
         return False
     if d.get("method") != "absent_on_responding_server":
         return False
-    return despawn_window_hit(d.get("type"), d.get("ttk_sec"))
+    return despawn_window_hit(d.get("type"), stored_row_elapsed(d))
 # Seed list for servers the poller has not seen yet. Measured by the browser
 # session 2026-10-17; the live set from ALData is preferred whenever there is
 # one.
@@ -1427,6 +1485,7 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         a = agg.setdefault(k, {
             "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
             "lost": 0, "despawns": 0, "despawns_reclassified": 0,
+            "despawns_reclassified_low": 0,
             "ttks": [], "last_kill_t": None,
             "last_spawn_t": None, "last_despawn_t": None,
             "first_t": None, "last_t": None,
@@ -1443,9 +1502,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         # than on disk - see stored_row_is_despawn. The raw log keeps saying
         # "death"; every derived number stops doing so.
         ev = d.get("ev")
-        if ev == "death" and stored_row_is_despawn(d):
-            ev = "despawn"
-            a["despawns_reclassified"] += 1
+        if ev == "death":
+            conf = stored_row_despawn_confidence(d)
+            if conf:
+                ev = "despawn"
+                a["despawns_reclassified"] += 1
+                if conf == "low":
+                    a["despawns_reclassified_low"] += 1
         if ev == "spawn":
             a["spawns"] += 1
             if t and (a["last_spawn_t"] is None or t > a["last_spawn_t"]):
@@ -1481,6 +1544,11 @@ def boss_history(path, want_type=None, want_server=None, since=None,
             elif d.get("ev") in ("death", "despawn") and open_spawn:
                 # A despawn CLOSES the window as surely as a kill does.
                 # Without it every event window reads as a stall.
+                # The RAW ev is read here on purpose, not the reclassified
+                # one: a pre-fix row says "death" and a reclassified row
+                # means "despawn", and BOTH close the window, so the two
+                # readings cannot disagree. Spelled out because it otherwise
+                # looks like the one place reclassification was forgotten.
                 open_spawn = False
         a["stalled_count"] = stalls
         ttks = a.pop("ttks")

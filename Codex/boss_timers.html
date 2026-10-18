@@ -300,6 +300,8 @@ function rankView() {
   if (!rows.length) return head + `<p class="empty">No ${esc(TYPE)} history logged yet.
     The log cannot be backfilled — a death is unrecoverable once the boss respawns — so
     this fills as the poller watches.</p>`;
+  // The write path's own threshold, mirrored here only for the tooltip text.
+  const b_pct = 5;
   return head + `<table><thead><tr>
     <th>Server</th><th class="num">Kills/day</th><th class="num">Kills logged</th>
     <th class="num">Despawns</th>
@@ -313,7 +315,9 @@ function rankView() {
        r.rate_capped ? ` <span class="warn" title="raw ${r.kills_per_day_raw} exceeds the physical ceiling of ${r.kills_per_day_cap} for this respawn">capped</span>` : ""}</td>
     <td class="num">${r.kills_logged}</td>
     <td class="num ${r.despawns ? "warn" : "dim"}">${r.despawns == null ? "—" : r.despawns}${
-       r.despawns_reclassified ? ` <span class="warn" title="${r.despawns_reclassified} of these were logged as kills before the despawn test existed and are reclassified on read, not rewritten on disk">\u2191</span>` : ""}</td>
+       r.despawns_reclassified ? ` <span class="warn" title="${r.despawns_reclassified} of these were logged as kills before the despawn test existed and are reclassified on read, not rewritten on disk${
+         r.despawns_reclassified_low ? `. ${r.despawns_reclassified_low} of them had ${b_pct}% hp or less left, so a kill finished in the last minutes of the window would look the same - treat those as uncertain` : ""}">\u2191${
+         r.despawns_reclassified_low ? "?" : ""}</span>` : ""}</td>
     <td class="num dim">${r.ttk_sample}${r.confidence_counts.low
        ? ` <span class="warn" title="${r.confidence_counts.low} low-confidence kills, excluded from medians">*</span>` : ""}</td>
     <td class="num ${r.stalled_count ? "dead" : "dim"}">${r.stalled_count}</td>
