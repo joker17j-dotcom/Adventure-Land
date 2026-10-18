@@ -539,28 +539,41 @@ summary of it.
   refused ("GitHub access to this repository is not enabled for this session").
   Use `git fetch origin main && git show origin/main:<path>`. From a browser tab
   the contents API works fine.
-- **Look for an existing clone before pulling source through a browser.**
-  Measured 2026-10-17: this container already held `/tmp/alrepo` (this repo) and
-  `/tmp/almongo` (`adventureland_mongodb`, the game's server source), so
-  `git -C /tmp/almongo grep` answered server-behaviour questions in one call.
-  Claude instead spent a morning fetching that same source through
-  `raw.githubusercontent.com` in a browser tab and fighting truncated results.
-  The container is ephemeral, so treat those paths as a lead, not a guarantee:
-  `find / -maxdepth 4 -name .git -type d` settles it.
-- **A FOUND CLONE'S IDENTITY AND AGE ARE BOTH UNKNOWN UNTIL MEASURED, AND
-  THE SAME PATH IS A DIFFERENT REPOSITORY IN THE TWO CONTAINERS.** The bullet
-  above was right about the cost and wrong by omission, and it cost a session
-  a full day. Measured 2026-10-18, both containers, same path `/tmp/almongo`:
-  the Claude Code container held `kaansoral/adventureland_mongodb` at
-  `2148cf25`, equal to upstream HEAD; the browser container held the
-  OPERATOR'S FORK, `joker17j-dotcom/adventureland_mongodb`, at `9005216` -
-  a clean ancestor 330 commits behind, with `node/server.js` differing by
-  599 insertions and 218 deletions. A path is not an identity.
+- **Look for an existing clone before pulling source through a browser**, and
+  find it with the SWEEP, never by a remembered path. Measured 2026-10-17:
+  a container already held a clone of this repo and one of
+  `adventureland_mongodb`, the game's server source, so a `git grep` answered
+  server-behaviour questions in one call while Claude spent a morning
+  fetching that same source through `raw.githubusercontent.com` in a browser
+  tab and fighting truncated results. The sweep is
+  `find / -maxdepth 4 -name .git -type d`, and it is worth one call at the
+  start of any source-reading task.
+- **NAME THE SWEEP, NOT THE PATHS. The paths differ per container, per
+  session, and between the two sessions at the same moment.** This bullet
+  used to cite `/tmp/alrepo` and `/tmp/almongo` as though they were fixtures.
+  Measured 2026-10-18, the same hour, both containers: the browser container
+  returned FIVE - three clones of this repo and two of the server source -
+  while the Claude Code container returned TWO relevant ones and no
+  `/tmp/alrepo` at all, plus unrelated toolchain clones (`/opt/rbenv`,
+  `/opt/nvm`) that a "first match wins" habit would hand you instead.
+  Neither list is the other's, and neither matches what this bullet named.
+- **A FOUND CLONE'S IDENTITY AND AGE ARE BOTH UNKNOWN UNTIL MEASURED. A PATH
+  IS NOT AN IDENTITY.** Same hour, same path `/tmp/almongo`: the Claude Code
+  container held `kaansoral/adventureland_mongodb` at `2148cf25`, equal to
+  upstream HEAD; the browser container held the OPERATOR'S FORK,
+  `joker17j-dotcom/adventureland_mongodb`, at `9005216` - a clean ancestor
+  330 commits behind, with `node/server.js` differing by 599 insertions and
+  218 deletions. Two sessions said "the clone at /tmp/almongo" to each other
+  all day and meant different repositories. A stale clone of THIS repo is
+  the same hazard wearing different clothes: one of the browser container's
+  three sat at `f8eebcd`, a v88-era commit.
   Three lines settle it, before reading anything:
   `git -C <clone> remote -v`, then
   `git ls-remote https://github.com/kaansoral/adventureland_mongodb HEAD`,
   then compare against `git -C <clone> rev-parse HEAD`. If they differ,
-  `git fetch origin main` and read from THAT commit, not from HEAD.
+  `git fetch origin main` and read from THAT commit, not from HEAD. For a
+  clone of this repo, `git -C <clone> rev-parse HEAD` against
+  `git rev-parse origin/main` is the same check.
 - **So cite the MECHANISM, and treat every line number as clone-local.** A
   mechanism survives a rebase; a line number does not. The six citations the
   stale fork produced - `:2263`, `:13163`, `:13146`, `:2671`, `:2712`,
