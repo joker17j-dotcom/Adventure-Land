@@ -434,19 +434,33 @@ character tab, with the operator's go-ahead for a disruptive test hop.
 
 ## Reading the bank without travelling
 
-**Browser-driven session only.**
+**Both sessions.** `api_call` is a function in the CODE context, not just on a
+tab, so this is not browser-only.
 
-- **`character.bank` is null anywhere but inside the bank map.** That is why a
-  bank read has meant walking a character there and back - `arbProbeBank()`
-  in `Party/Merchant.js` exists to time that round trip, and it reports free
-  slots and gold only, never contents.
-- **The /hub BANK button sidesteps it completely.** Click it, then read
-  `window.comm_items.bank`: an object of `items0..itemsN` arrays covering every
-  pack, each entry `{name, level, q}`. Measured 2026-10-04: 109 distinct
-  name+level lines, 14,964 items, with no character moved and no farming
-  interrupted.
+- **`api_call('load_bank', {})` returns the whole bank FROM ANYWHERE.** No bank
+  map, no character moved, no snapshot to keep in sync. It answers
+  `{success, gold, packs}`, where `packs` is `items0..itemsN` arrays of
+  `{name, level, q}`. Measured 2026-10-18 from TWO different characters' CODE
+  contexts - Dexon on `halloween`, FatherToken on `main`, neither anywhere
+  near a bank - both returning all 7 packs and 74,822 items.
+- **This is what the /hub BANK button calls.** `render_comm_bank()` FETCHES
+  despite the name; it is not a render over data that was already there. The
+  button was never the mechanism, just the only caller anyone had noticed.
+- **`character.bank` is still null anywhere but inside the bank map.** That is
+  a fact about that one property, NOT about the account bank, and conflating
+  the two is what made a bank read look like it required travel. `arbProbeBank()`
+  in `Party/Merchant.js` exists to time that round trip; for READS it is now
+  unnecessary. `Party/Merchant.js` v101 uses `load_bank` to cap Ponty purchases
+  at one full stack already held.
 - **`bank_packs` is NOT the contents.** It is the pack-name table (48 entries).
-  The contents are `comm_items.bank`, which has 4.
+  The contents are `comm_items.bank` on /hub, or `packs` from `load_bank`
+  anywhere. Measured 2026-10-18: the account owns 7 packs, so a 7-pack read is
+  a COMPLETE one - do not read 7-of-48 as truncation.
+- **ALData does NOT solve this and is not worth the key.** `PUT /bank/:owner/:key`
+  UPLOADS a snapshot and `GET /bank/:owner` reads it back, so something still
+  has to be in the bank to produce it - plus a 48,000-gold in-game mail for a
+  key the docs themselves say is stored in plaintext. `load_bank` needs none of
+  it. The script already uses ALData for market rows only, read-only, no key.
 
 ## Diagnosing a running character
 
