@@ -20,6 +20,83 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v52
+
+The follower reload loop: a hop replays the message that caused it.
+
+**The loop.** change_server() reloads the page. The reload resets plCursor to
+0 and empties plSeen, both of which live only in memory. The bridge serves
+every message newer than `since` for MESSAGE_TTL, ten minutes, so the fresh
+page asks from 0 and is handed the window back - including the boss_hop it
+just acted on, which makes it hop again. Four steps, closed.
+
+Measured on the live party 2026-10-18: FatherToken and MageofOz reloading in
+place on US V, each "hopping" to the shard it already stood on, cursors
+climbing 0 -> ~19,700 inside three minutes. Dexon was never affected because
+he SENDS boss_hop and never receives it - which is exactly why the operator
+saw the two followers and not the leader. It stopped on its own only because
+the stale message aged out of the ten-minute window. It was dormant, not
+fixed; the next hop would have re-armed it.
+
+Merchant hit the identical loop with potion requests on 2026-09-25 - MageofOz
+went 278 to 10,563 mpot1 on one genuine request - and fixed it in v68. None of
+that reached these three. Ported here, with one deliberate difference.
+
+**1. plCursor is persisted**, with Merchant's bridge-restart guard: if the
+bridge's own cursor comes back BELOW what we asked from, its seq began again
+at 0 and a remembered cursor would sit above every new message and starve us
+in silence. Re-reading the window once is the cheap answer.
+
+**2. COMMITTED PER MESSAGE, not per batch - the deliberate difference.**
+Merchant advances the cursor after the whole batch, so a hop mid-batch
+re-reads the tail rather than losing it, and its watermarks absorb the
+overlap. That order cannot work here: change_server never returns, so a
+batch-level commit is never written at all and the entire window replays - the
+commit that would have prevented the loop is the one the loop prevents. Per
+message, the only thing that can replay is the single message that reloaded,
+and part 3 absorbs exactly that one. Same safe direction, finer grain.
+
+**3. A durable acted-list**, capped at 20 ids, written to CODE storage BEFORE
+change_server. plSeen cannot do this job: the whole problem is that the page
+dies between acting on a message and remembering that we did. Keyed on _plid,
+not a timestamp - _plid is already stamped by plSend in all four scripts and
+is already the dedupe key, whereas _plts exists only in Merchant and would
+need porting along with the bridge-field bug Merchant already shipped once,
+reading `ts` when a /msg row carries `at`.
+
+**Same-shard guard.** bossHopFollow now refuses a hop to the shard it is
+standing on. That is a pure page reload, and the reload is what re-reads the
+backlog that sent it - the message becomes its own cause. This is the exact
+shape the operator saw.
+
+The guard is NOT sufficient alone, which is why part 3 exists: a replayed
+boss_hop naming a DIFFERENT shard clears it, reloads, and the party bounces
+between shards instead of reloading in place. The same loop wearing movement.
+
+**The follower's own log line was dead code.** It sat after change_server, so
+it never printed - which is why the console looked empty while this was
+happening. Moved above the call, along with the acted-list write, for the same
+reason the leader sends boss_hop before hopping: nothing after that call runs.
+
+The function stays byte-identical between Priest.js and Mage.js: 1,814 bytes,
+md5 e4e16c58c3a26a9f382c789fe40d7883. Only the -> <Name>Comments.md pointer in
+the doc comment above it differs, as it must.
+
+**Demonstrated, not just parsed.** node --check cannot show any of this, so
+the real functions were lifted from the committed file and driven through a
+simulated hop with CODE storage surviving and memory dying. 13 checks on the
+replay: the first delivery hops and persists its id BEFORE hopping; after a
+reload memory is empty and storage is not; the replayed message is REFUSED and
+- replayed deliberately from a different shard so the same-shard guard cannot
+be what catches it - refused by the acted-list specifically; a same-shard
+order causes no reload and is not recorded as acted; a genuinely new order
+still hops; the list caps at 20 keeping the newest; and with CODE storage
+throwing it still hops rather than wedging, warning that the message may
+replay. 7 more on the cursor: a message before the reloader is committed
+before it runs, the cursor reaches storage and a fresh page resumes from it
+rather than 0, and the restart guard detects a backwards seq, resets to 0,
+persists that, and does not starve afterwards.
+
 ## v51
 
 One addition to the console-command header.
