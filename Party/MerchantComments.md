@@ -180,13 +180,18 @@ shard is the first step of nearly every trade - so a value set from
 the console is gone before the buy leg runs, and the trade finishes
 simulated after starting live.
 
-## batchAboveGold
+## arbitrage batching
 
-Below this much gold, one trade at a time. At or above it, batching is
-allowed - multiple units of one item and multiple items in a visit -
-but ONLY when every buy sits on one shard and every sell sits on one
-shard. Splitting either leg across shards risks buying what cannot
-then be sold.
+Batching means multiple units of one item, and multiple items in a visit. It
+is allowed ONLY when every buy sits on one shard and every sell sits on one
+shard. Splitting either leg across shards risks buying what cannot then be
+sold.
+
+That rule is LIVE and enforced in code through buyShard/sellShard. A
+`batchAboveGold` knob used to gate batching on a gold threshold as well -
+below it, one trade at a time - and was deleted in v100 as unread. The
+THRESHOLD is gone; the ONE-SHARD RULE is not. Do not read the knob's removal
+as permission to split a leg.
 
 ## sellMaxAgeSec
 
