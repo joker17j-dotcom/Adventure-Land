@@ -211,6 +211,21 @@ SCOUT_SKIP_SHARDS = {"PVP"}
 # How often the shard list is re-read from the page.
 SHARD_LIST_REFRESH_SEC = 6 * 60 * 60
 
+# POPULATION HISTORY. The shard list above refreshes four times a day, which
+# is enough to keep the scout pool correct and useless for the question this
+# records: which shard is quiet IN THE HOURS SOMEONE ACTUALLY PLAYS. A 6h
+# sample cannot resolve a play window, so population gets its own cadence.
+# 15 minutes is 96 page reads a day against a page the bridge already reads;
+# raise POPULATION_SAMPLE_SEC if that is not wanted.
+#
+# One spot reading is actively misleading, which is the reason this exists:
+# measured 2026-10-18, US IV showed 33 players and US II 53, so the shard
+# that was abandoned for being busy now reads as the emptiest non-PVP US
+# server. Either number alone argues the wrong move.
+POPULATION_SAMPLE_SEC = 15 * 60
+POPULATION_PATH = "./data/population.jsonl"
+POPULATION_MAX_ROWS = 40000          # ~14 months at 96/day; trimmed on startup
+
 # A server needs at least this many logged kills before its ranking row counts
 # as a trend rather than an anecdote. The page greys out anything below it.
 BOSS_MIN_KILLS_FOR_TREND = 5
@@ -341,6 +356,127 @@ def shard_list_refresher(stop_evt) -> None:
             say("[scout] shard list: %s: %s - keeping %d"
                 % (type(e).__name__, e, len(shard_keys())))
         if stop_evt.wait(SHARD_LIST_REFRESH_SEC):
+            return
+
+
+def population_row(servers) -> dict:
+    """One sample: every shard's player count at one instant.
+
+    PVP is KEPT here even though SCOUT_SKIP_SHARDS drops it from the scout
+    pool - it costs two integers and a PVP shard's population is a real
+    signal about where people went."""
+    counts = {}
+    for sv in (servers or []):
+        if not (sv.get("region") and sv.get("name")):
+            continue
+        if not isinstance(sv.get("players"), int):
+            continue
+        counts[shard_key(str(sv["region"]), str(sv["name"]))] = sv["players"]
+    return {"at": round(now(), 1), "counts": counts}
+
+
+def population_append(row: dict, path: str) -> None:
+    """Append one sample. Same shape as the boss-event ledger: one JSON
+    object per line, opened per write rather than held, so a crash costs the
+    current sample and never the file."""
+    if not row.get("counts"):
+        return
+    try:
+        p = pathlib.Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, separators=(",", ":")) + "\n")
+    except Exception as e:
+        say("[pop] append failed: %s: %s" % (type(e).__name__, e))
+
+
+def population_read(path: str, hours: float | None = None) -> list:
+    """Rows newest-last. A short file is read whole; hours trims the window.
+    A malformed line is skipped rather than failing the read, because one bad
+    append must not make the history unreadable."""
+    cut = (now() - hours * 3600.0) if hours else None
+    out = []
+    try:
+        p = pathlib.Path(path)
+        if not p.exists():
+            return []
+        with p.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(row, dict) or "counts" not in row:
+                    continue
+                if cut is not None and float(row.get("at") or 0) < cut:
+                    continue
+                out.append(row)
+    except Exception as e:
+        say("[pop] read failed: %s: %s" % (type(e).__name__, e))
+    return out
+
+
+def population_summary(rows: list) -> dict:
+    """Per shard: samples, min, max, mean, and the latest reading.
+
+    The MEAN is the number worth moving house on and the single reading is
+    the one that misleads - see the US II / US IV note at POPULATION_*."""
+    agg = {}
+    for row in rows:
+        for key, n in (row.get("counts") or {}).items():
+            if not isinstance(n, int):
+                continue
+            a = agg.setdefault(key, {"n": 0, "sum": 0, "min": n, "max": n, "last": n})
+            a["n"] += 1
+            a["sum"] += n
+            a["min"] = min(a["min"], n)
+            a["max"] = max(a["max"], n)
+            a["last"] = n
+    out = {}
+    for key, a in agg.items():
+        out[key] = {"samples": a["n"], "min": a["min"], "max": a["max"],
+                    "mean": round(a["sum"] / a["n"], 1) if a["n"] else None,
+                    "last": a["last"]}
+    return out
+
+
+def population_by_hour(rows: list, key: str) -> dict:
+    """One shard's mean population per hour of the LOCAL day.
+
+    This is the whole point of sampling at 15 minutes instead of 6 hours: a
+    shard that is quiet at 03:00 and heaving at 20:00 is not a quiet shard if
+    20:00 is when it gets played."""
+    buckets = {}
+    for row in rows:
+        n = (row.get("counts") or {}).get(key)
+        if not isinstance(n, int):
+            continue
+        h = time.localtime(float(row.get("at") or 0)).tm_hour
+        b = buckets.setdefault(h, {"n": 0, "sum": 0})
+        b["n"] += 1
+        b["sum"] += n
+    return {str(h): round(b["sum"] / b["n"], 1)
+            for h, b in sorted(buckets.items()) if b["n"]}
+
+
+def population_sampler(stop_evt) -> None:
+    """Its own thread and its own interval, deliberately not folded into
+    shard_list_refresher: that one runs every 6h because the scout pool does
+    not move, and a 6h population sample answers nothing."""
+    while True:
+        try:
+            rows = fetch_shard_list()
+            row = population_row(rows)
+            if row.get("counts"):
+                population_append(row, POPULATION_PATH)
+            else:
+                say("[pop] page gave no player counts this pass")
+        except Exception as e:
+            say("[pop] sample failed: %s: %s" % (type(e).__name__, e))
+        if stop_evt.wait(POPULATION_SAMPLE_SEC):
             return
 
 
@@ -1337,8 +1473,19 @@ def servers_from_html(html: str) -> list:
     out = []
     for r in rows if isinstance(rows, list) else []:
         if isinstance(r, dict) and r.get("address") and r.get("name") and r.get("region"):
-            out.append({"name": str(r["name"]), "region": str(r["region"]),
-                        "address": str(r["address"]), "path": str(r.get("path") or "/")})
+            row = {"name": str(r["name"]), "region": str(r["region"]),
+                   "address": str(r["address"]), "path": str(r.get("path") or "/")}
+            # players/online/pvp ride along in the SAME payload and were being
+            # dropped here. set_shard_keys still reads only region+name, so
+            # carrying them changes nothing upstream; the population sampler
+            # is the only consumer.
+            if isinstance(r.get("players"), int):
+                row["players"] = r["players"]
+            if isinstance(r.get("online"), bool):
+                row["online"] = r["online"]
+            if isinstance(r.get("pvp"), bool):
+                row["pvp"] = r["pvp"]
+            out.append(row)
     return out
 
 
@@ -2199,6 +2346,32 @@ class Handler(BaseHTTPRequestHandler):
                     "<!doctype html><meta charset=utf-8><title>missing</title>"
                     f"<p>boss_timers.html not found next to market_bridge.py<br>"
                     f"<code>{html_escape(str(f))}</code><br>{html_escape(str(e))}", 500)
+        elif path == "/population":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("hours") or [""])[0].strip()
+            try:
+                hours = float(raw) if raw else None
+            except ValueError:
+                hours = None
+            rows = population_read(POPULATION_PATH, hours)
+            body = {"ok": True, "samples": len(rows), "window_hours": hours,
+                    "sample_sec": POPULATION_SAMPLE_SEC,
+                    "shards": population_summary(rows)}
+            shard = (q.get("shard") or [""])[0].strip()
+            if shard:
+                body["by_hour"] = {shard: population_by_hour(rows, shard)}
+            self._send(body)
+        elif path == "/population_rows":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            raw = (q.get("hours") or ["24"])[0].strip()
+            try:
+                hours = float(raw) if raw else 24.0
+            except ValueError:
+                hours = 24.0
+            rows = population_read(POPULATION_PATH, hours)
+            self._send({"ok": True, "window_hours": hours, "rows": rows})
         elif path == "/health":
             self._send({"ok": True, "service": "al-market-bridge"})
         else:
@@ -2270,6 +2443,8 @@ def main():
     Handler.bosses.start()
     _shard_stop = threading.Event()
     set_shard_keys(SI_SEED_SERVERS, "seed")
+    threading.Thread(target=population_sampler, args=(_shard_stop,),
+                     name="pop-sampler", daemon=True).start()
     threading.Thread(target=shard_list_refresher, args=(_shard_stop,),
                      name="shardlist", daemon=True).start()
 
