@@ -28,6 +28,16 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v103
+
+Header fix only, no code change.
+
+Line 4 said "read MerchantChangelog.md", without the `Party/` prefix the other
+three scripts use. The file moved into `Party/` on 2026-10-17 and the rename
+to MerchantChangelog.md on 2026-10-18 carried the unprefixed form forward. All
+four headers now name the same path shape.
+
+
 ## v102
 
 Three CONFIG switches the v101 TOGGLES pass left behind, and the console

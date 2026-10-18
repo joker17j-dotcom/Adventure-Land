@@ -1,10 +1,10 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v102
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v103
 //
-// CHANGELOG: read MerchantChangelog.md in this repo. Do not put version history back
-// in this file, and do not reconstruct it from git log - MerchantChangelog.md is the
-// record. Prepend new entries there, newest first, and never rewrite an old
-// one. Bump the version on the line above in the same commit.
+// CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
+// history back in this file, and do not reconstruct it from git log - that
+// file is the record. Prepend new entries there, newest first, never rewrite
+// an old one, and bump the version on the line above in the same commit.
 //
 //
 // CONSOLE COMMANDS - type these in the game console. They have no internal
