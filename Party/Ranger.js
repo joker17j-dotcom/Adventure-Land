@@ -1,4 +1,5 @@
 // ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v87 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v86. Two changes, both out of the overnight run. THE TARGET LIST NARROWS TO THREE - dragold, franky, crabxx - the reachable sub-100 rungs. Overnight credited 20 boss kills for 24.35 score, every point of it on mrgreen and mrpumpkin, whose rungs are still 619 and 530 kills away. franky took one kill at exactly 1.300, the full-party multiplier, which proves the v48/v71 follower relay works. crabxx, snowman, dragold and grinch were never live, so the cheap rungs got nothing. Meanwhile ZERO mobs died all night - armadillo, osnake, snake, bee, poisio and croc all unchanged - because with mrgreen on a 94-minute respawn across 13 shards something was always eligible and the party never stopped hopping. Six and a half hours that would have produced roughly 105,000 score at 1.6 a kill produced 24.35. Dropping the two cheap-to-reach-but-expensive-to-finish bosses means pickTarget() usually returns null, and null hands control straight back to ordinary farming. snowman is out despite being the cheapest rung at 60 kills, because FatherToken holds that account max at 22.10 against Dexon's 19.35 and it is a winter-event boss; grinch is out as a judgement call, though an unavailable target is never picked and costs nothing. AND THE CHAIN NOW ENDS AT HOME. v86 removed home routing BETWEEN kills and that stays removed - a round trip between two targets buys nothing and re-arms both clocks. This is the other case: nothing eligible anywhere, so there is no next hop, and parking on a foreign shard forfeits the HOME shard's own boss spawns, the only ones paying the home-server bonus and the drops_home table. goHomeIfIdle() reads character.home, which is the Bean-set home already in currentShard() format, so nothing is hardcoded, and debounces on idleSince against returnHomeAfterMs of 90s so a boss flickering across the eligibility floor cannot ping-pong the party between shards. It routes through changeServer(), so the followers are told first and come along. bossHop.enabled stays FALSE: a feature that moves the party across shards should not start itself on a deploy.)
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v86 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. Dexon is running v82. This records live configuration rather than changing behaviour. Five lines of the LIVE slot had drifted from the repo and none of them were in git, so every paste of a repo build was silently reverting the operator's own settings - and the deployment markers only ever record the repo being AHEAD of a slot, with no marker for the reverse, which is the direction that bites. Found by block-hashing codemirror_render.getValue() against v82 (372,989 UTF-16 units live against 372,979 committed, same line count), then hashing lines within the three differing blocks, which located five lines in a 7,217-line file. ADOPTED FROM LIVE: 'mole' joins singleTargetMobs; the achievement queue's enabled becomes true, which is the mode the party has actually been in all day; and the booboo park point (290,-990) is commented out rather than deleted, because that is the entry the operator uncomments when booboo IS wanted. DELETED: the second booboo entry, (415,-702). v82 measured it at gap 0, rageHit 'booboo', INSIDE the rage box - it is the coordinate that wedged the whole party twice in one morning - and it was kept then only in case the achievement path used it differently. It does not. Two booboo entries where only one is ever enabled is how the wrong one gets uncommented, and huntParkPoint validates by rageHit and rectGap with nearest-qualifying-wins, so nothing indexes the queue and removing an entry shifts nothing. NOT ADOPTED: monsterHunt.enabled stays true against live's false. Operator's call - the repo carries it enabled, so a deploy turns monster hunt back on by intent, and that is the one line to flip by hand after a paste if ordinary farming is wanted instead. ALSO, A THIRD STALE TOGGLE COMMENT. The achievements comment opened "OFF, with monsterHunt above ON - the operator's 2026-10-12 choice", which is a state claim of exactly the kind the standing rule forbids and which this version would have made false, and it closed by justifying the entry this version deletes. Merchant v98's sweep and the pair fixed in v85 both missed it because it never says "currently ON".)
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v85 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v82. The dwell gate is PER-BOSS, not a constant, which is the one substantive defect in v84. requiredDwellMs was a single 60s number and pickTarget() applied its 76.5s floor to all seven targets; it was calibrated on mrgreen, which is the only boss it fits. What has to be out-weighed is the total damage every OTHER contributor banks across the whole fight, and that is the boss's entire hp pool, so the requirement scales as maxHp^0.65. One constant was therefore wrong in both directions at once. snowman (1,200 hp) and crabxx (960,000) could NEVER be picked - their whole-health secsToDeath is 0.06s and 48.0s, both under 76.5s at any dps - and those are the two CHEAPEST rungs on the board, 60 kills to resistance +3 and 70 to luck +1. franky meanwhile was admitted when it earns nothing: it needs 167s at 40 contributors and the gate passed anything over 76.5s, so the party paid 12 minutes of hop sickness for no credit. THE FIX IS IN THREE PARTS. candidates() now emits maxHp alongside hp, because secsToDeath correctly asks when the boss will die while the dwell requirement needs the full pool - contributors' points for damage dealt before Dexon lands are still in total at the award. The G lookup is hoisted out of the pre-spawn branch into maxHpOf()/gameData() so both paths see it, keeping the typeof guard: optional chaining does NOT save an undeclared identifier from throwing. requiredDwellSec(maxHp, contributors, hopsick, mtype) implements the share model directly - others deal the whole pool split K ways, contributing K^(1-E) * maxHp^E to total, and Dexon clears THR/(1-THR) of that. contributors() derives K from observed dps over typicalPlayerDps, clamped to [5,200], since no feed reports one; it is self-consistent rather than accurate, because more dps means both more players and a faster death and both push the gate the same way. isHopsick() reads character.s live. AND THE SINGLE FLOOR SPLITS INTO TWO TESTS, which is what unblocks snowman: a LIVE boss must outlast the trip (secsToDeath >= arriveSec) while a PENDING one is exempt, since we land before it exists and catch the whole fight; then enough must remain AFTER landing (remainingSec >= requiredDwellSec). Conflating the two is exactly what rejected snowman, which needs ~0s of dwell but dies far inside the hop latency and is only ever reachable pre-spawn. localTarget() gets test (2) as well - v84 let it commit FIGHTING to a boss whose share was unreachable, a quarter of an hour spent for nothing - with hopsick read live, because a clean party's requirement is 5x smaller and that is precisely when a boss standing in front of him is most worth taking. Unknown hp does NOT reject a local boss: there is nothing to lose by trying and the alternative is hopping away from a free fight on missing data. CONFIG: requiredDwellMs is DROPPED rather than left as a dead knob that looks live; dexonDps 2605, typicalPlayerDps 2000, minContributors 5, maxContributors 200 added, with an optional per-target dexonDps override. The 2605 is a magical-resistance figure measured against mrgreen (resistance 900, apiercing 122) and is a first approximation elsewhere - crabxx is armor 320 physical, franky lists no resistance - mattering least where the maxHp term dominates and most at mrgreen, where a 2x error moves the gate from 50s to 100s. Per-boss figures want measuring. ShowBossHop now prints maxHp, contributors, requiredDwellSec, remainingSec and a rejectedBecause string per row, plus the live hopsick flag and arriveSec: with a per-boss gate the reason for a rejection stopped being guessable, since one 76.5s number no longer explains every one of them. VERIFIED by lifting the shipped methods out of the file and running them, not by re-deriving: requiredDwellSec reproduces the browser session's independent seven-boss table at K=10/40/80 to better than 0.9%, the residual being rounding and well inside the uncertainty on dexonDps; hop sickness is exactly 5.000x on all seven; crabxx flips from rejected to picked; snowman is rejected live and picked pre-spawn; a near-dead franky on a busy shard flips from picked to rejected while a full-health one and the same fight with a clean party both stay picked.)
 // ==========================================================================
@@ -556,6 +557,14 @@ const CONFIG = {
 		hopLatencyMs: 1500,          // measured 274ms per change_server + margin
 		safetyMarginMs: 15000,
 		maxFightMs: 15 * 60 * 1000,  // hard abort only, NOT a credit timer
+		/* Go home once the chain ENDS - nothing eligible anywhere. Parking on
+		   a foreign shard forfeits the HOME shard's own boss spawns, and those
+		   are the only ones paying the home-server bonus and the drops_home
+		   table. This is NOT the between-kills routing v86 removed; that stays
+		   removed. returnHomeAfterMs debounces it, so a boss flickering across
+		   the eligibility floor cannot ping-pong the party between shards. */
+		returnHome: true,
+		returnHomeAfterMs: 90 * 1000,
 		/* Dexon's own dps, the denominator of requiredDwellSec(). Measured
 		   against mrgreen, which is a MAGICAL-resistance fight - resistance
 		   900, apiercing 122 - so it is a first approximation elsewhere:
@@ -584,12 +593,8 @@ const CONFIG = {
 		   break a tie on time-to-death. */
 		targets: [
 			{ mtype: 'dragold', kills_to_rung: 1 },
-			{ mtype: 'grinch', kills_to_rung: 1 },
-			{ mtype: 'snowman', kills_to_rung: 60 },
 			{ mtype: 'franky', kills_to_rung: 68 },
 			{ mtype: 'crabxx', kills_to_rung: 70 },
-			{ mtype: 'mrpumpkin', kills_to_rung: 490 },
-			{ mtype: 'mrgreen', kills_to_rung: 621 },
 		],
 	},
 
@@ -2789,6 +2794,9 @@ const bossHop = {
 	hopAttempts: 0,
 	arrivedAt: 0,
 	fightStart: 0,
+	/* When IDLE first found nothing eligible while off the home shard.
+	   Cleared by reset() after every fight, so it never goes stale. */
+	idleSince: 0,
 	// shard|mtype -> { shard, mtype, live, hp, maxHp, spawnTime, at }
 	scanResults: [],
 	// shard|mtype -> { dps, etaSec, hp, stale } from the bridge, or empty
@@ -3056,6 +3064,29 @@ const bossHop = {
 		return eligible[0];
 	},
 
+	/* The chain has ended: nothing eligible on any shard. Go home, because
+	   parking away forfeits the home shard's OWN boss spawns - the only ones
+	   carrying the home-server bonus and drops_home. Deliberately not the
+	   between-kills routing v86 deleted: that round trip bought nothing
+	   between two targets and re-armed both clocks for the next hop. Here
+	   there IS no next hop, so the only thing left to protect is home.
+	   character.home is the Bean-set home and is already in currentShard()
+	   format, so nothing is hardcoded. Routes through changeServer(), so the
+	   followers are told first and come along. */
+	async goHomeIfIdle(cur) {
+		const c = CONFIG.bossHop;
+		if (!c.returnHome) { this.idleSince = 0; return 'continue'; }
+		const home = (typeof character !== 'undefined' && character && character.home) || null;
+		if (!home || cur === home) { this.idleSince = 0; return 'continue'; }
+		if (!this.idleSince) { this.idleSince = Date.now(); return 'continue'; }
+		if (Date.now() - this.idleSince < c.returnHomeAfterMs) return 'continue';
+		this.idleSince = 0;
+		game_log(`🐉 Nothing eligible anywhere — heading home to ${home}`, '#FFD700');
+		if (await this.lootBeforeHop()) return 'block';
+		await this.changeServer(home, 'home');
+		return 'block';
+	},
+
 	async lootBeforeHop() {
 		const chests = Object.keys(get_chests());
 		if (chests.length === 0) return false;
@@ -3122,7 +3153,8 @@ const bossHop = {
 				}
 
 				const pick = this.pickTarget();
-				if (!pick) return 'continue';
+				if (!pick) return await this.goHomeIfIdle(cur);
+				this.idleSince = 0;
 				this.state = 'HOPPING';
 				this.targetShard = pick.shard;
 				this.targetType = pick.mtype;
@@ -3193,6 +3225,7 @@ const bossHop = {
 		this.hopAttempts = 0;
 		this.arrivedAt = 0;
 		this.fightStart = 0;
+		this.idleSince = 0;
 	}
 };
 
