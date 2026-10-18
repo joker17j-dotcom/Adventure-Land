@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v99
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v100
 //
 // CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - CHANGELOG.md is the
@@ -314,10 +314,11 @@ const CONFIG = {
 	// How long to wait for a change_server to actually land before treating the
 	// hop as failed and requeueing the work.
 	hopTimeoutMs: 30000,
-	// The shard this merchant lives on. FIXED, never learned - matches Ranger's
-	// homeServer. A cross-shard trip always comes back here, and opening a stand
-	// somewhere else never changes where "here" is.
-	homeServer: 'USIV',
+	// The shard this merchant lives on. FIXED, never learned, and the
+	// merchant's own - there is no counterpart in the combat scripts to keep
+	// it in step with. A cross-shard trip always comes back here, and opening
+	// a stand somewhere else never changes where "here" is.
+	homeServer: 'USII',
 	movement: {
 		/* Hand-pinned approach chains, keyed 'map|x|y' of the DESTINATION, tried
 		   by rageWaypoints before the search and refused if any of their own
@@ -375,14 +376,6 @@ const CONFIG = {
 		pontyTimeoutMs: 8000,
 		minPostGapMs: 7000,
 		postConfirmRetries: 3,
-		// While a probe holds the merchant, the shard it is standing on is still
-		// rescanned and reposted this often. Without it the hold starves the
-		// bridge it is meant to be probing - see scoutHeldScan.
-		/* DEAD as of v34 - nothing reads it. The in-town beat is townScanMs
-		   below, and it is 20s rather than this 30s. Kept for one version only
-		   so a diff against v33 is readable; delete it next time this file is
-		   touched. */
-		heldScanMs: 30000,
 		/* The standing beat while in town, matching FamilyFleet. Once we are
 		   here the walk is already paid for and a scan costs a synchronous
 		   read of parent.entities plus a post. */
@@ -432,9 +425,6 @@ const CONFIG = {
 		// only the gain is split. Never banked on a loss, and losses are not
 		// carried forward against a later trade's share.
 		bankShare: 0.5,
-		// Below this much gold, one trade at a time. At or above it, batching is
-		// -> MerchantComments.md#batchAboveGold
-		batchAboveGold: 100000000,
 		// A queued delivery/pickup older than this stops the NEXT trade from
 		// starting. It never interrupts a trade already in flight: once gold is
 		// spent, the item reaches a terminal state (sold or banked) first.
@@ -554,7 +544,6 @@ const CONFIG = {
 			// The distance walk-in starts this far out and closes in by
 			// stepDist until the server stops rejecting the trade.
 			startDist: 600,
-			stepDist: 50,
 		},
 	},
 

@@ -28,6 +28,45 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v100
+
+Home server moves to US II, and three dead config keys go.
+
+`homeServer` is now `'USII'`. The operator made this change in the live slot
+first (v163) as part of moving the whole account off US IV; committing it
+means a repo -> slot push needs no hand edit afterwards, which is the point.
+The key itself is LIVE and stays - `mHomeShard()` reads it and seven call
+sites read that - so this is a value change, never a deletion.
+
+**The comment above it was wrong in a way that was about to get worse.** It
+said the value "matches Ranger's homeServer". Ranger's `homeServer` was dead
+by then and is deleted in Ranger v88, so the comment pointed at nothing on
+one side and was about to point at a different shard on the other. Rewritten
+to say the value is the merchant's own, fixed, with no counterpart in the
+combat scripts to keep it in step with.
+
+**Three unread config keys deleted**, found by an acorn AST walk that counted
+bare, dotted and string-literal references separately, cross-checked against
+an independent reference sweep from the browser session:
+
+- `scout.heldScanMs` - its own comment already said "DEAD as of v34 - nothing
+  reads it ... delete it next time this file is touched". This is that time.
+  Its seven-line comment went with it.
+- `arbitrage.batchAboveGold` - nothing reads it. NOTE: `MerchantComments.md`
+  still carries a `## batchAboveGold` section documenting it, which is now
+  orphaned. Left alone deliberately rather than edited in the same pass.
+- `arbitrage.probe.stepDist` - nothing reads it. The identically-named local
+  in `Party/Priest.js` is unrelated and live.
+
+**No functions, bindings or methods were dead in this file.** Of 1,693
+declarations, every unreferenced one is an `on_*` game callback or an operator
+console command. Worth recording because this is the file nearest the CODE
+slot size cap, so a missed reclaim would matter most here - and because it is
+the only file with `eval()` (`arbProbeSrc` and the confirm-gated call), which
+means a static proof of deadness has a hole here that it does not have
+elsewhere. Both evals resolve an operator-supplied name at call time, so
+neither rescues anything, but the caveat is real.
+
 ## v99
 
 Real upgrades now roll from Meltymerch's lucky inventory slot, 13.
