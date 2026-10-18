@@ -587,8 +587,12 @@ const CONFIG = {
 		probe: {
 			// arbProbeCall refuses to spend more than this in one call.
 			maxPrice: 10000,
-			// The distance walk-in starts this far out and closes in by
-			// stepDist until the server stops rejecting the trade.
+			// Where the probe walk-in starts; arbProbeStep() reads it.
+			// This used to name a `stepDist` knob as the amount each step
+			// closed in by. That knob was deleted in v100 as unread, and
+			// nothing in this file decrements a distance, so whatever
+			// closes the gap is not configured here. Do not re-add the
+			// name without the mechanism.
 			startDist: 600,
 		},
 	},
