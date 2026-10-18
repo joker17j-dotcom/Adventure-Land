@@ -10,7 +10,7 @@ root, so any path in an older note, comment or commit message may be stale.
 
 - **The character scripts and their changelog live in `Party/`** -
   `Party/Ranger.js`, `Party/Priest.js`, `Party/Mage.js`, `Party/Merchant.js`,
-  `Party/CHANGELOG.md`, `Party/MerchantComments.md`. Verified at the move:
+  `Party/MerchantChangelog.md`, `Party/MerchantComments.md`. Verified at the move:
   Ranger, Priest and Mage kept byte-identical blobs, so nothing drifted.
 - **`CaveRun.js` is still at the root**, with `Cleanout.js`,
   `ExchangeQuest.js`, `OpenGifts.js` and `UpgradeCompound.js`. It is run by all
@@ -40,9 +40,9 @@ root, so any path in an older note, comment or commit message may be stale.
   2026-10-17.
   Every reference points at the new path as of 2026-10-17: the three that
   still read `TASKS.md` were fixed in `Codex/FamilyFleet.js` (a comment and an
-  in-game log line, both "5e") and `Party/CHANGELOG.md` ("item 1"), and
+  in-game log line, both "5e") and `Party/MerchantChangelog.md` ("item 1"), and
   `README.md` already did. Cite the file and its anchor rather than a line
-  number - the `Party/CHANGELOG.md` line this entry used to name drifted twice
+  number - the `Party/MerchantChangelog.md` line this entry used to name drifted twice
   in one day, 2112 to 2168 to 2196, as entries were added above it.
 
 ## Which session are you
@@ -162,7 +162,7 @@ emptied, which is the single most expensive mistake this file can cause.
   history. Each script has its own changelog beside it:
   `Party/RangerChangelog.md`, `Party/PriestChangelog.md`,
   `Party/MageChangelog.md`, and the Merchant's (the browser session is renaming
-  `Party/CHANGELOG.md` to `Party/MerchantChangelog.md` to match). Prepend the
+  `Party/MerchantChangelog.md` to `Party/MerchantChangelog.md` to match). Prepend the
   new entry THERE, newest first, never rewrite an old one, and bump line 2 in
   the same commit.
 - **Why it changed.** Measured 2026-10-18 before the move: Ranger's header was
