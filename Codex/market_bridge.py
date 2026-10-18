@@ -194,6 +194,52 @@ SCHEDULE_EVENT_SEC = {"crabxx": 2400, "goobrawl": 540, "abtesting": 480,
 # goobrawl and abtesting are permanently invisible here - their absence from
 # a window says nothing about whether they ran.
 SCHEDULE_OBSERVABLE = {"crabxx", "icegolem", "franky"}
+# A timed event boss that VANISHES at the close of its window has DESPAWNED,
+# not died, and the listing cannot tell them apart on its own: a kill leaves
+# `estimatedRespawn` set, a despawn leaves nothing, so a despawn lands in the
+# same "absent on a responding server" branch a real kill would and was logged
+# `ev: "death"`. Measured 2026-10-18: every crabxx row in the log read
+# kills_logged 1 / lost 0 with the "kill" timestamped at window close.
+#
+# A vanish is called a despawn only on POSITIVE evidence - the type has a known
+# window, its spawn time is known, and that much of the window has elapsed.
+# With no spawn time nothing is claimed and the old behaviour stands, because an
+# invented window position is worse than an unlabelled event.
+#
+# The elapsed reading has to fall in a BAND around the window close, not merely
+# past it, and both edges were set from the live log on 2026-10-18.
+#
+# EARLY edge: `spawn_t` can be LATE, which makes elapsed short - a spawn found
+# by `observed_poll` is one poll gap after the real spawn, and a gap is not the
+# nominal 45s when the poller is backing off (BOSS_BACKOFF_MAX_SEC is 15 min).
+# The log carried a crabxx that vanished at 100% hp 168s short of its window,
+# which a 120 slack missed and 180 catches. Real kills in the same log sat at
+# 1322s, 1772s and 1773s elapsed, so 180 does not reach them.
+#
+# LATE edge: a stale `spawn_t` makes elapsed far too LARGE, and without a
+# ceiling that reads as "past the window" and would be relabelled. The log
+# carried a genuine kill at 4634s elapsed with 7.6% hp left - nearly two
+# windows, because a spawn had been missed. Confirmation costs up to
+# BOSS_ABSENT_CONFIRM polls, so honest lateness is bounded by a few minutes;
+# 300 covers that and excludes the stale case.
+#
+# KNOWN RESIDUAL, not fixed here: a boss that vanishes WELL inside its window
+# is left as a death even at full hp. The log holds two such rows, 338s and
+# 972s at 100%. Neither is a kill, but from the listing alone an early event
+# cancellation and a crowd killing a 960k boss between two polls look the same,
+# and guessing would trade a known error for an invisible one.
+BOSS_DESPAWN_WINDOW_SLACK = 180
+BOSS_DESPAWN_WINDOW_CEILING = 300
+# Window position says WHEN it vanished; remaining hp says whether it could
+# have been finished. An event boss has no BOSS_RESPAWN_SEC entry (respawn -1),
+# so `estimatedRespawn` is the ONLY other separator and the server need not
+# publish one for a -1 type - which leaves a real kill in the last minutes of a
+# window able to look exactly like a despawn. Remaining hp is the evidence that
+# settles it in practice: a despawn leaves hp on the boss, a kill does not. At
+# or below this percentage the despawn is recorded `confidence: "low"` rather
+# than reclassified, so the ambiguity is visible to anything reading the log
+# instead of being decided silently here. Unknown hp also reads low.
+BOSS_DESPAWN_ALIVE_PCT = 5.0
 # Seed list for servers the poller has not seen yet. Measured by the browser
 # session 2026-10-17; the live set from ALData is preferred whenever there is
 # one.
@@ -1328,7 +1374,8 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         k = (mtype, server)
         a = agg.setdefault(k, {
             "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
-            "lost": 0, "ttks": [], "last_kill_t": None, "last_spawn_t": None,
+            "lost": 0, "despawns": 0, "ttks": [], "last_kill_t": None,
+            "last_spawn_t": None, "last_despawn_t": None,
             "first_t": None, "last_t": None,
             "confidence_counts": {"high": 0, "low": 0},
         })
@@ -1346,6 +1393,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
                 a["last_spawn_t"] = t
         elif ev == "lost":
             a["lost"] += 1
+        elif ev == "despawn":
+            # A closed event window, NOT a kill. Counted apart from both: a
+            # kill earns credit and a `lost` is a measurement failure, while
+            # this is a real game event that earns nothing.
+            a["despawns"] += 1
+            if t and (a["last_despawn_t"] is None or t > a["last_despawn_t"]):
+                a["last_despawn_t"] = t
         elif ev == "death":
             a["kills_logged"] += 1
             c = "high" if d.get("confidence") == "high" else "low"
@@ -1365,7 +1419,9 @@ def boss_history(path, want_type=None, want_server=None, since=None,
                 if open_spawn:
                     stalls += 1
                 open_spawn = True
-            elif d.get("ev") == "death" and open_spawn:
+            elif d.get("ev") in ("death", "despawn") and open_spawn:
+                # A despawn CLOSES the window as surely as a kill does.
+                # Without it every event window reads as a stall.
                 open_spawn = False
         a["stalled_count"] = stalls
         ttks = a.pop("ttks")
@@ -1409,6 +1465,7 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         "deaths": sum(1 for d in rows if d.get("ev") == "death"),
         "spawns": sum(1 for d in rows if d.get("ev") == "spawn"),
         "lost": sum(1 for d in rows if d.get("ev") == "lost"),
+        "despawns": sum(1 for d in rows if d.get("ev") == "despawn"),
         "first_event": rows[0].get("t") if rows else None,
         "last_event": rows[-1].get("t") if rows else None,
         "history": out,
@@ -1969,6 +2026,10 @@ class BossWatch:
                     + f" [{ev['confidence']}]")
             elif ev["ev"] == "spawn":
                 say(f"[bosses] up   {ev['type']} on {ev['server']} [{ev['confidence']}]")
+            elif ev["ev"] == "despawn":
+                say(f"[bosses] gone {ev['type']} on {ev['server']} - event window"
+                    f" closed after {ev['elapsed_sec']}s of {ev['window_sec']}s"
+                    f" (despawn, NOT counted as a kill)")
             elif ev["ev"] == "lost":
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
@@ -2086,29 +2147,55 @@ class BossWatch:
                 if f is not None and f.get("alive"):
                     gap = gap_for(f)
                     rs = BOSS_RESPAWN_SEC.get(mtype)
-                    if er is not None and rs:
-                        # The server's own scheduled respawn minus the nominal
-                        # interval is an exact death time, so the observation gap
-                        # neither bounds it nor downgrades it.
-                        death_t, how, dconf = er - rs, "respawn_offset", "high"
-                    elif dead_reported:
-                        lo = f.get("last_alive_t") or (poll_t - gap)
-                        death_t, how, dconf = (lo + poll_t) / 2.0, "poll_bracket", "low"
-                    else:
-                        lo = f.get("last_alive_t") or (poll_t - gap)
-                        death_t = (lo + poll_t) / 2.0
-                        how, dconf = "absent_on_responding_server", "low"
                     spawn_t = f.get("spawn_t")
-                    ttk = round(death_t - spawn_t) if (spawn_t and death_t > spawn_t) else None
-                    self._emit({
-                        "ev": "death", "t": iso(death_t), "type": mtype, "server": server,
-                        "id": f.get("id"), "last_hp": f.get("last_hp"),
-                        "last_pct": f.get("last_pct"),
-                        "spawn_t": iso(spawn_t) if spawn_t else None, "ttk_sec": ttk,
-                        "method": how,
-                        "death_lo": iso(f.get("last_alive_t") or (poll_t - gap)),
-                        "death_hi": iso(poll_t), "estimated_respawn": er_raw,
-                        "poll_gap_sec": round(gap), "confidence": dconf})
+                    win = SCHEDULE_EVENT_SEC.get(mtype)
+                    elapsed = (poll_t - spawn_t) if spawn_t else None
+                    # A timed event boss gone at the close of its window with no
+                    # respawn estimate DESPAWNED; it was not killed. Positive
+                    # evidence only - see BOSS_DESPAWN_WINDOW_SLACK.
+                    despawned = bool(
+                        er is None and not dead_reported and win
+                        and elapsed is not None
+                        and win - BOSS_DESPAWN_WINDOW_SLACK <= elapsed
+                        <= win + BOSS_DESPAWN_WINDOW_CEILING)
+                    if despawned:
+                        self._emit({
+                            "ev": "despawn", "t": iso(poll_t), "type": mtype,
+                            "server": server, "id": f.get("id"),
+                            "last_hp": f.get("last_hp"),
+                            "last_pct": f.get("last_pct"),
+                            "spawn_t": iso(spawn_t), "window_sec": win,
+                            "elapsed_sec": round(elapsed),
+                            "reason": "event window closed; absent from a "
+                                      "responding server with no respawn estimate",
+                            "poll_gap_sec": round(gap),
+                            "confidence": ("high"
+                                           if (f.get("last_pct") is not None
+                                               and f["last_pct"] > BOSS_DESPAWN_ALIVE_PCT)
+                                           else "low")})
+                    else:
+                        if er is not None and rs:
+                            # The server's own scheduled respawn minus the nominal
+                            # interval is an exact death time, so the observation gap
+                            # neither bounds it nor downgrades it.
+                            death_t, how, dconf = er - rs, "respawn_offset", "high"
+                        elif dead_reported:
+                            lo = f.get("last_alive_t") or (poll_t - gap)
+                            death_t, how, dconf = (lo + poll_t) / 2.0, "poll_bracket", "low"
+                        else:
+                            lo = f.get("last_alive_t") or (poll_t - gap)
+                            death_t = (lo + poll_t) / 2.0
+                            how, dconf = "absent_on_responding_server", "low"
+                        ttk = round(death_t - spawn_t) if (spawn_t and death_t > spawn_t) else None
+                        self._emit({
+                            "ev": "death", "t": iso(death_t), "type": mtype, "server": server,
+                            "id": f.get("id"), "last_hp": f.get("last_hp"),
+                            "last_pct": f.get("last_pct"),
+                            "spawn_t": iso(spawn_t) if spawn_t else None, "ttk_sec": ttk,
+                            "method": how,
+                            "death_lo": iso(f.get("last_alive_t") or (poll_t - gap)),
+                            "death_hi": iso(poll_t), "estimated_respawn": er_raw,
+                            "poll_gap_sec": round(gap), "confidence": dconf})
                 self.fights[key] = {
                     "alive": False, "id": None, "spawn_t": None,
                     "last_alive_t": (f or {}).get("last_alive_t", 0.0),
