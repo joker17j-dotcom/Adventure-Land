@@ -547,6 +547,33 @@ summary of it.
   `raw.githubusercontent.com` in a browser tab and fighting truncated results.
   The container is ephemeral, so treat those paths as a lead, not a guarantee:
   `find / -maxdepth 4 -name .git -type d` settles it.
+- **A FOUND CLONE'S IDENTITY AND AGE ARE BOTH UNKNOWN UNTIL MEASURED, AND
+  THE SAME PATH IS A DIFFERENT REPOSITORY IN THE TWO CONTAINERS.** The bullet
+  above was right about the cost and wrong by omission, and it cost a session
+  a full day. Measured 2026-10-18, both containers, same path `/tmp/almongo`:
+  the Claude Code container held `kaansoral/adventureland_mongodb` at
+  `2148cf25`, equal to upstream HEAD; the browser container held the
+  OPERATOR'S FORK, `joker17j-dotcom/adventureland_mongodb`, at `9005216` -
+  a clean ancestor 330 commits behind, with `node/server.js` differing by
+  599 insertions and 218 deletions. A path is not an identity.
+  Three lines settle it, before reading anything:
+  `git -C <clone> remote -v`, then
+  `git ls-remote https://github.com/kaansoral/adventureland_mongodb HEAD`,
+  then compare against `git -C <clone> rev-parse HEAD`. If they differ,
+  `git fetch origin main` and read from THAT commit, not from HEAD.
+- **So cite the MECHANISM, and treat every line number as clone-local.** A
+  mechanism survives a rebase; a line number does not. The six citations the
+  stale fork produced - `:2263`, `:13163`, `:13146`, `:2671`, `:2712`,
+  `:2281` - all point at unrelated code in current source, and the only
+  reason none of them reached this file is that the other session's numbers
+  were checked against a second clone rather than taken on trust. Every
+  number in the drop-rolls block and the Hop Sickness block was read from
+  upstream `2148cf25` and re-confirmed there on 2026-10-18.
+- **The container's clone is SHALLOW** - `git log --oneline | wc -l` returns
+  1. That is fine for reading the tree, which is what these questions need,
+  and useless for any question about history: no blame, no "when did this
+  change", no comparing two revisions. `git fetch --unshallow` first if the
+  question is a historical one.
 
 ## Browser tabs - the keeper
 
