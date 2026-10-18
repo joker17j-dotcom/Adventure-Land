@@ -237,6 +237,16 @@ emptied, which is the single most expensive mistake this file can cause.
   window hints that a second declaration exists eleven lines further on, and
   the dead body is longer and more detailed than the live one, so it reads as
   the more authoritative of the two.
+- **A DESIGN VALUE MAY BE AN EXPRESSION, NOT A LITERAL. READ TO THE COMMA,
+  NOT TO THE FIRST TOKEN.** `design/monsters.js:1100` is
+  `"dragold":{ ... "hp":12800000*2,"xp":12000000*2, ... }`. A grep for the
+  field and a read of the first number gives 12,800,000, which is half, and
+  the file offers no hint - the whole definition is one line. It cost a
+  2026-10-18 session a phantom hunt for an event multiplier that does not
+  exist. maxHp feeds `requiredDwellSec` as `maxHp^0.65`, so a 2x error there
+  is a 2x error in how long the party is told to stay. The real values:
+  dragold 25,600,000, crabxx 960,000, franky 120,000,000, icegolem
+  16,000,000, mrgreen 36,000,000, all `cooperative: true`.
 
 ## A comment is a claim, and claims rot
 
@@ -432,6 +442,42 @@ first - this section is what it was learned on.
   is static reference data, NOT personal history; an attempt to use it for
   per-kill drop-rate history was a dead end. Operator's 2026-10-17 call: these
   are not worth planning around, the normal drops are.
+
+Drop rolls, from source 2026-10-18. BOTH sessions read this backwards on the
+same day, in opposite directions, so take the mechanism rather than anyone's
+summary of it.
+
+- **`item[0]` in `design/drops.js` is a RATE, NOT 1-in-N ODDS. HIGHER IS MORE
+  LIKELY.** `shouldItemDrop` at `node/server.js:2325` is
+  `playerRoll = Math.random() / rollModifier; return playerRoll < dropRate`,
+  so the item drops iff `random() < item[0] * rollModifier`. A line reading
+  `[1000, "funtoken"]` is a thousand times more likely than `[10, "funtoken"]`,
+  and `[4.0/10000, "suckerpunch"]` is the rare one.
+- **The modifier collapses to `share * luckm`.** It is
+  `share * player.luckm * monster.level * monster_mult`, and `new_monster`
+  sets `monster.level = 1` (`:13490`) and `monster.mult = 1` (`:13473`)
+  unconditionally. `mult` is written once more, at `:17000`, inside
+  `shutdown_routine` only. **`hp_mult` is NOT in this path** - the comment at
+  `:2343` reads `// /hp_mult - removed [13/07/18]`. The three older roll forms
+  above it do divide by `hp_mult`, but those serve the global_static, global
+  and MAP tables, not the monster table. So a boss's HP does not suppress its
+  own drops: being small buys nothing and being huge costs nothing.
+- **A line saturates once `item[0] * share * luckm >= 1`.** Credit already
+  requires `share > 0.0025`, so a `1000` line saturates at any `luckm >= 0.4`
+  - which means a credited character takes every `1000` line on every kill,
+  clean or hop-sick, and the lines cannot degrade while credit is being
+  earned at all. Hop Sickness never touches `luckm`; its `-80 luck` does not
+  enter this path.
+- **CROWDING MULTIPLIES THE ROLLS, ON COOPERATIVE MONSTERS ONLY.**
+  `B.drop_table_multiplier = parseInt(1 + Math.floor(total_characters / 10))`
+  at `:2734`, where `total_characters` counts contributors with
+  `share > 0.0008`; the monster-table loop at `:2340` runs that many times,
+  and `:2776` resets it. `issue_monster_award` reaches that code only
+  `if (monster.cooperative)`. So a crowd cuts each roll's share AND multiplies
+  the number of rolls, and where the lines are saturated the rolls win
+  outright. Modelled on crabxx with equal contributions and `luckm` 1.5:
+  5 funtokens a kill solo, 18.8 at 40 contributors, 30.4 at 80. A busy shard
+  is BETTER for a funtoken run, which is the opposite of the obvious instinct.
 
 ## Stopping and restarting a character's CODE
 
