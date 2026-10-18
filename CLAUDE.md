@@ -142,6 +142,12 @@ browser-driven route and does not apply to the other.
 - **Routing commits away from this session is a cost accepted, not a demotion.**
   It is the session that can read the live game and verify claims against it,
   which is why it produces the content in the first place.
+- **MCP code pushes follow the same rule as commits.** Operator's call
+  2026-10-17: `save_code` through the `adventureland` MCP server is DIRECTED
+  per push and never standing, exactly as a commit is, and the default stays
+  the operator doing the deploy. Data PULLS through that same server need no
+  instruction. The tool cannot actually carry a character script, though - see
+  "Deploying a code slot".
 
 ## Version headers
 
@@ -458,6 +464,46 @@ Claude Code session stops after `browser_code_eval`.
 - **`load_code` serves a cached copy.** After `save_code` the character keeps
   running the old build until the page is FULLY reloaded. Verify by feature-
   detecting something only the new build has, not by the slot version number.
+- **The MCP `save_code` cannot carry a character script.** It is whole-slot
+  REPLACE with no patch or append verb, and `code` is a single inline string,
+  so the entire file has to be emitted as one tool argument. Measured
+  2026-10-17: `Party/Mage.js` is 235,874 bytes and `Party/Ranger.js` 406,619,
+  past what one response can produce - Ranger decisively. `get_code` is no
+  help either, because it pulls that same full size INTO context. Both
+  directions are full-size, so there is nothing for a delta to chunk against.
+  The tool is fine for the small slots - Kill Count, Lucky Slot, Cave.
+- **`codemirror_render` already holds the live slot source, with the CODE panel
+  CLOSED.** This is the lever that makes a delta deploy possible at all. On a
+  character tab it is a CodeMirror 5 instance exposing `getValue`, `setValue`
+  and `replaceRange`, populated before anything is opened - measured
+  2026-10-17 on Dexon at 372,989 units while `.cm-content` was absent from the
+  DOM entirely. So the browser can fetch the target from the GitHub contents
+  API, hash it, and set the document without the file ever passing through the
+  conversation, which is what makes the size problem above irrelevant on this
+  route. The save step itself is classifier-gated.
+- **Do NOT pull the slot source into a tool result - the version-header line
+  carries the slot token**, which is exactly what comes back `[BLOCKED]`.
+  Report derived values instead: a length, a line count, a hash, per-block
+  hashes. That is enough to identify a build exactly.
+- **A LIVE SLOT CAN BE AHEAD OF THE REPO, AND NOTHING RECORDS IT.** The
+  deployment markers in the version header only ever say the repo is ahead of
+  the slot. There is no marker for the reverse, and the reverse is the one that
+  bites, because a wholesale paste silently reverts it. Measured 2026-10-17:
+  Dexon's live slot matched NO committed build - 372,989 UTF-16 units against
+  v82's 372,979, same line count, no trailing newline - and block-hashing
+  found five hand edits, every one of them deliberate operator config:
+  `'mole'` appended to `singleTargetMobs`, `monsterHunt.enabled` false, the
+  achievement queue `enabled` true, and both `booboo` entries commented out.
+  Pasting the repo build over that would have flipped the party back to monster
+  hunt and re-enabled booboo in the middle of an achievement grind. Priest and
+  Mage were byte-identical to v47 and v70, so this is NOT uniform across the
+  party - check each, never assume.
+- **How to check, in three cheap steps.** Hash 100-line blocks of
+  `codemirror_render.getValue()` inside the page and compare them with the same
+  blocks computed from the candidate commit; for each block that differs, hash
+  its individual lines and compare those; then read only the few differing
+  lines, which is safe because the slot token is not on them. Three round trips
+  located five changed lines in a 7,217-line file.
 
 ## Helpers that may not exist - use typeof, never truthiness
 
