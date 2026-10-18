@@ -20,6 +20,47 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v50
+
+A TOGGLES block and a console-command header. Additive only - no read site
+changed and no behaviour changed.
+
+**TOGGLES.** Every on/off switch in CONFIG, 28 of them, collected into one
+`const TOGGLES` immediately before `const CONFIG`, with CONFIG referencing
+each one. The value still lives at its original CONFIG path, so `cfg.enabled`
+after `const cfg = CONFIG.bossEvents` (line 1993) resolves exactly as before
+and a runtime assignment to a CONFIG path still wins. The diff touches only
+the inserted block and the value positions inside the CONFIG literal; every
+function body is untouched, which is the check that proves it is additive.
+
+Keys are namespaced because `enabled` appears 10 times in this file, once per
+subsystem: `<subsystem>` for an `enabled`, `<subsystem><Key>` for anything
+else, so `movement.kiting.debug` becomes `kitingDebug`. Each line carries its
+CONFIG path as a comment.
+
+The values were replaced by AST offset rather than by line, because several
+CONFIG lines carry two booleans at once - `focusFire.enabled` and
+`requireInRange` share a line, as do `cohesion.enabled` and `cohesion.debug` -
+and a line-based edit would have taken both or neither.
+
+RUNTIME CAVEAT, also in the block's own comment: the value is copied when
+CONFIG is constructed, so assigning to TOGGLES at runtime does NOT propagate.
+Editing the file and reloading does.
+
+NOT swept up: booleans that are not operator switches. `show` on the log-panel
+tabs, `ok` on result objects, `check_min_hp` on a game-API call, `childList`
+on a MutationObserver, `PARTY_LINK.verbose`, and the runtime state fields
+(`busy`, `rip`, `inFlight`, `restocking`, `skinReady`, `waitingForMerchant`,
+`arrivedAtSpot`, `reportedUnreachable`). A boolean at config indent inside a
+function is a data field, not a switch.
+
+**CONSOLE COMMANDS header.** 7 commands listed in the opening comment with
+their signatures, under the note that they have no internal callers BY DESIGN
+and that a static scan will call every one of them dead. Derived with an AST
+walk - top-level functions with zero bare, zero dotted and zero string-literal
+references, excluding `on_*` handlers - not from a list. The same derivation
+reproduces Merchant.js's hand-written header exactly, all twelve names, which
+is what validates the method.
 ## v49
 
 NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dead code only, 130 lines, no

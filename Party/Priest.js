@@ -1,10 +1,21 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v49
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v50
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
 // file is the record. Prepend new entries there, newest first, never rewrite
 // an old one, and bump the version on the line above in the same commit.
+//
+// CONSOLE COMMANDS - type these in the game console. They have no internal
+// callers BY DESIGN; a static scan will report every one as dead and it is
+// wrong. Do not delete them.
+//   bossJoin(name)  join the named boss fight, bypassing the gate
+//   bossHome()      abandon the boss trip and go back to the farm spot
+//   bossStatus()    boss gate, current pick and trip state
+//   mhStatus()      monster-hunt state for this character and the party
+//   plStatus()      party-link state
+//   rageStatus()    rage boxes on the current map
+//   restockNow()    clear the potion-restock backoff so the next empty tick travels
 //
 // COMMENTS: a line ending "-> PriestComments.md#anchor" is a SUMMARY, not the
 // whole comment. The reasoning behind it - what was measured, what was tried
@@ -203,26 +214,68 @@ setInterval(plPoll, PARTY_LINK.pollMs);
 
 const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'greenjr', 'grinch', 'icegolem', 'jr', 'mrgreen', 'mrpumpkin', 'phoenix', 'rgoo', 'wabbit'];
 
+/* -- TOGGLES -------------------------------------------------------
+   Every on/off switch in this file, in one place, so flipping one does not
+   mean hunting through CONFIG for it. Each is read ONCE, when CONFIG is
+   constructed below, and the value still lives at its original CONFIG path -
+   no read site changed, so `cfg.enabled` after `const cfg = CONFIG.x`
+   resolves exactly as it did.
+
+   EDITING A VALUE HERE AND RELOADING changes behaviour. ASSIGNING TO
+   `TOGGLES` AT RUNTIME DOES NOT - the subsystem already copied the value.
+   Runtime flips still go to the CONFIG path they always did, which is what
+   the console commands above already do. */
+const TOGGLES = {
+	scare:                      true,   // CONFIG.combat.scare.enabled
+	focusFire:                  true,   // CONFIG.combat.focusFire.enabled
+	focusFireRequireInRange:    true,   // CONFIG.combat.focusFire.requireInRange
+	combatCurse:                true,   // CONFIG.combat.curse
+	combatZapper:               true,   // CONFIG.combat.zapper
+	combatZapSwap:              false,  // CONFIG.combat.zapSwap
+	zapSpam:                    true,   // CONFIG.combat.zapSpam.enabled
+	movement:                   true,   // CONFIG.movement.enabled
+	movementCircleWalk:         true,   // CONFIG.movement.circleWalk
+	kiting:                     true,   // CONFIG.movement.kiting.enabled
+	kitingAutoBySpeed:          true,   // CONFIG.movement.kiting.autoBySpeed
+	kitingDisengageOnCourage:   true,   // CONFIG.movement.kiting.disengageOnCourage
+	kitingDebug:                false,  // CONFIG.movement.kiting.debug
+	healingHealOthers:          true,   // CONFIG.healing.healOthers
+	healingAbsorb:              true,   // CONFIG.healing.absorb
+	healingDarkBlessing:        true,   // CONFIG.healing.darkBlessing
+	looting:                    true,   // CONFIG.looting.enabled
+	lootingEquipGoldGear:       true,   // CONFIG.looting.equipGoldGear
+	equipmentAutoSwapSets:      true,   // CONFIG.equipment.autoSwapSets
+	equipmentBossLuckSwitch:    true,   // CONFIG.equipment.bossLuckSwitch
+	temporal:                   true,   // CONFIG.equipment.temporal.enabled
+	potionsAutoBuy:             true,   // CONFIG.potions.autoBuy
+	partyAutoManage:            true,   // CONFIG.party.autoManage
+	cohesion:                   true,   // CONFIG.party.cohesion.enabled
+	cohesionDebug:              false,  // CONFIG.party.cohesion.debug
+	bossEvents:                 true,   // CONFIG.bossEvents.enabled
+	bossEventsCooperativeOnly:  true,   // CONFIG.bossEvents.cooperativeOnly
+	muling:                     true,   // CONFIG.muling.enabled
+};
+
 const CONFIG = {
 	combat: {
 		/* Clears everything targeting us - jacko in the bag, 50 mp, 5s cooldown.
 		   courageOffset 0 fires AT courage, pre-empting the attacker that would
 		   start fear and stop him healing. See scare(). */
-		scare: { enabled: true, courageOffset: 0, minHeldMs: 250 },
+		scare: { enabled: TOGGLES.scare, courageOffset: 0, minHeldMs: 250 },
 		/* Adopt Dexon's target. Measured 2026-09-26: two distinct targets across
 		   three characters, and no focus-fire mechanism in any of the files -
 		   targetPriority below looks like one but means "prefer monsters already
 		   targeting the priest", which is a protect heuristic, not shared aim. */
-		focusFire: { enabled: true, requireInRange: true },
-		curse: true,
-		zapper: true,
-		zapSwap: false,
+		focusFire: { enabled: TOGGLES.focusFire, requireInRange: TOGGLES.focusFireRequireInRange },
+		curse: TOGGLES.combatCurse,
+		zapper: TOGGLES.combatZapper,
+		zapSwap: TOGGLES.combatZapSwap,
 		// home used to be baked in here, but it isn't known yet at load time
 		// now - it's added dynamically wherever zapperMobs is actually used
 		// (see updateHomeDependentSets() and handleCurse()).
 		zapperMobs: [...allBosses, "sparkbot"],
 		zapSpam: {
-			enabled: true,
+			enabled: TOGGLES.zapSpam,
 			mob: 'bscorpion',
 			minMp: 2000
 		},
@@ -247,14 +300,14 @@ const CONFIG = {
 				[270, -1060]
 			]
 		},
-		enabled: true,
-		circleWalk: true,
+		enabled: TOGGLES.movement,
+		circleWalk: TOGGLES.movementCircleWalk,
 		circleRadius: 35,
 		kiting: {
-			enabled: true,
+			enabled: TOGGLES.kiting,
 			/* Hand-tuned list - authoritative, never derived. See kiteThreatRadius(). */
 			avoidTypes: ['bscorpion'],
-			autoBySpeed: true,
+			autoBySpeed: TOGGLES.kitingAutoBySpeed,
 			speedRatio: 1.3,
 			attackMargin: 15,
 			/* Flee even when not yet inside a danger radius, once this many monsters
@@ -262,7 +315,7 @@ const CONFIG = {
 			   he held 122-181 units - safely outside cgoo's 64 reach - and was still
 			   over courage for 53 of 297 samples, because fear counts who TARGETS
 			   you, not who can reach you. A feared priest stops healing. */
-			disengageOnCourage: true,
+			disengageOnCourage: TOGGLES.kitingDisengageOnCourage,
 			disengageDistance: 70,
 			avoidRadius: 300,
 			rangeBuffer: 65,
@@ -280,34 +333,34 @@ const CONFIG = {
 
 			/* debug draws the fence and every tangent line on screen each tick -
 			   fine while tuning one arena, far too noisy now kiting is general. */
-			debug: false
+			debug: TOGGLES.kitingDebug
 		},
 	},
 
 	healing: {
 		partyHealThreshold: 0.65,
-		healOthers: true,
+		healOthers: TOGGLES.healingHealOthers,
 		healOthersThresh: 0.8,
 		partyHealMinMp: 2000,
-		absorb: true,
-		darkBlessing: true
+		absorb: TOGGLES.healingAbsorb,
+		darkBlessing: TOGGLES.healingDarkBlessing
 	},
 
 	looting: {
 		lootSet: "dreturn",
-		enabled: true,
+		enabled: TOGGLES.looting,
 		chestThreshold: 1,
 		// Bounds one pass; the old cap was chestThreshold * 5 = 5 per pass,
 		// which could never drain a backlog of thousands.
 		maxPerPass: 25,
 		targetCount: 55,
-		equipGoldGear: true,
+		equipGoldGear: TOGGLES.lootingEquipGoldGear,
 		lootCooldown: 3000
 	},
 
 	equipment: {
-		autoSwapSets: true,
-		bossLuckSwitch: true,
+		autoSwapSets: TOGGLES.equipmentAutoSwapSets,
+		bossLuckSwitch: TOGGLES.equipmentBossLuckSwitch,
 		bossHpThresholds: {
 			mrpumpkin: 300000,
 			mrgreen: 300000,
@@ -318,7 +371,7 @@ const CONFIG = {
 			wabbit: 5000,
 		},
 		temporal: {
-			enabled: true,
+			enabled: TOGGLES.temporal,
 			targetMob: 'bscorpion',
 			orbName: 'orboftemporal',
 			skillName: 'temporalsurge',
@@ -328,7 +381,7 @@ const CONFIG = {
 	},
 
 	potions: {
-		autoBuy: true,
+		autoBuy: TOGGLES.potionsAutoBuy,
 		hpThreshold: 400,
 		mpThreshold: 500,
 		minStock: 1000,
@@ -347,23 +400,23 @@ const CONFIG = {
 	},
 
 	party: {
-		autoManage: true,
+		autoManage: TOGGLES.partyAutoManage,
 		/* heal has use_range: true, so it reaches character.range - 197 here.
 		   Measured mid-fight: Dexon (181,637), FatherToken (-6,280) = 403 units,
 		   2.05x out of range. He was not failing to heal because he was feared;
 		   he could not heal at all. 150 leaves margin inside 197. */
-		cohesion: { enabled: true, leash: 150, handoff: 400, stepMax: 120, stuckMs: 20000, debug: false },
+		cohesion: { enabled: TOGGLES.cohesion, leash: 150, handoff: 400, stepMax: 120, stuckMs: 20000, debug: TOGGLES.cohesionDebug },
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken']
 	},
 
 	/* BOSS EVENTS - the operator's rule, 2026-09-30: cooperative bosses only,
 	   fought from maximum range, never expecting the kill. -> bossTick */
 	bossEvents: {
-		enabled: true,
+		enabled: TOGGLES.bossEvents,
 		// G.monsters[x].cooperative - the game's own "credit is shared by damage
 		// dealt" flag, and the only class of boss where chipping from range is a
 		// strategy rather than a waste. An unknown monster is NOT cooperative.
-		cooperativeOnly: true,
+		cooperativeOnly: TOGGLES.bossEventsCooperativeOnly,
 		// abtesting is team PvP with a 120s join window, not a boss.
 		// slenderman is excluded because he cannot be WALKED to, not because he is
 		// not worth fighting. The server broadcasts his MAP and nothing else -
@@ -392,7 +445,7 @@ const CONFIG = {
 	},
 
 	muling: {
-		enabled: true,
+		enabled: TOGGLES.muling,
 		muleName: 'Dexon',
 		fallbackMuleName: 'Meltymerch',
 		goldReserve: 500000,
