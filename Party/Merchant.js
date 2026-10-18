@@ -1,15 +1,31 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v100
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v101
 //
-// CHANGELOG: read CHANGELOG.md in this repo. Do not put version history back
-// in this file, and do not reconstruct it from git log - CHANGELOG.md is the
+// CHANGELOG: read MerchantChangelog.md in this repo. Do not put version history back
+// in this file, and do not reconstruct it from git log - MerchantChangelog.md is the
 // record. Prepend new entries there, newest first, and never rewrite an old
 // one. Bump the version on the line above in the same commit.
 //
+//
+// CONSOLE COMMANDS - type these in the game console. They have no internal
+// callers BY DESIGN; a static scan will report every one as dead and it is
+// wrong. Do not delete them.
+//   plStatus()                 party-link state
+//   rageStatus()               rage boxes on the current map
+//   pontyStatus()              ponty gate, budget and last pass
+//   sbStatus()                 stand-buy state
+//   scoutBufferedCount()       scout rows held but not yet flushed
+//   exchangeableReport()       what the exchangeable guard is protecting
+//   arbNeverList()             shelved arbitrage counterparties
+//   arbNeverForget(target)     un-shelve one
+//   arbStockSkipList()         ids arbitrage is refusing to restock
+//   arbStockUnskip(id)         clear one
+//   arbProbeHalt(on)           pause/resume arbitrage probing
+//   gearProbeTripwire(n)       arm the gear-probe tripwire
 // COMMENTS: a line ending "-> MerchantComments.md#anchor" is a SUMMARY, not
 // the whole comment. The reasoning behind it - what was measured, what was
 // tried and discarded, why a number is that number - lives in
-// Codex/MerchantComments.md under that anchor. Read it before changing the
+// Party/MerchantComments.md under that anchor. Read it before changing the
 // code it sits on. Most of those numbers were measured live rather than
 // chosen, and several record a theory that turned out to be wrong; both are
 // easy to tidy away if you only see the summary. When you change such a line,
@@ -309,6 +325,36 @@ if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog rep
 plProbe();
 setInterval(plPoll, PARTY_LINK.pollMs);
 
+/* -- TOGGLES -------------------------------------------------------
+   Every on/off switch in this file, in one place, so flipping one does not
+   mean hunting through 660 lines of CONFIG. Each is read ONCE, when CONFIG
+   is constructed below.
+
+   EDITING A VALUE HERE AND RELOADING changes behaviour. ASSIGNING TO
+   `TOGGLES` AT RUNTIME DOES NOT - the subsystem already copied the value.
+   Runtime flips still go to the CONFIG path they always did, which is what
+   the console commands and the one in-code assignment already do.
+   -> MerchantComments.md#TOGGLES */
+const TOGGLES = {
+	scout:                    true,   // CONFIG.scout.enabled
+	scoutParked:              false,  // CONFIG.scout.parked
+	scoutRescanAfterBuy:      true,   // CONFIG.scout.rescanAfterBuy
+	arbitrage:                true,   // CONFIG.arbitrage.enabled
+	arbitrageDryRun:          false,  // CONFIG.arbitrage.dryRun
+	idleRestock:              true,   // CONFIG.idleRestock.enabled
+	selfHeal:                 true,   // CONFIG.selfHeal.enabled
+	selling:                  true,   // CONFIG.selling.enabled
+	sellingAggressiveEnabled: true,   // CONFIG.selling.aggressiveEnabled
+	mluckOpportunistic:       true,   // CONFIG.mluck.opportunistic
+	mluckTakeOverOthers:      true,   // CONFIG.mluck.takeOverOthers
+	pontyBuy:                 true,   // CONFIG.pontyBuy.enabled
+	standBuy:                 true,   // CONFIG.standBuy.enabled
+	standSales:               false,  // CONFIG.standSales.enabled
+	gearProgression:          true,   // CONFIG.gearProgression.enabled
+	anniversaryKiss:          true,   // CONFIG.anniversaryKiss.enabled
+	pontyBuyCapAtOneStack:    true,   // CONFIG.pontyBuy.capAtOneStack
+};
+
 const CONFIG = {
 	partyMembers: ['Dexon', 'FatherToken', 'MageofOz'],
 	// How long to wait for a change_server to actually land before treating the
@@ -348,7 +394,7 @@ const CONFIG = {
 		// character to have scanned. CONFIG.arbitrage.enabled is the switch for
 		// trading.
 		// -> MerchantComments.md#enabled
-		enabled: true,
+		enabled: TOGGLES.scout,
 		// Scan beat. True holds CONFIG.homeServer, rescans it every townScanMs,
 		// and still scans wherever else the script legitimately takes it - it
 		// just never travels FOR a scan. False runs the full roaming rotation,
@@ -356,7 +402,7 @@ const CONFIG = {
 		// the stand and an in-flight trade behind a page load. Inert while
 		// `enabled` is off.
 		// -> MerchantComments.md#parked
-		parked: false,
+		parked: TOGGLES.scoutParked,
 		bridge: 'http://127.0.0.1:8787',
 		// earthiverse's ALData, the same feed the watchlist page defaults to. It
 		// -> MerchantComments.md#aldata
@@ -383,7 +429,7 @@ const CONFIG = {
 		/* Never publish a listing we just bought. The scan is captured BEFORE the
 		   buying, which is the right order - the buy needs the data - so without
 		   this the report advertises the slot we emptied. -> scoutRescanAfterBuy */
-		rescanAfterBuy: true,
+		rescanAfterBuy: TOGGLES.scoutRescanAfterBuy,
 		// Where the stands are, as a box in world coordinates.
 		// -> MerchantComments.md#standRegion
 		standRegion: { minX: -250, maxX: 260, minY: -210, maxY: 190 },
@@ -403,10 +449,10 @@ const CONFIG = {
 		// one persisted in CODE storage would outlive a redeploy, so a build
 		// pushed with this false could still be trading, which is the opposite
 		// of what a kill switch is for. arbProbeBuild() reports the live value.
-		enabled: true,
+		enabled: TOGGLES.arbitrage,
 		// Belt and braces. Turning `enabled` on alone cannot spend gold: the
 		// -> MerchantComments.md#dryRun
-		dryRun: false,
+		dryRun: TOGGLES.arbitrageDryRun,
 		// Per ITEM, not per batch: a marginal item must not ride along on a good
 		// one, which would quietly lower the floor.
 		minProfit: 500000,
@@ -589,7 +635,7 @@ const CONFIG = {
 	   away from what a delivery actually needs.
 	   -> MerchantComments.md#idleRestock */
 	idleRestock: {
-		enabled: true,
+		enabled: TOGGLES.idleRestock,
 		everyMs: 5 * 60 * 1000,
 		target: null,        // null = deliveryAmount + restockBuffer
 		reserve: 1000000,    // never spend down past this
@@ -608,7 +654,7 @@ const CONFIG = {
 	// partyheal's exact radius isn't documented, so this is a conservative
 	// approximation - tune if it turns out too tight or too loose.
 	selfHeal: {
-		enabled: true,
+		enabled: TOGGLES.selfHeal,
 		hpThreshold: 0.5,
 		maxRangeToHealer: 400,
 		requestCooldownMs: 5000,
@@ -649,7 +695,7 @@ const CONFIG = {
 	},
 
 	selling: {
-		enabled: true,
+		enabled: TOGGLES.selling,
 		// slice_blueberry was on this list until 2026-09-22. Arbitrage pays up to
 		// 2,000,000 for one and the NPC pays 6, so vendoring it on sight was a
 		// 300,000x loss waiting for the wrong moment.
@@ -657,7 +703,7 @@ const CONFIG = {
 
 		// Nothing else in this script actively guards against Meltymerch's
 		// -> MerchantComments.md#aggressiveEnabled
-		aggressiveEnabled: true,
+		aggressiveEnabled: TOGGLES.sellingAggressiveEnabled,
 		aggressiveFreeSlotThreshold: 5,
 	},
 
@@ -691,7 +737,7 @@ const CONFIG = {
 		   character - so the buff can NEVER stop, divert or delay a trip. If a
 		   party member is out of range, the pass does nothing and tries again on
 		   the next tick. It does not walk to them and it does not summon. */
-		opportunistic: true,
+		opportunistic: TOGGLES.mluckOpportunistic,
 
 		/* null => CONFIG.partyMembers. Set an array to narrow it. */
 		opportunisticTargets: null,
@@ -714,7 +760,7 @@ const CONFIG = {
 		   can be overwritten is NOT asserted here - the cast is attempted and the
 		   server decides. A refusal parks that one name for retryAfterFailMs
 		   instead of being retried every 2s. */
-		takeOverOthers: true,
+		takeOverOthers: TOGGLES.mluckTakeOverOthers,
 		retryAfterFailMs: 5 * 60 * 1000,
 
 		/* Short cooloff after ANY attempt on a name, win or lose. Two jobs.
@@ -758,7 +804,7 @@ const CONFIG = {
 	/* PONTY BUY LIST - the tier-3 gear the operator wants picked up whenever it
 	   turns up in Ponty's stock during the ordinary scan cycle. -> PONTY BUY */
 	pontyBuy: {
-		enabled: true,
+		enabled: TOGGLES.pontyBuy,
 
 		/* EDIT THIS. Item ids, any order, duplicates harmless - the set is
 		   rebuilt on every pass, so a change from the console takes effect on the
@@ -799,6 +845,12 @@ const CONFIG = {
 		/* 'always' | 'low' | 'never'. The bank trip happens AFTER the buying is
 		   finished, never between two purchases, so a hop is never taken with the
 		   list half-bought. */
+		/* Stop buying an id once the bank already holds a full stack of it -
+		   one copy for anything that does not stack. ashleaf is why: 38,553 in
+		   the bank on 2026-10-18, 3.86 stacks, bought here and banked forever.
+		   Reads live quantities via pontyBankQty(); if that read fails the pass
+		   proceeds uncapped and says so. -> MerchantComments.md#capAtOneStack */
+		capAtOneStack: TOGGLES.pontyBuyCapAtOneStack,
 		bankAfterBuy: 'always',
 		bankWhenFreeSlotsBelow: 12,   // only consulted when bankAfterBuy is 'low'
 	},
@@ -806,7 +858,7 @@ const CONFIG = {
 	/* STAND BUY LIST - the gear-plan pieces worth taking off another player's
 	   stand when they are cheap enough. -> STAND BUY */
 	standBuy: {
-		enabled: true,
+		enabled: TOGGLES.standBuy,
 
 		/* A pasted buy freezes the rotation while it runs, and may cross a shard
 		   to reach the listing. Both are v91; see sbBuyNow. */
@@ -908,7 +960,7 @@ const CONFIG = {
 		// So the rollback reason no longer holds, and v47's ARB_HELD_KEY
 		// registry independently covers the NPC-dump risk the same entry
 		// worried about. Re-enabling is the operator's call, not a fix owed.
-		enabled: false,
+		enabled: TOGGLES.standSales,
 		slots: [1, 2, 3, 4, 5],      // trade slots this feature owns (1-indexed)
 		revalueEveryMs: 5 * 60 * 1000,
 		undercutBy: 1,               // be the cheapest listing, by exactly this
@@ -936,7 +988,7 @@ const CONFIG = {
 	},
 
 	gearProgression: {
-		enabled: true,
+		enabled: TOGGLES.gearProgression,
 		// 8000 was far too tight for a loop that walks to the town spot and back.
 		// -> MerchantComments.md#gearPacing
 		intervalMs: 30000,
@@ -946,7 +998,7 @@ const CONFIG = {
 	// ANNIVERSARY KISS HUNTER - works on Mainframe. Primary source is
 	// parent.S.anniversary, confirmed reliable via live testing 2026-09-17.
 	anniversaryKiss: {
-		enabled: true,
+		enabled: TOGGLES.anniversaryKiss,
 		checkIntervalMs: 5000,
 		townMap: 'main', // only hunts while already in town, not mid-delivery/farm-support travel
 		// When this character IS the featured player there is nobody to go and
@@ -3539,6 +3591,7 @@ function sellAggressivelyIfLowOnSpace() {
 	if (freeInventorySlots() > cfg.aggressiveFreeSlotThreshold) return;
 
 	const held = arbHeldNames();
+	const ponty = pontyWanted();
 	let sold = 0;
 	for (let i = 0; i < character.items.length; i++) {
 		const item = character.items[i];
@@ -3549,6 +3602,7 @@ function sellAggressivelyIfLowOnSpace() {
 		if (isKeptMaterial(item.name)) continue;   // -> CONFIG.materials.keepAndBank
 		if (isTier2OrTier3GearItem(item.name)) continue;
 		if (held[item.name]) continue;   // arbitrage stock - vendoring it realises the loss
+		if (ponty.has(item.name)) continue;   // we BUY this from Ponty -> MerchantComments.md#isPontyBought
 
 		try {
 			sell(i);
@@ -5679,6 +5733,59 @@ function pontyCount(name, level) {
 }
 
 /* Tested before every purchase, not once per pass. */
+/* Anything the script is willing to BUY must never be vendored. Derived from
+   CONFIG.pontyBuy.items rather than copied into a second list, so the buy list
+   and the protect list cannot drift apart. They already had: every slice is
+   bought here and none was protected, and the arbitrage registry that nominally
+   covers them is self-healing - it holds only what is in the BAG, so bank stock
+   pulled into inventory during a reorganisation is unguarded. That is the most
+   likely path by which ~15 snakeoil disappeared on 2026-10-17.
+   -> MerchantComments.md#isPontyBought */
+function isPontyBought(name) {
+	return !!name && pontyWanted().has(String(name));
+}
+
+/* One full stack, as the game defines it. Anything that does not stack has no
+   `s` and caps at a single copy, which is the point - Ponty re-offers the same
+   pieces forever. Measured 2026-10-18 across the 58 pontyBuy ids: 22 do not
+   stack, 10 stack at 10-100 (the dungeon keys at 50), 23 stack at 9,999.
+   -> MerchantComments.md#pontyStackCap */
+function pontyStackCap(name) {
+	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+	const it = g && g.items && g.items[String(name)];
+	if (!it) return null;
+	return it.s || 1;
+}
+
+/* Live bank quantities without travelling. api_call('load_bank') answers from
+   anywhere - no bank map, no character moved, nothing to keep in sync. Measured
+   2026-10-18 from two different characters' CODE contexts, on halloween and on
+   main, both returning all 7 packs and 74,822 items. character.bank stays null
+   out here; this is a separate route to the same data, and it is what the /hub
+   BANK button calls.
+   Returns null on failure AND LOGS IT. A silent empty map would read as "the
+   bank is empty" and uncap every item, which is the worse failure.
+   -> MerchantComments.md#pontyBankQty */
+async function pontyBankQty() {
+	try {
+		const d = await api_call('load_bank', {}, { timeout: 10000 });
+		if (!d || !d.packs) {
+			pontyLog('load_bank returned no packs - stack caps NOT applied this pass', 'orange');
+			return null;
+		}
+		const out = {};
+		for (const pack in d.packs) {
+			for (const it of (d.packs[pack] || [])) {
+				if (it && it.name) out[it.name] = (out[it.name] || 0) + (it.q || 1);
+			}
+		}
+		return out;
+	} catch (e) {
+		pontyLog('load_bank failed (' + ((e && e.message) || e) + ') - stack caps NOT applied this pass', 'orange');
+		return null;
+	}
+}
+
 function pontyBuyGate(cost) {
 	const cfg = CONFIG.pontyBuy;
 	const free = pontyFreeSlots();
@@ -5734,6 +5841,11 @@ async function pontyBuyPass(rows) {
 	hits.sort((a, b) => (a.price == null ? Infinity : a.price) - (b.price == null ? Infinity : b.price));
 	pontyLog(hits.length + ' wanted item(s) in stock on ' + mShardKey() + ': '
 		+ hits.map((h) => h.name + '+' + h.level).join(', '), '#FFD700');
+	/* One read per pass, not one per row: load_bank is a network round trip.
+	   Purchases made inside this pass are counted locally, so a second copy of
+	   the same id cannot slip through against a number read before it. */
+	const bankQty = cfg.capAtOneStack ? await pontyBankQty() : null;
+	const boughtThisPass = {};
 	const bought = [];
 	for (const r of hits) {
 		const cap = (cfg.maxPrice || {})[r.name];
@@ -5741,11 +5853,21 @@ async function pontyBuyPass(rows) {
 			pontyLog('skipping ' + r.name + '+' + r.level + ' at ' + pontyFmt(r.price) + ' - over its ' + pontyFmt(cap) + ' cap', '#8b98ab');
 			continue;
 		}
+		if (bankQty) {
+			const stackCap = pontyStackCap(r.name);
+			const have = (bankQty[r.name] || 0) + (boughtThisPass[r.name] || 0);
+			if (stackCap && have >= stackCap) {
+				pontyLog('skipping ' + r.name + '+' + r.level + ' - bank already holds '
+					+ pontyFmt(have) + ' of a ' + pontyFmt(stackCap) + ' stack', '#9aa0a6');
+				continue;
+			}
+		}
 		const gate = pontyBuyGate(r.price || 0);
 		if (!gate.ok) { pontyLog('stopping here: ' + gate.why, 'orange'); break; }
 		const res = await pontyBuyOne(r);
 		if (res.ok) {
 			bought.push({ name: r.name, level: r.level, spent: res.spent });
+			boughtThisPass[r.name] = (boughtThisPass[r.name] || 0) + 1;
 			pontyLog('bought ' + r.name + '+' + r.level + ' for ' + pontyFmt(res.spent)
 				+ ' (gold ' + pontyFmt(character.gold) + ', ' + pontyFreeSlots() + ' slots free)', '#7FD98A');
 		}
@@ -7736,6 +7858,7 @@ function ssVendorBound(item) {
 	if (isKeptMaterial(item.name)) return false;   // -> CONFIG.materials.keepAndBank
 	if (isTier2OrTier3GearItem(item.name)) return false;
 	if (arbHeldNames()[item.name]) return false;   // arbitrage owns this exit
+	if (isPontyBought(item.name)) return false;    // we BUY this from Ponty - never vendor it
 	return true;
 }
 
