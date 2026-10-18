@@ -482,6 +482,10 @@ const CONFIG = {
 		   false, so the sockets never open and tick() has nothing to pick from. */
 		enabled: true,
 		preSpawnBuffer: 3000,
+		/* Extra lead time on top of hop sickness for a join-type event, so the
+		   clock is actually clear when the event opens rather than clearing on
+		   the same tick. -> RangerComments.md#joinWhileHopsick */
+		joinClearMarginMs: 30000,
 		hopLatencyMs: 1500,          // measured 274ms per change_server + margin
 		safetyMarginMs: 15000,
 		maxFightMs: 15 * 60 * 1000,  // hard abort only, NOT a credit timer
@@ -2665,6 +2669,35 @@ const bossHop = {
 		return Math.min(c.maxContributors, Math.max(c.minContributors, k));
 	},
 
+	/* G.conditions.hopsickness.duration, read live rather than hardcoded.
+	   Measured 2026-10-18: 720,000ms, with luck/gold/xp -80 and output -20. */
+	hopsickMs() {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+		const d = g && g.conditions && g.conditions.hopsickness && g.conditions.hopsickness.duration;
+		return typeof d === 'number' ? d : 720000;
+	},
+
+	/* Arrival is an event JOIN rather than a walk, and the server REFUSES a
+	   join while hop-sick - "You can't do this when you are sick!". Hopping
+	   re-stamps hop sickness on arrival, so a hop timed to land AT spawn lands
+	   unable to join at all, which is what v87 did for crabxx every time.
+	   Derived from the game rather than from a list here, so a new daily
+	   behaves correctly without an edit.
+	   -> RangerComments.md#joinWhileHopsick */
+	isJoinEvent(mtype) {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+		return !!(g && g.events && g.events[mtype] && g.events[mtype].join === true);
+	},
+
+	/* How long the event stays open once it spawns, in ms. Measured
+	   2026-10-18: crabxx 2,400s, which is the only reason waiting out 720s of
+	   hop sickness inside the window is affordable. */
+	eventWindowMs(mtype) {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
+		const d = g && g.events && g.events[mtype] && g.events[mtype].duration;
+		return typeof d === 'number' ? d * 1000 : null;
+	},
+
 	isHopsick() {
 		const s = (typeof character !== 'undefined' && character && character.s) || {};
 		return !!s.hopsickness;
@@ -2688,6 +2721,11 @@ const bossHop = {
 		let best = null;
 		for (const t of CONFIG.bossHop.targets) {
 			if (!this.localBossLive(t.mtype)) continue;
+			/* Standing right here and still unreachable: the join is refused
+			   while hop-sick, so take it only once the clock has run out.
+			   Skipping beats attempting and logging a server refusal.
+			   -> RangerComments.md#joinWhileHopsick */
+			if (hopsick && this.isJoinEvent(t.mtype)) continue;
 			const cur = this.currentShard();
 			const st = parent?.S?.[t.mtype];
 			const hp = typeof st?.hp === 'number' ? st.hp : null;
@@ -2731,7 +2769,15 @@ const bossHop = {
 				hp = r.hp ?? row?.hp ?? r.maxHp;
 			} else if (r.spawnTime) {
 				const untilSpawn = r.spawnTime - now;
-				if (untilSpawn <= 0 || untilSpawn > CONFIG.bossHop.preSpawnBuffer) continue;
+				/* A join-type event has to be reached EARLY, not at spawn. The
+				   hop re-stamps hop sickness on arrival and the join is refused
+				   for its whole duration, so landing hopsickMs + margin ahead
+				   means the clock clears about when the event opens.
+				   -> RangerComments.md#joinWhileHopsick */
+				const buffer = this.isJoinEvent(r.mtype)
+					? this.hopsickMs() + CONFIG.bossHop.joinClearMarginMs
+					: CONFIG.bossHop.preSpawnBuffer;
+				if (untilSpawn <= 0 || untilSpawn > buffer) continue;
 				hp = this.maxHpOf(r.mtype, r.maxHp);
 			} else {
 				continue;
@@ -2751,6 +2797,7 @@ const bossHop = {
 				live: r.live,
 				secsToDeath: hp / this.shardDps(r.shard, r.mtype),
 				kills_to_rung: cfg.kills_to_rung,
+				spawnTime: r.spawnTime || null,
 			});
 		}
 		return out;
@@ -2773,6 +2820,18 @@ const bossHop = {
 			x.contributors = k;
 			// (1) a LIVE boss has to outlast the trip. A pending one does not.
 			if (x.live && x.secsToDeath < arriveSec) return false;
+			/* A join-type event is worth the trip only if we can be CLEAN
+			   inside its window. We land hop-sick for hopsickMs whatever we
+			   do, and cannot join until that clears, so the test is whether
+			   enough window remains AFTER it clears to satisfy the dwell. */
+			if (this.isJoinEvent(x.mtype)) {
+				const win = this.eventWindowMs(x.mtype);
+				if (win) {
+					const joinableAt = Date.now() + c.hopLatencyMs + c.safetyMarginMs + this.hopsickMs();
+					const closesAt = (x.live ? Date.now() : (x.spawnTime || Date.now())) + win;
+					if ((closesAt - joinableAt) / 1000 < x.requiredDwellSec) return false;
+				}
+			}
 			// (2) enough fight has to remain AFTER we land.
 			x.remainingSec = x.live ? x.secsToDeath - arriveSec : x.secsToDeath;
 			return x.remainingSec >= x.requiredDwellSec;
