@@ -28,6 +28,57 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v101
+
+pontyBuy items are now protected from both sell paths, and pontyBuy stops
+buying an id once the bank already holds a full stack of it.
+
+PROTECTION. `isPontyBought()` derives from CONFIG.pontyBuy.items rather than
+copying the names into a second list, so the buy list and the protect list
+cannot drift apart again. Both sell guards consult it:
+sellAggressivelyIfLowOnSpace() and ssVendorBound(). Measured before the
+change, 23 of the 58 pontyBuy ids passed every guard and would have been
+vendored during an inventory squeeze - including all six arbitrage slices,
+the eight dungeon keys and the three boxes. The slices were nominally
+covered by the arbHeld registry, but that registry is self-healing and holds
+only what is in the BAG, so bank stock pulled into inventory during a
+reorganisation was unguarded. That is the most likely path by which roughly
+15 snakeoil disappeared on 2026-10-17; snakeoil is sold by no NPC and drops
+at 3% from cave_snake, 0.01% from osnake and 0.001% from snake.
+
+STACK CAP. CONFIG.pontyBuy.capAtOneStack stops a purchase once the bank
+already holds a full stack of that id - one copy for anything that does not
+stack, since Ponty re-offers the same gear forever. Across the 58 ids, 22 do
+not stack, 10 stack at 10-100 (the dungeon keys at 50) and 23 stack at
+9,999. ashleaf is the case that prompted it: 38,553 banked on 2026-10-18,
+3.86 stacks, accumulating indefinitely because it sits in pontyBuy.items and
+in materials.keepAndBank at the same time.
+
+Quantities are read live with api_call('load_bank'), which answers from any
+map with no character moved and no bank visit. Measured 2026-10-18 from two
+different characters' CODE contexts, on halloween and on main, both
+returning all seven packs and 74,822 items. character.bank remains null
+outside the bank map; this is a separate route to the same data, and it is
+what the /hub BANK button calls. One read per pass, not one per row, with
+in-pass purchases counted locally so a second copy cannot slip through
+against a number read before it. A failed read logs and leaves the pass
+uncapped rather than silently uncapping every item.
+
+TOGGLES. All 17 on/off switches are collected in a TOGGLES block at the top
+of the file. No read site changed: the values still live at their original
+CONFIG paths, so cfg.enabled still resolves and the runtime assignment to
+CONFIG.arbitrage.enabled still wins. Editing TOGGLES at runtime does not
+propagate, because CONFIG copies the value when it is constructed; the block
+says so rather than leaving it to be discovered.
+
+HOUSEKEEPING. The header now lists all 12 console commands, which have no
+internal callers by design and which any static scan reports as dead. The
+header pointed at Codex/MerchantComments.md; the file is in Party/, and that
+was the only place the directory was named, against 152 pointers into it.
+This file was renamed from CHANGELOG.md to MerchantChangelog.md so that it
+matches the per-character changelogs being added for Ranger, Priest and
+Mage.
+
 ## v100
 
 Home server moves to US II, and three dead config keys go.
