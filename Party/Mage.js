@@ -1,10 +1,22 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v72
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v73
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
 // file is the record. Prepend new entries there, newest first, never rewrite
 // an old one, and bump the version on the line above in the same commit.
+//
+// CONSOLE COMMANDS - type these in the game console. They have no internal
+// callers BY DESIGN; a static scan will report every one as dead and it is
+// wrong. Do not delete them.
+//   bossJoin(name)     join the named boss fight, bypassing the gate
+//   bossHome()         abandon the boss trip and go back to the farm spot
+//   bossStatus()       boss gate, current pick and trip state
+//   mhStatus()         monster-hunt state for this character and the party
+//   plStatus()         party-link state
+//   rageStatus()       rage boxes on the current map
+//   removeChestId(id)  drop one chest id from the persisted chest map
+//   restockNow()       clear the potion-restock backoff so the next empty tick travels
 //
 // COMMENTS: a line ending "-> MageComments.md#anchor" is a SUMMARY, not the
 // whole comment. The reasoning behind it - what was measured, what was tried
@@ -206,12 +218,49 @@ setInterval(plPoll, PARTY_LINK.pollMs);
 
 const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'greenjr', 'grinch', 'icegolem', 'jr', 'mrgreen', 'mrpumpkin', 'phoenix', 'rgoo', 'wabbit'];
 
+/* -- TOGGLES -------------------------------------------------------
+   Every on/off switch in this file, in one place, so flipping one does not
+   mean hunting through CONFIG for it. Each is read ONCE, when CONFIG is
+   constructed below, and the value still lives at its original CONFIG path -
+   no read site changed, so `cfg.enabled` after `const cfg = CONFIG.x`
+   resolves exactly as it did.
+
+   EDITING A VALUE HERE AND RELOADING changes behaviour. ASSIGNING TO
+   `TOGGLES` AT RUNTIME DOES NOT - the subsystem already copied the value.
+   Runtime flips still go to the CONFIG path they always did, which is what
+   the console commands above already do. */
+const TOGGLES = {
+	manaBurst:                  true,   // CONFIG.combat.manaBurst.enabled
+	focusFire:                  true,   // CONFIG.combat.focusFire.enabled
+	focusFireRequireInRange:    true,   // CONFIG.combat.focusFire.requireInRange
+	movement:                   true,   // CONFIG.movement.enabled
+	movementCircleWalk:         true,   // CONFIG.movement.circleWalk
+	kiting:                     true,   // CONFIG.movement.kiting.enabled
+	kitingAutoBySpeed:          true,   // CONFIG.movement.kiting.autoBySpeed
+	kitingDisengageOnCourage:   true,   // CONFIG.movement.kiting.disengageOnCourage
+	kitingDebug:                false,  // CONFIG.movement.kiting.debug
+	energize:                   true,   // CONFIG.support.energize.enabled
+	magiport:                   false,  // CONFIG.support.magiport.enabled
+	blinkOnLowHp:               true,   // CONFIG.selfPreservation.blinkOnLowHp.enabled
+	looting:                    true,   // CONFIG.looting.enabled
+	equipmentAutoSwapSets:      true,   // CONFIG.equipment.autoSwapSets
+	potionsAutoBuy:             true,   // CONFIG.potions.autoBuy
+	partyAutoManage:            true,   // CONFIG.party.autoManage
+	cohesion:                   true,   // CONFIG.party.cohesion.enabled
+	cohesionDebug:              false,  // CONFIG.party.cohesion.debug
+	temporal:                   true,   // CONFIG.temporal.enabled
+	selling:                    false,  // CONFIG.selling.enabled
+	bossEvents:                 true,   // CONFIG.bossEvents.enabled
+	bossEventsCooperativeOnly:  true,   // CONFIG.bossEvents.cooperativeOnly
+	muling:                     true,   // CONFIG.muling.enabled
+};
+
 const CONFIG = {
 	combat: {
 		// Mana Burst dumps the ENTIRE mp pool as pure damage - only fire it
 		// when mp is comfortably high, never as a reflex low-mp action.
 		manaBurst: {
-			enabled: true,
+			enabled: TOGGLES.manaBurst,
 			minMp: 1200,       // don't burst below this - keep some mp in reserve
 			// home used to be baked in here, but it isn't known yet at load
 			// time now - checked separately alongside this list wherever
@@ -222,7 +271,7 @@ const CONFIG = {
 		   2026-09-26: two distinct targets across three characters. Note
 		   targetPriority below is NOT focus fire - it means "prefer monsters
 		   already targeting the priest". */
-		focusFire: { enabled: true, requireInRange: true },
+		focusFire: { enabled: TOGGLES.focusFire, requireInRange: TOGGLES.focusFireRequireInRange },
 		targetPriority: ['FatherToken'],
 		allBosses,
 	},
@@ -244,8 +293,8 @@ const CONFIG = {
 				[270, -1060]
 			]
 		},
-		enabled: true,
-		circleWalk: true,
+		enabled: TOGGLES.movement,
+		circleWalk: TOGGLES.movementCircleWalk,
 		circleRadius: 35,
 		/* Kiting - new in v54. Mage.js had none at all, which left blinkOnLowHp as
 		   his only answer to being hit, and that only fires at 25% hp - roughly a
@@ -259,17 +308,17 @@ const CONFIG = {
 		   anyway (speed 24 against his 64) and derives the hold from its
 		   weakness_aura radius of 100 rather than its 32 attack range. */
 		kiting: {
-			enabled: true,
+			enabled: TOGGLES.kiting,
 			targets: [],
 			overrides: {},
-			autoBySpeed: true,
+			autoBySpeed: TOGGLES.kitingAutoBySpeed,
 			speedRatio: 1.3,
 			attackMargin: 15,
 			/* Abandon the hold band once this many monsters target us. He died on
 			   2026-09-26 bleeding 1,995 to 0 with ONE attacker while sitting at
 			   59-95 against a 176 hold, unhealed because the rest of the party was
 			   already down - so getting out matters more than holding station. */
-			disengageOnCourage: true,
+			disengageOnCourage: TOGGLES.kitingDisengageOnCourage,
 			disengageDistance: 60,
 			rangeBuffer: 20,
 			moveThrottle: 100,
@@ -277,7 +326,7 @@ const CONFIG = {
 			moveDistance: 30,
 			repositionThreshold: 20,
 			maxKiteRange: 400,
-			debug: false
+			debug: TOGGLES.kitingDebug
 		},
 	},
 
@@ -287,7 +336,7 @@ const CONFIG = {
 		// with this. Change target to FatherToken if you'd rather buff the
 		// priest instead.
 		energize: {
-			enabled: true,
+			enabled: TOGGLES.energize,
 			target: 'Dexon',
 			minSelfMp: 500, // don't energize if it would leave MageofOz too low
 		},
@@ -295,7 +344,7 @@ const CONFIG = {
 		// character without them asking for it in the moment, so it is opt-in:
 		// the operator turns it on deliberately, for a reason.
 		magiport: {
-			enabled: false,
+			enabled: TOGGLES.magiport,
 			target: 'Dexon',
 			triggerDistance: 2000, // only pull if they're this far away
 		},
@@ -305,24 +354,24 @@ const CONFIG = {
 		// Blink is a short teleport, used here purely to break away from
 		// immediate danger. No offensive use.
 		blinkOnLowHp: {
-			enabled: true,
+			enabled: TOGGLES.blinkOnLowHp,
 			hpThreshold: 0.25, // blink away below 25% hp
 		},
 	},
 
 	looting: {
-		enabled: true,
+		enabled: TOGGLES.looting,
 		lootCooldown: 3000,
 		// Bounds one pass so draining a backlog is not one unbroken socket chain.
 		maxPerPass: 25
 	},
 
 	equipment: {
-		autoSwapSets: true,
+		autoSwapSets: TOGGLES.equipmentAutoSwapSets,
 	},
 
 	potions: {
-		autoBuy: true,
+		autoBuy: TOGGLES.potionsAutoBuy,
 		hpThreshold: 400,
 		mpThreshold: 500,
 		minStock: 1000,
@@ -341,19 +390,19 @@ const CONFIG = {
 	},
 
 	party: {
-		autoManage: true,
+		autoManage: TOGGLES.partyAutoManage,
 		/* He cannot heal himself, so staying inside FatherToken's 197 heal range
 		   is what keeps him alive. He died on 2026-09-26 bleeding 1,995 to 0
 		   against ONE attacker with nobody in range to heal him. Moving toward
 		   the centroid rather than at the leader keeps the group compact. */
-		cohesion: { enabled: true, leash: 150, handoff: 400, stepMax: 120, stuckMs: 20000, debug: false },
+		cohesion: { enabled: TOGGLES.cohesion, leash: 150, handoff: 400, stepMax: 120, stuckMs: 20000, debug: TOGGLES.cohesionDebug },
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken']
 	},
 
 	// Shared with Ranger.js / Priest.js - keep this array identical across
 	// all three scripts, since the rotation index is shared via localStorage.
 	temporal: {
-		enabled: true,
+		enabled: TOGGLES.temporal,
 		targetMob: 'bscorpion',
 		skillName: 'temporalsurge',
 		characters: ['FatherToken', 'Dexon', 'MageofOz'],
@@ -363,7 +412,7 @@ const CONFIG = {
 	// Selling is left disabled - I don't know which mage drops you actually
 	// want auto-sold. Fill in a whitelist and flip this on when you're ready.
 	selling: {
-		enabled: false,
+		enabled: TOGGLES.selling,
 		whitelist: [],
 	},
 
@@ -372,11 +421,11 @@ const CONFIG = {
 	/* BOSS EVENTS - the operator's rule, 2026-09-30: cooperative bosses only,
 	   fought from maximum range, never expecting the kill. -> bossTick */
 	bossEvents: {
-		enabled: true,
+		enabled: TOGGLES.bossEvents,
 		// G.monsters[x].cooperative - the game's own "credit is shared by damage
 		// dealt" flag, and the only class of boss where chipping from range is a
 		// strategy rather than a waste. An unknown monster is NOT cooperative.
-		cooperativeOnly: true,
+		cooperativeOnly: TOGGLES.bossEventsCooperativeOnly,
 		// abtesting is team PvP with a 120s join window, not a boss.
 		// slenderman is excluded because he cannot be WALKED to, not because he is
 		// not worth fighting. The server broadcasts his MAP and nothing else -
@@ -405,7 +454,7 @@ const CONFIG = {
 	},
 
 	muling: {
-		enabled: true,
+		enabled: TOGGLES.muling,
 		muleName: 'Dexon',
 		fallbackMuleName: 'Meltymerch',
 		goldReserve: 500000,
