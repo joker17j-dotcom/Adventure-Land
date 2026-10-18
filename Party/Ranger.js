@@ -1,4 +1,7 @@
 // ==========================================================================
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v85 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v82. The dwell gate is PER-BOSS, not a constant, which is the one substantive defect in v84. requiredDwellMs was a single 60s number and pickTarget() applied its 76.5s floor to all seven targets; it was calibrated on mrgreen, which is the only boss it fits. What has to be out-weighed is the total damage every OTHER contributor banks across the whole fight, and that is the boss's entire hp pool, so the requirement scales as maxHp^0.65. One constant was therefore wrong in both directions at once. snowman (1,200 hp) and crabxx (960,000) could NEVER be picked - their whole-health secsToDeath is 0.06s and 48.0s, both under 76.5s at any dps - and those are the two CHEAPEST rungs on the board, 60 kills to resistance +3 and 70 to luck +1. franky meanwhile was admitted when it earns nothing: it needs 167s at 40 contributors and the gate passed anything over 76.5s, so the party paid 12 minutes of hop sickness for no credit. THE FIX IS IN THREE PARTS. candidates() now emits maxHp alongside hp, because secsToDeath correctly asks when the boss will die while the dwell requirement needs the full pool - contributors' points for damage dealt before Dexon lands are still in total at the award. The G lookup is hoisted out of the pre-spawn branch into maxHpOf()/gameData() so both paths see it, keeping the typeof guard: optional chaining does NOT save an undeclared identifier from throwing. requiredDwellSec(maxHp, contributors, hopsick, mtype) implements the share model directly - others deal the whole pool split K ways, contributing K^(1-E) * maxHp^E to total, and Dexon clears THR/(1-THR) of that. contributors() derives K from observed dps over typicalPlayerDps, clamped to [5,200], since no feed reports one; it is self-consistent rather than accurate, because more dps means both more players and a faster death and both push the gate the same way. isHopsick() reads character.s live. AND THE SINGLE FLOOR SPLITS INTO TWO TESTS, which is what unblocks snowman: a LIVE boss must outlast the trip (secsToDeath >= arriveSec) while a PENDING one is exempt, since we land before it exists and catch the whole fight; then enough must remain AFTER landing (remainingSec >= requiredDwellSec). Conflating the two is exactly what rejected snowman, which needs ~0s of dwell but dies far inside the hop latency and is only ever reachable pre-spawn. localTarget() gets test (2) as well - v84 let it commit FIGHTING to a boss whose share was unreachable, a quarter of an hour spent for nothing - with hopsick read live, because a clean party's requirement is 5x smaller and that is precisely when a boss standing in front of him is most worth taking. Unknown hp does NOT reject a local boss: there is nothing to lose by trying and the alternative is hopping away from a free fight on missing data. CONFIG: requiredDwellMs is DROPPED rather than left as a dead knob that looks live; dexonDps 2605, typicalPlayerDps 2000, minContributors 5, maxContributors 200 added, with an optional per-target dexonDps override. The 2605 is a magical-resistance figure measured against mrgreen (resistance 900, apiercing 122) and is a first approximation elsewhere - crabxx is armor 320 physical, franky lists no resistance - mattering least where the maxHp term dominates and most at mrgreen, where a 2x error moves the gate from 50s to 100s. Per-boss figures want measuring. ShowBossHop now prints maxHp, contributors, requiredDwellSec, remainingSec and a rejectedBecause string per row, plus the live hopsick flag and arriveSec: with a per-boss gate the reason for a rejection stopped being guessable, since one 76.5s number no longer explains every one of them. VERIFIED by lifting the shipped methods out of the file and running them, not by re-deriving: requiredDwellSec reproduces the browser session's independent seven-boss table at K=10/40/80 to better than 0.9%, the residual being rounding and well inside the uncertainty on dexonDps; hop sickness is exactly 5.000x on all seven; crabxx flips from rejected to picked; snowman is rejected live and picked pre-spawn; a near-dead franky on a busy shard flips from picked to rejected while a full-health one and the same fight with a clean party both stay picked.)
+// ==========================================================================
+// ==========================================================================
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v84 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. The cross-shard dragold hunter becomes a cross-shard BOSS hunter, and it ships OFF. CONFIG.dragold is now CONFIG.bossHop, carrying seven targets - dragold, grinch, snowman, franky, crabxx, mrpumpkin, mrgreen - each with its kills_to_rung. The state machine needed almost nothing: only six places ever named dragold. TWO FEEDS, AND THE BRIDGE IS OPTIONAL. The per-shard parent.io sockets stay and now record every target type rather than filtering on data.dragold, which gives liveness and hp everywhere with no external process; the bridge /bosses endpoint is layered on top for the one thing a snapshot cannot give, the dps it measured from its own sample series on that shard. A dead bridge costs a worse pick, not the hunt - refreshBridge() is fire-and-forget on a 30s interval, nothing in tick() awaits it, and a failure drops the rows rather than letting a stale dps rot, because fallbackDps is at least honestly labelled. ShowBossHop names the source per row. SELECTION. secsToDeath = hp / shardDps(shard, mtype); eligible when secsToDeath >= (requiredDwellMs + hopLatencyMs + safetyMarginMs) / 1000, which is 76.5s at the shipped numbers; among the eligible take the SMALLEST secsToDeath, tie-broken on the lowest kills_to_rung. Smallest-first reads backwards until you write out the alternative: eligibility has already guaranteed the boss lives long enough to earn credit, so every candidate past that gate pays the same and what separates them is how long Dexon is stuck there. Biggest-first parks him on a full-health mrgreen for twenty minutes while four others die elsewhere. A boss that has not spawned yet is admitted only inside preSpawnBuffer and is costed at full health, which correctly ranks it last - arriving early means waiting. NO HOME ROUTING BETWEEN HOPS, which v83 did after every kill. Going home is not useless in itself; it clears Hop Sickness instantly, measured 2026-10-17 with ~11 minutes still on the clock. But the clear is spent the moment he leaves again, because the next hop re-stamps the full 12 minutes, so between two kills the round trip buys nothing, costs two hops of latency, and re-arms Realm Fatigue on the whole party - which does NOT clear on the way home. FIGHTING now falls straight back to IDLE. FIGHTING ALSO EXITS ON DEATH OR A HARD ABORT AND NOTHING ELSE: credit requires being live in that shard's process when the boss dies, because the award loop resolves contributors through players[name_to_id[name]] behind a bare if (current) and a departed player's points are discarded without even reaching total. maxFightMs is therefore an abort for a fight that has gone wrong, never a 'banked enough, move on' timer; there is no such thing as leaving early with a share. It also aborts if something else moved him off the target shard mid-fight, since the credit is gone either way and pretending otherwise just wedges the state. The relay message generalises from dragold_hop to boss_hop and now carries shard and mtype alongside the region and name it already sent, and it is sent BEFORE change_server because change_server reloads the page and anything after it may never run. ShowDragold becomes ShowBossHop, listing the candidate table sorted the way the picker sorts it, with each row's dps source and whether it clears the floor; its gate moves from parent.S.lunarnewyear - right while the only target was a lunar-new-year boss - to the feature's own switch. Two toggle comments rewritten to describe effect rather than current state, per the operator's standing rule.)
 // ==========================================================================
 // ==========================================================================
@@ -515,10 +518,19 @@ const CONFIG = {
 	   party is permanently sick - every hop re-stamps the full 12 minutes - so
 	   the sick column is the only one worth quoting here. The two measured
 	   anchors for mrgreen at 36,000,000 hp: 50.1s against 40 other
-	   contributors, 147.0s against 300. requiredDwellMs sits between them at
-	   60s because that is the operator's dial, NOT because 60s was measured to
-	   be the threshold at any particular contributor count. Raise it on a busy
-	   shard.
+	   contributors, 147.0s against 300.
+
+	   REQUIRED DWELL IS NOT A CONSTANT - it scales as maxHp^0.65, and v84
+	   shipped it as one. What has to be out-weighed is the total damage every
+	   OTHER contributor banks across the whole fight, and that is the boss's
+	   entire hp pool, not the part left when Dexon arrives. A single 76.5s
+	   floor calibrated on mrgreen was therefore wrong in both directions at
+	   once: 39x too strict for crabxx and 31,587x for snowman - the two
+	   CHEAPEST rungs on the board at 70 and 60 kills, both permanently
+	   unreachable because their whole-health secsToDeath, 48.0s and 0.06s,
+	   never clears it - and 2x too loose for franky, which needs 167s at 40
+	   contributors and so was admitted to fights it could not score in, at a
+	   cost of 12 minutes of hop sickness a time. See requiredDwellSec().
 
 	   PUSH ONE CHARACTER, NOT THREE. Achievement score is a MAX across the
 	   account, never a sum: the effective value is max(own p.stats total,
@@ -543,7 +555,21 @@ const CONFIG = {
 		hopLatencyMs: 1500,          // measured 274ms per change_server + margin
 		safetyMarginMs: 15000,
 		maxFightMs: 15 * 60 * 1000,  // hard abort only, NOT a credit timer
-		requiredDwellMs: 60000,
+		/* Dexon's own dps, the denominator of requiredDwellSec(). Measured
+		   against mrgreen, which is a MAGICAL-resistance fight - resistance
+		   900, apiercing 122 - so it is a first approximation elsewhere:
+		   crabxx is armor 320 physical and franky lists no resistance at all.
+		   It matters least where the maxHp term dominates and most at
+		   mrgreen, where a 2x error moves the gate from 50s to 100s. A target
+		   may carry its own dexonDps to override this; none does yet, and
+		   per-boss figures want measuring rather than estimating. */
+		dexonDps: 2605,
+		/* Used to turn an observed shard dps into a contributor count, since
+		   no feed reports one. Not measured - a stand-in for "one other
+		   player", deliberately round. */
+		typicalPlayerDps: 2000,
+		minContributors: 5,
+		maxContributors: 200,
 		/* Used only when the bridge has no fresh dps for that shard and boss -
 		   either it is down, or it has not sampled this fight yet. NOT a
 		   per-boss measurement: it is the whole-server figure the bridge read
@@ -2701,15 +2727,26 @@ function crabxxReport() {
    Written this way round deliberately. Dexon keeps hopping when the bridge is
    down - he just picks worse - rather than the hunt stopping with it.
 
-   SELECTION. For each live boss on another shard:
+   SELECTION. For each target boss on another shard:
 
        secsToDeath = hp / shardDps(shard, mtype)
-       eligible    = secsToDeath >= (requiredDwell + hopLatency + safety) / 1000
+       arriveSec   = (hopLatency + safety) / 1000
+       (1) a LIVE boss must outlast the trip:  secsToDeath >= arriveSec
+           a PENDING one is exempt - we land before it exists
+       (2) enough must remain after landing:
+           remainingSec = live ? secsToDeath - arriveSec : secsToDeath
+           remainingSec >= requiredDwellSec(maxHp, contributors, hopsick)
        choose      = the SMALLEST secsToDeath among the eligible
        tie-break   = the lowest kills_to_rung
 
+   TWO TESTS, NOT ONE FLOOR, and that is the v84 fix. Adding the dwell
+   requirement to the trip cost and comparing the sum against secsToDeath
+   rejects snowman outright - it needs ~0s of dwell but dies far inside the
+   hop latency, so it is only ever reachable pre-spawn, and the pre-spawn
+   path must not be charged an arrival it does not pay.
+
    Smallest-first looks backwards until you write out what the alternative
-   buys. Eligibility has already guaranteed the boss lives long enough to earn
+   buys. Test (2) has already guaranteed the boss lives long enough to earn
    credit, so every candidate past that gate pays the same; what separates
    them is how long Dexon is then stuck there. Taking the one nearest death
    banks the kill soonest and frees him for the next, which is the only way a
@@ -2857,6 +2894,55 @@ const bossHop = {
 		return parent.server_region + parent.server_identifier;
 	},
 
+	/* typeof, not G?. - optional chaining does NOT save an UNDECLARED
+	   identifier from throwing, and every caller here sits inside a loop
+	   whose catch would turn that throw into a silent no-op. */
+	gameData() {
+		return (typeof parent !== 'undefined' && parent.G) ? parent.G
+			: (typeof G !== 'undefined' ? G : null);
+	},
+
+	/* The boss's FULL pool, which is what the dwell requirement turns on -
+	   not the hp left when Dexon lands. Contributors' points for damage dealt
+	   before he arrives are still in `total` when the award loop runs. */
+	maxHpOf(mtype, observed) {
+		return observed ?? this.gameData()?.monsters?.[mtype]?.hp ?? null;
+	},
+
+	/* Minimum seconds Dexon must be present before the boss dies to clear
+	   share > 0.0025. Derivation, from the share model: others collectively
+	   deal the whole pool, split K ways, so their contribution to `total` is
+	   K * (maxHp/K)^E = K^(1-E) * maxHp^E. Dexon clears the threshold when
+	   his own points^E exceed THR/(1-THR) of that. Checked against the
+	   browser session's independent table for all seven targets at K =
+	   10/40/80: agreement is better than 0.9%, the residual being rounding
+	   and well inside the uncertainty on dexonDps itself. */
+	requiredDwellSec(maxHp, contributors, hopsick, mtype) {
+		const E = 0.65, THR = 0.0025;
+		const cfg = this.targetCfg(mtype);
+		const dps = (cfg && cfg.dexonDps) || CONFIG.bossHop.dexonDps;
+		/* Hop Sickness is output -20 AND points /= 4, so 0.8 * 0.25 = 0.2. */
+		const ptFactor = hopsick ? 0.20 : 1.0;
+		const k = Math.max(1, contributors);
+		const needPoints = Math.pow(
+			(THR / (1 - THR)) * Math.pow(k, 1 - E) * Math.pow(maxHp, E), 1 / E);
+		return needPoints / (dps * ptFactor);
+	},
+
+	/* No feed gives a contributor count, so derive it from the dps we can
+	   see. Self-consistent rather than accurate: more dps means both more
+	   players and a faster death, and both push the gate the same way. */
+	contributors(shard, mtype) {
+		const c = CONFIG.bossHop;
+		const k = Math.round(this.shardDps(shard, mtype) / c.typicalPlayerDps);
+		return Math.min(c.maxContributors, Math.max(c.minContributors, k));
+	},
+
+	isHopsick() {
+		const s = (typeof character !== 'undefined' && character && character.s) || {};
+		return !!s.hopsickness;
+	},
+
 	localBossLive(mtype) {
 		return parent?.S?.[mtype]?.live === true;
 	},
@@ -2865,9 +2951,28 @@ const bossHop = {
 	   first. Checked before any hop: a boss standing here costs no latency and
 	   no hop sickness, so it always wins. */
 	localTarget() {
+		/* No latency and no NEW hop sickness, so test (2) only - but it is
+		   still a test. v84 let this path commit FIGHTING to a boss whose
+		   share was unreachable, which is a quarter of an hour spent for
+		   nothing. hopsick is read LIVE rather than assumed: if the clock has
+		   run out the requirement is 5x smaller, and that is exactly the case
+		   where a boss standing in front of him is most worth taking. */
+		const hopsick = this.isHopsick();
 		let best = null;
 		for (const t of CONFIG.bossHop.targets) {
 			if (!this.localBossLive(t.mtype)) continue;
+			const cur = this.currentShard();
+			const st = parent?.S?.[t.mtype];
+			const hp = typeof st?.hp === 'number' ? st.hp : null;
+			const maxHp = this.maxHpOf(t.mtype, typeof st?.max_hp === 'number' ? st.max_hp : null) ?? hp;
+			/* Unknown hp is NOT a reason to skip a boss that is standing
+			   here: there is nothing to lose by trying, and the alternative
+			   is hopping away from a free fight on missing data. */
+			if (hp > 0 && maxHp > 0) {
+				const k = this.contributors(cur, t.mtype);
+				const need = this.requiredDwellSec(maxHp, k, hopsick, t.mtype);
+				if (hp / this.shardDps(cur, t.mtype) < need) continue;
+			}
 			if (!best || t.kills_to_rung < best.kills_to_rung) best = t;
 		}
 		return best?.mtype ?? null;
@@ -2900,21 +3005,22 @@ const bossHop = {
 			} else if (r.spawnTime) {
 				const untilSpawn = r.spawnTime - now;
 				if (untilSpawn <= 0 || untilSpawn > CONFIG.bossHop.preSpawnBuffer) continue;
-				/* typeof, not G?. - optional chaining does NOT save an
-				   UNDECLARED identifier from throwing, and this runs inside
-				   a loop whose catch would turn it into a silent no-op. */
-				const g = (typeof parent !== 'undefined' && parent.G) ? parent.G
-					: (typeof G !== 'undefined' ? G : null);
-				hp = r.maxHp ?? g?.monsters?.[r.mtype]?.hp ?? null;
+				hp = this.maxHpOf(r.mtype, r.maxHp);
 			} else {
 				continue;
 			}
 			if (!(hp > 0)) continue;
 
+			/* secsToDeath takes CURRENT hp - when will it die - while the
+			   dwell gate takes the FULL pool. They are different questions
+			   and conflating them is what shipped in v84. */
+			const maxHp = this.maxHpOf(r.mtype, r.maxHp) ?? hp;
+
 			out.push({
 				shard: r.shard,
 				mtype: r.mtype,
 				hp,
+				maxHp,
 				live: r.live,
 				secsToDeath: hp / this.shardDps(r.shard, r.mtype),
 				kills_to_rung: cfg.kills_to_rung,
@@ -2923,10 +3029,27 @@ const bossHop = {
 		return out;
 	},
 
+	/* TWO tests, not one floor. v84 added the dwell requirement to the trip
+	   cost and compared the sum against secsToDeath, which rejects snowman
+	   outright: it needs ~0s of dwell but dies far inside the hop latency, so
+	   it is only ever reachable PRE-SPAWN - and the pre-spawn path must not
+	   be charged arrival latency, because we land before the boss exists and
+	   catch the whole fight. */
 	pickTarget() {
 		const c = CONFIG.bossHop;
-		const floorSec = (c.requiredDwellMs + c.hopLatencyMs + c.safetyMarginMs) / 1000;
-		const eligible = this.candidates().filter(x => x.secsToDeath >= floorSec);
+		const hopsick = this.isHopsick();
+		const arriveSec = (c.hopLatencyMs + c.safetyMarginMs) / 1000;
+
+		const eligible = this.candidates().filter(x => {
+			const k = this.contributors(x.shard, x.mtype);
+			x.requiredDwellSec = this.requiredDwellSec(x.maxHp, k, hopsick, x.mtype);
+			x.contributors = k;
+			// (1) a LIVE boss has to outlast the trip. A pending one does not.
+			if (x.live && x.secsToDeath < arriveSec) return false;
+			// (2) enough fight has to remain AFTER we land.
+			x.remainingSec = x.live ? x.secsToDeath - arriveSec : x.secsToDeath;
+			return x.remainingSec >= x.requiredDwellSec;
+		});
 		if (!eligible.length) return null;
 		eligible.sort((a, b) =>
 			a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung);
@@ -4575,32 +4698,47 @@ function topButtons() {
 		add_top_button('ShowBossHop', '🐉', () => {
 			const now = Date.now();
 			const c = CONFIG.bossHop;
-			const floorSec = (c.requiredDwellMs + c.hopLatencyMs + c.safetyMarginMs) / 1000;
+			const hopsick = bossHop.isHopsick();
+			const arriveSec = (c.hopLatencyMs + c.safetyMarginMs) / 1000;
 			const info = {
 				state: bossHop.state,
 				targetShard: bossHop.targetShard,
 				targetType: bossHop.targetType,
 				currentShard: bossHop.currentShard(),
 				localTarget: bossHop.localTarget(),
-				eligibleAtOrAboveSec: Math.round(floorSec),
-				bridge: bossHop.bridgeAt
-					? { ageSec: Math.round((now - bossHop.bridgeAt) / 1000), rows: bossHop.bridgeRows.length }
-					: { ageSec: null, rows: 0, error: bossHop.bridgeErr },
-				/* Sorted the way the picker sorts, so the top row IS the
-				   next hop unless it falls below the floor. */
+				/* Hop Sickness is the 5x on every requiredDwellSec below, so
+				   it belongs on screen next to them. */
+				hopsick,
+				arriveSec: Math.round(arriveSec),
+				/* Sorted the way the picker sorts, so the top ELIGIBLE row is
+				   the next hop. A rejected row has to say WHY, because with a
+				   per-boss gate the reason stopped being guessable - one
+				   75-second number no longer explains every rejection. */
 				candidates: bossHop.candidates()
 					.sort((a, b) => a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung)
-					.map(x => ({
-						shard: x.shard,
-						mtype: x.mtype,
-						live: x.live,
-						hp: Math.round(x.hp),
-						dps: Math.round(bossHop.shardDps(x.shard, x.mtype)),
-						dpsSource: bossHop.bridgeRow(x.shard, x.mtype)?.dps > 0 ? 'bridge' : 'fallback',
-						secsToDeath: Math.round(x.secsToDeath),
-						eligible: x.secsToDeath >= floorSec,
-						kills_to_rung: x.kills_to_rung,
-					})),
+					.map(x => {
+						const k = bossHop.contributors(x.shard, x.mtype);
+						const need = bossHop.requiredDwellSec(x.maxHp, k, hopsick, x.mtype);
+						const outlasts = !x.live || x.secsToDeath >= arriveSec;
+						const remaining = x.live ? x.secsToDeath - arriveSec : x.secsToDeath;
+						return {
+							shard: x.shard,
+							mtype: x.mtype,
+							live: x.live,
+							hp: Math.round(x.hp),
+							maxHp: Math.round(x.maxHp),
+							dps: Math.round(bossHop.shardDps(x.shard, x.mtype)),
+							dpsSource: bossHop.bridgeRow(x.shard, x.mtype)?.dps > 0 ? 'bridge' : 'fallback',
+							contributors: k,
+							secsToDeath: Math.round(x.secsToDeath),
+							remainingSec: Math.round(remaining),
+							requiredDwellSec: Math.round(need * 100) / 100,
+							eligible: outlasts && remaining >= need,
+							rejectedBecause: !outlasts ? 'dies before we land'
+								: (remaining < need ? 'not enough fight left to earn a share' : null),
+							kills_to_rung: x.kills_to_rung,
+						};
+					}),
 				scanResults: bossHop.scanResults
 					.slice()
 					.sort((a, b) => (a.spawnTime ?? 0) - (b.spawnTime ?? 0))
