@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v87 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v86. Two changes, both out of the overnight run. THE TARGET LIST NARROWS TO THREE - dragold, franky, crabxx - the reachable sub-100 rungs. Overnight credited 20 boss kills for 24.35 score, every point of it on mrgreen and mrpumpkin, whose rungs are still 619 and 530 kills away. franky took one kill at exactly 1.300, the full-party multiplier, which proves the v48/v71 follower relay works. crabxx, snowman, dragold and grinch were never live, so the cheap rungs got nothing. Meanwhile ZERO mobs died all night - armadillo, osnake, snake, bee, poisio and croc all unchanged - because with mrgreen on a 94-minute respawn across 13 shards something was always eligible and the party never stopped hopping. Six and a half hours that would have produced roughly 105,000 score at 1.6 a kill produced 24.35. Dropping the two cheap-to-reach-but-expensive-to-finish bosses means pickTarget() usually returns null, and null hands control straight back to ordinary farming. snowman is out despite being the cheapest rung at 60 kills, because FatherToken holds that account max at 22.10 against Dexon's 19.35 and it is a winter-event boss; grinch is out as a judgement call, though an unavailable target is never picked and costs nothing. AND THE CHAIN NOW ENDS AT HOME. v86 removed home routing BETWEEN kills and that stays removed - a round trip between two targets buys nothing and re-arms both clocks. This is the other case: nothing eligible anywhere, so there is no next hop, and parking on a foreign shard forfeits the HOME shard's own boss spawns, the only ones paying the home-server bonus and the drops_home table. goHomeIfIdle() reads character.home, which is the Bean-set home already in currentShard() format, so nothing is hardcoded, and debounces on idleSince against returnHomeAfterMs of 90s so a boss flickering across the eligibility floor cannot ping-pong the party between shards. It routes through changeServer(), so the followers are told first and come along. bossHop.enabled stays FALSE: a feature that moves the party across shards should not start itself on a deploy.)
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v88 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18, BUT ITS TWO BEHAVIOUR FLAGS NOW MATCH IT. Dexon is running v87 plus two hand edits; this commit folds those edits into the repo so a push needs no hand work. bossHop.enabled false -> TRUE and monsterHunt.enabled true -> FALSE. Both are startup defaults only: mhOn()/mhOff() still flip the hunt at runtime, and flipping bossHop needs a RELOAD rather than an edit, because startScanning() runs once at load and returns early while the flag is false. The comment above bossHop.enabled opened 'Off: the operator flips it ... a session the operator starts deliberately', which committing true would have turned into a fresh documentation trap of exactly the kind the rest of this version removes, so it is rewritten; the reload paragraph is kept verbatim because it is still true and still the thing that catches people. THE REST IS DEAD CODE, 197 lines, found by two independent passes - a reference sweep from the browser session and an acorn AST walk here - which agreed on every item and position after one stale-checkout correction. Deleted: homeServer (superseded by v87's goHomeIfIdle, which reads character.home and says 'nothing is hardcoded'; a dead 'USIV' const was the highest-cost line in the file, one day after the account moved to US II); locations (34, a monster-coordinate table the farm scorer replaced); rageFilterTarget; handleSpecificEvent (29, author-marked DEAD in its own comment); kitePathBlocked (8, a hard veto that eliminated every candidate whenever we were inside the pack); focusFireTarget (14); holdCohesion (28, also author-marked); findBestFarmSpot (4, a wrapper whose callers already use scoreAllFarmSpots directly); and the whole Temporal Surge feature - handleTemporalSurge, isMyTurnForTemporal, updateTemporalRotation, getTemporalRotation and CONFIG.equipment.temporal, 57 lines end to end. MageofOz owns Temporal Surge now; his copy is live, unrelated and untouched. getTemporalRotation is the one item neither first-order reference count found: both its callers are themselves dead, so only reachability reaches it. Also dropped two config keys nothing reads, movement.moveThreshold and rangedKiting.prioritizeDistance. equipment.bossSetSwapEnabled is KEPT by the operator's call - the swap is planned now that hopping is live - and now carries a NOT IMPLEMENTED comment, because a knob reading true for code that does not exist is a trap whether or not it is dead weight. Every deletion took its attached doc comment with it: 16 lines the manifest did not count, and leaving them would have recreated the orphaned-comment problem the pass exists to remove. Three surviving comments that named deleted code were reworded rather than cut, keeping the reasoning: the kitePathBlocked note still records WHY the veto died and now says not to reinstate it, the travel-radius note drops the cohesion leash figure, and the cohesion comment went with its key.) v87 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v86. Two changes, both out of the overnight run. THE TARGET LIST NARROWS TO THREE - dragold, franky, crabxx - the reachable sub-100 rungs. Overnight credited 20 boss kills for 24.35 score, every point of it on mrgreen and mrpumpkin, whose rungs are still 619 and 530 kills away. franky took one kill at exactly 1.300, the full-party multiplier, which proves the v48/v71 follower relay works. crabxx, snowman, dragold and grinch were never live, so the cheap rungs got nothing. Meanwhile ZERO mobs died all night - armadillo, osnake, snake, bee, poisio and croc all unchanged - because with mrgreen on a 94-minute respawn across 13 shards something was always eligible and the party never stopped hopping. Six and a half hours that would have produced roughly 105,000 score at 1.6 a kill produced 24.35. Dropping the two cheap-to-reach-but-expensive-to-finish bosses means pickTarget() usually returns null, and null hands control straight back to ordinary farming. snowman is out despite being the cheapest rung at 60 kills, because FatherToken holds that account max at 22.10 against Dexon's 19.35 and it is a winter-event boss; grinch is out as a judgement call, though an unavailable target is never picked and costs nothing. AND THE CHAIN NOW ENDS AT HOME. v86 removed home routing BETWEEN kills and that stays removed - a round trip between two targets buys nothing and re-arms both clocks. This is the other case: nothing eligible anywhere, so there is no next hop, and parking on a foreign shard forfeits the HOME shard's own boss spawns, the only ones paying the home-server bonus and the drops_home table. goHomeIfIdle() reads character.home, which is the Bean-set home already in currentShard() format, so nothing is hardcoded, and debounces on idleSince against returnHomeAfterMs of 90s so a boss flickering across the eligibility floor cannot ping-pong the party between shards. It routes through changeServer(), so the followers are told first and come along. bossHop.enabled stays FALSE: a feature that moves the party across shards should not start itself on a deploy.)
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v86 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-17. Dexon is running v82. This records live configuration rather than changing behaviour. Five lines of the LIVE slot had drifted from the repo and none of them were in git, so every paste of a repo build was silently reverting the operator's own settings - and the deployment markers only ever record the repo being AHEAD of a slot, with no marker for the reverse, which is the direction that bites. Found by block-hashing codemirror_render.getValue() against v82 (372,989 UTF-16 units live against 372,979 committed, same line count), then hashing lines within the three differing blocks, which located five lines in a 7,217-line file. ADOPTED FROM LIVE: 'mole' joins singleTargetMobs; the achievement queue's enabled becomes true, which is the mode the party has actually been in all day; and the booboo park point (290,-990) is commented out rather than deleted, because that is the entry the operator uncomments when booboo IS wanted. DELETED: the second booboo entry, (415,-702). v82 measured it at gap 0, rageHit 'booboo', INSIDE the rage box - it is the coordinate that wedged the whole party twice in one morning - and it was kept then only in case the achievement path used it differently. It does not. Two booboo entries where only one is ever enabled is how the wrong one gets uncommented, and huntParkPoint validates by rageHit and rectGap with nearest-qualifying-wins, so nothing indexes the queue and removing an entry shifts nothing. NOT ADOPTED: monsterHunt.enabled stays true against live's false. Operator's call - the repo carries it enabled, so a deploy turns monster hunt back on by intent, and that is the one line to flip by hand after a paste if ordinary farming is wanted instead. ALSO, A THIRD STALE TOGGLE COMMENT. The achievements comment opened "OFF, with monsterHunt above ON - the operator's 2026-10-12 choice", which is a state claim of exactly the kind the standing rule forbids and which this version would have made false, and it closed by justifying the entry this version deletes. Merchant v98's sweep and the pair fixed in v85 both missed it because it never says "currently ON".)
 // Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v85 (NOT DEPLOYED TO THE LIVE SLOT as of 2026-10-18. Dexon is running v82. The dwell gate is PER-BOSS, not a constant, which is the one substantive defect in v84. requiredDwellMs was a single 60s number and pickTarget() applied its 76.5s floor to all seven targets; it was calibrated on mrgreen, which is the only boss it fits. What has to be out-weighed is the total damage every OTHER contributor banks across the whole fight, and that is the boss's entire hp pool, so the requirement scales as maxHp^0.65. One constant was therefore wrong in both directions at once. snowman (1,200 hp) and crabxx (960,000) could NEVER be picked - their whole-health secsToDeath is 0.06s and 48.0s, both under 76.5s at any dps - and those are the two CHEAPEST rungs on the board, 60 kills to resistance +3 and 70 to luck +1. franky meanwhile was admitted when it earns nothing: it needs 167s at 40 contributors and the gate passed anything over 76.5s, so the party paid 12 minutes of hop sickness for no credit. THE FIX IS IN THREE PARTS. candidates() now emits maxHp alongside hp, because secsToDeath correctly asks when the boss will die while the dwell requirement needs the full pool - contributors' points for damage dealt before Dexon lands are still in total at the award. The G lookup is hoisted out of the pre-spawn branch into maxHpOf()/gameData() so both paths see it, keeping the typeof guard: optional chaining does NOT save an undeclared identifier from throwing. requiredDwellSec(maxHp, contributors, hopsick, mtype) implements the share model directly - others deal the whole pool split K ways, contributing K^(1-E) * maxHp^E to total, and Dexon clears THR/(1-THR) of that. contributors() derives K from observed dps over typicalPlayerDps, clamped to [5,200], since no feed reports one; it is self-consistent rather than accurate, because more dps means both more players and a faster death and both push the gate the same way. isHopsick() reads character.s live. AND THE SINGLE FLOOR SPLITS INTO TWO TESTS, which is what unblocks snowman: a LIVE boss must outlast the trip (secsToDeath >= arriveSec) while a PENDING one is exempt, since we land before it exists and catch the whole fight; then enough must remain AFTER landing (remainingSec >= requiredDwellSec). Conflating the two is exactly what rejected snowman, which needs ~0s of dwell but dies far inside the hop latency and is only ever reachable pre-spawn. localTarget() gets test (2) as well - v84 let it commit FIGHTING to a boss whose share was unreachable, a quarter of an hour spent for nothing - with hopsick read live, because a clean party's requirement is 5x smaller and that is precisely when a boss standing in front of him is most worth taking. Unknown hp does NOT reject a local boss: there is nothing to lose by trying and the alternative is hopping away from a free fight on missing data. CONFIG: requiredDwellMs is DROPPED rather than left as a dead knob that looks live; dexonDps 2605, typicalPlayerDps 2000, minContributors 5, maxContributors 200 added, with an optional per-target dexonDps override. The 2605 is a magical-resistance figure measured against mrgreen (resistance 900, apiercing 122) and is a first approximation elsewhere - crabxx is armor 320 physical, franky lists no resistance - mattering least where the maxHp term dominates and most at mrgreen, where a 2x error moves the gate from 50s to 100s. Per-boss figures want measuring. ShowBossHop now prints maxHp, contributors, requiredDwellSec, remainingSec and a rejectedBecause string per row, plus the live hopsick flag and arriveSec: with a per-boss gate the reason for a rejection stopped being guessable, since one 76.5s number no longer explains every one of them. VERIFIED by lifting the shipped methods out of the file and running them, not by re-deriving: requiredDwellSec reproduces the browser session's independent seven-boss table at K=10/40/80 to better than 0.9%, the residual being rounding and well inside the uncertainty on dexonDps; hop sickness is exactly 5.000x on all seven; crabxx flips from rejected to picked; snowman is rejected live and picked pre-spawn; a near-dead franky on a busy shard flips from picked to rejected while a full-health one and the same fight with a clean party both stay picked.)
 // ==========================================================================
@@ -193,7 +193,6 @@ function plStatus() {
 plProbe();
 setInterval(plPoll, PARTY_LINK.pollMs);
 
-const homeServer = 'USIV';
 const allBosses = ['bgoo', 'bscorpion', 'crabxx', 'dragold', 'ent', 'franky', 'greenjr', 'grinch', 'icegolem', 'jr', 'mrgreen', 'mrpumpkin', 'phoenix', 'rgoo', 'wabbit'];
 
 const CONFIG = {
@@ -293,7 +292,6 @@ const CONFIG = {
 		enabled: true,
 		circleWalk: true,
 		circleRadius: 75,
-		moveThreshold: 25,
 		clumpRadius: 85,
 		/* Per-spot standing position, overriding the spawn-boundary centre that
 		   scoreAllFarmSpots hands back. Measured off G.geometry.level2s with 24
@@ -342,7 +340,6 @@ const CONFIG = {
 			moveThrottle: 100,
 			sampleAngles: 90,
 			moveDistance: 30,
-			prioritizeDistance: true,
 			repositionThreshold: 20,
 			maxKiteRange: 400,
 			debug: false
@@ -363,19 +360,14 @@ const CONFIG = {
 		swapCooldown: 500,
 		capeSwapEnabled: false,
 		coatSwapEnabled: true,
+		/* NOT IMPLEMENTED - no boss-set swap code exists anywhere in this file.
+		   The knob is kept deliberately: the swap is planned now that boss
+		   hopping is live. Reading it as working config is the trap. */
 		bossSetSwapEnabled: true,
 		xpSetSwapEnabled: false,
 		xpMonsters: ['sparkbot'],
 		xpMobHpThreshold: 12000,
 		useLicence: false,
-		temporal: {
-			enabled: true,
-			targetMob: 'bscorpion',
-			orbName: 'orboftemporal',
-			skillName: 'temporalsurge',
-			characters: ['FatherToken', 'Dexon', 'MageofOz'],
-			storageKey: 'temporal_surge_rotation'
-		}
 	},
 
 	potions: {
@@ -408,9 +400,6 @@ const CONFIG = {
 
 	party: {
 		autoManage: true,
-		/* Leader-exempt by construction - see holdCohesion(). Present so the
-		   three files carry the same shape. */
-		cohesion: { enabled: true, leash: 150, stepMax: 120, debug: false },
 		groupMembers: ['Dexon', 'MageofOz', 'FatherToken', 'Meltymerch']
 	},
 
@@ -546,13 +535,14 @@ const CONFIG = {
 	   for the full party against 1.00 alone. That multiplier needs them
 	   PRESENT at the death, same as Dexon - see the credit rule above. */
 	bossHop: {
-		/* Off: the operator flips it. Chaining hops keeps the party
-		   permanently hop-sick, which is a real cost to everything else it
-		   does, so this is a session the operator starts deliberately.
+		/* ON by default as of v88, matching Dexon's live slot. Chaining hops
+		   keeps the party permanently hop-sick, which is a real cost to
+		   everything else it does, so turning it OFF is the deliberate act now -
+		   the operator flips it when the party has other work to do.
 		   Flipping it needs a RELOAD, not just an edit: startScanning() runs
 		   once at load and returns early while this is false, so the sockets
 		   never open and tick() has nothing to pick from. */
-		enabled: false,
+		enabled: true,
 		preSpawnBuffer: 3000,
 		hopLatencyMs: 1500,          // measured 274ms per change_server + margin
 		safetyMarginMs: 15000,
@@ -643,7 +633,7 @@ const CONFIG = {
 	   the scorer.
 	   mhOn() and mhOff() flip 'enabled' at runtime. */
 	monsterHunt: {
-		enabled: true,
+		enabled: false,
 		/* The backstop on waiting for everyone, NOT the rule. The rule is in
 		   mhSettled(): a member holding an unexpired hunt counts as settled,
 		   because the server answers monsterhunt_already and leaves it
@@ -835,40 +825,6 @@ const cache = {
 	isValid() { return performance.now() - this.lastUpdate < CACHE_TTL; }
 };
 
-const locations = {
-	bat: [{ x: 1200, y: -782 }],
-	bigbird: [{ x: 1258, y: -120 }],
-	bluefairy: [{ x: -376, y: -680 }],
-	bscorpion: [{ x: -561, y: -1400 }],
-	boar: [{ x: 19, y: -1109 }],
-	cgoo: [{ x: -221, y: -274 }],
-	crab: [{ x: -11840, y: -37 }],
-	dryad: [{ x: 403, y: -347 }],
-	ent: [{ x: -413, y: -1961 }],
-	fireroamer: [{ x: 222, y: -827 }],
-	ghost: [{ x: -405, y: -1642 }],
-	gscorpion: [{ x: 390, y: -1422 }],
-	iceroamer: [{ x: 823, y: -45 }],
-	mechagnome: [{ x: 0, y: 0 }],
-	mole: [{ x: 14, y: -1072 }],
-	mummy: [{ x: 256, y: -1417 }],
-	odino: [{ x: -52, y: 756 }],
-	oneeye: [{ x: -632, y: 55 }],
-	pinkgoblin: [{ x: 485, y: 157 }],
-	poisio: [{ x: -121, y: 1360 }],
-	prat: [{ x: 11, y: 84 }],
-	pppompom: [{ x: 292, y: -189 }],
-	plantoid: [{ x: -780, y: -387 }],
-	rat: [{ x: 6, y: 430 }],
-	scorpion: [{ x: -495, y: 685 }],
-	stoneworm: [{ x: 830, y: 7 }],
-	spider: [{ x: 895, y: -145 }],
-	squig: [{ x: -1175, y: 422 }],
-	targetron: [{ x: -544, y: -275 }],
-	wolf: [{ x: 433, y: -2745 }],
-	wolfie: [{ x: 113, y: -2014 }],
-	xscorpion: [{ x: -495, y: 685 }]
-};
 
 let destination = null;
 
@@ -1993,7 +1949,6 @@ function rageHoldFire(mob) {
 	return !!rageHit(character.map, mob.x, mob.y, 0);
 }
 
-function rageFilterTarget(t) { return rageHoldFire(t) ? null : t; }
 
 /* The one mover everything else calls. Refuses to enter a rectangle, and routes
    around one rather than through it. Falls straight through to xmove on a map
@@ -2550,40 +2505,6 @@ function handleEvents() {
 	bossTick().catch(e => bossLog('tick threw: ' + (e && e.message || e), 'red'));
 }
 
-/* DEAD as of this version - bossPosture() replaced the boss branch and the
-   non-boss branch has no caller left, since only cooperative bosses and the
-   holiday tree reach handleEvents() now. Kept for one version so a diff is
-   readable; delete it next time this file is touched, in the same way
-   Merchant.js retired heldScanMs. */
-async function handleSpecificEvent(eventType, mapName, x, y) {
-	if (!parent?.S?.[eventType]?.live) return;
-
-	const monster = get_nearest_monster({ type: eventType });
-	if (!monster) {
-		smart_move({ x, y, map: mapName });
-		return;
-	}
-
-	if (COMBAT_SETS.bosses.has(eventType)) {
-		if (!is_in_range(monster) && !smart.moving) {
-			const dx = monster.x - character.x;
-			const dy = monster.y - character.y;
-			const dist = Math.hypot(dx, dy);
-			const targetDist = character.range * 0.8;
-			await safeMove(
-				character.x + dx * (1 - targetDist / dist),
-				character.y + dy * (1 - targetDist / dist)
-			);
-		}
-		return;
-	}
-
-	const halfway_x = character.x + (monster.x - character.x) / 2;
-	const halfway_y = character.y + (monster.y - character.y) / 2;
-	if (!is_in_range(monster, 'attack') && !smart.moving) {
-		await safeMove(halfway_x, halfway_y);
-	}
-}
 
 /* ============================================================================
    GIGA CRAB CONTRIBUTION LOG
@@ -3304,7 +3225,7 @@ function travelDistanceNote(dest) {
    on and fighting the intended monster at. Three of those and the spot is
    reported unreachable. Kite steps are moveDistance 50 / disengageDistance 70,
    so a few of them compound to well inside this radius while the fight is ON the
-   destination. 200 sits clear of that and of the cohesion leash (150), and well
+   destination. 200 sits clear of that, and well
    under the handoff (400) so it cannot mask a route that left us hundreds short -
    travelDistanceNote still logs "N units short", so the figure is checkable. */
 function travelAtDestination(dest) {
@@ -3631,17 +3552,6 @@ function kiteSegDist(px, py, qx, qy, tx, ty) {
 	return Math.hypot(tx - (px + u * dx), ty - (py + u * dy));
 }
 
-/* Veto a candidate whose route closes on any threat more than we already are.
-   Retreating keeps our current distance as the closest approach, so it passes;
-   crossing a mob, or fleeing one monster into another, does not. */
-function kitePathBlocked(threats, px, py) {
-	const cx = character.real_x, cy = character.real_y;
-	for (const t of threats) {
-		const dmin = kiteSegDist(cx, cy, px, py, t.x, t.y);
-		if (dmin < Math.min(t.d, t.r) * 0.9) return true;
-	}
-	return false;
-}
 
 /* ---------------------------------------------------------------------------
    COHESION, FOCUS FIRE AND THE ROUTE PENALTY - v60/v33/v56.
@@ -3685,58 +3595,6 @@ function kitePathPenalty(threats, px, py) {
 		if (dmin < floor) pen += (floor - dmin) * Math.max(1, t.r - t.d) * 3;
 	}
 	return pen;
-}
-
-/* The leader's current target, when we are a follower and it is worth sharing.
-   Returns null for the leader itself, so this is safe to call anywhere. */
-function focusFireTarget() {
-	const cfg = (CONFIG.combat && CONFIG.combat.focusFire) || {};
-	if (cfg.enabled === false) return null;
-	const group = (CONFIG.party && CONFIG.party.groupMembers) || [];
-	const leaderName = group[0];
-	if (!leaderName || leaderName === character.name) return null;
-	if (typeof parent === 'undefined' || !parent.entities) return null;
-	const leader = parent.entities[leaderName];
-	if (!leader || !leader.target) return null;
-	const t = parent.entities[leader.target];
-	if (!t || t.type !== 'monster' || t.dead) return null;
-	if (cfg.requireInRange !== false && !is_in_range(t)) return null;
-	return t;
-}
-
-/* Close on the party when we drift out of heal range.
-
-   Moves toward the CENTROID of the other members rather than at the leader, so
-   the priest settles between the two he has to reach instead of hugging one and
-   losing the other. Leader-exempt: Dexon drives the farm spot, and a leader that
-   chases his own followers never arrives anywhere. */
-async function holdCohesion() {
-	const cfg = (CONFIG.party && CONFIG.party.cohesion) || {};
-	if (!cfg.enabled) return false;
-	const group = (CONFIG.party.groupMembers || []);
-	if (group[0] === character.name) return false;
-	if (typeof parent === 'undefined' || !parent.entities) return false;
-
-	let fx = 0, fy = 0, n = 0, worst = 0;
-	for (const nm of group) {
-		if (nm === character.name) continue;
-		const e = parent.entities[nm];
-		if (!e || e.rip) continue;
-		const ex = (e.real_x != null ? e.real_x : e.x) || 0;
-		const ey = (e.real_y != null ? e.real_y : e.y) || 0;
-		const d = Math.hypot(ex - character.real_x, ey - character.real_y);
-		if (d > worst) worst = d;
-		fx += ex; fy += ey; n++;
-	}
-	if (!n || worst <= (cfg.leash || 150)) return false;
-
-	fx /= n; fy /= n;
-	const a = Math.atan2(fy - character.real_y, fx - character.real_x);
-	const gap = Math.hypot(fx - character.real_x, fy - character.real_y);
-	const step = Math.max(20, Math.min(cfg.stepMax || 120, gap - (cfg.leash || 150) * 0.5));
-	await safeMove(character.real_x + Math.cos(a) * step, character.real_y + Math.sin(a) * step);
-	if (cfg.debug) game_log('Cohesion: closing ' + Math.round(worst) + 'u to party', '#7FD1FF');
-	return true;
 }
 
 async function rangedKite() {
@@ -3792,8 +3650,9 @@ async function rangedKite() {
 		for (let i = 0, a = 0; i < n; i++, a += step) {
 			const tx = cx + mag * Math.cos(a), ty = cy + mag * Math.sin(a);
 			if (!can_move_to(tx, ty)) continue;
-			/* Route cost, not a veto - kitePathBlocked eliminated every candidate
-			   whenever we were inside the pack, which is the only case that kills. */
+			/* Route cost, not a veto - the old hard veto eliminated every
+			   candidate whenever we were inside the pack, which is the only case
+			   that kills. Do not reinstate it. */
 			let w;
 			if (multi) w = kiteMultiWeight(threats, tx, ty) - kitePathPenalty(threats, tx, ty);
 			else {
@@ -3840,59 +3699,6 @@ async function rangedKite() {
 	return true;
 }
 rangedKite.lastMove = 0;
-
-function getTemporalRotation() {
-	const stored = get(CONFIG.equipment.temporal.storageKey);
-	if (!stored) {
-		const initial = {
-			lastUser: null,
-			nextIndex: 0,
-			lastKillTime: 0
-		};
-		set(CONFIG.equipment.temporal.storageKey, initial);
-		return initial;
-	}
-	return stored;
-}
-
-function updateTemporalRotation() {
-	const rotation = getTemporalRotation();
-	rotation.lastUser = character.name;
-	rotation.nextIndex = (rotation.nextIndex + 1) % CONFIG.equipment.temporal.characters.length;
-	rotation.lastKillTime = Date.now();
-	set(CONFIG.equipment.temporal.storageKey, rotation);
-}
-
-function isMyTurnForTemporal() {
-	const rotation = getTemporalRotation();
-	const myIndex = CONFIG.equipment.temporal.characters.indexOf(character.name);
-
-	if (myIndex === -1) return false;
-
-	return rotation.lastUser === null || rotation.nextIndex === myIndex;
-}
-
-async function handleTemporalSurge() {
-	if (!CONFIG.equipment.temporal.enabled) return;
-	if (!isMyTurnForTemporal()) return;
-
-	const orbSlot = character.items.findIndex(i => i?.name === 'orboftemporal');
-	if (orbSlot === -1) {
-		game_log(`Missing ${CONFIG.equipment.temporal.orbName}!`, 'red');
-		return;
-	}
-
-	try {
-		equip(orbSlot, 'orb');
-		use_skill(CONFIG.equipment.temporal.skillName);
-		game_log(`⏰ Temporal Surge used on ${CONFIG.equipment.temporal.targetMob}!`, '#00FFFF');
-		updateTemporalRotation();
-		equip(orbSlot, 'orb');
-	} catch (e) {
-		game_log(`Temporal surge failed: ${e}`, 'red');
-		console.error('Temporal surge error:', e);
-	}
-}
 
 const CHEST_STORAGE_KEY = 'loot_chest_ids';
 
@@ -5347,10 +5153,6 @@ function whitelistFallbackCandidates() {
 	return out;
 }
 
-function findBestFarmSpot() {
-	const candidates = scoreAllFarmSpots();
-	return candidates.length ? candidates[0] : null;
-}
 
 let manualOverride = null;
 let lastCandidates = [];
