@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v50
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v51
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -16,6 +16,11 @@
 //   plStatus()      party-link state
 //   rageStatus()    rage boxes on the current map
 //   restockNow()    clear the potion-restock backoff so the next empty tick travels
+//
+// Also typeable, but these HAVE internal callers, so a dead-code scan
+// would not flag them and they are listed for reference rather than
+// protection:
+//   restockStatus()  potion vendor, backoff and last attempt
 //
 // COMMENTS: a line ending "-> PriestComments.md#anchor" is a SUMMARY, not the
 // whole comment. The reasoning behind it - what was measured, what was tried

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v73
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v74
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -17,6 +17,11 @@
 //   rageStatus()       rage boxes on the current map
 //   removeChestId(id)  drop one chest id from the persisted chest map
 //   restockNow()       clear the potion-restock backoff so the next empty tick travels
+//
+// Also typeable, but these HAVE internal callers, so a dead-code scan
+// would not flag them and they are listed for reference rather than
+// protection:
+//   restockStatus()  potion vendor, backoff and last attempt
 //
 // COMMENTS: a line ending "-> MageComments.md#anchor" is a SUMMARY, not the
 // whole comment. The reasoning behind it - what was measured, what was tried

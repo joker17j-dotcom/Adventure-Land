@@ -20,6 +20,22 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v74
+
+One addition to the console-command header.
+
+**CONSOLE COMMANDS header.** The existing eight are unchanged. Derived with an
+AST walk - top-level functions with zero bare, zero dotted and zero
+string-literal references, excluding on_* handlers - not from a list.
+
+A SECOND, SEPARATELY LABELLED GROUP lists 1 more: functions an operator can
+also type, but which HAVE internal callers, so a dead-code scan would never
+flag them. They are reference, not protection, and the split keeps visible
+which names would actually be at risk if their caller disappeared. The
+operator's call, 2026-10-18: the header is an operator reference, not a scan
+shield.
+
+
 ## v73
 
 A TOGGLES block and a console-command header. Additive only - no read site
