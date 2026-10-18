@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v101
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v102
 //
 // CHANGELOG: read MerchantChangelog.md in this repo. Do not put version history back
 // in this file, and do not reconstruct it from git log - MerchantChangelog.md is the
@@ -22,6 +22,13 @@
 //   arbStockUnskip(id)         clear one
 //   arbProbeHalt(on)           pause/resume arbitrage probing
 //   gearProbeTripwire(n)       arm the gear-probe tripwire
+//
+// Also typeable, but these HAVE internal callers, so a dead-code scan
+// would not flag them and they are listed for reference rather than
+// protection:
+//   parent.MLUCK_OPP()      mluck opportunity dump - the documented way to prove a deploy took
+//   arbProbeDump()          the stored arbitrage probe log
+//   scoutReportConfirmed()  flush scout findings - the confirmed variant, which is the one the code uses
 // COMMENTS: a line ending "-> MerchantComments.md#anchor" is a SUMMARY, not
 // the whole comment. The reasoning behind it - what was measured, what was
 // tried and discarded, why a number is that number - lives in
@@ -353,6 +360,10 @@ const TOGGLES = {
 	gearProgression:          true,   // CONFIG.gearProgression.enabled
 	anniversaryKiss:          true,   // CONFIG.anniversaryKiss.enabled
 	pontyBuyCapAtOneStack:    true,   // CONFIG.pontyBuy.capAtOneStack
+	/* Added 2026-10-18: three switches the first pass left as literals. */
+	stockRecovery:            true,   // CONFIG.arbitrage.stockRecovery.enabled
+	town:                     true,   // CONFIG.town.enabled
+	standBuyDryRun:           false,  // CONFIG.standBuy.dryRun
 };
 
 const CONFIG = {
@@ -530,7 +541,7 @@ const CONFIG = {
 		   Measured 2026-09-27 over 48 banked rows with a live buyer: the vendor
 		   bar passed 29 of them for -29,373,824 realised, this one passes 9
 		   for +15,109,489. -> MerchantComments.md#only-at-a-profit */
-		stockRecovery: { enabled: true, minProfit: 100000, refreshMs: 10 * 60 * 1000 },
+		stockRecovery: { enabled: TOGGLES.stockRecovery, minProfit: 100000, refreshMs: 10 * 60 * 1000 },
 		// Consecutive trades that ended with an item banked rather than sold.
 		// Past this the executor stops itself: each one has converted liquid
 		// gold into stock, and a run of them means the market being traded
@@ -609,7 +620,7 @@ const CONFIG = {
 	/* The 3 s recall. Gated per leg - see the TOWN HOP block for the measured
 	   reason a blanket smart.use_town is worse. margin is how many units the hop
 	   must beat walking by before it is taken. */
-	town: { enabled: true, margin: 40 },
+	town: { enabled: TOGGLES.town, margin: 40 },
 	/* The summon wait. Meltymerch holds the move lock for waitMs so nothing
 	   else walks him off the spot he just published; driftUnits is how far he
 	   may be shifted by anything that bypasses the lock before he re-publishes. */
@@ -906,7 +917,7 @@ const CONFIG = {
 		maxPerPass: 3,
 		skipAfterMissMs: 20 * 60 * 1000,   // don't re-walk a listing that just fell through
 
-		dryRun: false,           // rehearse the whole pass, stopping short of trade_buy
+		dryRun: TOGGLES.standBuyDryRun,           // rehearse the whole pass, stopping short of trade_buy
 
 		bankAfterBuy: 'always',  // 'always' | 'low' | 'never'
 		bankWhenFreeSlotsBelow: 12,

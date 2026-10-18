@@ -28,6 +28,49 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v102
+
+Three CONFIG switches the v101 TOGGLES pass left behind, and the console
+header gains its second group.
+
+**THE THREE MISSES.** `arbitrage.stockRecovery.enabled`, `town.enabled` and
+`standBuy.dryRun` were still boolean literals in the CONFIG literal after v101
+hoisted the other seventeen. Two of them are `.enabled` switches, so they were
+in scope by the rule v101 set for itself. They are appended to the existing
+TOGGLES block under a dated note rather than merged into the original list, so
+the diff reads as what it is.
+
+Found by an AST walk over the CONFIG object literal. Worth recording because
+the browser session's own regex scan of the same file returned FIVE, not
+three: the two extras were `strong: true` and `strong: false` in prose inside
+a block comment, which a line-comment strip does not remove and an AST walk
+never sees at all. The AST count is the right one, and this is the second time
+in two days that a regex over this file has over-reported.
+
+With this, all four character scripts satisfy the invariant for the first
+time: zero boolean literals inside any CONFIG. Merchant 20 toggles, Ranger 39,
+Priest 28, Mage 23.
+
+**CONSOLE HEADER, SECOND GROUP.** Three more commands listed, separately
+labelled, for functions an operator can type but which HAVE internal callers
+and so would never be flagged by a dead-code scan:
+
+`parent.MLUCK_OPP()` is listed under the name the operator actually types, not
+`mluckOppDump`. It is alias-exported at L2642 via `parent.MLUCK_OPP =
+mluckOppDump`, which is exactly why an export scan keyed on `window.<fnName>`
+reads it as unexported and internal-only. This file is the only one of the
+four with an alias export of a command; the other three were checked and have
+none.
+
+`scoutReportConfirmed()` is listed rather than `scoutReport()`. The bare
+`scoutReport` has exactly one caller, the Confirmed wrapper, and every
+internal path goes through the wrapper deliberately - the comment at L6584
+says "never carry findings across a hop". An operator typing the bare name
+would get the variant the code never uses.
+
+`arbProbeDump()` completes the group.
+
+
 ## v101
 
 pontyBuy items are now protected from both sell paths, and pontyBuy stops
