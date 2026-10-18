@@ -475,16 +475,35 @@ summary of it.
   REPLACE tables declared higher up. From a character tab the assembled
   state is `G.drops.monsters[type]`; the literal is safe only for a monster
   confirmed unmutated.
-- **No regex over that file is sound, because the mutations take four
-  shapes.** `drops["monsters"]["cutebee"]`, `drops.monsters.xmagex`,
-  `drops.monsters.cave_spider`, and - the one that defeats any name search -
-  `for (var cave_monster of [...]) drops.monsters[cave_monster] = ...`,
-  where the name never appears beside `drops.monsters` at all. Measured
-  2026-10-18: one session's scan found six tables, a second found one, then
-  two; the true set is twelve-plus. Both scans were the method failing, not
-  the reader. Named: `cave_broodmother`, `cave_scorpion`, `cave_snake`,
-  `cave_spider`, `cutebee`, `xmagex`. Loop-assigned and invisible to a name
-  search: `cave_bat`, `cave_rat`, `cave_crab`, `cave_guard`, `cave_wolf`.
+- **No regex over that file is sound, because the mutations take FIVE
+  shapes, and FOURTEEN monster tables are mutated.** Measured 2026-10-18
+  against upstream `2148cf25`:
+  `drops["monsters"]["cutebee"]` (bracket); `drops.monsters.xmagex.push`
+  (dot); `drops.monsters.cave_spider = [...]` (dot assign);
+  `for (var cave_monster of [...]) drops.monsters[cave_monster] = [...]`
+  (computed name, assign); and
+  `for (var xmage of [...]) drops.monsters[xmage] =
+  (drops.monsters[xmage] || []).concat([...])` at `:1667` (computed name,
+  READ-MODIFY-WRITE).
+- **That fifth shape is the one that defeats everything.** The other four
+  hide the NAME; the concat form also hides the CONTENTS, because the final
+  table is neither the literal nor the added rows but their concatenation -
+  and the `|| []` means a name's absence from the literal proves nothing
+  either way. You cannot enumerate a mutated table's contents by reading
+  statements, only by reading the assembled object.
+- **The fourteen.** Named: `cave_broodmother`, `cave_scorpion`,
+  `cave_snake`, `cave_spider`, `cutebee`, `xmagex`. Loop-assigned and
+  invisible to a name search: `cave_bat`, `cave_rat`, `cave_crab`,
+  `cave_guard`, `cave_wolf`, `xmagen`, `xmagefi`, `xmagefz`. The last three
+  are the easiest to miss BECAUSE `xmagex` is named - the siblings read as
+  though they must be covered by it, and they are not.
+- **The scan sequence is the evidence, not any one scan.** One session's
+  pattern found six tables; another's found one, then two, then the real
+  shape, and only reading raw statements got there. A regex that finds
+  FEWER things each time it is made more careful is a method failing, and
+  that is visible only if the failures are recorded. Neither pattern was
+  careless - each happened to cover a different arbitrary subset of the
+  five shapes.
 - **The boss tables quoted above are complete, but by luck.** None of
   `dragold`, `franky`, `crabxx`, `icegolem`, `mrgreen`, `mrpumpkin`, `rgoo`
   or `bgoo` is mutated at load, so every figure here survives - it just was
