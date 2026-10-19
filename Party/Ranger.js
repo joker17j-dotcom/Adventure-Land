@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v96
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v97
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -63,6 +63,60 @@
 // at millisecond granularity, so Date.now() is a fully safe substitute -
 // no behavior changes, just makes this actually load on Mainframe.
 // ============================================================================
+// --------------------------------------------------------------------------
+// WHICH SCRIPT IS ACTUALLY RUNNING. Published to `parent` so a probe outside
+// this file can answer that without reading the source.
+//
+// WHY THIS EXISTS, measured 2026-10-19: Dexon - a RANGER - was found running
+// Party/Mage.js out of the Ranger slot, code_active, 4,219 lines against
+// Ranger's 7,445. Nothing in these three files reached `parent` before this
+// block, so from outside there was no way to tell. A VERSION NUMBER WOULD NOT
+// HAVE CAUGHT IT: the slot header read v77, which is a real, valid, current
+// version - just the wrong script's. It would have reported "the deploy took".
+//
+// So the signal is the set of functions the running build actually DEFINES.
+// It cannot lie the way a transcribed number can, because every value below
+// is a live `typeof` of the identifier beside it rather than a claim about
+// it - a key whose function is absent is filtered out instead of published.
+// The three scripts' key sets are disjoint, so one read names the script.
+//
+// SCOPE, so this is not read as more than it is. This answers WHICH SCRIPT,
+// not WHICH VERSION. The list grows as features land, so a missing key means
+// "older build, or nobody added the key" and those are not distinguishable.
+// For version, feature-detect the specific function a build introduced, per
+// CLAUDE.md "Deploying a code slot". Deliberately NO slot-header version read
+// here: that reports what is in the SLOT, not what is executing, and under the
+// load_code cache those differ - which is the one answer a deploy check must
+// never get wrong. The slot buffer is readable directly from a tab anyway.
+//
+// Tests/suite_features.js asserts every key resolves to a declaration in this
+// same file, that each key is typeof'd against ITSELF, and that the three sets
+// stay disjoint - so the list cannot drift into naming something that is not
+// here. Keyed by character name so a probe sees WHO is running WHAT in one
+// object, which is the exact shape of the Dexon failure. */
+const PARTY_SCRIPT = 'Ranger';
+const PARTY_FEATURE_PROBE = {
+	achvScore: typeof achvScore,
+	achvRefresh: typeof achvRefresh,
+	bossRank: typeof bossRank,
+	addToBlacklist: typeof addToBlacklist,
+	checkFarmEconomics: typeof checkFarmEconomics,
+	combineItems: typeof combineItems,
+};
+
+function publishPartyBuild() {
+	const features = Object.keys(PARTY_FEATURE_PROBE)
+		.filter((k) => PARTY_FEATURE_PROBE[k] === 'function')
+		.sort();
+	try {
+		const who = (typeof character !== 'undefined' && character && character.name) || '?';
+		if (!parent.PARTY_BUILD) parent.PARTY_BUILD = {};
+		parent.PARTY_BUILD[who] = { script: PARTY_SCRIPT, features: features };
+	} catch (e) { }
+	return features;
+}
+publishPartyBuild();
+
 if (typeof performance === 'undefined') {
 	globalThis.performance = { now: () => Date.now() };
 }

@@ -21,6 +21,61 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v55
+
+Publishes which script is running, so a mis-deploy is visible from outside.
+
+MEASURED 2026-10-19 BY THE BROWSER SESSION: Dexon - a RANGER - was running
+Party/Mage.js out of the Ranger slot, code_active, 4,219 lines against
+Ranger's 7,445. Identified against the committed files rather than by guessing
+names: Ranger-only achvScore/achvLoad/achvRefresh all undefined on him,
+Mage-only findEnergizeTarget/handleBlinkEscape/muleToMerchant all functions.
+
+A VERSION NUMBER WOULD NOT HAVE CAUGHT IT, and that is what settled the design.
+The slot header read v77 - a real, current, valid-looking version, just the
+wrong script's - so a version marker would have reported that the deploy took.
+Nothing in these three files reached `parent` before this change, which is the
+same gap that made v94 and v95 undetectable from outside: both touched only
+CONFIG and GEAR_PROGRESSION, so there was nothing to feature-detect.
+
+So each script now publishes the set of functions it actually DEFINES, as
+`parent.PARTY_BUILD[<character name>] = { script, features }`. Every value in
+the table is a live `typeof` of the identifier beside it, not a claim about it,
+so a key whose function is absent is filtered out rather than published. The
+three key sets are disjoint, so one read names the script. Keyed by character
+name because the Dexon failure is precisely a mismatch between WHO and WHAT.
+
+Priest publishes: findHealTarget, handlePartyHeal, handleCurse, handleZapper, kiter, equipSet.
+
+SCOPE. This answers WHICH SCRIPT, not WHICH VERSION - the list grows as
+features land, so a missing key means "older build, or nobody added the key"
+and those are not distinguishable. Version stays with feature-detecting the
+specific function a build introduced. DELIBERATELY NO SLOT-HEADER VERSION READ
+here, unlike Merchant v104: that reports what is in the SLOT, not what is
+executing, and under the load_code cache those differ - a stale build would
+read the new slot and report a successful deploy, which is the one answer a
+deploy check must never get wrong. Merchant can carry it because it REPLACED
+two already-rotting constants and publishes its probe API beside it; here it
+would be net-new and the only signal. The slot buffer is readable directly
+from a tab in any case.
+
+The list is written by hand, so `Tests/suite_features.js` closes the one way it
+can lie: every key must resolve to a declaration in that same lifted source,
+every key must be typeof'd against ITSELF (`foo: typeof bar` would publish foo
+on the strength of bar), the three sets must stay disjoint, and the block must
+stay identical across the three - the same divergence guard the relay block and
+bossHopFollow carry, added because the v94 strand shipped to Ranger alone and
+stranded the followers. All five checks were mutation-tested: each was broken
+on purpose and each failed the run. Suite green at 289.
+
+CONSEQUENCE WORTH RECORDING: bossRank is declared only in Party/Ranger.js, so
+with Dexon on Mage v77 the operator's boss ranking has been live on nobody.
+Any earlier claim that the ranking was deployed and verified was wrong.
+
+Not deployed. Dexon needs Ranger v55 and is currently running the wrong
+script entirely.
+
+
 ## v54
 
 Port the v94 taxi walk to the followers - it was leader-only.
