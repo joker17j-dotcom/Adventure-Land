@@ -173,6 +173,20 @@ emptied, which is the single most expensive mistake this file can cause.
   describing it as in progress, or a reference to the old path, is stale.
   Prepend the new entry THERE, newest first, never rewrite an old one, and
   bump line 2 in the same commit.
+- **THE "CURRENT VERSION ONLY" RULE IS NOW LOAD-BEARING FOR CODE, NOT JUST A
+  CONVENTION.** As of Merchant v104, `merchantHeaderVersion()` reads line 2 at
+  runtime with an END-ANCHORED regex (`/\bv(\d+)\s*$/`) and `parent.MERCHANT_VER`
+  derives from it, so putting a parenthetical body back on that line does not
+  merely violate the rule - it changes what the running script reports about
+  itself. Anchoring to the FIRST match is not an alternative, because a slot
+  token containing a lowercase v followed by digits would win it;
+  `Tests/suite_merchantver.js` asserts that case.
+- **THAT HELPER MUST NOT BE COPIED INTO A ROOT SCRIPT.** The root scripts keep
+  their accumulated history by the operator's call, and a history-carrying line
+  2 ENDS WITH THE OLDEST ENTRY - on `OpenGifts.js` the same read returns 2
+  against a v11 build. The suite asserts the trap rather than leaving it to a
+  reader. Do not cite a character count for that line: it grew 14,727 -> 17,553
+  in a day, and the durable fact is the ordering, not the size.
 - **Why it changed.** Measured 2026-10-18 before the move: Ranger's header was
   86,133 bytes, 21% of the whole file, and ONE line of it was 64,673
   characters; Priest 45,771 and Mage 45,801. Extracting all three dropped
