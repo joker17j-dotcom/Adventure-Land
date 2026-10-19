@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v97
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v98
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -89,6 +89,21 @@
 // load_code cache those differ - which is the one answer a deploy check must
 // never get wrong. The slot buffer is readable directly from a tab anyway.
 //
+// THIS MARKER IS A CONVENIENCE, NOT THE AUTHORITY, AND THAT IS MEASURED.
+// A parent.* global OUTLIVES THE SCRIPT THAT PUBLISHED IT: measured 2026-10-19,
+// engaging a different slot swaps the running script immediately - no page
+// reload - and parent.MERCHANT_VER still read 104 while OpenGifts was the thing
+// executing. A confident false positive, which is the one answer a deploy check
+// must never give. parent.PARTY_BUILD has exactly the same exposure.
+//
+// THE AUTHORITY IS PARTY_SCRIPT ITSELF, read inside the CODE context. It is a
+// top-level const in this file - none of these scripts is IIFE-wrapped - so
+// `typeof PARTY_SCRIPT !== 'undefined' && PARTY_SCRIPT` evaluated there answers
+// from the live lexical scope, which is destroyed and rebuilt with the script
+// and therefore cannot go stale. browser_code_eval already runs in that
+// context. Read the global only from somewhere that is NOT the CODE context,
+// and treat a disagreement between the two as the global being wrong.
+//
 // Tests/suite_features.js asserts every key resolves to a declaration in this
 // same file, that each key is typeof'd against ITSELF, and that the three sets
 // stay disjoint - so the list cannot drift into naming something that is not
@@ -110,8 +125,15 @@ function publishPartyBuild() {
 		.sort();
 	try {
 		const who = (typeof character !== 'undefined' && character && character.name) || '?';
-		if (!parent.PARTY_BUILD) parent.PARTY_BUILD = {};
-		parent.PARTY_BUILD[who] = { script: PARTY_SCRIPT, features: features };
+		/* REPLACED WHOLESALE, NEVER MERGED INTO. Engaging a different slot swaps
+		   the running script immediately and leaves every parent.* global behind,
+		   so merging would let a previous script's entry survive beside this one
+		   and be read as current. Overwriting is what makes a party-to-party swap
+		   self-correcting. `at` is the publish time: a reader comparing it with
+		   how long the page has been up can see a marker that stopped being
+		   refreshed, which is the only staleness this can signal by itself. */
+		parent.PARTY_BUILD = {};
+		parent.PARTY_BUILD[who] = { script: PARTY_SCRIPT, features: features, at: Date.now() };
 	} catch (e) { }
 	return features;
 }

@@ -18,18 +18,36 @@ module.exports = [{ name: 'merchantHeaderVersion reads the slot header', fn(t) {
 	t.eq('clean header -> the version',
 		withHeader('// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v103')
 			.merchantHeaderVersion(), 103);
-	t.eq('a three-digit bump still reads',
+	t.eq('a four-digit bump still reads',
 		withHeader('// Meltymerch (Merchant) - slot CH_x - v1040').merchantHeaderVersion(), 1040);
+	t.eq('the character name is not hardcoded - only the class marker is',
+		withHeader('// Renamed (Merchant) - slot CH_x - v105').merchantHeaderVersion(), 105);
 	t.eq('trailing whitespace tolerated',
 		withHeader('// Meltymerch (Merchant) - slot CH_x - v103   ').merchantHeaderVersion(), 103);
 
-	/* THE DOCUMENTED TRAP, asserted so it cannot be "fixed" into a first-match.
-	   A header that still accumulates history ENDS with the oldest entry. The
-	   root scripts keep their history by the operator's call, so this helper
-	   must never be copied into one. */
-	t.eq('a history-carrying header returns the OLDEST version - do not copy this helper there',
+	/* THE TRAP IS NOW DEFENDED, NOT MERELY DOCUMENTED, AND THIS ASSERTION WAS
+	   INVERTED ON 2026-10-19. It used to assert that a history-carrying header
+	   returns its OLDEST version (2), recording the hazard and relying on a
+	   reader not to copy the helper into a root script. Measured live that day:
+	   the buffer reports the slot the EDITOR has LOADED, not the script that is
+	   EXECUTING, so with slot 8 loaded and Merchant still running the helper
+	   read OpenGifts' header and returned 2 - with no copying involved at all.
+	   The hazard was never about where the helper lives. Requiring the full
+	   "(Merchant)" header shape makes every foreign buffer null. */
+	t.eq('a history-carrying foreign header is null, not its oldest version',
 		withHeader('// OpenGifts - open boxes - v10 (2026-10-18) THREE CHANGES ... - v2')
-			.merchantHeaderVersion(), 2);
+			.merchantHeaderVersion(), null);
+
+	/* The real sibling headers, verbatim in shape - these are what the buffer
+	   actually holds when the editor has another slot open. */
+	t.eq('a Ranger header is not read as a merchant version',
+		withHeader('// Dexon (Ranger) - Mainframe slot CH_x - v97').merchantHeaderVersion(), null);
+	t.eq('a Priest header is not read as a merchant version',
+		withHeader('// FatherToken (Priest) - Mainframe slot CH_x - v55').merchantHeaderVersion(), null);
+	t.eq('a Mage header is not read as a merchant version',
+		withHeader('// MageofOz (Mage) - Mainframe slot CH_x - v78').merchantHeaderVersion(), null);
+	t.eq('a bare trailing version with no header shape is null',
+		withHeader('something else entirely - v42').merchantHeaderVersion(), null);
 
 	// failure modes report unknown rather than guessing
 	t.eq('no version on line 2 -> null',

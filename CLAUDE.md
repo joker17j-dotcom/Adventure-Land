@@ -181,11 +181,22 @@ emptied, which is the single most expensive mistake this file can cause.
   itself. Anchoring to the FIRST match is not an alternative, because a slot
   token containing a lowercase v followed by digits would win it;
   `Tests/suite_merchantver.js` asserts that case.
-- **THAT HELPER MUST NOT BE COPIED INTO A ROOT SCRIPT.** The root scripts keep
-  their accumulated history by the operator's call, and a history-carrying line
-  2 ENDS WITH THE OLDEST ENTRY - on `OpenGifts.js` the same read returns 2
-  against a v11 build. The suite asserts the trap rather than leaving it to a
-  reader. Do not cite a character count for that line: it grew 14,727 -> 17,553
+  **END-ANCHORING ALONE WAS NOT ENOUGH, and v106 tightened it.** The buffer can
+  hold ANOTHER SLOT's header, so a bare trailing-version match read OpenGifts
+  and returned 2. The live pattern requires the whole header shape -
+  `/^\/\/ .* \(Merchant\) - .* - v(\d+)\s*$/` - so a foreign buffer is null
+  rather than a wrong number that then gets cached. The character name is
+  deliberately not hardcoded; only the `(Merchant)` class marker is.
+- **THE HISTORY-HEADER TRAP WAS MISLOCATED, AND THAT COST A LIVE DEFECT.** This
+  bullet said the helper must not be COPIED into a root script, because a
+  history-carrying line 2 ends with the OLDEST entry - on `OpenGifts.js` the
+  read returns 2 against a v11 build. True, and not the real exposure: no
+  copying was involved when the helper read OpenGifts' header anyway, because
+  the EDITOR's buffer had that slot loaded. A hazard filed as "do not put this
+  code there" was actually "this code will read that file from where it
+  already is". When a trap is described by WHERE code lives, check whether the
+  data can come to the code instead. The suite now asserts null rather than
+  asserting the trap. Do not cite a character count for that line: it grew 14,727 -> 17,553
   in a day, and the durable fact is the ordering, not the size.
 - **Why it changed.** Measured 2026-10-18 before the move: Ranger's header was
   86,133 bytes, 21% of the whole file, and ONE line of it was 64,673
@@ -922,7 +933,11 @@ Claude Code session stops after `browser_code_eval`.
 
 ## Deploying a code slot
 
-- **`load_code` serves a cached copy.** After `save_code` the character keeps
+- **`load_code` serves a cached copy. THIS IS TRUE OF `save_code` AND NOT OF
+  ENGAGING A SLOT** - the section used to read as though every script change
+  needed a reload. Measured 2026-10-19: `start_runner()` on a newly loaded slot
+  swaps the live script IMMEDIATELY, `code_active` never goes false, and the
+  maincode iframe is replaced in place. After `save_code` the character keeps
   running the old build until the page is FULLY reloaded. Verify by feature-
   detecting something only the new build has, not by the slot version number.
   The next two bullets are what "feature-detect" has to mean in practice;
@@ -1000,6 +1015,38 @@ Claude Code session stops after `browser_code_eval`.
   lines, which is safe because the slot token is not on them. Three round trips
   located five changed lines in a 7,217-line file.
 
+- **ANY MARKER PUBLISHED ON `parent.*` OUTLIVES THE SCRIPT THAT PUBLISHED IT.**
+  Measured 2026-10-19 across four states: with OpenGifts v11 running after a
+  slot engage, `parent.MERCHANT_VER` still read 104 and `parent.PROBE_API` was
+  still present. Nothing clears them, so the deploy marker answered "Merchant
+  v104 is live" for a character not running Merchant at all - a confident false
+  positive, the one answer a deploy check must never give. The iframe `typeof`
+  answered correctly in all four states; both `parent.*` markers answered wrongly
+  in the fourth.
+  This is the same shape as "feature-detect FUNCTIONS, never persisted state"
+  above, by a different mechanism - page globals rather than CODE storage - and
+  it lands on every marker either session has built. **So read the live lexical
+  scope, not the global.** None of the four scripts is IIFE-wrapped, so
+  `PARTY_SCRIPT` and the script's own functions are top-level bindings in the
+  CODE context, destroyed and rebuilt with the script;
+  `browser_code_eval` already runs there. `parent.PARTY_BUILD` and
+  `parent.MERCHANT_VER` are for a reader who is NOT in that context, and a
+  disagreement between the two means the GLOBAL is wrong.
+  Partial mitigations shipped in Ranger v98 / Priest v56 / Mage v79:
+  `parent.PARTY_BUILD` is replaced wholesale rather than merged, so a
+  party-to-party swap is self-correcting, and each record carries `at`. Neither
+  helps when the incoming script knows nothing about the marker, and no
+  cross-clearing scheme fixes that without every script transcribing every
+  other script's marker names.
+- **THE BUFFER REPORTS THE SLOT THE EDITOR HAS LOADED, NOT THE SCRIPT THAT IS
+  EXECUTING, and that is a stronger statement than this section's "it holds
+  THIS character's active slot".** Measured 2026-10-19 with slot 8 loaded and
+  NOT engaged while Merchant v104 ran: the buffer held OpenGifts. A header read
+  taken then returns another script's version. `merchantHeaderVersion()` did
+  exactly that and returned 2 - OpenGifts' oldest history entry - which v105's
+  memoisation would have cached for the life of the page. Fixed in Merchant v106
+  by requiring the full `(Merchant)` header shape so a foreign buffer yields
+  null; see "Version headers".
 - **A DEPLOY IS PER-SLOT, AND IS NOT VERIFIED BY HAVING BEEN PERFORMED.** "The
   operator pushed the files" is not "the files are live on every character", and
   the gap is not visible from here. Three times on 2026-10-18 a session asserted

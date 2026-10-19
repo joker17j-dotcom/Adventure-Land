@@ -111,6 +111,26 @@ name: 'publishPartyBuild reports only what the build actually defines', fn(t) {
 	t.eq('and the features ride along', w.parent.PARTY_BUILD.Dexon.features.join(','),
 		'achvScore,bossRank');
 
+	/* A STALE ENTRY FROM A PREVIOUS SCRIPT MUST NOT SURVIVE. Engaging a
+	   different slot swaps the running script with no page reload and leaves
+	   parent.* behind - measured 2026-10-19, parent.MERCHANT_VER still read 104
+	   while OpenGifts was executing. Wholesale replacement is what stops this
+	   marker doing the same thing on a party-to-party swap. */
+	const swapped = world({});
+	lift(swapped, 'Party/Priest.js', ['publishPartyBuild']);
+	swapped.PARTY_SCRIPT = 'Priest';
+	swapped.PARTY_FEATURE_PROBE = { findHealTarget: 'function' };
+	swapped.parent.PARTY_BUILD = { Dexon: { script: 'Mage', features: ['stale'] } };
+	swapped.publishPartyBuild();
+	t.eq('the previous script\'s entry is gone, not merged beside the new one',
+		Object.keys(swapped.parent.PARTY_BUILD).join(','), 'Dexon');
+	t.eq('and the surviving entry is the one just published',
+		swapped.parent.PARTY_BUILD.Dexon.script, 'Priest');
+	t.eq('with no trace of the stale feature list',
+		swapped.parent.PARTY_BUILD.Dexon.features.join(','), 'findHealTarget');
+	t.ok('a publish timestamp rides along so a reader can spot a frozen marker',
+		typeof swapped.parent.PARTY_BUILD.Dexon.at === 'number');
+
 	/* THE DEXON CASE, asserted directly: a ranger running mage code reports
 	   'Mage' against the ranger's own name, which is the thing a version
 	   number could not say. */

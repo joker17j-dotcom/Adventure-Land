@@ -21,6 +21,45 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v98
+
+The PARTY_BUILD marker no longer accumulates, and the comment now names what
+the real authority is.
+
+MEASURED 2026-10-19, and it defeats the marker's whole purpose if left alone:
+`parent.*` globals OUTLIVE THE SCRIPT THAT PUBLISHED THEM. Engaging a different
+slot swaps the running script IMMEDIATELY - no page reload, `code_active` never
+goes false, the maincode iframe is replaced in place - and every parent global
+stays behind. `parent.MERCHANT_VER` still read 104 while OpenGifts v11 was the
+thing executing. That is a confident false positive, which is exactly the
+answer a deploy check must never produce, and `parent.PARTY_BUILD` had the same
+exposure.
+
+Two changes. The object is now REPLACED WHOLESALE rather than merged into, so a
+previous party script's entry cannot survive beside the current one - that makes
+a party-to-party swap self-correcting. And each record carries `at`, the publish
+time, so a reader comparing it against how long the page has been up can see a
+marker that stopped being refreshed.
+
+NEITHER FIXES THE GENERAL CASE, and the comment says so. A swap to a script that
+knows nothing about this marker - OpenGifts, anything shared - leaves it behind
+untouched, and no amount of cross-clearing fixes that without every script
+having to know every other script's marker names, which is the transcription
+problem this session has spent its time removing.
+
+SO THE AUTHORITY IS `PARTY_SCRIPT` ITSELF, READ INSIDE THE CODE CONTEXT. None of
+these three scripts is IIFE-wrapped - verified, `PARTY_SCRIPT` is the first code
+line in each - so it is a top-level const in the live lexical scope, which is
+destroyed and rebuilt with the script and therefore cannot go stale.
+`browser_code_eval` already runs in that context. The parent global is for a
+reader who is NOT in the CODE context, and a disagreement between the two means
+the global is wrong.
+
+Suite 317.
+
+Not deployed.
+
+
 ## v97
 
 Publishes which script is running, so a mis-deploy is visible from outside.

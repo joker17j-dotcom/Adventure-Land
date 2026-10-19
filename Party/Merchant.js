@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v105
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v106
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2737,7 +2737,21 @@ function merchantHeaderVersion() {
 		const src = parent && parent.codemirror_render && parent.codemirror_render.getValue();
 		if (typeof src !== 'string') return null;
 		const line2 = src.split('\n')[1] || '';
-		const m = line2.match(/\bv(\d+)\s*$/);
+		/* THE WHOLE HEADER SHAPE IS REQUIRED, NOT JUST A TRAILING VERSION, AND
+		   THIS IS A FIX FOR A MEASURED WRONG ANSWER rather than caution. The
+		   buffer reports the slot the EDITOR has LOADED, which need not be the
+		   script that is executing: measured 2026-10-19 with slot 8 loaded and
+		   not engaged, Merchant v104 still running, a bare /\bv(\d+)\s*$/ read
+		   OpenGifts' line 2 and returned 2 - another script's header, mangled by
+		   the history-header trap into a number matching no build of anything.
+		   Non-null, so the memoisation below would then CACHE it for the life of
+		   the page. The trigger is ordinary operator behaviour: browse another
+		   slot, then anything that re-evaluates this script.
+		   Requiring "(Merchant)" turns that from FAIL-WRONG into FAIL-NULL, which
+		   is the failure the retry already handles and the only one the cache is
+		   safe under. A foreign buffer now yields null forever rather than a
+		   confident lie. */
+		const m = line2.match(/^\/\/ .* \(Merchant\) - .* - v(\d+)\s*$/);
 		return m ? Number(m[1]) : null;
 	} catch (e) { return null; }
 }
