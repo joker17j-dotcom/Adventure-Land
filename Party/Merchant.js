@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v104
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v105
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2742,12 +2742,24 @@ function merchantHeaderVersion() {
 	} catch (e) { return null; }
 }
 
-/* THE READ IS MEMOISED, NOT ONE-SHOT, AND THAT IS THE WHOLE VALUE OF THE
-   MARKER. A single read at load is null FOREVER if parent.codemirror_render is
-   not yet populated at the moment this file evaluates, and nothing in here can
-   know how the game orders its own UI init against the maincode iframe. It was
-   measured present on a character tab with the CODE panel closed, which is a
-   steady state, not this instant.
+/* THE READ IS MEMOISED, NOT ONE-SHOT, AND THE ORDERING IT GUARDS IS NOW
+   MEASURED - IT IS FAVOURABLE AND NOT RELIABLY SO. Cold load of this character,
+   sampled from t=0 (2026-10-19): parent.codemirror_render is PRESENT at t=1ms
+   but holds the game's 1,118-character tutorial template, the real slot arrives
+   at t=1833ms, and CODE first evaluates at t=1961ms. So the first read does
+   succeed - by 128ms. On the next load of the same page the slot arrived at
+   t=2224ms, a 391ms swing, THREE TIMES that margin. The retry is guarding a
+   race whose jitter is larger than the margin it would have to clear, so it
+   stays. -> MerchantComments.md#header-read-ordering
+
+   THE CACHE IS SOUND BECAUSE THE PRE-SLOT DOCUMENT YIELDS NULL, AND THAT IS A
+   MEASURED PROPERTY OF THAT TEMPLATE RATHER THAN A GUARANTEE. Its line 2 is
+   "// This is CODE, lets you control your character with code." - no trailing
+   v<digits>, so the end-anchored regex returns null and the failure mode inside
+   the window is FAIL-NULL, never FAIL-WRONG. Caching the first NON-NULL answer
+   is only safe under that. Had the template's line 2 happened to end in a v and
+   digits, this would pin a wrong version permanently with nothing to correct
+   it. If that template ever changes, re-check this before trusting the cache.
 
    A null does not read as "unknown" to anyone downstream: it reads exactly like
    a build from before this marker existed. So the one question the marker is

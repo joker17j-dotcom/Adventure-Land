@@ -283,6 +283,12 @@ emptied, which is the single most expensive mistake this file can cause.
   declined for defensible reasons and the error survived on being someone
   else's. When a handoff mentions a fix, say who makes it and by when, or make
   it yourself.
+- **A GREP THAT MISSES IS NOT EVIDENCE OF ABSENCE, BECAUSE PROSE WRAPS.**
+  2026-10-19: "is live in Ranger v95 as `bossRank()`" straddles a line break in
+  this file, so a search for the phrase found nothing while the claim sat there.
+  Search for a distinctive single WORD, or use a multiline pattern - `grep -z`,
+  `rg -U`, or a Python read of the whole file - but do not conclude a wrapped
+  phrase is absent from a line-oriented search for it.
 - **CHECK THE FILE YOU ACTUALLY MEAN, AT THE REVISION YOU ACTUALLY MEAN.** That
   same "it is not in the repo copy" report was produced by grepping the working
   tree one call BEFORE the `merge --ff-only` that brought the other session's
@@ -572,8 +578,12 @@ summary of it.
 
 ## Boss priority and the event schedule
 
-**Both sessions.** The ranking is the operator's, given 2026-10-18, and is live
-in Ranger v95 as `bossRank()`.
+**Both sessions.** The ranking is the operator's, given 2026-10-18. It is
+declared in `Party/Ranger.js` as `bossRank()` and in no other script. This line
+said "live in Ranger v95" and was wrong twice over: it landed in v95 but ships
+in v97, and it had never EXECUTED at all, because Dexon was running
+`Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
+this ranking until a Ranger build is actually running on him.
 
 - **The table.** dragold 1; franky 2; crabxx, wabbit and goobrawl 3; mrgreen 4;
   snowman, grinch and mrpumpkin 5; `BOSS_RANK_DEFAULT = 6` for everything else,
@@ -652,8 +662,10 @@ time on 2026-10-18.
   COLLECTING IT YET, and the entry claimed otherwise for an hour: `taxiProbeNote`
   is declared only in `Party/Ranger.js`, and Dexon was measured on 2026-10-18
   running `Party/Mage.js` out of his own slot, so the probe has never executed.
-  Collection starts once Ranger v97 is deployed AND the page fully reloaded -
-  which is also the only way `bossRank` goes live at all. The claim was written
+  Collection STARTED 2026-10-19: Dexon was measured byte-identical to committed
+  v97 bar the trailing newline, so `taxiProbeNote` and `bossRank` are both
+  executing for the first time and a walk-in-sick franky now collects this
+  without anyone setting up a test. The claim was written
   from a verification that was true when run and stale by the time it was
   filed; see "Deploying a code slot".
 
@@ -875,12 +887,32 @@ Claude Code session stops after `browser_code_eval`.
   when a blocked read had already removed the counter it was reporting on, so
   a completed probe read as a failed one. Never re-send a mutating snippet
   because its result came back blocked; re-read the state instead.
-- **What trips it is not predictable, so keep the value you need OUT of the
-  payload.** Measured 2026-10-12: a 24-character instance id came back
-  `[BLOCKED: Base64 encoded data]`, and FatherToken's entry came back
-  `[BLOCKED: Sensitive key]` in two unrelated probes while Dexon, MageofOz and
-  Meltymerch came through both times - the only field name containing "Token",
-  which is a LEAD and not confirmed. His attack and frequency are still
+- **THE KEY-NAME RULE IS NOW MEASURED, AND IT IS PLAIN CASE-INSENSITIVE
+  SUBSTRING MATCHING.** This bullet said "not predictable" until 2026-10-19 and
+  that was too pessimistic for the key-name half. Controlled test, identical
+  integer values with only the key name varying - BLOCKED: `token`, `auth`,
+  `secret`, `password`, `apikey`/`api_key`, `credential`, `bearer`,
+  `session_id`; `cookie` blocks with its own `[BLOCKED: Cookie access]`. NOT
+  matched: a bare `key` - `keys`, `keyTest` and `monkey` all pass - and
+  `passwd`. Because it is substring matching it eats ordinary words: `author`,
+  `authority`, `coauthor`, `secretary`, `tokens`, `tokenize`, `subtokens`,
+  `passwordless` are all suppressed. One asymmetry left unexplained rather than
+  theorised about: `cookies` blocks but `nocookie` passes, while `subtokens`
+  blocks - so `cookie` is not matched the way `token` is.
+  **This explains all four earlier incidents at once**, including the one this
+  bullet recorded as an unconfirmed lead: FatherToken's entry was blocked
+  because his NAME contains "token", and the `Object.keys(PROBE_API).length`
+  case that was briefly read as a counterexample was a second instance - the
+  key was `probe_api_keys`, which contains `api_key`. A retraction was issued
+  on that reading and then withdrawn.
+  **So name result keys away from that list**, and for character-keyed data
+  read `X[character.name]` into a local and emit derived fields only - the
+  blocked KEY then never appears in the result. `Tests/suite_features.js`
+  asserts no `PARTY_BUILD` feature key lands on the list; the character-name
+  key cannot be fixed that way and does not need to be.
+- **The VALUE side is still unpredictable, so keep it out of the payload.**
+  Measured 2026-10-12: a 24-character instance id came back
+  `[BLOCKED: Base64 encoded data]`. His attack and frequency are still
   unmeasured because of it. `document.hidden` and `document.visibilityState`
   trip it reliably. Report DERIVED facts - a length, a boolean, a brace depth,
   a count - and where the raw value is needed, have the GAME read it rather
@@ -904,11 +936,23 @@ Claude Code session stops after `browser_code_eval`.
   and `gearProbeTripwire` were every one undefined. The value was a leftover
   from the last time `Party/Merchant.js` ran. The same durability that makes
   the fix work makes its own key worthless as evidence of it.
+- **A SLOT'S NAME IS NOT ITS CONTENTS, and this entry's own example was
+  misdescribed because of it.** Measured 2026-10-19: there are twelve numbered
+  slots plus one character slot each, and scripts are SELECTED rather than
+  pasted between them. SLOT 8, NAMED "Exchange Xyn", CONTAINS `OpenGifts.js`
+  v11 - 86,867 chars, 1,572 lines, a 17,553-character line 2, all eight
+  OpenGifts CONFIG keys, `runLadders`/`castBuff`/`skillReport`/`bowAtTarget`
+  present and `bowDone` absent. So the "Xyn exchange script" named below is not
+  a separate script at all; it is OpenGifts in a slot whose NAME is stale. The
+  lesson holds, the example did not. Merchant v104 did not displace OpenGifts
+  either - different slots, which is why `OpenGifts.js` carries no `CH_` token
+  in its header while all four party scripts do.
 - **Absence of a feature can mean a DIFFERENT SCRIPT, not an older build.**
   Same character, same probe: no Merchant symbol resolved because
-  `Party/Merchant.js` was not loaded at all - Meltymerch was running the Xyn
-  exchange script, whose CONFIG keys are `boxes`, `minFreeSlots`, `autoSell`,
-  `sellEvery`, `compound`, `bow`, `hub`, `maxConsecutiveFailures`.
+  `Party/Merchant.js` was not loaded at all - Meltymerch was running what that
+  slot's stale name calls the Xyn exchange script, whose CONFIG keys are
+  `boxes`, `minFreeSlots`, `autoSell`, `sellEvery`, `compound`, `bow`, `hub`,
+  `maxConsecutiveFailures`.
   `CONFIG.homeServer` and `parent.MERCHANT_VER` coming back undefined read
   exactly like a stale pre-v100 merchant and were nothing of the kind; the
   slot held v103 throughout. Establish WHICH SCRIPT is loaded before
@@ -965,6 +1009,46 @@ Claude Code session stops after `browser_code_eval`.
   time. Priest and Mage being byte-identical to their committed builds while
   Dexon's slot matched none of them, measured 2026-10-17, is the same lesson
   from the other direction: the party is not uniform.
+- **WHICH SCRIPT IS RUNNING IS NOW PUBLISHED, AND IT IS A DIFFERENT QUESTION
+  FROM WHICH VERSION.** Ranger v97 / Priest v55 / Mage v78 each set
+  `parent.PARTY_BUILD[<character name>] = { script, features }`, where every
+  value in the table is a live `typeof` of the identifier beside it, so an
+  absent function is filtered out instead of published. The three key sets are
+  disjoint, so ONE read names the script. Read it as
+  `parent.PARTY_BUILD[character.name].script`, never as a wholesale dump of the
+  object - FatherToken's key contains "token" and his entry is suppressed by the
+  result filter, per "Diagnosing a running character".
+  **It was built because a version number could not catch what happened**:
+  Dexon, a RANGER, was found running `Party/Mage.js` out of the Ranger slot, and
+  the slot header read v77 - a real, current, valid-looking version, just the
+  wrong script's. A version marker would have reported that the deploy took.
+  **It answers WHICH SCRIPT, not WHICH VERSION**: the list grows as features
+  land, so a missing key cannot be told apart from a key nobody added. Version
+  stays with feature-detecting the specific function a build introduced.
+  `Party/Merchant.js` deliberately does NOT carry this - it publishes
+  `arbProbeBuild()`'s `api` list, which is the same idea and predates it.
+- **READING A SLOT HEADER IS CHEAP, AND THE REASON BOTH SESSIONS AVOIDED IT WAS
+  NOT TRUE.** `get_code` returns whole slots, but the MCP writes an oversized
+  result to a FILE rather than into context - so `jq`/`python` can pull just the
+  first two lines of `code.code` with the `CH_` token masked. That is a full
+  header read on a 464 KB slot for no context cost and nothing token-bearing in
+  the result. The bullet above warning against pulling slot source still holds
+  for pulling it INTO a result; it never applied to reading it out of a file.
+  Two neighbours, one of them untested on purpose: `get_code_slot()` takes NO
+  arguments and returns the currently-engaged slot id; `load_code_s()` takes one
+  argument and may ENGAGE a slot, so it was left unprobed on a live character.
+- **WHEN THE SLOT ACTUALLY ARRIVES, measured 2026-10-19 on a cold load sampled
+  from t=0.** `parent.codemirror_render` is PRESENT at t=1ms holding the game's
+  1,118-character tutorial template; the real slot arrives at t=1833ms; CODE
+  first evaluates at t=1961ms. So "present" and "holds the slot" are about two
+  seconds apart and a presence check reports success for that whole window. A
+  read at module load does win - by 128ms - but slot arrival moved to t=2224ms
+  on the very next load of the same page, a 391ms swing, three times that
+  margin. So a header read at load is correct in practice and must still retry;
+  see `Party/MerchantComments.md#header-read-ordering`. The template's line 2
+  carries no trailing v<digits>, so the pre-slot failure is FAIL-NULL and never
+  FAIL-WRONG, which is the only thing that makes caching a first non-null read
+  safe.
 - **`codemirror_render` IS ALSO REACHABLE FROM THE CODE CONTEXT, not only from a
   tab, AND IT HOLDS THAT CHARACTER'S OWN ACTIVE SLOT** rather than whatever the
   editor last had open. The bullet above describes the tab-side instance; this is

@@ -15,6 +15,41 @@ Anchors match the `-> MerchantComments.md#anchor` pointers in the source.
 
 ---
 
+## header-read-ordering
+
+WHEN THE SLOT ACTUALLY ARRIVES IN parent.codemirror_render.
+
+  Measured 2026-10-19 by the browser session on a cold load of Meltymerch in a
+  fresh tab, sampled every 40-50ms from t=0. The question was whether
+  `merchantHeaderVersion()`'s read at module load can land before the buffer
+  holds the slot - the memoisation was written while that was unknown.
+
+  Load 1:
+    t=1ms     codemirror_render PRESENT, 1,118 chars - the game's tutorial
+              template, not the slot. No maincode iframe yet.
+    t=1833ms  real slot arrives: 440,812 chars, 9,862 lines, end-anchored
+              regex on line 2 -> 104.
+    t=1961ms  CODE first evaluates. merchantVersion defined, MERCHANT_VER 104.
+  Load 2:
+    t=0ms     placeholder, 1,118 chars.
+    t=2224ms  real slot arrives.
+
+  So the first read succeeds with 128ms to spare, and slot arrival moved 391ms
+  between two consecutive loads of the same page - three times that margin. The
+  ordering is favourable and not reliably so, which is why the retry stays. It
+  is dead code on the happy path and the happy path is not guaranteed.
+
+  TWO THINGS THAT WOULD HAVE BEEN MISSED BY REASONING INSTEAD OF SAMPLING.
+  First, "codemirror_render is present" and "codemirror_render holds the slot"
+  are different events about 1.8-2.2 seconds apart; a presence check would have
+  reported success throughout the window. Second, the placeholder is a REAL
+  document that a read lands in, and the memoisation's safety depends entirely
+  on what its line 2 looks like: "// This is CODE, lets you control your
+  character with code." has no trailing v<digits>, so the regex returns null and
+  the window fails NULL rather than WRONG. Caching the first non-null answer is
+  safe only under that. It is a measured property of the template, not a
+  guarantee, and it is the one thing to re-check if the template ever changes.
+
 ## stamp-where-the-sender-is
 
 Stamp where the sender is standing. Doing it here rather than at each

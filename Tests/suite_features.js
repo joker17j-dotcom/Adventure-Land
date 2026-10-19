@@ -43,6 +43,36 @@ name: 'each script publishes a feature set that resolves in its own source', fn(
 
 }, {
 
+/* A PUBLISHED KEY THAT THE RESULT FILTER EATS IS A KEY THAT CANNOT BE READ,
+   and this whole mechanism exists to be read through a probe. Measured by the
+   browser session 2026-10-19 with identical values and only the key name
+   varying: the filter does plain case-insensitive SUBSTRING matching, so
+   `author` and `secretary` are suppressed exactly as `token` is. Bare `key`
+   is NOT matched - keys, keyTest and monkey all pass.
+
+   This cannot cover the CHARACTER-name key: FatherToken contains "token" and
+   his PARTY_BUILD entry is suppressed in any wholesale read of the object.
+   That is not fixable here and is not a fault in the data - read
+   `parent.PARTY_BUILD[character.name].script` and the blocked key never
+   appears in the result. */
+name: 'no published key is one the result filter will suppress', fn(t) {
+	const BLOCKED = ['token', 'auth', 'secret', 'password', 'apikey', 'api_key',
+		'credential', 'bearer', 'session_id', 'cookie'];
+	for (const n of SCRIPTS) {
+		for (const [, key] of probeKeys(n)) {
+			const hit = BLOCKED.filter((b) => key.toLowerCase().includes(b));
+			t.eq(n + ': ' + key + ' survives the result filter', hit.join(','), '');
+		}
+	}
+	// the check has to be able to fail, or it is decoration
+	t.eq('the list would catch a key named authTarget',
+		BLOCKED.filter((b) => 'authTarget'.toLowerCase().includes(b)).join(','), 'auth');
+	t.eq('and does not fire on a bare key-like name',
+		BLOCKED.filter((b) => 'monkeyKeys'.toLowerCase().includes(b)).join(','), '');
+},
+
+}, {
+
 name: 'the three feature sets stay disjoint, so one read names the script', fn(t) {
 	const sets = {};
 	for (const n of SCRIPTS) sets[n] = new Set(probeKeys(n).map((m) => m[1]));

@@ -28,6 +28,37 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v105
+
+Comment only, no behaviour change. The v104 memoisation is now justified by
+measurement rather than by the ordering being unknown.
+
+Browser session, 2026-10-19, cold load sampled from t=0: the slot arrives in
+`parent.codemirror_render` at t=1833ms and CODE first evaluates at t=1961ms, so
+the read at load DOES succeed - by 128ms. On the next load of the same page the
+slot arrived at t=2224ms, a 391ms swing, three times that margin. So the retry
+stays: it guards a race whose jitter exceeds the margin it would need to clear.
+Dead code on the happy path, and the happy path is not guaranteed.
+
+The finding neither of us predicted is that `codemirror_render` is PRESENT from
+t=1ms holding the game's 1,118-character tutorial template - so "present" and
+"holds the slot" are ~2 seconds apart, and a presence check would have reported
+success for the whole window. The memoisation's safety turns out to rest on
+that template's line 2 having no trailing v<digits>: the regex returns null, so
+the pre-slot failure mode is FAIL-NULL and never FAIL-WRONG, which is the only
+condition under which caching the first non-null answer is correct. Measured
+property of the template, not a guarantee - recorded in
+`Party/MerchantComments.md#header-read-ordering` with the sample series.
+
+DEPLOY WARNING, and it is the case CLAUDE.md says nothing records. The LIVE slot
+was measured ahead of committed v104 by one operator flip:
+`scoutParked: false` in the repo against `true` live - the entire 2-character
+gap between 440,814 committed and 440,812 live, the other character being the
+absent trailing newline. A wholesale paste of this build turns scout parking
+back off silently. Preserve the flip on redeploy, or commit it; that is the
+operator's call and nothing here has changed it.
+
+
 ## v104
 
 The version is read from line 2 instead of transcribed, and the read retries.
