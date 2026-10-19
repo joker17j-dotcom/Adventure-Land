@@ -39,6 +39,20 @@ WHEN THE SLOT ACTUALLY ARRIVES IN parent.codemirror_render.
   ordering is favourable and not reliably so, which is why the retry stays. It
   is dead code on the happy path and the happy path is not guaranteed.
 
+  A THIRD SAMPLE, taken later the same day off an unrelated reload: slot at
+  2,163ms, script up at 2,298ms, margin 135ms. So the MARGIN is stable across
+  loads - 128ms then 135ms - while slot ARRIVAL is not, spanning 1,833-2,224ms.
+  That combination is the whole case for the retry: the quantity that varies is
+  larger than the quantity protecting the read.
+
+  THE GATE ADDED IN v106 WAS PROVEN IN THE STATE IT WAS WRITTEN FOR, which is
+  worth more than the ordering numbers. With the editor VIEWING OpenGifts and
+  Merchant v106 executing, `merchantHeaderVersion()` returned null while the
+  ungated regex was measured beside it returning 2, and the memoised
+  `merchantVersion()` held 106 throughout. The v104 build would have cached 2
+  permanently in exactly that state. The counterfactual is a measurement rather
+  than a reconstruction, which is the standard to hold a fix to.
+
   TWO THINGS THAT WOULD HAVE BEEN MISSED BY REASONING INSTEAD OF SAMPLING.
   First, "codemirror_render is present" and "codemirror_render holds the slot"
   are different events about 1.8-2.2 seconds apart; a presence check would have

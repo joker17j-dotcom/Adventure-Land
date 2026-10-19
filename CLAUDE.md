@@ -684,6 +684,13 @@ time on 2026-10-18.
 
 **Browser-driven session only.** Needs a live character tab.
 
+- **`start_runner()` SAVES THE EDITOR BUFFER INTO THE VIEWED SLOT BEFORE IT
+  RUNS ANYTHING - read "Deploying a code slot" before using the advice in this
+  section.** A slot was destroyed this way on 2026-10-19. In the normal case
+  the buffer already matches the viewed slot and the save is a harmless no-op,
+  which is exactly why this is easy to miss; it bites when something has
+  written to the buffer or `load_code` has pointed it elsewhere. Every
+  "engage the runner" instruction below carries that cost.
 - **`stop_runner()` and `start_runner()`, both called with no arguments.**
   Measured off the game's own markup rather than guessed: the Disengage control
   carries `onclick="btc(event); stop_runner()"` and Engage `start_runner()`.
@@ -933,12 +940,45 @@ Claude Code session stops after `browser_code_eval`.
 
 ## Deploying a code slot
 
-- **`load_code` serves a cached copy. THIS IS TRUE OF `save_code` AND NOT OF
-  ENGAGING A SLOT** - the section used to read as though every script change
-  needed a reload. Measured 2026-10-19: `start_runner()` on a newly loaded slot
-  swaps the live script IMMEDIATELY, `code_active` never goes false, and the
-  maincode iframe is replaced in place. After `save_code` the character keeps
-  running the old build until the page is FULLY reloaded. Verify by feature-
+- **`start_runner()` IS NOT A RUN BUTTON. IT SAVES THE EDITOR BUFFER INTO THE
+  VIEWED SLOT, THEN RUNS IT. TREAT IT AS `save_code` WITH AN INVISIBLE TARGET.**
+  This is the most destructive call in this file and it was learned by
+  destroying a slot: a 3-line probe was `setValue`'d while the editor viewed
+  Meltymerch's MERCHANT slot, `start_runner()` was called, and the slot became
+  185 characters. Confirmed with `get_code`; the save-counter went 168 -> 171.
+  The operator restored it from the repo in seconds, which is the only reason
+  it cost nothing. **Before calling it, read `get_code_slot()` AND check what
+  `codemirror_render` holds**; if the buffer is not what belongs in the viewed
+  slot, that call overwrites the slot. Sibling hazard to "a live slot can be
+  ahead of the repo": a live slot can also be REPLACED BY A STRAY EDITOR
+  BUFFER, with no warning either way.
+- **THE THREE FUNCTIONS, each measured 2026-10-19, and the model that fits every
+  observation.** The editor VIEWS a slot and `codemirror_render` holds that
+  slot's content; the ENGAGED slot is what a page load runs. They are not the
+  same thing and nothing on screen says so.
+  - `load_code('8')` changes the VIEWED slot ONLY, and is ASYNCHRONOUS -
+    returns undefined, buffer changes about a second later. Engaged slot and
+    running script untouched. This reproduces the "loaded but not engaged"
+    hazard state on demand.
+  - `load_code_s('8')` is a SILENT NO-OP: returns normally, changes nothing,
+    throws nothing. An earlier entry here guessed it "may ENGAGE a slot" and
+    was wrong. `load_code` is the loader.
+  - `get_code_slot()` takes no arguments and returns the ENGAGED slot id. It is
+    the ONLY read that separates engaged from viewed.
+  So when viewed == engaged, a `start_runner()` change survives a reload,
+  because the engaged slot's CONTENT changed. When viewed != engaged it runs
+  now, the save lands on the OTHER slot, and a reload returns to the engaged
+  slot - which LOOKS transient. One mechanism, two pairings; neither
+  "transient" nor "durable" is true on its own. Unresolved and not worth
+  chasing: whether the save is unconditional or only fires on a dirty buffer -
+  where the buffer already matched the slot the two are indistinguishable, and
+  the operational rule is the same either way.
+- **`load_code` serves a cached copy, so the running script outlives a
+  `save_code`.** The character keeps running the old build until the page is
+  FULLY reloaded. `start_runner()` is the exception and not a counterexample:
+  it runs the buffer immediately BECAUSE it saves it first. An earlier version
+  of this bullet called that "engaging a slot swaps the script immediately",
+  which reported the effect and missed the write. Verify by feature-
   detecting something only the new build has, not by the slot version number.
   The next two bullets are what "feature-detect" has to mean in practice;
   both measured by the browser session on 2026-10-18, on the same character,
@@ -1017,8 +1057,8 @@ Claude Code session stops after `browser_code_eval`.
 
 - **ANY MARKER PUBLISHED ON `parent.*` OUTLIVES THE SCRIPT THAT PUBLISHED IT.**
   Measured 2026-10-19 across four states: with OpenGifts v11 running after a
-  slot engage, `parent.MERCHANT_VER` still read 104 and `parent.PROBE_API` was
-  still present. Nothing clears them, so the deploy marker answered "Merchant
+  `start_runner()` swapped the script in place, `parent.MERCHANT_VER` still read
+  104 and `parent.PROBE_API` was still present. Nothing clears them, so the deploy marker answered "Merchant
   v104 is live" for a character not running Merchant at all - a confident false
   positive, the one answer a deploy check must never give. The iframe `typeof`
   answered correctly in all four states; both `parent.*` markers answered wrongly
@@ -1046,7 +1086,11 @@ Claude Code session stops after `browser_code_eval`.
   exactly that and returned 2 - OpenGifts' oldest history entry - which v105's
   memoisation would have cached for the life of the page. Fixed in Merchant v106
   by requiring the full `(Merchant)` header shape so a foreign buffer yields
-  null; see "Version headers".
+  null; see "Version headers". **The fix was then proven IN that state rather
+  than argued**: with the editor viewing OpenGifts and Merchant v106 executing,
+  `merchantHeaderVersion()` returned null, the ungated regex was measured
+  beside it returning 2, and the memoised `merchantVersion()` held 106 with
+  `parent.MERCHANT_VER` 106 and `merchantBuild()` "v106".
 - **A DEPLOY IS PER-SLOT, AND IS NOT VERIFIED BY HAVING BEEN PERFORMED.** "The
   operator pushed the files" is not "the files are live on every character", and
   the gap is not visible from here. Three times on 2026-10-18 a session asserted
@@ -1081,9 +1125,9 @@ Claude Code session stops after `browser_code_eval`.
   header read on a 464 KB slot for no context cost and nothing token-bearing in
   the result. The bullet above warning against pulling slot source still holds
   for pulling it INTO a result; it never applied to reading it out of a file.
-  Two neighbours, one of them untested on purpose: `get_code_slot()` takes NO
-  arguments and returns the currently-engaged slot id; `load_code_s()` takes one
-  argument and may ENGAGE a slot, so it was left unprobed on a live character.
+  For the three slot functions and what each actually does see the model at the
+  top of this section - `load_code_s` was guessed here to "may ENGAGE a slot"
+  and is in fact a silent no-op.
 - **WHEN THE SLOT ACTUALLY ARRIVES, measured 2026-10-19 on a cold load sampled
   from t=0.** `parent.codemirror_render` is PRESENT at t=1ms holding the game's
   1,118-character tutorial template; the real slot arrives at t=1833ms; CODE
@@ -1091,7 +1135,10 @@ Claude Code session stops after `browser_code_eval`.
   seconds apart and a presence check reports success for that whole window. A
   read at module load does win - by 128ms - but slot arrival moved to t=2224ms
   on the very next load of the same page, a 391ms swing, three times that
-  margin. So a header read at load is correct in practice and must still retry;
+  margin. A third sample: slot 2,163ms, script up 2,298ms, margin 135ms. So the
+  MARGIN is stable across loads (128/135ms) while slot ARRIVAL is not
+  (1,833-2,224ms), which is the combination that keeps the retry justified -
+  what varies is larger than what protects you. So a header read at load is correct in practice and must still retry;
   see `Party/MerchantComments.md#header-read-ordering`. The template's line 2
   carries no trailing v<digits>, so the pre-slot failure is FAIL-NULL and never
   FAIL-WRONG, which is the only thing that makes caching a first non-null read
