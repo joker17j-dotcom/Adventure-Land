@@ -131,6 +131,54 @@ module.exports = [
 	t.note(`measured: overlapped ${overlapped}ms, serial ${serial}ms`);
 } },
 
+{ name: 'the overlap runs BOTH ways - a slow ladder does not hold up the next box', async fn(t) {
+	/* v10 overlapped one direction only: a box could start a compound, but
+	   the next box waited for it. The operator saw exactly that live -
+	   "it starts upgrades and compounds while opening boxes but it does not
+	   open boxes while the upgrade/compound is running". A 10s compound
+	   against a 3-6s exchange is ~5s of nothing, every compound. */
+	const w = gifts({ cmpGroup: () => ({}), bowPick: () => null });
+	w.compoundAll = async () => { await new Promise((r) => setTimeout(r, 300)); return { attempts: 1, made: {} }; };
+	lift(w, GIFTS, ['ladderRunner']);
+	const nil = () => [{ attempts: 0, made: {} }, { attempts: 0, made: 0, lost: 0 }];
+
+	w.ladderRunner.reset();
+	const t0 = Date.now();
+	w.ladderRunner.launch(...nil());                       // 300ms ladder
+	await new Promise((r) => setTimeout(r, 100));          // a 100ms "exchange"
+	const afterFirstBox = Date.now() - t0;
+	t.that('the next box is reachable while the ladder still runs', afterFirstBox < 200, afterFirstBox + 'ms');
+	t.eq('and the ladder is still in flight', w.ladderRunner.busy, true);
+
+	/* The second box must NOT start a second ladder - q.compound is single,
+	   so two at once would contend however independent the three queues are. */
+	t.eq('a second launch while one runs is refused', w.ladderRunner.launch(...nil()), false);
+
+	await w.ladderRunner.settle();
+	const total = Date.now() - t0;
+	t.that('settle still waits for it', total >= 300, total + 'ms');
+	t.eq('and clears the slot', w.ladderRunner.busy, false);
+	t.note(`next box at ${afterFirstBox}ms, ladder settled at ${total}ms`);
+
+	w.ladderRunner.reset();
+	t.eq('a launch after a reset is accepted', w.ladderRunner.launch(...nil()), true);
+	await w.ladderRunner.settle();
+
+	/* settle() on nothing is a no-op rather than a throw - every guarded
+	   call site hits this case most of the time. */
+	let threw = false;
+	try { await w.ladderRunner.settle(); } catch (e) { threw = true; }
+	t.eq('settling an empty runner is safe', threw, false);
+
+	/* A throwing ladder must not wedge the runner: runLadders swallows its
+	   own, but the slot has to clear even if something else throws. */
+	w.ladderRunner.reset();
+	w.compoundAll = async () => { throw new Error('boom'); };
+	w.ladderRunner.launch(...nil());
+	await w.ladderRunner.settle();
+	t.eq('a throwing ladder still frees the slot', w.ladderRunner.busy, false);
+} },
+
 { name: 'the bow ladder makes fodder, not one trophy', fn(t) {
 	t.that('a finished +7 on hand no longer stops the ladder', gifts({ character: { items: [bow(7), bow(3), bow(0)] } }).bowPick() !== null);
 	t.eq('and it picks the highest BELOW target', gifts({ character: { items: [bow(7), bow(3), bow(0)] } }).bowPick().level, 3);
