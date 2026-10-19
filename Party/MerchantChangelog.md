@@ -28,6 +28,61 @@ moved it here - it just is not a countdown to a known number.
 Newest first. Entries through v62 are verbatim from the header they replaced;
 v63 onward were written here directly, since the header stopped accumulating.
 
+## v104
+
+The version is read from line 2 instead of transcribed, and the read retries.
+
+Two constants carried it by hand and both rotted under a comment ordering a
+human to bump them: the deploy marker `parent.MERCHANT_VER` sat at 95 against
+a v103 header, and the build string at v76 - twenty-seven versions - having
+already been caught stale once on 2026-09-29. Two explicit instructions,
+ignored for months, so a third was not written. `merchantHeaderVersion()`
+reads line 2 out of `parent.codemirror_render`, the slot's own CodeMirror
+document, which is populated on a character tab before the CODE panel is
+opened and holds THIS character's active slot - verified 2026-10-18 on
+Meltymerch, whose buffer was the OpenGifts slot while OpenGifts was running,
+and on Dexon, whose buffer reported 95 while v95 was live.
+
+THE REGEX IS END-ANCHORED AND THAT IS LOAD-BEARING. It depends on this repo's
+rule that line 2 of a `Party/` script carries the CURRENT VERSION ONLY, so the
+line ENDS with it. DO NOT COPY THE HELPER INTO A ROOT SCRIPT - those keep their
+accumulated history by the operator's call, and a history-carrying line 2 ends
+with the OLDEST entry: on OpenGifts.js it returns 2 against a v11 build.
+Anchoring to the first match instead is not the fix, because a slot token
+containing a lowercase v followed by digits would win.
+
+THE READ IS MEMOISED RATHER THAN ONE-SHOT, which is the one change from the
+patch as it arrived. A single read at module load is null forever if
+`parent.codemirror_render` is not yet populated at that instant, and nothing
+in the file can know how the game orders its UI init against the maincode
+iframe - it was measured present on a tab with the CODE panel closed, which is
+a steady state and not this moment. The failure would not have announced
+itself: a null `MERCHANT_VER` is indistinguishable from a build predating the
+marker, so the one question it exists to answer - did the deploy take, or is
+the slot stale - would have come back "stale" in the direction nobody can
+detect. First successful read wins and is kept, so a `save_code` part-way
+through a run cannot move the answer underneath the build that is executing.
+
+The build string is now `merchantBuild()` rather than a constant, so that
+retry can reach it; its three consumers are unchanged in behaviour. Feature
+detection stays the authority - the buffer is the EDITOR's document, so
+between a save_code and a full reload it holds the new source while the old
+build runs. A failed read reports `v? (slot header unreadable)` and does not
+guess.
+
+Also removed the two surviving "BUMP THIS EVERY DEPLOY" instructions, which
+the fix had falsified, and the stale "`build` is a hand-bumped string" claim
+in `Party/MerchantComments.md#MERCHANT_BUILD`.
+
+21 assertions in the new `Tests/suite_merchantver.js` - both header shapes,
+five failure modes, the documented trap asserted so it cannot be "corrected"
+into a first-match, the retry and the pinning, and a source check that the
+file still calls `merchantVersion()` at load. Suite green at 234.
+
+Not deployed to the live slot: Meltymerch was last seen running the Xyn
+exchange script, not this one.
+
+
 ## v103
 
 Header fix only, no code change.

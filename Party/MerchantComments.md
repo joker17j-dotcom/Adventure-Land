@@ -1325,11 +1325,18 @@ WHICH BUILD IS ACTUALLY RUNNING.
   here: the v24 header survived thirteen commits of changes and led a handoff
   to record the file as untouched.
 
-  So two answers, of different quality. `build` is a hand-bumped string and
-  can go stale exactly as that header did - treat it as a hint. `api` is the
-  live list of probe functions the running script actually exposes, and it
-  cannot lie: if arbProbeDistanceCheck is in it, the build is at least the one
-  that introduced it. Feature-detect against `api`, read `build` for context.
+  So two answers, of different quality. `build` WAS a hand-bumped string and
+  went stale exactly as that header did - three times, the last of them v76
+  against a v103 header. It is no longer transcribed: `merchantBuild()` derives
+  it from line 2 through `merchantVersion()`, so there is one number in the
+  file. That removes the transcription error, not the staleness question - the
+  source it reads is the EDITOR's buffer, which after a `save_code` holds the
+  new text while the old build is still running.
+
+  `api` is the live list of probe functions the running script actually
+  exposes, and it cannot lie: if arbProbeDistanceCheck is in it, the build is
+  at least the one that introduced it. So the order of authority is unchanged.
+  Feature-detect against `api`, read `build` for context.
 
 ## arbitrage-2
 

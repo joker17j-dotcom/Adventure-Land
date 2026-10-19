@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v103
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v104
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2697,9 +2697,79 @@ try { parent.MLUCK_OPP = mluckOppDump; } catch (e) { }
    OLD build silently, so the slot's version string is the one thing that cannot
    verify a deploy. Nothing in v94 or v95 was reachable from outside this file's
    IIFE - both changed only CONFIG and GEAR_PROGRESSION - which left no way to
-   feature-detect either. This is that way. Read it as parent.MERCHANT_VER;
-   bump it with the header. -> CLAUDE.md, "Deploying a code slot" */
-try { parent.MERCHANT_VER = 95; } catch (e) { }
+   feature-detect either. This is that way. Read it as parent.MERCHANT_VER.
+   -> CLAUDE.md, "Deploying a code slot"
+
+   THE NUMBER IS NO LONGER TRANSCRIBED. It was, twice, and both copies rotted
+   under a comment instructing a human to bump them: this marker sat at 95
+   against a v103 header, and the build string below sat at v76 - twenty-seven
+   versions - having already been caught stale once on 2026-09-29. Two explicit
+   instructions, both ignored for months. So the version is read from the slot's
+   own header instead, and there is one number in this file rather than three.
+
+   WHY THE HEADER AND NOT A CONSTANT: parent.codemirror_render is the slot's
+   CodeMirror document, populated on a character tab before the CODE panel is
+   ever opened, and it holds THIS character's active slot - verified 2026-10-18
+   on Meltymerch, whose buffer was the OpenGifts slot while OpenGifts was the
+   running script, and on Dexon, whose buffer reported 95 while v95 was live.
+
+   THE REGEX IS END-ANCHORED AND THAT IS LOAD-BEARING. It depends on the
+   version-header rule: line 2 carries the CURRENT VERSION ONLY, so the line
+   ENDS with it. DO NOT COPY THIS HELPER INTO A SCRIPT WHOSE HEADER STILL
+   ACCUMULATES HISTORY - the root scripts do, by the operator's call, and
+   OpenGifts.js line 2 runs to tens of thousands of characters and ENDS WITH
+   THE OLDEST ENTRY, so this returns 2 there no matter how far the build has
+   moved - measured 2026-10-19 at v11, and the 2 is durable because history is
+   prepended. Do not re-cite the character count: it grew 14,727 -> 17,553 in a
+   day and the number is not the point. Anchoring to the FIRST match instead is
+   not the fix: a slot token containing a lowercase v followed by digits would
+   then win.
+
+   RESIDUAL, and it is why feature detection stays the authority: the buffer is
+   the EDITOR's document, so between a save_code and a full page reload it holds
+   the new source while the old build runs. A load normally implies the reload
+   that makes them agree - but a runner restart over a cached build would report
+   the buffer. The memoisation below bounds this: the first successful read is
+   kept, so a save_code mid-run cannot move the answer afterwards. A null read
+   reports itself as unknown rather than guessing. */
+function merchantHeaderVersion() {
+	try {
+		const src = parent && parent.codemirror_render && parent.codemirror_render.getValue();
+		if (typeof src !== 'string') return null;
+		const line2 = src.split('\n')[1] || '';
+		const m = line2.match(/\bv(\d+)\s*$/);
+		return m ? Number(m[1]) : null;
+	} catch (e) { return null; }
+}
+
+/* THE READ IS MEMOISED, NOT ONE-SHOT, AND THAT IS THE WHOLE VALUE OF THE
+   MARKER. A single read at load is null FOREVER if parent.codemirror_render is
+   not yet populated at the moment this file evaluates, and nothing in here can
+   know how the game orders its own UI init against the maincode iframe. It was
+   measured present on a character tab with the CODE panel closed, which is a
+   steady state, not this instant.
+
+   A null does not read as "unknown" to anyone downstream: it reads exactly like
+   a build from before this marker existed. So the one question the marker is
+   here to answer - did the deploy take, or is the slot still stale - would come
+   back "stale" in the one direction nobody can detect. Retrying until the first
+   successful read removes the question without needing to answer it.
+
+   FIRST SUCCESSFUL READ WINS AND IS KEPT, so a save_code part-way through a run
+   cannot shift the answer underneath the build that is actually executing. In
+   the normal case the [probe] load print fills it immediately and the retry
+   never happens. */
+const merchantVerCache = { v: null };
+function merchantVersion() {
+	if (merchantVerCache.v === null) {
+		merchantVerCache.v = merchantHeaderVersion();
+		if (merchantVerCache.v !== null) {
+			try { parent.MERCHANT_VER = merchantVerCache.v; } catch (e) { }
+		}
+	}
+	return merchantVerCache.v;
+}
+merchantVersion();
 
 async function pickupItemsFrom(recipientName) {
 	// The fighters' own clearInventory()/muling logic already auto-sends
@@ -6823,7 +6893,7 @@ function arbHalted() {
 /* build is recorded for diagnosis - which build was running when the breaker
    tripped - and is deliberately NOT a clearing condition. See haltMs. */
 function arbHalt(reason) {
-	try { set(ARB_HALT_KEY, { at: Date.now(), reason: reason, build: MERCHANT_BUILD }); } catch (e) { }
+	try { set(ARB_HALT_KEY, { at: Date.now(), reason: reason, build: merchantBuild() }); } catch (e) { }
 }
 
 /* Console helper: arbProbeHalt() reports, arbProbeHalt(false) clears. */
@@ -8095,24 +8165,32 @@ function arbRestore() {
 
 // WHICH BUILD IS ACTUALLY RUNNING.
 // -> MerchantComments.md#MERCHANT_BUILD
-// BUMP THIS EVERY DEPLOY, together with line 2. It is the version a human
-// sees in-game, via the [probe] game_log on load, and it is stamped into a
-// stored arbitrage halt so you can tell which build tripped the breaker.
-// It sat at v27 from 2026-09-19 to 2026-09-25 while the file reached v52, so
-// the game log named the wrong build for 25 versions. It no longer gates
-// anything: arbHalted() used to ignore a halt whose build differed, and that
-// clause was removed in v53 - see CONFIG.arbitrage.haltMs.
-/* Read by the operator - and by anyone diagnosing this character from outside,
-   which is the reason it is now kept current. It sat at 'v57' through ten
-   releases, and on 2026-09-29 a live probe of the running merchant reported v57
-   while the deployed build was in fact v67. Feature-detection caught it; the
-   string should not have needed catching. Bump this with every version. */
-const MERCHANT_BUILD = 'v76 / exchangeables are never sold, and are banked when already at the bank / 2026-10-03';
+// NOTHING TO BUMP. This derives from line 2 via merchantVersion(). It is the
+// version a human sees in-game, via the [probe] game_log on load, and it is
+// stamped into a stored arbitrage halt so you can tell which build tripped the
+// breaker. It no longer gates anything: arbHalted() used to ignore a halt whose
+// build differed, and that clause was removed in v53 - see
+// CONFIG.arbitrage.haltMs.
+/* THIS COMMENT USED TO ORDER A HUMAN TO BUMP THE STRING, TWICE, AND IT ROTTED
+   ANYWAY - which is the argument for deriving it rather than a reason to write
+   the instruction more firmly a third time. It sat at v27 from 2026-09-19 to
+   2026-09-25 while the file reached v52, so the game log named the wrong build
+   for 25 versions; it then sat at 'v57' through ten releases, and on 2026-09-29
+   a live probe reported v57 while the deployed build was v67; it was at v76
+   when this was finally derived, against a v103 header. Feature-detection
+   caught each one. The string should not have needed catching.
+
+   It is a FUNCTION rather than a constant so the memoised read can still
+   succeed on a later call if the buffer was not ready at load. */
+function merchantBuild() {
+	const v = merchantVersion();
+	return v === null ? 'v? (slot header unreadable - feature-detect instead)' : ('v' + v);
+}
 
 function arbProbeBuild() {
 	const api = Object.keys(parent.PROBE_API || {}).sort();
 	const out = {
-		build: MERCHANT_BUILD,
+		build: merchantBuild(),
 		api: api,
 		apiCount: api.length,
 		// Read from CONFIG, never transcribed into the build string. An earlier
@@ -9778,7 +9856,7 @@ try {
 	PROBE.hold = !!get('probe_hold');
 	// A cross-shard buy stashed before the hop picks itself up here.
 	try { sbPendingResume(); } catch (e) { }
-	game_log('[probe] ' + MERCHANT_BUILD + ' loaded (' + PROBE.log.length + ' stored entries'
+	game_log('[probe] ' + merchantBuild() + ' loaded (' + PROBE.log.length + ' stored entries'
 		+ (PROBE.hold ? ', HOLD STILL ON' : '') + ') - arbProbeHelp() for commands',
 		PROBE.hold ? '#FFD700' : '#8b98ab');
 } catch (e) { }
