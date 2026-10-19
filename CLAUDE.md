@@ -557,6 +557,88 @@ summary of it.
   object disagreed first - one truncated at the first `]`, the other had
   dragold's two items reversed.
 
+## Boss priority and the event schedule
+
+**Both sessions.** The ranking is the operator's, given 2026-10-18, and is live
+in Ranger v95 as `bossRank()`.
+
+- **The table.** dragold 1; franky 2; crabxx, wabbit and goobrawl 3; mrgreen 4;
+  snowman, grinch and mrpumpkin 5; `BOSS_RANK_DEFAULT = 6` for everything else,
+  icegolem included.
+- **THE RATIONALE IS THE PART THAT STOPS IT BEING RE-DERIVED WRONG.** franky
+  drops the keys the operator wants and goobrawl drops funtokens; keys outrank
+  funtokens for now. franky is WALKABLE, so it can be taken hop-sick, while
+  goobrawl needs the teleport. icegolem sits at default despite being a boss
+  because only 10 kills complete its achievement, its drops are unimpressive,
+  and the operator is not running the dungeon its key opens. goobrawl is treated
+  as a boss even though it is several monsters and only a CHANCE at rgoo.
+- **pinkgoo is deliberately ABSENT.** It was #1 in the operator's first pass and
+  was dropped on measurement: 40 hp. It is an opportunistic attack, never a
+  plan. The operator's own correction - they had confused pinkgoo with rgoo,
+  which is the chance boss inside goobrawl.
+- **Ties are equal order and fall through to the EXISTING priority system.** The
+  chain in `bossPick()` is rank, then `need`, then `kills_to_rung`. Ranking
+  decides which of several ALREADY-ALIVE bosses to take; it does not change
+  which bosses are worth hopping for, and those were settled separately.
+- **`kills_to_rung` ordering is NOT a bug.** A session called it one on the
+  strength of a single sentence about funtokens. The operator: "While it may be
+  a bug dragold is higher priority than funtokens." Do not promote one remark
+  about one drop into a global objective function.
+- **dragold is gated by `lunarnewyear: false`** and its event entry is a 15-day
+  seasonal (`60*60*24*15`). Real-world Lunar New Year is 6 February; the in-game
+  start is unknown. Operator's call: dragold is worth abandoning franky for, for
+  now, to be re-evaluated once the event is actually live and they have seen how
+  it runs.
+- **A SCHEDULED SPAWN IS WORTH PLANNING FOR, NOT ABANDONING FOR.** Operator's
+  call: ranks 1 and 2 are worth abandoning everything else, but both spawn on a
+  known schedule, so the schedule is the thing to design around rather than an
+  interrupt to absorb. Where a scheduled event is known for a slot, no
+  higher-ranked boss outranks it, and it is not spawning on home, a PREPOSITION
+  on that server is required.
+- **THE NINE EVENT WINDOWS NEVER OVERLAP, so nothing ever has to arbitrate
+  between two scheduled events.** Measured 2026-10-18: dailies at game-hours 13
+  and 20, nightly at 23; windows 2400s except goobrawl at 540s; region offsets
+  ASIA +7, EU +1, US -5. That lands them at 01:00, 04:00, 06:00, 12:00, 13:00,
+  16:00, 18:00, 19:00 and 22:00 UTC - every adjacent pair at least an hour
+  apart. The nine are a queue, not a contention problem.
+
+## The bridge's boss log - despawn vs kill
+
+**Both sessions.** `Codex/market_bridge.py`, fixed at write time and at read
+time on 2026-10-18.
+
+- **ABSENCE IS NOT A KILL.** An event boss that times out of its window
+  disappears exactly as a killed one does, so a despawn was logging as a kill
+  and inflating the kill record the chain would otherwise plan from.
+- **The classifier is `stored_row_is_despawn()`**: a `death` row with no
+  `estimated_respawn`, method `absent_on_responding_server`, whose elapsed lands
+  inside the monster's event window. Constants `BOSS_DESPAWN_WINDOW_SLACK = 180`,
+  `BOSS_DESPAWN_WINDOW_CEILING = 300`, `BOSS_DESPAWN_ALIVE_PCT = 5.0`.
+- **THE CEILING IS LOAD-BEARING AND WAS ADDED AFTER A FALSE POSITIVE.** Without
+  it, a US II crabxx at 4634s elapsed sitting at 7.61% hp would have been
+  relabelled a despawn. It then protected a REAL kill: the US IV franky at 3612s.
+- **A LOW hp READING IS THE COUNTER-EVIDENCE, AND THE READ PATH MUST KEEP IT.**
+  A read path that checked only the window buried the live US III rgoo row at
+  4.96% hp. That is what `stored_row_despawn_confidence` is for: the window says
+  "possibly a despawn", the hp says "something was killing it", and the row has
+  to carry both rather than be collapsed to one verdict.
+- **`ttk_sec` IS NOT THE WRITE PATH'S QUANTITY.** `death_t` is
+  `(last_alive_t + poll_t)/2`, so `ttk_sec` runs SHORT by
+  `(poll_t - last_alive_t)/2` and nothing the row reports bounds that. DO NOT
+  correct it with `poll_gap_sec / 2`: `gap_for()` reads `last_obs_t`, which
+  advances on every ABSENT poll while `last_alive_t` stays put, and
+  `poll_gap_sec` reads 0 on all 37 rows, so that correction no-ops. `death_hi`
+  IS `iso(poll_t)`, so `death_hi - spawn_t` reconstructs the true upper bound
+  exactly. The fix was right; the derivation first offered for it was not, which
+  is its own instance of "a comment is a claim".
+- **OPEN as of 2026-10-18: does an engaged franky persist past its 2400s
+  window?** The US IV kill row reads 3612s elapsed, 1212s past the window. If it
+  persists, the window is an ARRIVAL deadline; if that row is something else, it
+  is a COMPLETION deadline - and the chain queue's deadlines mean different
+  things in each case, so this blocks that part of the design. `taxiProbeNote` is
+  live on Dexon, so a walk-in-sick franky collects the data without anyone
+  setting up a test.
+
 ## Stopping and restarting a character's CODE
 
 **Browser-driven session only.** Needs a live character tab.
@@ -856,6 +938,28 @@ Claude Code session stops after `browser_code_eval`.
   lines, which is safe because the slot token is not on them. Three round trips
   located five changed lines in a 7,217-line file.
 
+- **A DEPLOY IS PER-SLOT, AND IS NOT VERIFIED BY HAVING BEEN PERFORMED.** "The
+  operator pushed the files" is not "the files are live on every character", and
+  the gap is not visible from here. Three times on 2026-10-18 a session asserted
+  a build was live on the strength of the deploy having happened and was wrong
+  each time, including reporting Ranger on v96 while v95 was live, which the
+  operator had to correct. Measure the slot you actually mean, each one, every
+  time. Priest and Mage being byte-identical to their committed builds while
+  Dexon's slot matched none of them, measured 2026-10-17, is the same lesson
+  from the other direction: the party is not uniform.
+- **`codemirror_render` IS ALSO REACHABLE FROM THE CODE CONTEXT, not only from a
+  tab, AND IT HOLDS THAT CHARACTER'S OWN ACTIVE SLOT** rather than whatever the
+  editor last had open. The bullet above describes the tab-side instance; this is
+  the same object reached as `parent.codemirror_render` from inside running CODE,
+  which is what lets a script read its own header - `merchantHeaderVersion()` in
+  Merchant v104 does exactly that, see "Version headers". Measured 2026-10-18:
+  Meltymerch's buffer was the OpenGifts slot while OpenGifts was his running
+  script, and Dexon's reported 95 while v95 was live. The residual is this
+  section's own warning - it is the EDITOR's document, so between a `save_code`
+  and a full reload it holds the NEW source while the OLD build runs, and a
+  runner restart over a cached build would report the buffer. Feature detection
+  stays the authority.
+
 ## Helpers that may not exist - use typeof, never truthiness
 
 - **Referencing an undeclared identifier THROWS.** It does not evaluate to
@@ -946,6 +1050,26 @@ ask the other session to measure first.
   a Chrome tab (create and close only), and computer use grants Chrome tier
   `read`, so it cannot click one either. Only the user can change which tab is
   active - or launch with the flags, which makes focus irrelevant.
+
+## Movement ownership - one strand at a time
+
+**Both sessions.** Found 2026-10-18 from a symptom the operator noticed, not by
+reading.
+
+- **`bossApproach` and `holdCohesion` are MUTUALLY EXCLUSIVE strands, and that
+  is how the party split.** `shouldHandleEvents()` is
+  `holidaySpirit || !!bossPick() || !!bossState.trip`. While it is true,
+  `handleEvents()` owns movement and `holdCohesion()` - which sits in the
+  `else if (CONFIG.movement.enabled)` branch - never runs at all. So a boss
+  being merely PICKED, with no trip under way, was enough to stop the party
+  holding together. Fixed in Priest v54 / Mage v77 and verified live.
+- **When one branch owns movement, check what the OTHER branch stopped doing.**
+  The bug was not in the code that changed; it was in the code that silently
+  stopped being reached.
+- **The ranger diverged from the other two and the divergence was invisible.**
+  It walked to an unreachable boss where priest and mage did not, because
+  `bossTaxiWalkable` and the walk fall-through landed in Ranger v94 alone. See
+  "Testing" for the byte-identity assertion that now catches this class of drift.
 
 ## Self-chained async loops: a real hazard, but NOT what was wrong
 
