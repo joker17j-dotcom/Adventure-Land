@@ -276,6 +276,19 @@ emptied, which is the single most expensive mistake this file can cause.
   hash, a line count and a byte count - the most checkable form an assertion
   can take - and all three were wrong within two hours of being written,
   falsified by the very next commit to that file. Precision is not durability.
+- **A FIX NOBODY IS NAMED FOR IS A FIX NOBODY MAKES.** Measured on itself,
+  2026-10-19: a false `taxiProbeNote` claim sat in THIS file while each session
+  believed it was the other's to correct - one had written it and assumed the
+  other would carry it, the other had looked and reported it absent. Both
+  declined for defensible reasons and the error survived on being someone
+  else's. When a handoff mentions a fix, say who makes it and by when, or make
+  it yourself.
+- **CHECK THE FILE YOU ACTUALLY MEAN, AT THE REVISION YOU ACTUALLY MEAN.** That
+  same "it is not in the repo copy" report was produced by grepping the working
+  tree one call BEFORE the `merge --ff-only` that brought the other session's
+  commit in - a true reading of a stale file, stated as a fact about the repo.
+  `git show origin/main:<path> | grep` answers the question that was being
+  asked; a bare `grep` answers a different one and looks identical.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -635,9 +648,14 @@ time on 2026-10-18.
   window?** The US IV kill row reads 3612s elapsed, 1212s past the window. If it
   persists, the window is an ARRIVAL deadline; if that row is something else, it
   is a COMPLETION deadline - and the chain queue's deadlines mean different
-  things in each case, so this blocks that part of the design. `taxiProbeNote` is
-  live on Dexon, so a walk-in-sick franky collects the data without anyone
-  setting up a test.
+  things in each case, so this blocks that part of the design. NOTHING IS
+  COLLECTING IT YET, and the entry claimed otherwise for an hour: `taxiProbeNote`
+  is declared only in `Party/Ranger.js`, and Dexon was measured on 2026-10-18
+  running `Party/Mage.js` out of his own slot, so the probe has never executed.
+  Collection starts once Ranger v97 is deployed AND the page fully reloaded -
+  which is also the only way `bossRank` goes live at all. The claim was written
+  from a verification that was true when run and stale by the time it was
+  filed; see "Deploying a code slot".
 
 ## Stopping and restarting a character's CODE
 
