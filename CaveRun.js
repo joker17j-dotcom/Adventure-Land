@@ -1,4 +1,13 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v14 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v15 (TEST BUILD)
+// v15 2026-10-20 followers close from 60/30 out of combat instead of 120/60,
+//                and the leader's hold stops tracking the travel leash - it
+//                reads MOVE.* so it holds at 180/120 in both modes, which is
+//                a REVERSAL of v14's deliberate welding of the two. A travel
+//                kite step may no longer grow the leader gap at all, because
+//                a 30u band is narrower than kiteStep 55 and v6's oscillation
+//                would otherwise return. leaderMap and leaderPos read the
+//                leader ENTITY then the BEACON and never parent.party, which
+//                is what sent followers back to the door they had just used
 // v14 2026-10-18 travel leash tightens to 120/60 while walking and reverts to
 //                180/120 whenever anyone is fighting; a localStorage trouble
 //                beacon carries fear, which is self-only and readable nowhere
@@ -146,12 +155,15 @@ const MOVE = {
 	staleSlack: 60,
 	smartMoveMaxMs: 8000,
 
-	/* TRAVEL LEASH - v14. Tighter while the party is walking, the numbers above
-	   the moment anyone is fighting. See the v14 block below for why the band
-	   stays 60u wide and why the ceiling only ever comes down. */
+	/* TRAVEL LEASH - v14, HALVED IN v15. Tighter while the party is walking, the
+	   numbers above the moment anyone is fighting. v14 said the band "stays 60u
+	   wide"; it is 30u now and the v15 block explains what had to change in
+	   kiteStep to make a band narrower than kiteStep safe. travelCeiling is
+	   unchanged and is inert in travel mode for the same reason - it no longer
+	   holds v14's closeAt+15 relationship and does not need to. */
 	tighten: true,
-	travelCloseAt: 120,
-	travelReleaseAt: 60,
+	travelCloseAt: 60,
+	travelReleaseAt: 30,
 	travelCeiling: 135,
 };
 
@@ -162,13 +174,14 @@ const MOVE = {
    CANNOT converge on a faster leader. The leader holding is what makes a
    tight band reachable, and the beacon is what tells the leader to hold.
 
-   HYSTERESIS IS PRESERVED EXACTLY. 120-60 is the same 60u band as 180-120,
-   and that margin exists because it must stay comfortably above kiteStep
-   (55) or v6's oscillation returns - 2,064 close steps against 486 kite
-   steps, cancelling each other out. travelCeiling keeps closeAt's +15
-   relationship for the same reason: a kite step free to push to 195 while
-   the band closes at 120 would re-latch recovering on the next tick, every
-   tick.
+   HYSTERESIS WAS PRESERVED EXACTLY, AND v15 BROKE THAT ON PURPOSE. 120-60 was
+   the same 60u band as 180-120, and that margin existed because it had to stay
+   comfortably above kiteStep (55) or v6's oscillation returns - 2,064 close
+   steps against 486 kite steps, cancelling each other out. v15's band is
+   60-30, which is 30u and BELOW kiteStep, so that protection is gone and
+   something had to replace it; see the v15 block for the kiteStep guard that
+   does. travelCeiling no longer keeps closeAt's +15 relationship either - it
+   is inert in travel mode once a kite step there cannot grow the gap at all.
 
    THE CEILING NEVER GOES UP. 195 is already inside the priest's measured
    201 heal range with no margin to spare; travel tightens it to 135. */
@@ -223,9 +236,17 @@ const HOLD = {
    parent.party IS ALSO USELESS FOR DISTANCE, measured the same day: every
    member's x/y sat frozen for a 20.7s sample while the characters walked
    hundreds of units, and the leader's own entry was 396u from his real
-   position. On a band that is 120u wide that is not a rounding error. This is
-   why leaderPos() tries the ENTITY first and party only as a fallback, and why
-   followerGaps does the same.
+   position. Re-measured 2026-10-19 and worse: single snaps of 975u, and the two
+   candidate leader positions 2558u apart. On a travel band that is now 30u wide
+   that is not a rounding error.
+   THIS PARAGRAPH WAS RIGHT AND THE CODE IGNORED IT UNTIL v15. It used to end
+   "which is why leaderPos() tries the ENTITY first and party only as a
+   fallback" - and that fallback was the party row this very paragraph calls
+   useless for distance. leaderPos() and leaderMap() now fall back to the
+   BEACON, which is measured ~100x fresher and is what the rest of this file
+   already uses for exactly this reason. A correct comment sitting above code
+   that contradicts it is not a safe state; see CLAUDE.md, "A comment is a
+   claim".
 
    WHY localStorage AND NOT send_cm. caveSay is leader-gated and the cm handler
    drops anything whose sender is not the leader, so followers have no upward
@@ -445,10 +466,54 @@ function leaderEntity() { try { return parent.entities[leaderName()] || null; } 
 function leaderPos() {
 	const e = leaderEntity();
 	if (here(e)) return { x: e.real_x !== undefined ? e.real_x : e.x, y: e.real_y !== undefined ? e.real_y : e.y };
-	try { const p = (parent.party || {})[leaderName()]; if (p && p.x != null && (p.map || p.in) === character.map) return { x: p.x, y: p.y }; } catch (e) {}
+	/* SAME ROOT CAUSE AS leaderMap BELOW, AND NO OBSERVED SYMPTOM IS ATTRIBUTED TO
+	   IT - this was latent, not the backtracking. The party row that measured 975u,
+	   1418u and 2558u stale was this fallback's source too, so it could steer a
+	   follower that far off a leader it simply could not see. The beacon is the
+	   same substitution, with the same staleness gate. */
+	try {
+		const st = beacons()[leaderName()];
+		if (st && st.x != null && st.map === character.map && Date.now() - st.t <= TROUBLE.staleMs) return { x: st.x, y: st.y };
+	} catch (e) {}
 	return null;
 }
-function leaderMap() { try { const p = (parent.party || {})[leaderName()]; return (p && (p.map || p.in)) || null; } catch (e) { return null; } }
+/* THE PARTY ROW IS GONE FROM BOTH OF THESE, AND IT IS WHY FOLLOWERS WALKED BACK
+   TO THE DOOR THEY HAD JUST COME THROUGH. Operator, 2026-10-19: "the party kept
+   moving between the entrance they just passed through onto the new floor and the
+   leader... At all times during this behavior both the door and the leader were in
+   vision range of the follower."
+
+   leaderMap() read ONLY parent.party and never consulted parent.entities, so
+   followFloor() could fire with the leader standing in plain sight. After the party
+   takes a door onto floor N+1 the row still names floor N while it is stale, and
+   the door matching `d.to === lm` IS THE ENTRANCE THEY JUST USED; followFloor
+   returning true skips cohesion entirely. When the row refreshes, lm ===
+   character.map, it returns false, and recoverStep aims at the leader. Entrance,
+   leader, entrance, leader - stopping once the row settles, which is also once
+   they are far from the door. The same failure shape is already recorded above
+   followFloor from a different trigger (a death and respawn), so this is its
+   second trigger rather than a new class.
+
+   HOW STALE THE ROW GETS, measured live 2026-10-19 at 250ms on two followers:
+   parent.party[*].x,y is a SPARSE SNAPSHOT, not a lagging position - one change in
+   26.6s across 53 ticks, a 975-unit snap, and a separate 7.2s window frozen while
+   the leader entity moved ~290u. The two candidate leader positions were 2558u then
+   1418u apart, with both followers recording the same 1418u split at the same
+   moment. Beacons are ~100x fresher.
+
+   A VISIBLE LEADER IS ON THIS MAP BY DEFINITION, so clause one is not circular:
+   here(e) is `e && !e.rip && (!e.map || e.map === character.map)`. Clause two
+   handles the genuine cross-floor case from the leader's own beacon, which
+   beaconWrite() refreshes unconditionally every TROUBLE.beaconMs for every
+   CaveRun character including the leader, and which carries `map`. A beacon more
+   than TROUBLE.staleMs old during a cave run means the leader's script is not
+   ticking, and chasing a door on that basis is pointless - so it answers null and
+   moveTick's `if (!lp)` path handles it. */
+function leaderMap() {
+	try { if (here(leaderEntity())) return character.map; } catch (e) {}
+	try { const st = beacons()[leaderName()]; if (st && st.map && Date.now() - st.t <= TROUBLE.staleMs) return st.map; } catch (e) {}
+	return null;
+}
 
 /* active() replaces v6's bare phase === 'inside' test, which made an on-map
    rehearsal impossible: both combatTick and moveTick returned immediately
@@ -754,7 +819,25 @@ function kiteStep(lp) {
 		if (lp) {
 			const gapNew = Math.hypot(nx - lp.x, ny - lp.y);
 			if (gapNew > L.ceiling) continue;
-			if (gapNow > L.releaseAt && gapNew > gapNow + 1) continue;
+			/* IN TRAVEL MODE THE NO-RATCHET RULE IS UNCONDITIONAL, AND v15's
+			   NARROWER BAND IS UNSAFE WITHOUT IT. The clause below only bites
+			   past releaseAt, which was sound while the band was wider than
+			   kiteStep: a free 55u step taken from releaseAt 60 landed at ~115,
+			   still inside closeAt 120, so it could not latch. v15's band is
+			   60-30, so the same step from 30 lands at ~85 - past closeAt 60 -
+			   and the follower latches recovering, closes to 30, and is free to
+			   kite out again. That is v6's oscillation returning by the exact
+			   mechanism this block was written to prevent, and it needs no
+			   engagement to fire: kiteStep asks only for a threat inside
+			   kiteRadius 90, while computeLeash stays in travel mode until
+			   something is engaged, attacking, or in trouble. A monster wandering
+			   past at 80u is enough.
+			   So in travel mode a kite step may hold the gap or shrink it and
+			   never grow it, whatever the current gap. Kiting stays tangential,
+			   which is what the paragraph above already asks for; what it loses
+			   is the slow retreat, and out of combat staying with the party is
+			   worth more than backing away from a monster that is not attacking. */
+			if ((gapNow > L.releaseAt || L.mode === 'travel') && gapNew > gapNow + 1) continue;
 		}
 		let minD = Infinity;
 		for (const m of near) minD = Math.min(minD, Math.hypot(nx - (m.real_x !== undefined ? m.real_x : m.x), ny - (m.real_y !== undefined ? m.real_y : m.y)));
@@ -938,11 +1021,25 @@ function warnOutrun() {
 		if (!HOLD.enabled) return;
 		if (mode === 'crypt' && !HOLD.inCrypt) return;
 
-		/* THE HOLD LATCHES ON THE SAME TWO NUMBERS AS COHESION. It begins past
-		   closeAt and does not let go until releaseAt, because releasing at the
-		   same number it caught on is how you get a leader that stutters one
-		   step at a time down a corridor. */
-		const need = (holdFrom ? worst > L.releaseAt : worst > L.closeAt) || troubleNow.length > 0;
+		/* THE HOLD NO LONGER LATCHES ON THE SAME NUMBERS AS COHESION, AND THAT
+		   IS A REVERSAL OF v14's DELIBERATE DESIGN rather than a typo fix. This
+		   comment used to say the welding was intentional, and the code matched
+		   it; what falsified it was the operator driving a live run, not an
+		   inconsistency in the file. Out of combat `L` is the TRAVEL leash, so
+		   the leader's stop threshold WAS the same number the followers use to
+		   decide to start following - "the stop feature is too close to the
+		   distance at which the followers start following so it stops before
+		   they start moving". Reading MOVE.* instead pins the hold to the combat
+		   pair (180/120) in both modes, so out of combat followers begin closing
+		   at 60 while the leader does not halt until 180.
+
+		   HYSTERESIS IS STILL HERE, just on the combat pair: it begins past 180
+		   and does not let go until 120, because releasing at the number it
+		   caught on is how you get a leader that stutters one step at a time
+		   down a corridor. 180 also stays inside the priest's measured 201 heal
+		   range, which is why the hold threshold cannot simply be raised to the
+		   top of the operator's range - see the v15 block. */
+		const need = (holdFrom ? worst > MOVE.releaseAt : worst > MOVE.closeAt) || troubleNow.length > 0;
 		if (!need) { holdDone = false; if (holdFrom) holdResume(); return; }
 		if (holdDone) return;
 
