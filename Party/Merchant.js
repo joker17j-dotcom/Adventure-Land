@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v106
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v107
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2648,8 +2648,13 @@ async function mluckOpportunityPass() {
 }
 
 /* Read from the console as parent.MLUCK_OPP(). Published onto parent for the
-   reason v90 had to learn the hard way: these declarations are lexical inside
-   this file's IIFE, so a `parent.`-prefixed eval cannot see the bare name. */
+   reason v90 had to learn the hard way: a `parent.`-prefixed eval cannot see the
+   bare name. This used to say "lexical inside this file's IIFE" and THERE IS NO
+   IIFE - measured by brace depth 2026-10-20, no column-0 `(function` opener and
+   the top-level declarations sit at depth 0. The conclusion was right for the
+   wrong reason: a top-level `const`/`function` in a script creates a LEXICAL
+   binding, not a property of the global object, so it is unreachable through
+   `parent.` whether anything wraps the file or not. */
 function mluckOppDump() {
 	const cfg = CONFIG.mluck;
 	const names = (Array.isArray(cfg.opportunisticTargets) && cfg.opportunisticTargets.length)
@@ -2695,9 +2700,10 @@ try { parent.MLUCK_OPP = mluckOppDump; } catch (e) { }
 
 /* DEPLOY MARKER. load_code serves a cached copy and an over-size slot runs the
    OLD build silently, so the slot's version string is the one thing that cannot
-   verify a deploy. Nothing in v94 or v95 was reachable from outside this file's
-   IIFE - both changed only CONFIG and GEAR_PROGRESSION - which left no way to
-   feature-detect either. This is that way. Read it as parent.MERCHANT_VER.
+   verify a deploy. Nothing in v94 or v95 was reachable from outside this file at
+   all - both changed only CONFIG and GEAR_PROGRESSION - which left no way to
+   feature-detect either. (This said "outside this file's IIFE"; there is no
+   IIFE, see mluckOppDump.) This is that way. Read it as parent.MERCHANT_VER.
    -> CLAUDE.md, "Deploying a code slot"
 
    THE NUMBER IS NO LONGER TRANSCRIBED. It was, twice, and both copies rotted

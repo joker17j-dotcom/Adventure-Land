@@ -1,4 +1,7 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v15 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v16 (TEST BUILD)
+// v16 2026-10-20 comment only: the isFn(bare identifier) Form A surface is
+//                recorded as MEASURED inert across all five game helpers, and
+//                the file is confirmed IIFE-wrapped by brace depth
 // v15 2026-10-20 followers close from 60/30 out of combat instead of 120/60,
 //                and the leader's hold stops tracking the travel leash - it
 //                reads MOVE.* so it holds at 180/120 in both modes, which is
@@ -446,6 +449,19 @@ function senseTick() {
 }
 
 
+/* THE isFn(bare_identifier) PATTERN IS MEASURED INERT, NOT ASSUMED SAFE, AND THAT
+   IS WHY IT STAYS. Passing a bare identifier as an ARGUMENT evaluates it, so
+   `isFn(can_move_to)` throws ReferenceError rather than returning false if the
+   name is undeclared - CLAUDE.md's Form A, and :803 and :912 sit outside any
+   try. Eight call sites across five identifiers. Measured live 2026-10-19 in the
+   CODE context of all three combat characters, by typeof AND by the arg-pass
+   that is the actual hazard: can_move_to, can_attack, is_on_cooldown,
+   is_in_range and get_nearest_monster all `function` both ways, and a real
+   can_move_to() call returned a boolean. Confound ruled out the way the
+   ms_to_next_skill case teaches - grepped Party/*.js, CaveRun.js and Codex/*.js
+   for a declaration of each: zero for all five, so they are game-provided and
+   the measurement transfers. DO NOT "fix" the eight sites on the pattern alone;
+   re-measure first if the game ever stops providing one. */
 const isFn = (f) => typeof f === 'function';
 function clog(m, c) { try { game_log('[cave] ' + m, c || '#8b98ab'); } catch (e) {} try { console.log('[cave] ' + m); } catch (e) {} }
 function throttleLog(m) { if (Date.now() - lastLog < CFG.logEveryMs) return; lastLog = Date.now(); clog(m); }

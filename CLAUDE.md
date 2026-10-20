@@ -155,6 +155,25 @@ browser-driven route and does not apply to the other.
   `git show origin/main:<path> | git hash-object --stdin`. One call, ten
   seconds, not optional. The 2026-10-17 commit was only provably correct
   because its blob matched `ff76723a` exactly.
+- **VERIFY THE BLOB OF EVERY FILE A COMMIT TOUCHED, NOT JUST THE INTERESTING
+  ONES.** `Party/MerchantChangelog.md` was committed EMPTY in `e8df0cc` and
+  stayed that way for two commits - 196,051 bytes to 0. The commit verified
+  `CLAUDE.md`, `Party/Merchant.js` and `Party/Ranger.js` against `origin/main`
+  and not the changelog, because the changelog was the boring file. Three things
+  that all looked like success: the writing script printed its own completion
+  message, no assertion covered that file, and `git status --porcelain` showed
+  `M` - which says a file CHANGED, never that it changed into what was intended.
+  Loop the check over the whole `git diff --name-only` set; it is one call for
+  all of them.
+- **NEVER READ AND WRITE THE SAME FILE IN ONE EXPRESSION.** That is how the
+  changelog went to zero:
+  `io.open(p,'w').write(io.open(p).read().replace(a,b))`. Python evaluates the
+  write handle FIRST, `open(p,'w')` truncates immediately, and the read argument
+  then returns an empty string - so the file is replaced by `''.replace(a,b)`,
+  which is `''`. It raises nothing and the surrounding script reports success.
+  Read into a variable, then write, as two statements; and assert on the content
+  you read before writing, which is what caught nothing here because the
+  assertion was in a sibling branch of the same script.
 - **Attribution stays on handed-over commits.** Operator's call 2026-10-17: the
   session that did the work gets the credit, so every extended description ends
   with the `Co-Authored-By: Claude Opus 5` and `Claude-Session:` lines even
@@ -319,6 +338,17 @@ emptied, which is the single most expensive mistake this file can cause.
   commit in - a true reading of a stale file, stated as a fact about the repo.
   `git show origin/main:<path> | grep` answers the question that was being
   asked; a bare `grep` answers a different one and looks identical.
+- **A CORRECT COMMENT THAT NOBODY ACTED ON IS INVISIBLE TO EVERY CHECK ABOVE.**
+  `CaveRun.js:227` has said since v6 that `parent.party` is useless for distance -
+  every member's x/y frozen across a 20.7s sample, the leader's own entry 396u from
+  his real position - and then ended by explaining that `leaderPos()` uses it for
+  distance as a fallback. Correct claim, contradicting code, sitting together through
+  nine versions. Re-verification cannot find this: checking the claim CONFIRMS the
+  claim, the hash confirms the file, and a grep finds the text present and right. It
+  was found only when the browser session re-measured the same staleness from the live
+  game (975u, 1418u, 2558u) and went looking for where it mattered. So when a comment
+  states a limitation, read the code BESIDE it and ask what acts on it - a claim nobody
+  acted on costs exactly as much as a claim that rotted, and announces itself less.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -1118,9 +1148,11 @@ Claude Code session stops after `browser_code_eval`.
   This is the same shape as "feature-detect FUNCTIONS, never persisted state"
   above, by a different mechanism - page globals rather than CODE storage - and
   it lands on every marker either session has built. **So read the live lexical
-  scope, not the global.** None of the four scripts is IIFE-wrapped, so
-  `PARTY_SCRIPT` and the script's own functions are top-level bindings in the
-  CODE context, destroyed and rebuilt with the script;
+  scope, not the global.** None of the four PARTY scripts is IIFE-wrapped -
+  measured by brace depth 2026-10-20, not inferred from indentation, and
+  `CaveRun.js` IS wrapped by contrast - so `PARTY_SCRIPT` and the script's own
+  functions are top-level bindings in the CODE context, destroyed and rebuilt
+  with the script;
   `browser_code_eval` already runs there. `parent.PARTY_BUILD` and
   `parent.MERCHANT_VER` are for a reader who is NOT in that context, and a
   disagreement between the two means the GLOBAL is wrong.
@@ -1353,6 +1385,29 @@ reading.
   called dead on that basis.
 - **`const state`, `CONFIG`, `fleetState` are block-scoped and not on
   `window`.** Reach them with `frame.contentWindow.eval('...')`.
+- **COLUMN POSITION AND BRACE DEPTH ANSWER DIFFERENT QUESTIONS, AND BOTH
+  SESSIONS COLLAPSED THEM INTO ONE ON 2026-10-20.** "Can `lift()` reach a
+  declaration" is answered by COLUMN, because lift anchors its patterns at `^`.
+  "Is the file wrapped, so are its internals reachable by indirect eval from the
+  CODE context" is answered by BRACE DEPTH or by the opening token, and column
+  position cannot answer it at all - an author can wrap a file without indenting
+  the body, which is exactly what `CaveRun.js` does. One session argued not-wrapped
+  from 86 column-0 declarations; the other argued wrapped from a trailing `})();`
+  with no check of the declarations. Neither read the HEAD of the file, where
+  `CaveRun.js:52` says "EVERYTHING IS WRAPPED IN AN IIFE" eight lines above the
+  opener, and `:31`'s own changelog says "v4 ... IIFE wrapper". The cheap
+  discriminator is `head -60 <file> | grep -n '(function'`.
+- **MEASURED 2026-10-20 BY BRACE DEPTH, so neither question has to be re-argued.**
+  `CaveRun.js` IS wrapped: opener at `:60`, closer on the last line, all 95
+  column-0 `function` declarations at depth 1. `Party/Ranger.js`,
+  `Party/Priest.js`, `Party/Mage.js` and `Party/Merchant.js` are NOT - their
+  column-0 declarations sit at depth 0 and none has a column-0 `(function`
+  opener, so Merchant's own comments claiming "this file's IIFE" were wrong and
+  were corrected in v107. The consequence is operational: `PARTY_SCRIPT` and the
+  party scripts' own functions ARE readable from the CODE context, which is what
+  makes them the deploy authority, while CaveRun's internals are NOT - a live
+  probe of it goes through its `window.*` exports (`caveDump()`, `caveStatus()`,
+  `caveLeash()`) and nothing else will resolve.
 
 ## javascript_tool mechanics
 
@@ -1447,6 +1502,15 @@ The Claude Code session commits with git and should never use this route.
   `change_server` and matched a doc comment 1,700 bytes before the call; the
   code was right and the assertion was not. That is the failure mode to
   watch for here. Assert against the mechanism where you can.
+- **IF A TEST CANNOT DISTINGUISH THE TWO BRANCHES IT IS COMPARING, THE SETUP IS
+  DEGENERATE - SUSPECT IT BEFORE THE CODE.** `suite_caverun.js` first compared
+  travel-mode against combat-mode kiting with the monster OPPOSITE the leader,
+  where fleeing the monster shrinks the leader gap anyway, so both modes agree
+  and the assertion failed against correct code. Worse than a false failure: the
+  same setup would have PASSED against the broken version, because the guard
+  under test never had to fire. Putting the monster BETWEEN follower and leader
+  separates them. The general form: construct the case where the two branches
+  must disagree, and if you cannot, the test is not testing the thing.
 - **The divergence checks are the ones most likely to earn their keep.**
   `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
   relay block or `bossHopFollow` stop being identical. Merchant fixed the

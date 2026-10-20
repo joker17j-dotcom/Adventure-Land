@@ -1,10 +1,20 @@
 /* Tests/suite_caverun.js - the v15 leash decoupling and the beacon fallbacks.
 
-   CaveRun.js is a ROOT script and had no suite until 2026-10-20. It is testable
-   for the same reason the party scripts are: 86 top-level function declarations
-   at column 0 and none indented, so lift() reaches them. A handoff described it
-   as IIFE-wrapped, which would have made all of this unreachable - worth the one
-   check before concluding a file cannot be tested. */
+   CaveRun.js is a ROOT script and had no suite until 2026-10-20.
+
+   IT IS TESTABLE BECAUSE ITS DECLARATIONS SIT AT COLUMN 0, WHICH IS A DIFFERENT
+   QUESTION FROM WHETHER THE FILE IS WRAPPED - and this comment asserted the
+   wrong one first. lift() anchors every pattern at ^, so column position is all
+   it needs; CaveRun.js IS IIFE-wrapped and the suite works anyway. Measured by
+   brace depth 2026-10-20: `(function () {` at :60, `})();` at the last line, and
+   all 95 column-0 `function` declarations at DEPTH 1. The file says so itself at
+   :52 - "EVERYTHING IS WRAPPED IN AN IIFE" - eight lines above the opener, and
+   neither session read the head of the file before arguing about it.
+   What wrapping DOES decide is whether the internals are reachable by indirect
+   eval from the live CODE context. CaveRun's are not, so a live probe goes
+   through its window.* exports - caveDump(), caveStatus(), caveLeash() - while
+   the four party scripts are genuinely unwrapped (column-0 declarations at depth
+   0) and expose PARTY_SCRIPT directly. */
 const fs = require('fs');
 const path = require('path');
 const { lift, world, ROOT } = require('./lift');
