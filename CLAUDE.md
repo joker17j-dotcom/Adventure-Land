@@ -745,6 +745,38 @@ time on 2026-10-18.
   4.96% hp. That is what `stored_row_despawn_confidence` is for: the window says
   "possibly a despawn", the hp says "something was killing it", and the row has
   to carry both rather than be collapsed to one verdict.
+- **A FILTER THAT NAMES A CAUSE ANSWERS A DIFFERENT QUESTION FROM ONE THAT
+  NAMES AN OUTCOME, AND THIS SECTION IS WHERE THAT GOES WRONG.** Everything
+  above grades HOW a boss stopped existing. A consumer asking whether to travel
+  to one needs only THAT it stopped - and the two readings look identical when
+  the despawn work is the thing freshly in mind. Measured 2026-10-20 over the
+  2,499 retained events: death 1,116, despawn 15, lost 120, spawn 1,248. So a
+  liveness check written as `ev=despawn` covers 15 of the 1,251 terminal
+  events, ONE POINT TWO PERCENT, and misses every kill - which is how Ranger
+  v100 was first designed, by this session, straight after building the
+  classifier. The tell was on the page before the measurement arrived: this
+  section's own opening says a despawn and a kill are indistinguishable at the
+  transition, which is why the classifier had to exist at all. **A distinction
+  that was expensive to draw is not a distinction to filter on when the
+  question does not need it drawn.** Terminal is `BOSS_TERMINAL_EV` in
+  `Codex/market_bridge.py`, enumerated so a fifth `ev` value has to be
+  classified rather than defaulting in silence, and `lost` is inside it: it
+  means two unrelated things - an instance id that changed, and a shard that
+  went unlistable - and neither is worth a 30-minute Realm Fatigue trip, so the
+  reason string never has to be parsed to classify it.
+- **A SERVER-SIDE FILTER IS NOT A GUARANTEE, BECAUSE THE BRIDGE IGNORES QUERY
+  PARAMETERS IT DOES NOT KNOW.** Measured 2026-10-20 against the live handler:
+  `/boss_events?bogus=1` returns every row. The handler reads the parameters it
+  recognises and never rejects an unknown one - so a script asking an OLDER
+  bridge for `terminal=1` is answered with spawn rows still in the set, and one
+  that trusted the filter would act on a boss APPEARING as though it had died,
+  which is exactly inverted. The script and the bridge deploy independently and
+  neither can see the other's version, so the consumer re-checks `ev` itself and
+  the query filter is bandwidth only. **This generalises past this endpoint:
+  wherever both sides of a deployed pair are edited here, the receiver validates
+  and the sender's filter is an optimisation.** The unknown-parameter behaviour
+  is asserted in `Tests/bridge/test_despawn.py` rather than remembered, so the
+  comment in `Party/Ranger.js` that depends on it is a checked claim.
 - **`ttk_sec` IS NOT THE WRITE PATH'S QUANTITY.** `death_t` is
   `(last_alive_t + poll_t)/2`, so `ttk_sec` runs SHORT by
   `(poll_t - last_alive_t)/2` and nothing the row reports bounds that. DO NOT
@@ -1590,8 +1622,11 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20: 285 JS assertions across SIX suites, plus 61 from the
-  python bridge suite the runner shells out to and folds in, for `all 346 pass`.**
+  **COUNT AS OF 2026-10-20, LATE: 320 JS assertions across SIX suites, plus 112
+  from the python bridge suite the runner shells out to and folds in, for
+  `all 432 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  that - three figures in one file in one day, which is the point rather than
+  an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
   overwritten - it is this file's own "claims rot" with the numbers to prove it. The
   handoff proposing this correction said "four suites"; it is six -

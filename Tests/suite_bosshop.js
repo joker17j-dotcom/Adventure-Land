@@ -382,4 +382,143 @@ module.exports = [
 		pt.indexOf('bossCooledDown(') >= 0, false);
 } },
 
+{ name: 'applyTerminal: a boss that stopped existing stops being a candidate', fn(t) {
+	/* SCAN_STALE_MS is a const with a non-brace initialiser, so lift() cannot
+	   brace-match it; supplied to the world the same way HOP_ATTEMPT_CAP is. */
+	function withScan(entries) {
+		const w = ranger({ SCAN_STALE_MS: 5 * 60 * 1000 });
+		w.bossHop.scanResults = entries;
+		w.bossHop.currentShard = () => 'USI';
+		w.bossHop.maxHpOf = () => 960000;
+		return w;
+	}
+	const NOW = Date.now();
+	const liveRow = () => ({
+		shard: 'USII', mtype: 'crabxx', live: true,
+		hp: 960000, maxHp: 960000, spawnTime: null, at: NOW - 60000,
+	});
+
+	/* 1. THE CASE THE DEFECT IS ABOUT. The entry is fresh enough that
+	   SCAN_STALE_MS does not touch it, so before this change it stayed the
+	   picker's best candidate - a frozen hp is an hp that never falls. */
+	let w = withScan([liveRow()]);
+	t.eq('a fresh live entry IS a candidate to begin with',
+		w.bossHop.candidates().map((c) => c.mtype), ['crabxx']);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II', t: new Date(NOW).toISOString() });
+	t.eq('a death clears the live claim', w.bossHop.scanResults[0].live, false);
+	t.eq('and the entry drops out of candidates() entirely',
+		w.bossHop.candidates().length, 0);
+	t.note('closes a 300s window (SCAN_STALE_MS) to about 75s - one 45s bridge poll plus one 30s fetch');
+
+	/* 2. THE OLD-BRIDGE HAZARD. `terminal=1` is a query parameter; the
+	   handler reads the params it knows and ignores an unknown one in
+	   silence, so a bridge deployed before it answers with spawns mixed in.
+	   If the ev check were not in applyTerminal this would pass degenerately
+	   - the server filter would have removed the row before it arrived. */
+	w = withScan([liveRow()]);
+	w.bossHop.applyTerminal({ ev: 'spawn', type: 'crabxx', server: 'US II', t: new Date(NOW).toISOString() });
+	t.eq('a SPAWN never clears anything - the ev check is the authority',
+		w.bossHop.scanResults[0].live, true);
+
+	/* 3. ALL THREE terminal values, pinned so the set is the MEANING and not
+	   an accident of which rows the log happened to hold. `lost` is in it
+	   because neither of its two causes - an instance id that changed, or a
+	   shard that stopped being listable - is a boss worth planning a trip
+	   towards, so its ambiguity need not be resolved to classify it. */
+	for (const ev of ['death', 'despawn', 'lost']) {
+		const h = withScan([liveRow()]);
+		h.bossHop.applyTerminal({ ev, type: 'crabxx', server: 'US II', t: new Date(NOW).toISOString() });
+		t.eq('terminal: ' + ev, h.bossHop.scanResults[0].live, false);
+	}
+	t.note('measured 2026-10-20 over 2,499 retained events: death 1116, despawn 15, lost 120, spawn 1248');
+	t.note('so ev=despawn alone would have covered 15 of 1,251 terminal events - 1.2%');
+
+	/* 4. THE ORDERING GUARD, which is also what makes the cold start safe:
+	   the first fetch has no cursor and replays the whole retained log, and
+	   every historical row predates the push that created the entry. */
+	w = withScan([liveRow()]);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+		t: new Date(NOW - 600000).toISOString() });
+	t.eq('an event OLDER than the push does not clear - server_info wins',
+		w.bossHop.scanResults[0].live, true);
+	t.note('server_info is the direct feed; the bridge is a derivative running up to 45s behind it');
+
+	/* 5. SHARD NORMALISATION. The log writes "US II"; scanResults builds its
+	   shard as region + name with no separator. An unnormalised compare
+	   matches nothing, and matching nothing is indistinguishable from no boss
+	   ever having died - so this asserts the match, not just the mismatch. */
+	w = withScan([liveRow()]);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'USII', t: new Date(NOW).toISOString() });
+	t.eq('an already-joined shard string still matches', w.bossHop.scanResults[0].live, false);
+	w = withScan([liveRow()]);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'EU II', t: new Date(NOW).toISOString() });
+	t.eq('a DIFFERENT shard is left alone', w.bossHop.scanResults[0].live, true);
+	w = withScan([liveRow()]);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'franky', server: 'US II', t: new Date(NOW).toISOString() });
+	t.eq('a different boss on the right shard is left alone', w.bossHop.scanResults[0].live, true);
+
+	/* 6. A PENDING entry - live false with a spawnTime - is the pre-spawn
+	   candidate the hop wants, and must not be collateral damage. */
+	w = withScan([{ shard: 'USII', mtype: 'crabxx', live: false, hp: null,
+		maxHp: 960000, spawnTime: NOW + 60000, at: NOW - 60000 }]);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II', t: new Date(NOW).toISOString() });
+	t.eq('a pending respawn entry keeps its spawnTime',
+		w.bossHop.scanResults[0].spawnTime, NOW + 60000);
+	/* And is not STAMPED. The `live !== true` early-out is not a safety guard
+	   - nothing downstream reads clearedBy - so asserting on behaviour here
+	   would be degenerate: removing the check changes no outcome, because the
+	   pre-spawn path reads spawnTime and this path never writes it. What the
+	   check buys is that clearedBy means "a live claim was cleared HERE" and
+	   not "a terminal event once went past", which is the difference between
+	   a usable diagnostic and a misleading one. */
+	t.eq('and is not stamped as cleared - clearedBy marks a cleared LIVE claim',
+		w.bossHop.scanResults[0].clearedBy, undefined);
+
+	/* 7. Garbage in from a bridge mid-upgrade must not throw: applyTerminal
+	   runs inside a for loop in the fetch handler, so one bad row would cost
+	   every row after it. */
+	w = withScan([liveRow()]);
+	for (const bad of [null, {}, { ev: 'death' }, { ev: 'death', type: 'crabxx' },
+			{ ev: 'death', type: 'crabxx', server: 'US II' },
+			{ ev: 'death', type: 'crabxx', server: 'US II', t: 'not a date' }]) {
+		w.bossHop.applyTerminal(bad);
+	}
+	t.eq('no malformed row clears anything, and none throws',
+		w.bossHop.scanResults[0].live, true);
+} },
+
+{ name: 'refreshTerminal: the cursor is the server clock and only moves on success', fn(t) {
+	const { extract } = require('./lift');
+	const rt = extract(RANGER, 'bossHop');
+	const body = rt.slice(rt.indexOf('\trefreshTerminal() {'), rt.indexOf('\tapplyTerminal(e) {'));
+
+	t.ok('asks for terminal rows only', /terminal=1/.test(body));
+	t.ok('and carries the cursor as `since` when it has one',
+		/since=' \+ encodeURIComponent\(this\.termCursor\)/.test(body));
+	/* The cursor must be the ANSWER's clock. A local Date.now() even a few
+	   seconds fast would skip rows the script never saw, and they are gone
+	   for good - the query is strictly-after. */
+	t.ok('advances the cursor to the answer\'s own now', /this\.termCursor = j\.now/.test(body));
+	t.eq('and never to a local clock', /termCursor = Date\.now/.test(body), false);
+
+	/* The failure arm must NOT advance it: holding it back re-reads a few
+	   rows, which applyTerminal is idempotent about, while advancing past a
+	   failed fetch drops those events permanently. */
+	const arms = body.split('}, (e) => {');
+	t.eq('the fetch has a rejection arm', arms.length, 2);
+	t.eq('which does not touch the cursor', /termCursor/.test(arms[1]), false);
+	t.ok('and records the error rather than swallowing it', /termErr = String\(e\)/.test(arms[1]));
+
+	/* Both feeds have to run on the one timer, or the invalidation silently
+	   stops happening the moment someone edits the other one. */
+	const w = ranger();
+	const scan = extract(RANGER, 'bossHop');
+	const start = scan.slice(scan.indexOf('\tstartScanning() {'), scan.indexOf('\trecord(entry) {'));
+	t.ok('refreshTerminal is wired into the same 30s interval as refreshBridge',
+		/setInterval\(\(\) => \{ this\.refreshBridge\(\); this\.refreshTerminal\(\); \}, 30000\)/.test(start));
+	t.ok('and is called once up front', /\n\t\tthis\.refreshTerminal\(\);\n/.test(start));
+	t.eq('state starts with no cursor, so the first fetch pulls the whole log',
+		w.bossHop.termCursor, null);
+} },
+
 ];

@@ -258,6 +258,103 @@ chk("near death still does", b.despawn_confidence(1.2), "low")
 chk("one expression now serves both paths",
     b.despawn_confidence(100), b.stored_row_despawn_confidence(row("crabxx", 2400, 100)))
 
+# ------------------------------------------- terminal events (liveness, not cause)
+# WHY THIS IS A SEPARATE QUESTION FROM EVERYTHING ABOVE. The despawn
+# classifier grades HOW a boss stopped existing; a consumer asking whether to
+# plan a trip towards it needs only to know THAT it did. Measured over the
+# 2,499 retained events on 2026-10-20: death 1,116, despawn 15, lost 120,
+# spawn 1,248 - so a consumer filtering on `ev=despawn` to answer the liveness
+# question would have seen 15 of the 1,251 terminal events, 1.2% of them.
+chk("death is terminal", b.boss_ev_is_terminal("death"), True)
+chk("despawn is terminal", b.boss_ev_is_terminal("despawn"), True)
+# `lost` means two different things - an instance id that changed under the
+# poller, and a shard that stopped being listable - and is terminal for both,
+# because neither is a boss worth travelling to. Pinned so the inclusion is
+# the MEANING and not an accident.
+chk("lost is terminal, for both of its causes", b.boss_ev_is_terminal("lost"), True)
+chk("spawn is NOT", b.boss_ev_is_terminal("spawn"), False)
+chk("the set is exactly those three", sorted(b.BOSS_TERMINAL_EV), ["death", "despawn", "lost"])
+chk("case does not matter", b.boss_ev_is_terminal("DEATH"), True)
+for junk in (None, "", "spawned", "unknown_future_ev", 0, [], {}):
+    chk(f"junk is not terminal: {junk!r}", b.boss_ev_is_terminal(junk), False)
+
+# ------------------------------------------------- the route, over a real socket
+# Driven through ThreadingHTTPServer rather than by calling the filter inline,
+# because the filters live in the /boss_events branch of a long if/elif and
+# that branch IS the thing a consumer meets. A test that re-implemented the
+# query parsing would pass while the route stayed broken.
+import threading, urllib.request
+from http.server import ThreadingHTTPServer
+
+_tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+T0 = time.time() - 3600
+EV_ROWS = [
+    {"ev": "spawn",   "t": b.iso(T0 + 0),   "type": "crabxx", "server": "US II"},
+    {"ev": "death",   "t": b.iso(T0 + 100), "type": "crabxx", "server": "US II"},
+    {"ev": "spawn",   "t": b.iso(T0 + 200), "type": "franky",  "server": "EU I"},
+    {"ev": "despawn", "t": b.iso(T0 + 300), "type": "franky",  "server": "EU I"},
+    {"ev": "lost",    "t": b.iso(T0 + 400), "type": "dragold", "server": "ASIA I"},
+]
+for r in EV_ROWS:
+    _tmp.write(json.dumps(r) + "\n")
+_tmp.close()
+
+b.Handler.bosses = b.BossWatch(["crabxx"], interval=45, enabled=False,
+                               events_path=_tmp.name)
+_srv = ThreadingHTTPServer(("127.0.0.1", 0), b.Handler)
+threading.Thread(target=_srv.serve_forever, daemon=True).start()
+_base = f"http://127.0.0.1:{_srv.server_address[1]}"
+
+def get(q):
+    with urllib.request.urlopen(_base + "/boss_events" + q, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+def evs(q):
+    return [(e["ev"], e["type"]) for e in get(q)["events"]]
+
+chk("unfiltered: every row, oldest first", evs(""),
+    [("spawn", "crabxx"), ("death", "crabxx"), ("spawn", "franky"),
+     ("despawn", "franky"), ("lost", "dragold")])
+chk("terminal=1 drops the spawns and keeps all three terminal kinds",
+    evs("?terminal=1"),
+    [("death", "crabxx"), ("despawn", "franky"), ("lost", "dragold")])
+chk("ev= is still single-value equality", evs("?ev=despawn"), [("despawn", "franky")])
+chk("terminal=true and terminal=yes read the same",
+    evs("?terminal=true"), evs("?terminal=yes"))
+chk("terminal=0 does not filter", len(evs("?terminal=0")), 5)
+
+# `since` is STRICTLY after, so a caller handing back the `now` of its own
+# previous answer is never served that boundary row twice.
+chk("since is strictly after", evs(f"?since={b.iso(T0 + 200)}"),
+    [("despawn", "franky"), ("lost", "dragold")])
+chk("since composes with terminal", evs(f"?terminal=1&since={b.iso(T0 + 100)}"),
+    [("despawn", "franky"), ("lost", "dragold")])
+chk("an unparseable since is ignored rather than emptying the answer",
+    len(evs("?since=not-a-timestamp")), 5)
+chk("a since in the future returns nothing, and says so",
+    get(f"?since={b.iso(time.time() + 86400)}")["total"], 0)
+
+# truncated: the tail slice keeps the NEWEST rows, so a `since` caller losing
+# the oldest of its new rows cannot otherwise tell that it happened.
+one = get("?terminal=1&limit=1")
+chk("limit truncates from the OLDEST end", [(e["ev"]) for e in one["events"]], ["lost"])
+chk("and reports it", one["truncated"], True)
+chk("total counts what matched, not what was returned", one["total"], 3)
+chk("returned counts what was sent", one["returned"], 1)
+chk("an untruncated answer says so", get("?terminal=1")["truncated"], False)
+
+# THE PREMISE OF THE RANGER'S CLIENT-SIDE ev CHECK, asserted here rather than
+# only claimed in a comment there. The handler reads the parameters it knows
+# and never rejects an unknown one, so a bridge predating `terminal` answers a
+# `terminal=1` query with spawns mixed in. That is why applyTerminal() in
+# Party/Ranger.js re-checks ev and treats the query filter as bandwidth only.
+chk("an unknown parameter is ignored, not refused", len(evs("?bogus=1")), 5)
+chk("which is exactly what an older bridge does with terminal=1",
+    len(evs("?unknown_future_filter=1")), 5)
+
+_srv.shutdown()
+os.unlink(_tmp.name)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

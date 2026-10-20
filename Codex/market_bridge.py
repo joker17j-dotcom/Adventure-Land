@@ -104,6 +104,38 @@ BOSS_EVENTS_PATH = "./data/boss_events.jsonl"
 # itself. Absence is only ever recorded as `lost`, never as a kill, and not
 # until this many consecutive SUCCESSFUL polls have failed to list it.
 BOSS_ABSENT_CONFIRM = 3
+
+# TERMINAL boss events: everything that is not a boss APPEARING. The four ev
+# values the poller emits are spawn, death, despawn and lost; this is the
+# other three, enumerated rather than written as `!= "spawn"` so that a fifth
+# value has to be classified here deliberately instead of drifting in.
+#
+# WHY `lost` IS IN THE SET, given that it means two different things. Site one
+# is an instance id that changed between polls, where the old instance is gone
+# for certain and a spawn for its replacement is emitted in the same poll.
+# Site two is a shard that stopped being listable for BOSS_ABSENT_CONFIRM
+# successive successful polls, where nothing is known about the boss at all.
+# Neither is a boss anything should plan a trip towards, so the ambiguity in
+# the reason string does not have to be resolved in order to classify it.
+#
+# The costs are not symmetric, which is what makes the inclusive reading the
+# safe one. A consumer that drops a LIVE boss on a false terminal loses one
+# scan cycle and is corrected by the game's own feed seconds later; one that
+# MISSES a terminal keeps a dead boss as its best candidate until its own
+# staleness timer expires. So when a new ev value appears and nobody has
+# classified it, terminal is the direction to err in.
+BOSS_TERMINAL_EV = ("death", "despawn", "lost")
+
+
+def boss_ev_is_terminal(ev) -> bool:
+    """True for an event meaning a boss stopped existing, however it stopped.
+
+    The despawn/kill distinction grades HOW it went and is what
+    stored_row_is_despawn() is for; this grades only THAT it went. Measured
+    over the 2,499 retained events on 2026-10-20: death 1,116, despawn 15,
+    lost 120, spawn 1,248 - so a consumer filtering on despawn alone to ask
+    the liveness question would have seen 15 of 1,251 terminal events."""
+    return str(ev or "").lower() in BOSS_TERMINAL_EV
 # A transition seen across a gap wider than this many poll intervals is logged
 # `confidence: "low"` - the event is real, the timestamp is poorly bounded.
 # Low rows stay in the file and are excluded from medians by default.
@@ -2643,12 +2675,28 @@ class Handler(BaseHTTPRequestHandler):
             if wt: rows = [r for r in rows if (r.get("type") or "").lower() == wt]
             if ws: rows = [r for r in rows if (r.get("server") or "").lower() == ws]
             if we: rows = [r for r in rows if (r.get("ev") or "").lower() == we]
+            # `ev` stays single-value equality for compatibility; `terminal`
+            # is the named predicate, so its definition lives in exactly one
+            # place and a consumer never transcribes the member list.
+            if (q.get("terminal") or [""])[0].strip().lower() in ("1", "true", "yes"):
+                rows = [r for r in rows if boss_ev_is_terminal(r.get("ev"))]
+            # Strictly after: a caller passing back the `now` of its previous
+            # answer must not be handed that boundary row twice.
+            wsince = parse_ts((q.get("since") or [""])[0].strip() or None)
+            if wsince is not None:
+                rows = [r for r in rows if (parse_ts(r.get("t")) or 0.0) > wsince]
             try:
                 limit = max(1, min(5000, int((q.get("limit") or ["500"])[0])))
             except ValueError:
                 limit = 500
+            # `truncated` is reported rather than left to be inferred from
+            # total != returned, because the tail slice keeps the NEWEST rows
+            # and a `since` caller losing the oldest of its new rows cannot
+            # otherwise tell that it happened.
             self._send({"now": iso(now()), "total": len(rows),
-                        "returned": min(limit, len(rows)), "events": rows[-limit:]})
+                        "returned": min(limit, len(rows)),
+                        "truncated": len(rows) > limit,
+                        "events": rows[-limit:]})
         elif path == "/boss_history":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)

@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v99
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v100
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2961,6 +2961,11 @@ const bossHop = {
 	bridgeRows: [],
 	bridgeAt: 0,
 	bridgeErr: null,
+	/* Cursor for the terminal-event feed: the SERVER's own `now` from the
+	   last successful answer, never a local clock. Null until one succeeds. */
+	termCursor: null,
+	termAt: 0,
+	termErr: null,
 
 	targetCfg(mtype) {
 		return CONFIG.bossHop.targets.find(t => t.mtype === mtype) || null;
@@ -3007,7 +3012,8 @@ const bossHop = {
 			});
 		}
 		this.refreshBridge();
-		setInterval(() => this.refreshBridge(), 30000);
+		this.refreshTerminal();
+		setInterval(() => { this.refreshBridge(); this.refreshTerminal(); }, 30000);
 	},
 
 	record(entry) {
@@ -3039,6 +3045,82 @@ const bossHop = {
 			this.bridgeRows = [];
 			this.bridgeErr = String(e);
 		});
+	},
+
+	/* A boss that dies or despawns VANISHES from server_info rather than
+	   reporting itself dead: `if (!d) continue` in startScanning has nothing
+	   to write, so the last `live: true` push sits in scanResults until
+	   SCAN_STALE_MS retires it five minutes later. For those five minutes a
+	   dead boss is the candidate the picker likes BEST, because a frozen hp
+	   is an hp that never falls. The bridge logs the transition within one
+	   45s poll, so asking it closes a 300s hole to about 75s.
+
+	   TERMINAL events, not despawns. Measured over the 2,499 retained events
+	   on 2026-10-20: death 1,116, despawn 15, lost 120, spawn 1,248. Asking
+	   for `ev=despawn` would have covered 15 of the 1,251 terminal events,
+	   because despawn-vs-kill grades HOW a boss stopped existing and this
+	   code cares only THAT it did.
+	   -> RangerComments.md#terminalInvalidation */
+	refreshTerminal() {
+		if (!CONFIG.bossHop.enabled) return;
+		/* No cursor on the first call, which pulls the whole retained log on
+		   purpose: the ordering guard in applyTerminal is what makes that
+		   safe, so there is no cold-start branch to get wrong. A truncated
+		   answer drops the OLDEST of the new rows, which that same guard
+		   already renders harmless. */
+		const q = '/boss_events?terminal=1&limit=2000'
+			+ (this.termCursor ? '&since=' + encodeURIComponent(this.termCursor) : '');
+		plFetch(q).then((j) => {
+			const evs = Array.isArray(j?.events) ? j.events : [];
+			for (const e of evs) this.applyTerminal(e);
+			/* Advanced only on success and only to the answer's own clock.
+			   Holding it back on failure re-reads a few rows, which is
+			   idempotent; advancing past a failed fetch would drop them. */
+			if (typeof j?.now === 'string') this.termCursor = j.now;
+			this.termAt = Date.now();
+			this.termErr = null;
+		}, (e) => {
+			/* Recorded, not swallowed: without this "the bridge is down" and
+			   "nothing has died" are the same silence. The cursor is left
+			   where it was, so no event is lost by a failed poll. */
+			this.termErr = String(e);
+		});
+	},
+
+	/* One terminal event against one scanResults entry. Split out from the
+	   fetch so it can be driven without a bridge. */
+	applyTerminal(e) {
+		/* THIS CHECK IS THE AUTHORITY; `terminal=1` on the query is bandwidth
+		   only. A bridge predating that parameter ignores it in silence - the
+		   handler reads the params it knows and never rejects an unknown one -
+		   and answers with spawns mixed in, so a script trusting the server
+		   filter would clear entries on a boss APPEARING. Deploy order
+		   between the two is not something this script can observe. */
+		const ev = String(e && e.ev || '').toLowerCase();
+		if (ev !== 'death' && ev !== 'despawn' && ev !== 'lost') return;
+		const mtype = e.type;
+		if (!mtype) return;
+		/* "US II" in the log against "USII" in scanResults, which builds its
+		   shard as region + name with no separator. An unnormalised compare
+		   matches nothing at all, and matching nothing is indistinguishable
+		   from no boss ever having died. */
+		const shard = String(e.server || '').replace(/\s+/g, '');
+		if (!shard) return;
+		const t = Date.parse(e.t);
+		if (!(t > 0)) return;
+		const r = this.scanResults.find(x => x.shard === shard && x.mtype === mtype);
+		if (!r || r.live !== true) return;
+		/* ORDERING GUARD, and it is what carries the cold start. server_info
+		   is the direct feed; the bridge is a derivative of it running up to
+		   45s behind. So a push NEWER than the event describes a later
+		   instance and wins - which is also why replaying the entire retained
+		   log on the first fetch cannot clear a live entry, since every
+		   historical row predates the push that created it. */
+		if (r.at > t) return;
+		r.live = false;
+		r.hp = null;
+		r.clearedBy = ev;
+		r.clearedAt = t;
 	},
 
 	bridgeRow(shard, mtype) {

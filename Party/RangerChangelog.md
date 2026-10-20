@@ -21,6 +21,69 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v100
+
+A boss that is already dead stops being the picker's favourite candidate.
+Second of the two bossHop defects the browser session found on 2026-10-19;
+v99 fixed the first.
+
+WHY A DEAD BOSS WAS THE *BEST* CANDIDATE. `startScanning()` records a boss
+from the game's own `server_info` broadcast and opens with `if (!d) continue`.
+When an event boss dies or despawns its key does not go false - it VANISHES
+from the broadcast entirely - so there is nothing to write and the last
+`live: true` push stays in `scanResults` untouched. Its `at` freezes with it,
+which means `SCAN_STALE_MS` does eventually retire the entry, but not for five
+minutes. For those five minutes the picker sees a boss whose hp never falls,
+and an hp that never falls is the shortest `secsToDeath` on offer. The bridge
+logs the transition within one 45s poll, so asking it closes a 300s hole to
+about 75s.
+
+TERMINAL EVENTS, NOT DESPAWNS - and this was the correction that mattered.
+The first design asked the bridge for `ev=despawn`, reasoning from the despawn
+classifier that had just been built. The browser session measured the retained
+log: 2,499 events, of which death 1,116, despawn 15, lost 120, spawn 1,248. So
+`ev=despawn` would have covered 15 of the 1,251 terminal events - 1.2% - and
+missed every kill. The despawn/kill distinction grades HOW a boss stopped
+existing, which is what `stored_row_is_despawn()` is for; this code cares only
+THAT it did.
+
+`lost` IS TREATED AS TERMINAL, and the ambiguity in it did not have to be
+resolved to decide that. It is emitted from two places: an instance id that
+changed between polls, where the old instance is gone for certain, and a shard
+that stopped being listable for `BOSS_ABSENT_CONFIRM` successive successful
+polls, where nothing at all is known about the boss. Neither is a boss worth
+planning a 30-minute Realm Fatigue trip towards, so both clear the entry. The
+costs decide it rather than the reason string: a wrongly cleared LIVE boss is
+restored by the next `server_info` push seconds later, while a missed terminal
+keeps a dead boss as the best candidate for the full five minutes.
+
+THE ORDERING GUARD IS WHAT MAKES THE COLD START SAFE, so there is no
+cold-start branch to get wrong. `applyTerminal()` ignores any event older than
+the push that created the entry, because `server_info` is the direct feed and
+the bridge a derivative of it running up to 45s behind. The first fetch has no
+cursor and therefore replays the whole retained log - and cannot clear
+anything, since every historical row predates the push that put the entry
+there.
+
+THE ev CHECK IN THE SCRIPT IS THE AUTHORITY; `terminal=1` ON THE QUERY IS
+BANDWIDTH. The bridge's `/boss_events` handler reads the parameters it knows
+and never rejects an unknown one, so a bridge deployed before `terminal`
+existed answers a `terminal=1` query with spawns mixed in - and a script
+trusting the server filter would clear entries on a boss APPEARING. Deploy
+order between the script and the bridge is not something the script can
+observe. `Tests/bridge/test_despawn.py` asserts that an unknown parameter is
+ignored, so the premise of that comment is checked rather than claimed.
+
+Bridge side, same commit: `BOSS_TERMINAL_EV` and `boss_ev_is_terminal()`,
+plus `terminal=` and `since=` on `/boss_events` and a `truncated` flag on its
+answer. `since` is strictly after, so a caller handing back the `now` of its
+previous answer is never served the boundary row twice.
+
+Suite 432 (320 JS, 112 python). Every guard in `applyTerminal` was
+mutation-tested; the `live !== true` early-out proved to bind to nothing
+behavioural, which is correct - it exists so `clearedBy` means "a live claim
+was cleared here" - and its assertion was rewritten to say that instead.
+
 ## v99
 
 A boss the combat side has GIVEN UP ON no longer pins the party to its shard.

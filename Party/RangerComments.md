@@ -88,6 +88,83 @@ G's 720000 whatever the clock says, so every gate using it charged a character
 2026-10-17 - and falls back to the full duration when the field is absent,
 which is the conservative direction.
 
+## terminalInvalidation
+
+Why `scanResults` needs the bridge at all, when it already has a staleness
+timer, and why the query is terminal events rather than despawns.
+
+THE FEED DOES NOT REPORT DEATH, IT STOPS REPORTING. `startScanning()` reads
+the game's `server_info` broadcast per shard and opens its per-boss loop with
+`if (!d) continue`. A respawning boss keeps its key and reports the dead shape
+- no hp, a `spawn` field - which `record()` stores happily as
+`live: false, spawnTime`. A timed EVENT boss has no respawn to report, so when
+it dies or its window closes the key is simply gone. `continue` then has
+nothing to write, and the last `live: true` entry survives with its `at`
+frozen at the moment the key disappeared.
+
+SO THE EXISTING GUARD IS A BACKSTOP, NOT A FIX. `SCAN_STALE_MS` is five
+minutes, and it catches the frozen entry eventually. The problem is what
+happens in between: `candidates()` costs a live entry as `hp / shardDps`, and
+a frozen hp is an hp that never falls, so the dead boss offers the shortest
+`secsToDeath` of anything on the board. It is not merely a stale candidate, it
+is the preferred one. The bridge writes the transition to its log within one
+45s poll and the script re-reads every 30s, so the exposure goes from 300s to
+roughly 75s.
+
+CAUSE VERSUS OUTCOME, which is the mistake worth remembering. The first design
+asked for `ev=despawn`. That came from having just built the despawn
+classifier, and it is the wrong question by construction: the classifier
+exists to grade HOW a boss stopped existing, and a picker needs to know only
+THAT it stopped. Measured by the browser session over the 2,499 retained
+events on 2026-10-20 - death 1,116, despawn 15, lost 120, spawn 1,248 - the
+despawn filter would have caught 15 of the 1,251 terminal events, 1.2%, and
+missed every single kill. The tell was available before the measurement: the
+classifier's own section in CLAUDE.md says a despawn and a kill are
+indistinguishable at the transition, which is the whole reason it was needed.
+A distinction that was hard to draw is not a distinction to filter on when you
+do not need it drawn.
+
+WHY `lost` IS IN THE TERMINAL SET WITHOUT RESOLVING WHAT IT MEANS. The bridge
+emits it from two unrelated places. One is an instance id that changed between
+polls, where the previous instance is gone for certain and a spawn for its
+replacement is emitted on the same poll. The other is a shard absent from
+`BOSS_ABSENT_CONFIRM` successive successful polls, where the honest reading is
+that nothing is known about that boss. Those are different facts, and neither
+of them is a boss worth committing a 30-minute Realm Fatigue trip towards, so
+both clear the entry and the reason string never has to be parsed.
+
+What actually settles it is the asymmetry of the two errors. Clearing a boss
+that is really alive costs one scan cycle, because `record()` is an upsert and
+the broadcast pushes on a short period - and, crucially, clearing sticks only
+where it should: the entries that are wrong are exactly the ones whose key has
+vanished, so nothing overwrites them, while a genuinely live boss is restored
+within seconds by a feed that never stopped. Missing a terminal event costs
+the full five minutes with a dead boss ranked first. The two mechanisms are
+complementary rather than competing: broadcast present means the broadcast is
+authoritative, broadcast gone means the bridge is.
+
+THE ORDERING GUARD DOES DOUBLE DUTY. `applyTerminal()` returns early when the
+entry's `at` is newer than the event. The direct reason is that `server_info`
+is the primary feed and the bridge a derivative running up to 45s behind it,
+so a push newer than the event is describing a later instance and must win.
+The second effect is that the cold start needs no special case: the first
+fetch carries no cursor and replays the entire retained log, and not one
+historical row can clear a live entry, because every one of them predates the
+push that created it. A seeding branch was considered and then deleted as
+redundant, which is the better outcome - a guard that removes a branch is
+worth more than a branch that duplicates a guard.
+
+THE SERVER-SIDE FILTER IS NOT A GUARANTEE. `terminal=1` reduces bandwidth and
+nothing else; the `ev` test inside `applyTerminal()` is what decides. The
+bridge's handler reads the query parameters it knows about and silently
+ignores any it does not, so a bridge deployed before `terminal` existed
+answers a `terminal=1` query with the spawns still in it - and a script that
+trusted the filter would clear its entries every time a boss APPEARED, which
+is precisely inverted. The script cannot observe which bridge it is talking
+to, and the two are deployed independently. `Tests/bridge/test_despawn.py`
+asserts the unknown-parameter behaviour directly, so this paragraph is a
+checked claim rather than a remembered one.
+
 ## taxiWalkProbe
 
 The claim the whole of the above rests on - that a hop-sick character can walk
