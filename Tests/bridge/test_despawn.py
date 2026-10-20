@@ -410,6 +410,82 @@ chk("a non-product type maps to itself",
 # rgoo, so a bgoo-only goobrawl would read as unobserved on that mapping.
 chk("bgoo counts too, not only rgoo", b.SCHEDULE_EVENT_OF.get("bgoo"), "goobrawl")
 
+# --------------------------------- ttk for the bosses the chain queue is about
+# WHY THE EVENT BOSSES HAD NO ttk AT ALL, which is the question the browser
+# session's spec revision was blocked on. `ttk_median_sec` is high-confidence
+# only BY DESIGN, and "high" is reached only by the respawn_offset method,
+# which requires a BOSS_RESPAWN_SEC entry. EVENT_WINDOW_SEC and
+# BOSS_RESPAWN_SEC are DISJOINT, so an event boss can never reach it: the
+# exclusion is structural, not a sampling accident. Measured on the live log
+# 2026-10-20 - 29 event-boss kills, zero medians, while phoenix/greenjr/jr all
+# had percentiles and all three are respawn bosses.
+chk("the two sets are disjoint, which is what makes it structural",
+    sorted(set(b.EVENT_WINDOW_SEC) & set(b.BOSS_RESPAWN_SEC)), [])
+for t in b.EVENT_WINDOW_SEC:
+    chk(f"{t} has no respawn constant, so respawn_offset is unreachable for it",
+        b.BOSS_RESPAWN_SEC.get(t), None)
+for t in ("phoenix", "greenjr", "jr"):
+    chk(f"{t} does, which is why it has percentiles",
+        isinstance(b.BOSS_RESPAWN_SEC.get(t), int), True)
+
+_hf = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+def _hrow(**kw):
+    _hf.write(json.dumps(kw) + "\n")
+# An EVENT boss: low confidence by construction, spawn observed.
+_hrow(ev="spawn", t="2026-10-20T22:00:01Z", type="franky", server="EU III")
+_hrow(ev="death", t="2026-10-20T22:30:00Z", type="franky", server="EU III",
+      confidence="low", method="absent_on_responding_server", ttk_sec=1799,
+      spawn_t="2026-10-20T22:00:01Z", death_hi="2026-10-20T22:31:00Z")
+# A RESPAWN boss: high confidence, so it has both numbers.
+_hrow(ev="spawn", t="2026-10-20T20:00:00Z", type="phoenix", server="EU III")
+_hrow(ev="death", t="2026-10-20T20:05:00Z", type="phoenix", server="EU III",
+      confidence="high", method="respawn_offset", ttk_sec=300,
+      spawn_t="2026-10-20T20:00:00Z", death_hi="2026-10-20T20:05:30Z")
+# A death whose spawn was never observed: no bound is possible at all.
+_hrow(ev="death", t="2026-10-20T13:30:00Z", type="crabxx", server="US I",
+      confidence="low", method="absent_on_responding_server",
+      spawn_t=None, death_hi="2026-10-20T13:31:00Z")
+_hf.close()
+_h = b.boss_history(_hf.name)
+_by = {(r["type"], r["server"]): r for r in _h["history"]}
+
+# THE DEFECT, stated as an assertion so it cannot be read as an accident.
+chk("an event boss still has NO high-confidence median",
+    _by[("franky", "EU III")]["ttk_median_sec"], None)
+chk("but it DOES have an exact upper bound now",
+    _by[("franky", "EU III")]["ttk_upper_median_sec"], 1859.0)
+chk("which is death_hi - spawn_t and nothing else",
+    _by[("franky", "EU III")]["ttk_upper_sample"], 1)
+# A respawn boss keeps its median AND gains the bound, which is wider - the
+# bound includes the poll bracket the median's method resolved away.
+chk("a respawn boss keeps its median", _by[("phoenix", "EU III")]["ttk_median_sec"], 300.0)
+chk("and its bound is wider than its estimate",
+    _by[("phoenix", "EU III")]["ttk_upper_median_sec"] > 300.0, True)
+# "No samples" and "samples we cannot bound" are different answers.
+chk("a death with no observed spawn yields no bound",
+    _by[("crabxx", "US I")]["ttk_upper_median_sec"], None)
+chk("and is COUNTED, so the reason is visible rather than looking like no data",
+    _by[("crabxx", "US I")]["ttk_upper_no_spawn"], 1)
+chk("while a bounded row counts zero unbounded",
+    _by[("franky", "EU III")]["ttk_upper_no_spawn"], 0)
+
+# The payload says the asymmetry out loud, because it is not guessable from it.
+chk("the payload declares the median's confidence restriction",
+    _h["ttk_median_high_confidence_only"], True)
+chk("and names the bosses that can never satisfy it",
+    _h["event_bosses_cannot_reach_high_confidence"], sorted(b.EVENT_WINDOW_SEC))
+chk("include_low is still reported for the median",
+    _h["medians_include_low_confidence"], False)
+# include_low remains the other route and still works.
+_hl = b.boss_history(_hf.name, include_low=True)
+_byl = {(r["type"], r["server"]): r for r in _hl["history"]}
+chk("include_low=1 surfaces the low-confidence median too",
+    _byl[("franky", "EU III")]["ttk_median_sec"], 1799.0)
+chk("and the bound is unchanged by it - it never depended on confidence",
+    _byl[("franky", "EU III")]["ttk_upper_median_sec"],
+    _by[("franky", "EU III")]["ttk_upper_median_sec"])
+os.unlink(_hf.name)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

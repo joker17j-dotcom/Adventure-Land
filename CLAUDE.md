@@ -839,6 +839,28 @@ time on 2026-10-18.
   current, precise and present, and the index was wrong. **When a bullet
   establishes what a FIELD means, say so in its own sentence, not only as the
   premise of the bug it was written for.**
+- **AN EVENT BOSS CAN NEVER PRODUCE A ttk MEDIAN, AND THAT IS STRUCTURAL
+  RATHER THAN A SAMPLING ACCIDENT.** `boss_history`'s `ttk_median_sec` is
+  high-confidence only by design, and "high" is reached only by the
+  `respawn_offset` method, which requires a `BOSS_RESPAWN_SEC` entry.
+  `EVENT_WINDOW_SEC` and `BOSS_RESPAWN_SEC` are DISJOINT, so crabxx, franky,
+  icegolem, rgoo and bgoo are excluded BY CONSTRUCTION. Measured on the live log
+  2026-10-20: event bosses held 29 logged kills and zero medians, while phoenix,
+  greenjr and jr - all three respawn bosses - had populated percentiles. The
+  chain queue's opening decision is about exactly those five, so the default
+  view answered "no data" for the entire population being asked about. **THIRD
+  TIME IN ONE DAY THAT A FILTER OR A NAME HID THE POPULATION OF INTEREST**,
+  after `never_observable` and `ev=despawn`; the shared tell is that the
+  excluded set was defined by a mechanism nobody re-read, not by the data.
+- **SO `ttk_upper_*` IS THE FIELD THOSE BOSSES ACTUALLY HAVE, and an upper bound
+  is what a budget question wants anyway.** `death_hi - spawn_t` is EXACT for
+  every death row regardless of confidence - `death_hi` IS `iso(poll_t)`, the
+  poll that proved the boss gone - so it needs no `include_low` and carries no
+  estimate. "Does it die inside our budget" is a question about the pessimistic
+  end, not the median, so this is the better input even where a median exists.
+  `ttk_upper_no_spawn` counts the death rows whose spawn was never observed,
+  because "no samples" and "samples we cannot bound" are different answers and
+  a bare null conflates them.
 - **`ttk_sec` IS NOT THE WRITE PATH'S QUANTITY.** `death_t` is
   `(last_alive_t + poll_t)/2`, so `ttk_sec` runs SHORT by
   `(poll_t - last_alive_t)/2` and nothing the row reports bounds that. DO NOT
@@ -1738,9 +1760,9 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 124
+  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 146
   from the python bridge suite the runner shells out to and folds in, for
-  `all 553 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 575 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than

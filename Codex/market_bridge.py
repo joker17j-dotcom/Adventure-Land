@@ -1613,7 +1613,7 @@ def boss_history(path, want_type=None, want_server=None, since=None,
             "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
             "lost": 0, "despawns": 0, "despawns_reclassified": 0,
             "despawns_reclassified_low": 0,
-            "ttks": [], "last_kill_t": None,
+            "ttks": [], "ttk_hi": [], "ttk_upper_no_spawn": 0, "last_kill_t": None,
             "last_spawn_t": None, "last_despawn_t": None,
             "first_t": None, "last_t": None,
             "confidence_counts": {"high": 0, "low": 0},
@@ -1657,6 +1657,36 @@ def boss_history(path, want_type=None, want_server=None, since=None,
                 a["last_kill_t"] = t
             if isinstance(d.get("ttk_sec"), (int, float)) and (include_low or c == "high"):
                 a["ttks"].append(d["ttk_sec"])
+            # THE UPPER BOUND, COLLECTED WITHOUT REGARD TO CONFIDENCE, because
+            # it is not an estimate. `death_hi` IS iso(poll_t) - the poll that
+            # proved the boss gone - so death_hi - spawn_t is an exact bound on
+            # how long the kill took, however wide the bracket behind it.
+            #
+            # WHY THIS EXISTS. `ttk_median_sec` is high-confidence only by
+            # design, and "high" requires the respawn_offset method, which
+            # requires a BOSS_RESPAWN_SEC entry. EVENT_WINDOW_SEC and
+            # BOSS_RESPAWN_SEC are DISJOINT SETS, so a crabxx, franky,
+            # icegolem, rgoo or bgoo kill can NEVER reach high confidence and
+            # its ttk is excluded by construction, not by chance. Measured on
+            # the live log 2026-10-20: event bosses held 29 logged kills and
+            # zero ttk_median_sec, while phoenix, greenjr and jr - all three in
+            # BOSS_RESPAWN_SEC - had populated percentiles. The chain queue's
+            # opening decision is about exactly those five bosses, so the
+            # default view answered "no data" for the entire population it was
+            # being asked about.
+            #
+            # AND AN UPPER BOUND IS WHAT A BUDGET DECISION WANTS ANYWAY. "Does
+            # it die inside our budget" is a question about the pessimistic
+            # end, not the median - so this is the better input even where a
+            # median exists.
+            sp_hi, sp_t = parse_ts(d.get("death_hi")), parse_ts(d.get("spawn_t"))
+            if sp_hi and sp_t and sp_hi > sp_t:
+                a["ttk_hi"].append(round(sp_hi - sp_t))
+            elif sp_t is None:
+                # Counted rather than silently dropped: a death whose spawn was
+                # never observed cannot yield a bound at all, and "no samples"
+                # and "samples we cannot bound" are different answers.
+                a["ttk_upper_no_spawn"] += 1
 
     out = []
     for k, a in agg.items():
@@ -1685,6 +1715,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         a["ttk_min_sec"] = min(ttks) if ttks else None
         a["ttk_max_sec"] = max(ttks) if ttks else None
         a["ttk_sample"] = len(ttks)
+        # Exact bounds, every death row, no confidence filter - see the
+        # collection site for why this is the field an event boss actually has.
+        hi = a.pop("ttk_hi")
+        a["ttk_upper_median_sec"] = _pct(hi, 0.5)
+        a["ttk_upper_p90_sec"] = _pct(hi, 0.9)
+        a["ttk_upper_max_sec"] = max(hi) if hi else None
+        a["ttk_upper_sample"] = len(hi)
         lo, hi = parse_ts(a.pop("first_t")), parse_ts(a.pop("last_t"))
         win = round(hi - lo) if (lo and hi and hi > lo) else 0
         a["observed_window_sec"] = win
@@ -1715,6 +1752,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         "log": str(path) if path else None,
         "min_kills_for_trend": BOSS_MIN_KILLS_FOR_TREND,
         "medians_include_low_confidence": bool(include_low),
+        # Said in the payload because the asymmetry is not guessable from it:
+        # ttk_median_sec is high-confidence only and high confidence needs a
+        # BOSS_RESPAWN_SEC entry, so the five EVENT_WINDOW_SEC bosses can never
+        # populate it. ttk_upper_* is an exact bound and has no such gap.
+        "ttk_median_high_confidence_only": True,
+        "ttk_upper_is_exact_bound": "death_hi - spawn_t, every death row",
+        "event_bosses_cannot_reach_high_confidence": sorted(EVENT_WINDOW_SEC),
         "events": len(rows),
         # Effective, not raw: a pre-fix row counts where it belongs. The
         # summary has always counted the WHOLE log rather than the filtered
