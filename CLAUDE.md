@@ -708,6 +708,38 @@ time on 2026-10-18.
 - **THE CEILING IS LOAD-BEARING AND WAS ADDED AFTER A FALSE POSITIVE.** Without
   it, a US II crabxx at 4634s elapsed sitting at 7.61% hp would have been
   relabelled a despawn. It then protected a REAL kill: the US IV franky at 3612s.
+- **THE EARLY SIDE AND THE LATE SIDE OF THE BAND ARE NOT SYMMETRIC, and the band
+  alone cannot say so.** Added 2026-10-20 after the 14 retained despawn rows were
+  measured: twelve went essentially untouched - `last_pct` 99.81 to 100 - clustered
+  at `elapsed_sec` 2402-2556 against a 2400s window, and NOT ONE clean row sits
+  below the window. The early side's only contribution to date was one row.
+  Each signal alone has an innocent explanation and the PAIR does not. Early alone
+  is a LATE-DETECTED SPAWN making `elapsed` read short, which is what
+  `BOSS_DESPAWN_WINDOW_SLACK` is for and why it stays. Damaged alone on the late
+  side is chip damage from a passer-by - crabxx US I at 97.52% and elapsed 2561,
+  admitted by the CEILING, left alone. Both at once is crabxx EU III at `last_pct`
+  63.19 and elapsed 2226 - window MINUS 174, admitted by SLACK with six seconds to
+  spare, a third of its health gone: no timing artefact removes health, and a window
+  expiry does not explain a boss that was being fought. `despawn_qualifies()` now
+  vetoes that conjunction and only that conjunction, in ONE expression both paths
+  call, with `BOSS_DESPAWN_INTACT_PCT = 95.0`.
+  **Misclassifying a kill as a despawn DEFLATES the kill record**, which is the
+  mirror of the inflation this classifier was written to fix, so it is a veto rather
+  than a confidence downgrade - on the late side both stories are live and
+  confidence is the honest answer, here one story is excluded.
+  The log is APPEND-ONLY, so the EU III row is still on disk graded high;
+  `stored_despawn_row_rejected()` is the filter a planner uses to drop it without
+  rewriting anything.
+- **CONFIDENCE GRADES NEARNESS TO DEATH, NOT DAMAGE, AND THAT WAS RE-DECIDED RATHER
+  THAN INHERITED.** Widening it so any damaged boss reads low was considered on
+  2026-10-20 and rejected: a boss at 4% that vanishes is very plausibly the killing
+  blow landing, while a boss at 52% vanishing exactly at its window close is a
+  coincidence and not a kill. The suite pins both ends - 5.01 high, 5.0 low - so
+  those assertions are the MEANING and not an accident, and two of them would have
+  had to be rewritten to widen it. Damage is handled by the veto above instead,
+  where it proves something. The write path's inline copy of this inequality was
+  also folded into `despawn_confidence()`; it had drifted apart from the read path's
+  copy in the same neighbourhood as the function written to prevent exactly that.
 - **A LOW hp READING IS THE COUNTER-EVIDENCE, AND THE READ PATH MUST KEEP IT.**
   A read path that checked only the window buried the live US III rgoo row at
   4.96% hp. That is what `stored_row_despawn_confidence` is for: the window says

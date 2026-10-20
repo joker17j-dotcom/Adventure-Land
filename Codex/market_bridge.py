@@ -240,6 +240,10 @@ BOSS_DESPAWN_WINDOW_CEILING = 300
 # than reclassified, so the ambiguity is visible to anything reading the log
 # instead of being decided silently here. Unknown hp also reads low.
 BOSS_DESPAWN_ALIVE_PCT = 5.0
+# A boss at or above this fraction of its health was not being fought. Used ONLY
+# on the EARLY side of the band - see despawn_qualifies for why the conjunction
+# is what carries the argument and neither half does.
+BOSS_DESPAWN_INTACT_PCT = 95.0
 # SCHEDULE_EVENT_SEC is keyed by EVENT name, and the poller only ever sees
 # MONSTER types. For four of the five they are the same word, which is why the
 # first version of the despawn test worked at all - but goobrawl spawns `rgoo`
@@ -268,6 +272,79 @@ def despawn_window_hit(mtype, elapsed_sec) -> bool:
     if not win or not isinstance(elapsed_sec, (int, float)):
         return False
     return win - BOSS_DESPAWN_WINDOW_SLACK <= elapsed_sec <= win + BOSS_DESPAWN_WINDOW_CEILING
+
+
+def despawn_confidence(last_pct) -> str:
+    """"high" unless the boss was nearly dead, or its hp is unknown.
+
+    ONE EXPRESSION FOR BOTH PATHS, which it was not until 2026-10-20: the write
+    path carried this inequality inline and the read path carried it in
+    stored_row_despawn_confidence, which is the drift that despawn_window_hit
+    exists to prevent, half-present in its own neighbour.
+
+    DELIBERATELY GRADES NEARNESS TO DEATH AND NOT DAMAGE. Widening it so that any
+    damaged boss reads low was considered on 2026-10-20 and rejected: a boss at 4%
+    that vanishes is very plausibly the killing blow landing, while a boss at 52%
+    vanishing exactly at its window close is a coincidence, not a kill. The suite
+    pins both ends (5.01 high, 5.0 low) because that is the meaning, not an
+    accident. Damage is handled by despawn_qualifies instead, and only where it
+    proves something.
+    """
+    return ("high" if (isinstance(last_pct, (int, float))
+                       and last_pct > BOSS_DESPAWN_ALIVE_PCT) else "low")
+
+
+def despawn_qualifies(mtype, elapsed_sec, last_pct) -> bool:
+    """The band, minus the one conjunction no single artefact explains.
+
+    THE EARLY SIDE AND THE LATE SIDE ARE NOT SYMMETRIC, which the band alone
+    cannot express. Measured by the browser session over all 14 retained despawn
+    rows, 2026-10-19: twelve went essentially untouched - last_pct 99.81 to 100 -
+    clustered at elapsed 2402-2556 against a 2400s window. NOT ONE clean row sits
+    below the window. The early side's only contribution to date is a single row,
+    and it is the suspicious one.
+
+    EACH SIGNAL ALONE HAS AN INNOCENT EXPLANATION AND THE PAIR DOES NOT.
+      - early alone: spawn_t comes from the poller, so a LATE-DETECTED spawn makes
+        elapsed read short. That is why BOSS_DESPAWN_WINDOW_SLACK exists and it
+        stays - an untouched boss reading early is kept.
+      - damaged alone, on the late side: chip damage from a passer-by. crabxx US I
+        at 97.52% and elapsed 2561 is admitted by the CEILING and is left alone;
+        2.5% is not a fight.
+      - BOTH: no timing artefact removes health. crabxx EU III, last_pct 63.19 at
+        elapsed 2226 - window MINUS 174, admitted by SLACK with six seconds to
+        spare, a third of its health gone. A late-detected spawn cannot explain
+        the 37%, and a window expiry cannot explain a boss that was being fought.
+        It is far more likely a real kill whose last poll caught it at 63%.
+
+    WHY A VETO HERE RATHER THAN A CONFIDENCE DOWNGRADE, given that this module's
+    stated preference is to keep ambiguity visible: on the late side both stories
+    are live and confidence is the honest answer. Here one story is excluded, so
+    recording it as a despawn at any confidence asserts something the data denies.
+    Misclassifying a kill as a despawn DEFLATES the kill record, which is the
+    mirror of the inflation this whole classifier was written to fix.
+    """
+    if not despawn_window_hit(mtype, elapsed_sec):
+        return False
+    win = EVENT_WINDOW_SEC.get(mtype)
+    early = isinstance(elapsed_sec, (int, float)) and win and elapsed_sec < win
+    damaged = isinstance(last_pct, (int, float)) and last_pct < BOSS_DESPAWN_INTACT_PCT
+    return not (early and damaged)
+
+
+def stored_despawn_row_rejected(d: dict):
+    """For a row ALREADY written `ev: "despawn"`: would the current rule refuse it?
+
+    None if the row is not a despawn row at all, else True/False. The log is
+    append-only, so the EU III row described in despawn_qualifies is still on disk
+    graded high confidence; nothing re-reads and re-judges written rows. A planner
+    counting finishes needs to drop it without the log being rewritten, and this is
+    that filter. It reads `elapsed_sec` and `last_pct`, which despawn rows carry
+    directly - no reconstruction, unlike the death-row path above.
+    """
+    if d.get("ev") != "despawn":
+        return None
+    return not despawn_qualifies(d.get("type"), d.get("elapsed_sec"), d.get("last_pct"))
 
 
 def stored_row_elapsed(d: dict):
@@ -324,8 +401,7 @@ def stored_row_despawn_confidence(d: dict):
     """
     if not stored_row_is_despawn(d):
         return None
-    pct = d.get("last_pct")
-    return "high" if (isinstance(pct, (int, float)) and pct > BOSS_DESPAWN_ALIVE_PCT) else "low"
+    return despawn_confidence(d.get("last_pct"))
 
 
 def stored_row_is_despawn(d: dict) -> bool:
@@ -349,7 +425,7 @@ def stored_row_is_despawn(d: dict) -> bool:
         return False
     if d.get("method") != "absent_on_responding_server":
         return False
-    return despawn_window_hit(d.get("type"), stored_row_elapsed(d))
+    return despawn_qualifies(d.get("type"), stored_row_elapsed(d), d.get("last_pct"))
 # Seed list for servers the poller has not seen yet. Measured by the browser
 # session 2026-10-17; the live set from ALData is preferred whenever there is
 # one.
@@ -2290,7 +2366,7 @@ class BossWatch:
                     despawned = bool(
                         er is None and not dead_reported and win
                         and elapsed is not None
-                        and despawn_window_hit(mtype, elapsed))
+                        and despawn_qualifies(mtype, elapsed, f.get("last_pct")))
                     if despawned:
                         self._emit({
                             "ev": "despawn", "t": iso(poll_t), "type": mtype,
@@ -2302,10 +2378,7 @@ class BossWatch:
                             "reason": "event window closed; absent from a "
                                       "responding server with no respawn estimate",
                             "poll_gap_sec": round(gap),
-                            "confidence": ("high"
-                                           if (f.get("last_pct") is not None
-                                               and f["last_pct"] > BOSS_DESPAWN_ALIVE_PCT)
-                                           else "low")})
+                            "confidence": despawn_confidence(f.get("last_pct"))})
                     else:
                         if er is not None and rs:
                             # The server's own scheduled respawn minus the nominal

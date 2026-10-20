@@ -200,6 +200,64 @@ chk("only the nearly-dead one is flagged uncertain", r0["despawns_reclassified_l
 chk("neither counts as a kill", r0["kills_logged"], 0)
 os.unlink(path)
 
+# ------------------------------------------------- the early side is asymmetric
+# All 14 retained despawn rows, measured 2026-10-19: twelve untouched (99.81-100)
+# clustered at elapsed 2402-2556 against a 2400s window, NOT ONE below it. The two
+# damaged rows are different cases and only one is suspect.
+EU3 = {"ev": "despawn", "type": "crabxx", "server": "EU III",
+       "elapsed_sec": 2226, "window_sec": 2400, "last_pct": 63.19,
+       "last_hp": 606608, "confidence": "high"}
+US1 = {"ev": "despawn", "type": "crabxx", "server": "US I",
+       "elapsed_sec": 2561, "window_sec": 2400, "last_pct": 97.52,
+       "last_hp": 936223, "confidence": "high"}
+
+chk("EARLY and DAMAGED is not a despawn - no artefact explains both",
+    b.despawn_qualifies("crabxx", 2226, 63.19), False)
+chk("EARLY but INTACT is kept; a late-detected spawn reads short",
+    b.despawn_qualifies("crabxx", 2226, 100), True)
+chk("LATE and damaged is kept; chip damage from a passer-by",
+    b.despawn_qualifies("crabxx", 2561, 97.52), True)
+chk("exactly AT the window is not early, so damage does not veto",
+    b.despawn_qualifies("crabxx", 2400, 52.1), True)
+chk("early with UNKNOWN hp is kept - absence of evidence vetoes nothing",
+    b.despawn_qualifies("crabxx", 2226, None), True)
+chk("the intact threshold is inclusive at 95.0",
+    b.despawn_qualifies("crabxx", 2226, 95.0), True)
+chk("and a hair below it vetoes", b.despawn_qualifies("crabxx", 2226, 94.99), False)
+chk("outside the band entirely is still not a despawn",
+    b.despawn_qualifies("crabxx", 600, 100), False)
+chk("past the ceiling is still not a despawn",
+    b.despawn_qualifies("crabxx", 4634, 7.61), False)
+
+# the write path must not emit the EU III shape as a despawn any more
+chk("write path: the EU III shape stays a death",
+    drive("crabxx", 2226, False, None, last_pct=63.19)[0], ["death"])
+chk("write path: early but intact still despawns",
+    drive("crabxx", 2226, False, None, last_pct=100)[0], ["despawn"])
+chk("write path: the US I shape still despawns",
+    drive("crabxx", 2561, False, None, last_pct=97.52)[0], ["despawn"])
+
+# the read path agrees, which is the whole point of one shared predicate
+chk("read path: early and damaged death row is NOT reclassified",
+    b.stored_row_is_despawn(row("crabxx", 2226, 63.19)), False)
+chk("read path: early and intact death row still is",
+    b.stored_row_is_despawn(row("crabxx", 2226, 100)), True)
+chk("read path: confidence follows, None once it is not a despawn",
+    b.stored_row_despawn_confidence(row("crabxx", 2226, 63.19)), None)
+
+# already-written despawn rows: the log is append-only, so they need a filter
+chk("the EU III row on disk is rejected by the current rule",
+    b.stored_despawn_row_rejected(EU3), True)
+chk("the US I row on disk is not", b.stored_despawn_row_rejected(US1), False)
+chk("a death row is not a despawn row", b.stored_despawn_row_rejected(row("crabxx", 2400, 100)), None)
+chk("nor is a spawn row", b.stored_despawn_row_rejected({"ev": "spawn", "type": "crabxx"}), None)
+
+# confidence semantics are UNCHANGED, and that was a decision - see the docstring
+chk("damage alone does not downgrade confidence", b.despawn_confidence(52.1), "high")
+chk("near death still does", b.despawn_confidence(1.2), "low")
+chk("one expression now serves both paths",
+    b.despawn_confidence(100), b.stored_row_despawn_confidence(row("crabxx", 2400, 100)))
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)
