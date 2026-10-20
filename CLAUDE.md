@@ -911,6 +911,33 @@ time on 2026-10-18.
   point, because the party was fighting it. So the window governs how long an
   unengaged boss waits to be REACHED; a damaged one can outlive it. The chain
   queue's deadlines are arrival deadlines.
+- **THE STRONGEST ARRIVAL-DEADLINE INSTANCE IS A MATCHED PAIR IN ONE REGION,
+  AND IT PUTS THE WINDOW AT 1.86x OF ITS OWN LENGTH.** The bullet above cites
+  US II franky at 2,628s, 228s past window. Measured 2026-10-20 in the 22:00
+  UTC EU window, two frankys spawning the SAME SECOND:
+  EU III `spawn 22:00:01` -> `despawn 22:40:02`, `last_pct` 100, elapsed 2401;
+  EU IV `spawn 22:00:01` -> `death 23:14:15`, elapsed 4454. One took ZERO
+  damage across its whole window while the other was killed 34 minutes past
+  window close. So INSTANCE CHOICE INSIDE ONE REGION swings the outcome
+  between "dies late" and "never touched", and `eta_sec` on EU IV read
+  hopeless at spawn and correct an hour later.
+  **THE OPERATIONAL CONSEQUENCE IS THE PART TO KEEP:
+  `CONFIG.bossHop.maxFightMs` at 15 minutes would have aborted that kill
+  ELEVEN TIMES OVER.** A hard abort sized for a typical fight is a hard abort
+  against the late-join case this same data argues for.
+  **DO NOT LET THIS BULLET BECOME EVIDENCE FOR A RISING-DPS MODEL.** The
+  120,000,000 / 4,454 = ~26,900 dps, about thirteen typical players sustained,
+  is a MEAN over two end-points and says nothing about whether dps rose during
+  the fight - see the attribution split under "Falsifying a design" below. It
+  is equally consistent with the party's dps rising and with the static
+  estimate having always been too low.
+- **THE DESPAWN VETO'S FIRST LIVE WINDOW BEHAVED, 2026-10-20.** franky EU III
+  `last_pct` 100 elapsed 2401, and icegolem EU PVP `last_pct` 100 elapsed 2442
+  - both intact and at the window, both in the 2402-2556 cluster the band
+  bullet describes (2401 is one second under, admitted by SLACK as intended),
+  both at or above `BOSS_DESPAWN_INTACT_PCT` so `despawn_qualifies()` does not
+  veto. Twelve-of-fourteen becomes fourteen-of-sixteen without the shape
+  changing.
 - **BUT "DAMAGED MEANS IT PERSISTS" HAS EXCEPTIONS, AND ONE MAY BE A
   MISCLASSIFICATION.** Two of the fourteen despawned while damaged: crabxx US I at
   `last_pct` 97.52, `elapsed_sec` 2561; and crabxx EU III at **63.19% with elapsed
@@ -1804,9 +1831,10 @@ The Claude Code session commits with git and should never use this route.
   handoff proposing this correction said "four suites"; it was six and is now
   SEVEN - `suite_relay`, `suite_bosshop`, `suite_opengifts`,
   `suite_merchantver`, `suite_features`, `suite_caverun` and `suite_priest`,
-  the last added 2026-10-20 for the priest's skill paths - and quoting 346 as
-  the JS total would overstate it by the python 61. Re-derive both from a run rather than from any note, including
-  this one.
+  the last added 2026-10-20 for the priest's skill paths. Quoting the combined
+  figure as the JS total overstates it by whatever the python suite currently
+  contributes, which is its own moving number - so re-derive BOTH from a run
+  rather than from any note, including this one.
 - **Suites lift the code out of the COMMITTED file, never a copy.**
   `Tests/lift.js` pulls a named declaration by brace-matching and evaluates
   it in a vm context; the only edit is `function x` -> `globalThis.x =

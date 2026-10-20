@@ -533,6 +533,157 @@ chk("and the bound is unchanged by it - it never depended on confidence",
     _by[("franky", "EU III")]["ttk_upper_median_sec"])
 os.unlink(_hf.name)
 
+# ------------------------- alive-hp observation rows (the dps-curve falsifier)
+# WHY THIS ROW CLASS EXISTS: two end-points give a MEAN dps and nothing about
+# its shape, so "dps rose after we declined" and "our static estimate was
+# always too low" are indistinguishable - and they call for opposite fixes.
+chk("hp is NOT terminal, so terminal=1 consumers never see one",
+    b.boss_ev_is_terminal("hp"), False)
+chk("it is an observation", b.boss_ev_is_observation("hp"), True)
+chk("and not a transition", b.boss_ev_is_transition("hp"), False)
+chk("transitions are exactly spawn plus the terminals",
+    b.BOSS_TRANSITION_EV, ("spawn",) + b.BOSS_TERMINAL_EV)
+# BOTH predicates are allowlists, so a sixth value joins neither set and
+# perturbs no existing number while it waits to be classified.
+chk("an unclassified sixth value is not terminal",
+    b.boss_ev_is_terminal("quux"), False)
+chk("and not a transition either", b.boss_ev_is_transition("quux"), False)
+# Scope is a CHOICE and is pinned so widening it is deliberate.
+chk("event bosses are sampled", b.boss_hp_sampled("franky"), True)
+chk("respawn bosses are not", b.boss_hp_sampled("phoenix"), False)
+for _t in b.EVENT_WINDOW_SEC:
+    chk(f"{_t} is in scope", b.boss_hp_sampled(_t), True)
+
+# THE KILL RECORD MUST NOT MOVE. This is the assertion that makes the
+# allowlist in boss_history load-bearing rather than decorative: the same log
+# with hp rows interleaved has to produce an EQUAL history, because an
+# aggregated observation row would widen first_t/last_t - the `window` that
+# kills_per_day divides by.
+_f1 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+_f2 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+_base = [
+    dict(ev="spawn", t="2026-10-20T22:00:01Z", type="franky", server="EU IV"),
+    dict(ev="death", t="2026-10-20T23:14:15Z", type="franky", server="EU IV",
+         confidence="high", method="respawn_offset", ttk_sec=4454,
+         spawn_t="2026-10-20T22:00:01Z", death_hi="2026-10-20T23:14:15Z"),
+]
+# THE FIRST VERSION OF THIS FIXTURE WAS DEGENERATE AND ONLY MUTATION TESTING
+# SAID SO. It put both hp rows strictly BETWEEN a spawn and its death, which
+# is the realistic shape and cannot distinguish the branches: bracketed rows
+# move neither first_t nor last_t, and the ev dispatch ignores an unknown
+# value anyway, so the equality held with the allowlist REMOVED. The two
+# shapes below are the ones that actually separate them.
+_hp_rows = [
+    # (a) bracketed - realistic, and on its own proves nothing.
+    dict(ev="hp", t="2026-10-20T22:30:00Z", type="franky", server="EU IV",
+         hp=90000000, max_hp=120000000, pct=75.0, dps_since=16666.7),
+    # (b) AN ONGOING FIGHT: the latest row for its bucket is an observation,
+    # so aggregating it advances last_t and widens the `window` that
+    # kills_per_day divides by.
+    dict(ev="spawn", t="2026-10-20T23:30:00Z", type="crabxx", server="US V"),
+    dict(ev="hp", t="2026-10-21T01:00:00Z", type="crabxx", server="US V",
+         hp=400000, max_hp=960000, pct=41.67, dps_since=62.0),
+    # (c) A BOSS ALREADY UP WHEN THE BRIDGE STARTED: the seeding branch sets a
+    # sample baseline with spawn_t None and emits no spawn row, so this bucket
+    # holds observations and NOTHING else. Aggregated, it invents a whole
+    # history entry for a boss with no recorded transitions.
+    dict(ev="hp", t="2026-10-21T02:00:00Z", type="icegolem", server="ASIA I",
+         hp=8000000, max_hp=16000000, pct=50.0, dps_since=900.0),
+]
+for _r in [r for r in _base + _hp_rows if r["ev"] != "hp"]:
+    _f1.write(json.dumps(_r) + "\n")
+for _r in sorted(_base + _hp_rows, key=lambda r: r["t"]):
+    _f2.write(json.dumps(_r) + "\n")
+_f1.close(); _f2.close()
+chk("hp rows do not change the kill record at all",
+    b.boss_history(_f2.name)["history"], b.boss_history(_f1.name)["history"])
+# PRECONDITION: the two logs really do differ, or the equality above is a
+# test of nothing.
+chk("the two logs are genuinely different lengths",
+    len(b.boss_events_load(_f2.name)) - len(b.boss_events_load(_f1.name)),
+    len(_hp_rows) - 1)   # (b) contributes a real spawn row to both
+# PRECONDITIONS, each naming the branch it separates. Without these the
+# equality above is the no-op it originally was.
+chk("the ongoing fight's bucket exists in both",
+    sorted({(r["type"], r["server"]) for r in b.boss_history(_f1.name)["history"]}),
+    [("crabxx", "US V"), ("franky", "EU IV")])
+chk("and the observation-only bucket exists in NEITHER",
+    [r for r in b.boss_history(_f2.name)["history"]
+     if r["type"] == "icegolem"], [])
+chk("and the kill is still counted once",
+    b.boss_history(_f2.name)["history"][0]["kills_logged"], 1)
+os.unlink(_f1.name); os.unlink(_f2.name)
+
+# ---- the sampler itself, driven directly against the real class
+_bw = b.BossWatch(["franky"], enabled=False)
+_bw.max_hp["franky"] = 120000000.0
+def _fight(hp, t, spawn_t=1000.0):
+    return {"alive": True, "id": "i1", "spawn_t": spawn_t,
+            "hp_s_hp": hp, "hp_s_t": t}
+def _sample(f, hp, t, mtype="franky"):
+    _bw._pending = []
+    _bw._hp_sample(f, (mtype, "EU", "IV"), "EU IV", "i1", hp, t)
+    return list(_bw._pending)
+
+# 2% of 120M is 2.4M: below it nothing is written.
+_f = _fight(120000000.0, 1000.0)
+chk("a move under the threshold writes nothing",
+    _sample(_f, 118000000.0, 1045.0), [])
+chk("and does not move the baseline", _f["hp_s_hp"], 120000000.0)
+_out = _sample(_f, 117000000.0, 1090.0)
+chk("a move over it writes one row", len(_out), 1)
+chk("carrying the percentage", _out[0]["pct"], 97.5)
+chk("the loss", _out[0]["hp_lost"], 3000000)
+chk("the interval", _out[0]["since_sec"], 90)
+chk("and dps over that interval", _out[0]["dps_since"], round(3000000/90.0, 1))
+chk("elapsed runs from spawn, not from the previous sample",
+    _out[0]["elapsed_sec"], 90)
+# THE BASELINE MUST ADVANCE TO THE EMITTED SAMPLE, not stay at spawn - else
+# dps_since is a mean from spawn wearing an interval's label, which is the
+# very conflation this row class exists to break.
+chk("the baseline advances to what was written", _f["hp_s_hp"], 117000000.0)
+chk("and so does its timestamp", _f["hp_s_t"], 1090.0)
+_out2 = _sample(_f, 114000000.0, 1180.0)
+chk("so the next row measures from the last sample",
+    (_out2[0]["hp_lost"], _out2[0]["since_sec"]), (3000000, 90))
+
+# Scope, checked through the sampler and not only through the predicate.
+chk("an out-of-scope type writes nothing even past the threshold",
+    _sample(_fight(1000000.0, 1000.0), 1.0, 1090.0, mtype="phoenix"), [])
+# No max: counted, never guessed.
+_bw2 = b.BossWatch(["franky"], enabled=False)
+_before = _bw2.hp_samples_no_max
+chk("without a max_hp no row is written",
+    (lambda f: (_bw2._pending.clear(),
+                _bw2._hp_sample(f, ("franky", "EU", "IV"), "EU IV", "i1",
+                                1.0, 1090.0),
+                list(_bw2._pending))[-1])(_fight(120000000.0, 1000.0)), [])
+chk("and the skip is counted rather than silent",
+    _bw2.hp_samples_no_max - _before, 1)
+# An hp RISE inside one instance: the row is written for the curve, but
+# dps_since is null rather than negative.
+_rise = _sample(_fight(10000000.0, 1000.0), 60000000.0, 1090.0)
+chk("a rise still writes a row", len(_rise), 1)
+chk("but reports no dps", _rise[0]["dps_since"], None)
+chk("and no loss", _rise[0]["hp_lost"], None)
+
+# THE VOLUME BOUND IS A CLAIM IN THE COMMENT, so it is measured. A fight from
+# full health to zero cannot exceed 100/BOSS_HP_SAMPLE_PCT rows however fast
+# it dies - which is why there is no minimum interval between samples.
+_f3 = _fight(120000000.0, 0.0)
+_rows = 0
+for _i in range(1, 2001):
+    _hp = 120000000.0 * (1.0 - _i / 2000.0)
+    _rows += len(_sample(_f3, _hp, float(_i)))
+chk("a full fight is bounded by the threshold alone",
+    _rows <= int(100 / b.BOSS_HP_SAMPLE_PCT), True)
+chk("and is not degenerately small either", _rows >= 40, True)
+# An UNTOUCHED boss is the case the bound is really for: the 2026-10-20 EU III
+# franky took zero damage across its whole window.
+_f4 = _fight(120000000.0, 0.0)
+chk("an untouched boss emits nothing across a whole window",
+    sum(len(_sample(_f4, 120000000.0, float(_i * 45))) for _i in range(1, 54)), 0)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

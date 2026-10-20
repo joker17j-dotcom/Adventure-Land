@@ -127,6 +127,58 @@ BOSS_ABSENT_CONFIRM = 3
 BOSS_TERMINAL_EV = ("death", "despawn", "lost")
 
 
+# OBSERVATION rows, as against the four TRANSITION rows above. `hp` is the
+# fifth ev value and it is NOT a transition - every earlier value marks a boss
+# starting or stopping existing, so a reader meeting a fifth one will assume
+# the same of it. It marks neither: it is a periodic reading taken WHILE a
+# boss is alive, and its whole purpose is that two end-points cannot tell a
+# dps curve that ROSE from one that was always higher than assumed.
+#
+# THE ENUMERATION ABOVE DOES NOT FORCE WHAT ITS COMMENT CLAIMS, and `hp` is
+# the first value to find out. `boss_ev_is_terminal` is an allowlist, so an
+# unclassified new ev returns False and drifts in as NON-terminal - the
+# opposite of the direction that comment calls safe. It happens to be right
+# for `hp`, which really is non-terminal, so nothing is broken; but the
+# guarantee is "a new value cannot drift in as terminal", not "a new value has
+# to be classified". Both predicates here are allowlists for that reason: the
+# kill record is the thing being protected, and a sixth value left out of both
+# perturbs no existing number while it waits to be classified.
+BOSS_OBSERVATION_EV = ("hp",)
+# Rows the kill record is computed from. boss_history aggregates ONLY these,
+# so an observation row cannot widen a bucket's first_t/last_t - which feeds
+# `window` and therefore kills_per_day - or land in `seq`. Asserted in
+# Tests/bridge/test_despawn.py by running boss_history over a log with and
+# without hp rows interleaved and requiring the two outputs to be equal.
+BOSS_TRANSITION_EV = ("spawn",) + BOSS_TERMINAL_EV
+
+# How far hp must move, as a percentage of max, before another sample is
+# written. THIS IS ALSO THE VOLUME BOUND, and it is why there is no minimum
+# interval between samples: at 2% a fight from full health to zero can emit at
+# most 50 rows however fast it dies, so a floor would only ever suppress the
+# samples a FAST fight exists to provide. An untouched boss emits none at all -
+# the 2026-10-20 EU III franky that took zero damage across its whole window
+# would add one row to the log, not fifty.
+BOSS_HP_SAMPLE_PCT = 2.0
+# Which types get sampled. The chain queue's question is about the event
+# bosses, which are also the population that can never reach a ttk median, so
+# this is EVENT_WINDOW_SEC and not every boss the poller watches. It is a
+# scope CHOICE, not a property of the data: the browser session asked for
+# sampling scoped to bosses with an open skip row, and skip rows are written by
+# the script, which the bridge cannot see. Widen it here when they exist.
+def boss_hp_sampled(mtype) -> bool:
+    return str(mtype or "") in EVENT_WINDOW_SEC
+
+
+def boss_ev_is_observation(ev) -> bool:
+    """True for a row that reports a boss's state without a transition."""
+    return str(ev or "").lower() in BOSS_OBSERVATION_EV
+
+
+def boss_ev_is_transition(ev) -> bool:
+    """True for a row the kill record is computed from."""
+    return str(ev or "").lower() in BOSS_TRANSITION_EV
+
+
 def boss_ev_is_terminal(ev) -> bool:
     """True for an event meaning a boss stopped existing, however it stopped.
 
@@ -1604,6 +1656,13 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         mtype, server = d.get("type"), d.get("server")
         if not mtype or not server:
             continue
+        # OBSERVATION rows are not part of the kill record. Excluded here by
+        # ALLOWLIST rather than by skipping `hp` by name, so a sixth ev value
+        # cannot silently join the aggregation and move kills_per_day: an
+        # unclassified row would widen first_t/last_t, which is the `window`
+        # the rate divides by, and land in `seq`.
+        if not boss_ev_is_transition(d.get("ev")):
+            continue
         if want_type and mtype.lower() != want_type:
             continue
         if want_server and server.lower() != want_server:
@@ -2064,6 +2123,9 @@ class BossWatch:
         self.fights: dict[tuple, dict] = {}      # (type, region, ident) -> fight state
         self.events_written = 0
         self.events_error: str | None = None
+        # Samples skipped for want of a max_hp, so "the curve is thin" and
+        # "we could not scale the threshold" stay distinguishable.
+        self.hp_samples_no_max = 0
         self._pending: list[dict] = []
         self.source = source
         self.clients: list = []
@@ -2303,6 +2365,70 @@ class BossWatch:
     # `tracked` is memory only, so a bridge restart would lose it too. Hence
     # a file, appended the instant the poller sees the change.
 
+    def _hp_sample(self, f: dict, key: tuple, server: str, cur_id,
+                   hp, poll_t: float) -> None:
+        """Write a periodic alive-hp reading while a boss is being fought.
+
+        WHY THIS EXISTS, because the row is useless without the reason. Two
+        end-points - hp at spawn and hp at the last alive poll - give a MEAN
+        dps and nothing about its SHAPE, so "the party's dps rose after we
+        declined" and "our static dps estimate was always too low" produce
+        identical rows. Those two call for opposite fixes (model a rising term,
+        versus raise typicalPlayerDps), so a miss count built on end-points
+        alone cannot say which to make. Worked example, 2026-10-20 EU IV
+        franky: 120,000,000 hp over 4,454s is a mean 26,900 dps, about thirteen
+        typical players sustained - and that single figure is equally
+        consistent with both stories.
+
+        The poller already keeps an in-memory hp history (self.samples) for the
+        /bosses dps field; what was missing is that none of it reached the
+        append-only log, so once a boss died only its spawn hp and last_hp
+        survived. This persists a thinned version of what was already measured
+        rather than adding a new measurement.
+
+        NOT a transition row - see BOSS_OBSERVATION_EV. It is excluded from the
+        kill record by boss_history's allowlist and is non-terminal, so a
+        consumer asking `terminal=1` never sees one. That filter runs before
+        the endpoint's tail slice, so these rows cannot push terminal rows out
+        of a limited window either.
+        """
+        mtype = key[0]
+        if not boss_hp_sampled(mtype):
+            return
+        if not isinstance(hp, (int, float)) or isinstance(hp, bool):
+            return
+        mx = self.max_hp.get(mtype)
+        if not (isinstance(mx, (int, float)) and mx > 0):
+            # No max means no percentage, and a percentage is both the
+            # threshold and the volume bound. Counted rather than falling back
+            # to a time-based rule, which would be an uncapped path: "no
+            # samples" and "samples we could not scale" are different answers.
+            self.hp_samples_no_max += 1
+            return
+        prev_hp, prev_t = f.get("hp_s_hp"), f.get("hp_s_t")
+        if not isinstance(prev_hp, (int, float)) or prev_hp is None:
+            f["hp_s_hp"], f["hp_s_t"] = hp, poll_t
+            return
+        if abs(prev_hp - hp) < mx * (BOSS_HP_SAMPLE_PCT / 100.0):
+            return
+        dt = (poll_t - prev_t) if prev_t else None
+        # Damage only. hp going UP inside one instance is not a heal worth a
+        # dps figure - _record treats it as a new spawn and clears its buffer -
+        # so the row is written for the curve and dps_since is left null rather
+        # than reported negative.
+        drop = prev_hp - hp
+        dps = round(drop / dt, 1) if (dt and dt > 0 and drop > 0) else None
+        spawn_t = f.get("spawn_t")
+        self._emit({"ev": "hp", "t": iso(poll_t), "type": mtype,
+                    "server": server, "id": cur_id, "hp": hp, "max_hp": mx,
+                    "pct": round(hp / mx * 100.0, 2),
+                    "spawn_t": iso(spawn_t) if spawn_t else None,
+                    "elapsed_sec": round(poll_t - spawn_t) if spawn_t else None,
+                    "since_sec": round(dt) if dt else None,
+                    "hp_lost": round(drop) if drop > 0 else None,
+                    "dps_since": dps})
+        f["hp_s_hp"], f["hp_s_t"] = hp, poll_t
+
     def _emit(self, ev: dict) -> None:
         """Queue one event. Written to disk by the caller, outside the lock."""
         self._pending.append(ev)
@@ -2406,7 +2532,9 @@ class BossWatch:
                     "alive": alive, "id": cur_id if alive else None, "spawn_t": None,
                     "last_alive_t": poll_t if alive else 0.0, "last_obs_t": poll_t,
                     "absent": 0, "respawn_at": er if dead_reported else None,
-                    "last_hp": m["hp"] if alive else None, "last_pct": None}
+                    "last_hp": m["hp"] if alive else None, "last_pct": None,
+                    "hp_s_hp": m["hp"] if alive else None,
+                    "hp_s_t": poll_t if alive else None}
                 continue
 
             if alive:
@@ -2432,11 +2560,13 @@ class BossWatch:
                         "alive": True, "id": cur_id, "spawn_t": spawn_t,
                         "last_alive_t": poll_t, "last_obs_t": poll_t, "absent": 0,
                         "respawn_at": None, "last_hp": m["hp"],
-                        "last_pct": round(m["hp"] / mx * 100.0, 2) if (mx and m["hp"]) else None}
+                        "last_pct": round(m["hp"] / mx * 100.0, 2) if (mx and m["hp"]) else None,
+                        "hp_s_hp": m["hp"], "hp_s_t": poll_t}
                 else:
                     f["last_alive_t"] = f["last_obs_t"] = poll_t
                     f["absent"] = 0
                     f["id"] = cur_id
+                    self._hp_sample(f, key, server, cur_id, m["hp"], poll_t)
 
             elif dead_reported or (not present and server_answered
                                    and f is not None and f.get("alive")):
