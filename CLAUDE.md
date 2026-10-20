@@ -95,6 +95,19 @@ through Chrome" would stop a session that *can* push from ever trying.
     web editor instead.
   Stated unqualified ("Claude pushes through Chrome"), this reads as a fact
   about the repo and would stop a session that *can* push from trying.
+- **`gh api` IS REFUSED FROM THE BROWSER-DRIVEN CONTAINER, AND THE FIX IT NAMES
+  IS NOT AVAILABLE THERE - do not chase it.** Measured 2026-10-17 from that
+  container: `gh api repos/joker17j-dotcom/Adventure-Land` returns HTTP 403,
+  "GitHub access to this repository is not enabled for this session. Use
+  add_repo to request access ... call add_repo again with access:\"push\" to
+  attach the repository with credentials." That session holds no `add_repo` tool
+  and the operator confirmed the same day that the feature is unavailable to
+  them. **This is a fact about that session, not about the repo** - per the
+  warning above: the Claude Code session DOES hold `add_repo`, has a `gh` binary
+  on PATH, and reaches GitHub through its connector and the github MCP tools.
+  That asymmetry is why both sessions exist; each has what the other lacks.
+  Earlier wording called the fix "available", which would send the browser
+  session hunting for something it cannot do.
 - **Read a file before writing it in the web editor.** Opening `/new/<path>`
   for a file that already exists overwrites it wholesale rather than merging.
   One near miss already: `/new/main` for `CLAUDE.md` would have dropped every
@@ -718,30 +731,69 @@ time on 2026-10-18.
   also lives in the sandbox, not at top level, so reviving him needed the
   runner back up first.
 
-## The loaded copy vs this one
+## The loaded copy and the repo copy
 
-**Both sessions.**
+**Both sessions.** Written to be byte-identical in both copies, so a hash
+mismatch always means something and never means "that is just the other side's
+wording". Nothing in this section says "this file" or "this copy" for that
+reason - the two are always named. What makes a section un-mirrorable is DEIXIS:
+a document that points at itself cannot be copied without lying, and the
+previous version of this section did exactly that - repo-side wording sitting in
+the loaded copy, claiming that file was canonical and that it differed from
+itself.
 
-- **This file is canonical; `/home/claude/CLAUDE.md` in the container is what
-  actually loads.** They are different files. The loaded copy began as a
-  438-byte subset that stated flatly "git push from the container fails" - the
-  unqualified phrasing the Git section above warns against. It now carries the
-  full conventions, points here, and runs a drift check before the first repo
-  write of a session.
-- **Expect cosmetic drift; it is not worth a stop on its own.** Measured
-  2026-09-25: 14 shared sections differed, 13 of them only in punctuation and
+- **The REPO COPY is canonical: `CLAUDE.md` on `main` in
+  `joker17j-dotcom/Adventure-Land`.** The LOADED COPY is the `CLAUDE.md` in a
+  session's working directory, which is what actually loads into that session.
+  They are the same file only in a session whose working directory IS a clone of
+  the repo, so measure with `git rev-parse --show-toplevel` rather than assuming.
+- **MEASURED, so neither session has to guess which case it is in.** The
+  Claude Code container, 2026-10-20: the working directory IS the clone,
+  `CLAUDE.md` at its root is the file that loads (same inode as the tracked
+  file), and `/home/claude/CLAUDE.md` does not exist there. So that session
+  maintains ONE file, its drift check is `git status` rather than a hash
+  compare, and everything below about two copies is the browser-driven
+  session's to run. The browser-driven session's working directory is
+  `/home/claude` and is NOT a clone, so for it they are two different files.
+- **The loaded copy began as a 438-byte subset** that stated flatly "git push
+  from the container fails" - the unqualified phrasing the Git section above
+  warns against. It now carries the full conventions and runs a drift check
+  before the first repo write of a session.
+- **THE TWO COPIES ARE MEANT TO BE IDENTICAL, so the drift check is one call.**
+  `git hash-object <loaded copy>` against `git rev-parse origin/main:CLAUDE.md`.
+  A mismatch means exactly one of two things: the other session committed
+  something not yet reviewed, or this session edited its loaded copy and has not
+  pushed it. **This REVERSES the earlier "expect cosmetic drift; it is not worth
+  a stop on its own"**, which was correct while sections differed on purpose and
+  defeats the check now that they do not. Measured 2026-09-25, before the
+  rewrite: 14 shared sections differed, 13 of them only in punctuation and
   emphasis - em-dashes flattened to hyphens, `FULLY` lowercased, lines reflowed,
-  one sentence dropped from Testing. This file holds the better prose. Sync
-  substance in both directions; do not degrade this copy to match the other's
-  formatting.
-- **The loaded copy is allowed to be ahead.** That same check found the
-  `Party/Merchant.js` version-header exception present in the loaded copy and
-  missing here, which would have walked the other session into prepending to a
-  header that does not accumulate. It was carried into this file on 2026-09-25.
-  Drift is a two-way diff, not a one-way correction.
-- **The loaded copy must never be auto-synced from this one.** A session that
-  finds a difference reports it and stops, because this file is edited by both
-  chat sessions and a difference may be something the user has not reviewed.
+  one sentence dropped from Testing. That drift is what the rewrite exists to
+  stop recurring, which is why the measurement is kept as the REASON rather than
+  deleted.
+- **EITHER COPY IS ALLOWED TO BE AHEAD, and drift is a two-way diff rather than
+  a one-way correction.** The 2026-09-25 check found the `Party/Merchant.js`
+  version-header exception present in the loaded copy and missing from the repo
+  copy, which would have walked the other session into prepending to a header
+  that does not accumulate; it was carried INTO the repo copy rather than deleted
+  from the loaded one. The repo copy holds the better prose by convention, which
+  is a tie-break on wording and not a claim that it is more correct.
+- **NEITHER COPY IS EVER AUTO-SYNCED FROM THE OTHER.** A session that finds a
+  difference reports it and stops, because both copies are edited by both chat
+  sessions and a difference may be something the user has not reviewed. This is
+  the operator's standing instruction, not a style preference.
+- **A HASH MATCH PROVES FIDELITY TO WHATEVER YOU AIMED AT, NOT THAT YOU AIMED
+  CORRECTLY, and that cost the loaded copy three sections.** 2026-10-19: the
+  browser-driven container was replaced and its loaded copy was restored
+  byte-exact from `origin/main`, verified by `git hash-object` on both sides.
+  The operator had asked for the most recent LOADED copy, which carried
+  intentional differences - so matching the repo hash was proof the WRONG file
+  had been restored. Three sections existed only in the loaded copy and were
+  recovered from a handoff copy the operator still had; of the three, one was
+  superseded by better repo text, one wanted rewriting rather than restoring,
+  and one was a genuine loss (the `add_repo` guidance, now a bullet under Git).
+  The restore also auto-synced the loaded copy from the repo, which the bullet
+  above forbids. Ask which copy is wanted before restoring either.
 - **Container reads go through git, not the API.** `curl` to api.github.com is
   refused ("GitHub access to this repository is not enabled for this session").
   Use `git fetch origin main && git show origin/main:<path>`. From a browser tab
