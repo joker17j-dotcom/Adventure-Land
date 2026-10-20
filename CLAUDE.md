@@ -1723,9 +1723,9 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 378 JS assertions across SIX suites, plus 124
+  **COUNT AS OF 2026-10-20, LATE: 379 JS assertions across SIX suites, plus 124
   from the python bridge suite the runner shells out to and folds in, for
-  `all 502 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 503 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
@@ -1764,14 +1764,29 @@ The Claude Code session commits with git and should never use this route.
 - **The divergence checks are the ones most likely to earn their keep.**
   `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
   relay block or `bossHopFollow` stop being identical.
-  **BUT A DIVERGENCE CHECK COVERS THE NAMES IT LISTS AND NOTHING ELSE, AND BOTH
-  SESSIONS READ IT AS COVERING THE CLASS.** 2026-10-20: `BOSS_FIGHT_TYPE` sat in
-  all three scripts with no assertion over it, and a handoff asserted that
-  "suite_relay asserts the relay block is identical ... so all three move
-  together or the divergence check fires". It names `plSaveCursor`, `plActed`
-  and `plMarkActed`. Three copies could have drifted in silence; they had not,
-  and nothing would have said so. When adding a block to all three files, add it
-  to the loop in the same commit - the check is a LIST, not a rule. Merchant fixed the
+  **BUT A DIVERGENCE CHECK COVERS THE NAMES AND FILES IT LISTS, AND NOTHING
+  ELSE.** 2026-10-20: `BOSS_FIGHT_TYPE` sat in all three scripts with no
+  assertion over it, and a handoff asserted that the relay check meant "all
+  three move together or the divergence check fires". It does not - it names
+  `plSaveCursor`, `plActed` and `plMarkActed`. **ATTRIBUTION MATTERS HERE AND
+  THIS BULLET FIRST GOT IT WRONG, blaming the text.** The sentence above is
+  SPECIFIC and was accurate: the relay block and `bossHopFollow` are both
+  genuinely covered, and there is a separate block for `bossApproach`. Nothing
+  understated its scope; a reader widened a correctly-stated scope to a third
+  thing it never claimed, then relied on the widening. That is worse than
+  misreading a vague bullet, because the specific version was in front of them -
+  so the remedy is to re-read the loop body, never to trust a summary of what a
+  suite covers, including this file's.
+  **THE SAME TRAP HAS A SECOND LEVEL: THE FILE LIST.** The fix for the name list
+  was to add four names - and the survival check was then scoped to
+  `['Party/Ranger.js','Party/Priest.js','Party/Mage.js']`, so it read as
+  repo-wide while covering three of FOUR copies. `Codex/FamilyFleet.js` carried
+  the same single-valued mapping, with the same three call-site shape and a
+  comment block that already named bgoo and recorded both products as
+  cooperative. **So derive the file set, do not list it** - `suite_relay.js` now
+  walks every tracked `.js` for the offending form. A `*.js` walk skips
+  `Crowns3bc/` for free, which is the silent-skip hazard this file warns about
+  and is correct here, that directory being reference-only. Merchant fixed the
   replay bug in v68 and it took three weeks and a live reload loop to reach
   the other three; a suite checking only one would not have noticed.
 

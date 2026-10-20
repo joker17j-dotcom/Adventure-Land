@@ -165,17 +165,45 @@ module.exports = [
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,
 			texts.every((x) => x === texts[0]), true);
 	}
-	/* And that the rgoo-only form is gone from all three, not just renamed in
-	   one - a surviving single-valued copy is the defect itself. */
+	/* THE FILE SET IS DERIVED, NOT LISTED, and that is this check's own lesson
+	   applied to itself. The loop above fixes "a check covers the NAMES it
+	   lists" by naming four; FILES is the same kind of list, so scoping the
+	   survival check to it would have read as repo-wide while covering three of
+	   FOUR copies - Codex/FamilyFleet.js carried the single-valued mapping with
+	   the same three call-site shape, and was invisible to a FILES loop. The
+	   other session found it after this check was written and passing.
+	   Crowns3bc/ is excluded for free rather than deliberately: those files
+	   carry no extension, so a '*.js' walk skips them - which is the behaviour
+	   CLAUDE.md warns about, and is CORRECT here, since that directory is
+	   reference-only and must never be edited. */
 	const fs = require('fs');
 	const path = require('path');
 	const { ROOT } = require('./lift');
-	for (const f of FILES) {
-		const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
-		t.eq(`${f}: no single-valued BOSS_FIGHT_TYPE survives`,
-			/BOSS_FIGHT_TYPE\s*=/.test(src), false);
-		t.eq(`${f}: both goo types are named`,
-			/goobrawl: \['rgoo', 'bgoo'\]/.test(src), true);
+	const js = [];
+	(function walk(dir) {
+		for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+			const rel = dir ? dir + '/' + e.name : e.name;
+			if (e.isDirectory()) {
+				if (e.name === '.git' || e.name === 'node_modules' || e.name === 'Archived') continue;
+				walk(rel);
+			} else if (e.name.endsWith('.js')) {
+				js.push(rel);
+			}
+		}
+	})('');
+	t.ok('the walk found the scripts it is meant to cover', js.length >= 4);
+	const offenders = js.filter((f) => /BOSS_FIGHT_TYPE\s*=/.test(
+		fs.readFileSync(path.join(ROOT, f), 'utf8')));
+	t.eq('no single-valued BOSS_FIGHT_TYPE survives in ANY tracked .js', offenders, []);
+	/* And every file that carries the mapping at all names both products, so a
+	   fifth copy cannot land with one of them. */
+	const carriers = js.filter((f) => /BOSS_FIGHT_TYPES\s*=/.test(
+		fs.readFileSync(path.join(ROOT, f), 'utf8')));
+	t.eq('four files carry the mapping - the three party scripts and FamilyFleet',
+		carriers.length, 4);
+	for (const f of carriers) {
+		t.eq(`${f}: both goo types are named`, /goobrawl: \['rgoo', 'bgoo'\]/.test(
+			fs.readFileSync(path.join(ROOT, f), 'utf8')), true);
 	}
 } },
 

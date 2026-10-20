@@ -1752,8 +1752,8 @@ async function bossStandOff(mob) {
        null forever, so it never recognised ARRIVAL - it would have kept
        re-emitting join while standing in the brawl, and never swung.
 
-   bossMonsterType() maps the event name to the monster that is actually there,
-   which fixes both and relaxes no policy: goobrawl now passes the cooperative
+   bossMonsterTypes() maps the event name to the monsters that are actually
+   there - PLURAL, see below - which fixes both and relaxes no policy: goobrawl now passes the cooperative
    test for the same reason the other three do, rather than being admitted by
    hand. -> bossStandOff for the part Ranger.js needs bossPosture for.
 
@@ -1764,8 +1764,33 @@ async function bossStandOff(mob) {
    rgoo's range of 64 is the free-shot band - well inside a ranger's reach - but
    ONLY if the character actually stands outside it, which is what bossStandOff
    is for. The join teleports us to the arrival point, not to a firing posture. */
-const BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' };
-function bossMonsterType(name) { return BOSS_FIGHT_TYPE[name] || name; }
+/* ONE-TO-MANY as of 2026-10-20, and the comment block above is why this was a
+   defect rather than a tidy-up: it NAMES bgoo, records both products as
+   cooperative, and documents that bossApproach "asked
+   get_nearest_monster({ type: 'goobrawl' }) and got null forever" - then mapped
+   to rgoo alone, which reproduces that exact null-forever failure on a brawl
+   showing only bgoo. A correct comment sitting against contradicting code, in
+   the same thirty lines. The party scripts carried the same single value and
+   were fixed in Ranger v105 / Priest v57 / Mage v80.
+   -> Party/RangerComments.md#bossFightTypes */
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'] };
+function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
+
+/* The nearest of ANY of the event's monster types. Distance rather than
+   first-found: both goo types can be up, and the near one is the one to stand
+   off from. get_nearest_monster is bounded by vision here exactly as at the
+   call sites this replaces. */
+function bossNearestMonster(name) {
+	let best = null, bestD = Infinity;
+	for (const t of bossMonsterTypes(name)) {
+		const m = get_nearest_monster({ type: t });
+		if (!m) continue;
+		const d = (typeof m.x === 'number' && typeof character.x === 'number')
+			? Math.hypot(m.x - character.x, m.y - character.y) : 0;
+		if (d < bestD) { best = m; bestD = d; }
+	}
+	return best;
+}
 
 const BOSS_JOIN_SPOTS = {
 	goobrawl: { map: 'goobrawl', x: null, y: null },
@@ -1808,7 +1833,10 @@ function bossEligible(name) {
 	if (!cfg.enabled || !cfg.travel) return { ok: false, why: 'travel is off' };
 	if ((cfg.exclude || []).indexOf(name) !== -1) return { ok: false, why: 'excluded' };
 	// -> GOO BRAWL: the event name is not always the monster name.
-	if (!isCoopBoss(bossMonsterType(name))) return { ok: false, why: 'not cooperative' };
+	/* ANY of the event's products being cooperative admits it - both goo types
+	   are, per the measurements above, so this changes no answer today and stops
+	   a missing entry answering false, which rejects the boss outright. */
+	if (!bossMonsterTypes(name).some((t) => isCoopBoss(t))) return { ok: false, why: 'not cooperative' };
 	const until = bossState.cooldown[name] || 0;
 	if (until > Date.now()) return { ok: false, why: 'gave up, ' + Math.round((until - Date.now()) / 60000) + ' min left' };
 	return { ok: true, why: 'cooperative' };
@@ -1861,7 +1889,7 @@ function bossEnd(why) {
    walking us back to the farm spot in the same breath. */
 async function bossApproach(name) {
 	// -> GOO BRAWL. Asking for the EVENT name here returned null forever.
-	const arrived = get_nearest_monster({ type: bossMonsterType(name) });
+	const arrived = bossNearestMonster(name);
 	if (arrived) { await bossStandOff(arrived); return; }   // arrived; the attack rule decides from here
 	if (BOSS_JOIN_SPOTS[name]) {
 		// hopsickness is the one refusal worth naming: it is temporary, and the
@@ -1946,7 +1974,7 @@ function bossStatus() {
 	for (const n of live) {
 		const e = bossEligible(n);
 		const d = parent.S[n] || {};
-		const mob = get_nearest_monster({ type: bossMonsterType(n) });
+		const mob = bossNearestMonster(n);
 		bossLog('  ' + n + ': ' + (e.ok ? 'ELIGIBLE' : 'no - ' + e.why)
 			+ (d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
 			+ (mob ? (mob.target ? ' - engaged by ' + mob.target + ', we would attack' : ' - nobody on it, we would hold') : ''),
