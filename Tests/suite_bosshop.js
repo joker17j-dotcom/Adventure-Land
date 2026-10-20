@@ -617,7 +617,10 @@ module.exports = [
 			character: { name: 'Dexon', rip: false },
 		});
 		lift(w, RANGER, ['bossState', 'bossShard', 'bossCooldownKey', 'bossCooledDown',
-			'bossClearCooldown', 'bossEligible', 'bossEnd']);
+			'bossClearCooldown', 'bossEligible', 'bossGenerationEnd', 'bossEnd']);
+		/* No bridge row by default, so every assertion above this block reads
+		   the cooldownMs fallback and the generation-end tests opt in. */
+		w.bossHop = { bridgeRow: () => null };
 		w.CONFIG = { bossEvents: { enabled: true, exclude: new Set(), include: [],
 			cooperativeOnly: false, cooldownMs: CD } };
 		w.bossCooperative = () => true;
@@ -707,6 +710,89 @@ module.exports = [
 	t.eq('a pre-v103 bare key still forbids the type everywhere',
 		w.bossCooledDown('franky', 'ASIAI'), true);
 	t.note('fails safe rather than permissive, so the persisted map needs no migration');
+} },
+
+{ name: 'the cooldown runs to the end of the GENERATION, not a fixed 30 minutes', fn(t) {
+	const CD = 30 * 60 * 1000;
+	function w1(row) {
+		const w = world({
+			BOSS_TYPE_GIVEUP_MAX: 2,
+			parent: { server_region: 'US', server_identifier: 'II' },
+			character: { name: 'Dexon', rip: false },
+		});
+		lift(w, RANGER, ['bossState', 'bossShard', 'bossCooldownKey', 'bossCooledDown',
+			'bossClearCooldown', 'bossEligible', 'bossGenerationEnd', 'bossEnd']);
+		w.CONFIG = { bossEvents: { enabled: true, exclude: new Set(), include: [],
+			cooperativeOnly: false, cooldownMs: CD } };
+		w.bossCooperative = () => true;
+		w.bossSave = () => { };
+		w.bossLog = () => { };
+		w.bossIsLeader = () => false;
+		w.bossBroadcast = () => { };
+		w.bossHop = { bridgeRow: () => row };
+		return w;
+	}
+	const giveUp = (w, name, shard) => {
+		w.bossState.trip = { name, shard, startedAt: Date.now() - 1200000, deaths: 0 };
+		w.bossEnd('trip cap of 20 min');
+	};
+	const leftMin = (w, key) => Math.round((w.bossState.cooldown[key] - Date.now()) / 60000);
+
+	/* NO CONSTANT IS RIGHT, which is why the field exists. A 30-minute cooldown
+	   against a 2400s window expires INSIDE the window for a give-up in the
+	   first ten minutes and runs PAST the next window's open for one in the
+	   last ten - mistimed in opposite directions at the two ends. */
+	let w = w1({ hasWindow: true, windowEndsAt: Date.now() + 8 * 60000, estimatedRespawn: null });
+	giveUp(w, 'franky', 'USII');
+	t.eq('an event boss cools only to its window end', leftMin(w, 'franky|USII'), 8);
+	t.note('30 min here would have expired 22 min into the NEXT window, suppressing a fresh generation');
+
+	/* And the type-level backstop uses the same end, because an event boss's
+	   generation IS type-wide - every shard spawns on the scheduled hour. */
+	w = w1({ hasWindow: true, windowEndsAt: Date.now() + 8 * 60000, estimatedRespawn: null });
+	giveUp(w, 'franky', 'USII');
+	giveUp(w, 'franky', 'USV');
+	t.eq('the backstop too, for an event boss', leftMin(w, 'franky'), 8);
+
+	/* A RESPAWN BOSS IS THE CASE THE OTHER SESSION GOT WRONG. estimated_respawn
+	   is right for THIS shard's instance and says nothing about the others,
+	   because each shard's timer runs independently - so there is no type-wide
+	   generation and the backstop has nothing to align to. */
+	w = w1({ hasWindow: false, windowEndsAt: null, estimatedRespawn: Date.now() + 95 * 60000 });
+	giveUp(w, 'dragold', 'USII');
+	t.eq('a respawn boss cools its SHARD to its own respawn', leftMin(w, 'dragold|USII'), 95);
+	giveUp(w, 'dragold', 'USV');
+	t.eq('but the backstop keeps the constant - no type-wide generation exists',
+		leftMin(w, 'dragold'), 30);
+	t.note('using estimated_respawn there would suppress every shard on one shard\'s timer');
+
+	/* NULL IS NOT ABSENT. An event boss the bridge found already up sends
+	   window_ends_at as null, and inventing a deadline from that would be
+	   worse than falling back. */
+	w = w1({ hasWindow: true, windowEndsAt: null, estimatedRespawn: null });
+	giveUp(w, 'crabxx', 'USII');
+	t.eq('an event boss with an unknown window falls back to the constant',
+		leftMin(w, 'crabxx|USII'), 30);
+
+	/* A window end already past, and no bridge row at all: both fall back
+	   rather than producing a zero or negative cooldown. */
+	w = w1({ hasWindow: true, windowEndsAt: Date.now() - 60000, estimatedRespawn: null });
+	giveUp(w, 'crabxx', 'USII');
+	t.eq('a window end in the past falls back', leftMin(w, 'crabxx|USII'), 30);
+	w = w1(null);
+	giveUp(w, 'crabxx', 'USII');
+	t.eq('no bridge row falls back', leftMin(w, 'crabxx|USII'), 30);
+
+	/* The three-state read itself, at the helper. */
+	w = w1({ hasWindow: true, windowEndsAt: 123456, estimatedRespawn: 999 });
+	t.eq('hasWindow -> type-wide', w.bossGenerationEnd('franky', 'USII'),
+		{ at: 123456, typeWide: true });
+	w = w1({ hasWindow: false, windowEndsAt: null, estimatedRespawn: 999 });
+	t.eq('absent window -> per-shard only', w.bossGenerationEnd('dragold', 'USII'),
+		{ at: 999, typeWide: false });
+	w = w1(null);
+	t.eq('no row -> nothing known', w.bossGenerationEnd('franky', 'USII'),
+		{ at: null, typeWide: false });
 } },
 
 ];

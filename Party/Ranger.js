@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v103
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v104
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2703,6 +2703,34 @@ function bossOnCall(from, data) {
 	if (!data.name && bossState.trip) bossEnd('the leader moved on');
 }
 
+/* WHEN THIS BOSS'S CURRENT GENERATION ENDS, and whether that end is TYPE-WIDE.
+   The give-up cooldown is approximating "stop considering this until the thing
+   we judged too strong is gone", which is not a duration at all - and no
+   constant can be right, because a 30-minute cooldown against a 2400s window
+   expires INSIDE the window for a give-up in the first ten minutes and runs
+   PAST the next window's open for one in the last ten. Measured by the browser
+   session across the 60-minute inter-window gap.
+
+   THE TWO CLASSES NEED DIFFERENT FIELDS, and only one of them is type-wide:
+   - An EVENT boss (the EVENT_WINDOW_SEC five) has every shard's instance
+     spawning on the same scheduled hour and dying at the same window close, so
+     `window_ends_at` is the end AND it is type-wide.
+   - A RESPAWN boss has no window and no synchronised generation at all: each
+     shard's timer runs independently. `estimated_respawn` is exactly right for
+     THIS shard's instance and says nothing whatever about the others - so it
+     serves the shard key and the TYPE-level backstop has nothing to align to
+     and keeps the constant. The other session recommended estimated_respawn for
+     both; it is wrong for the type key for that reason.
+   Unknown answers fall back to cooldownMs rather than inventing a deadline.
+   -> RangerComments.md#shardKeyedCooldown */
+function bossGenerationEnd(name, shard) {
+	let row = null;
+	try { row = bossHop.bridgeRow(shard, name); } catch (e) { }
+	if (!row) return { at: null, typeWide: false };
+	if (row.hasWindow) return { at: row.windowEndsAt || null, typeWide: true };
+	return { at: row.estimatedRespawn || null, typeWide: false };
+}
+
 /* Terminal for one trip. The cooldown is set ONLY when we gave up rather than
    when the event ended on its own - otherwise the party turns round and walks
    back out to the boss that just outlasted it, which is the same loop under a
@@ -2716,19 +2744,18 @@ function bossEnd(why) {
 	if (gaveUp) {
 		const sh = t.shard || bossShard();
 		const now = Date.now();
-		bossState.cooldown[bossCooldownKey(t.name, sh)] = now + CONFIG.bossEvents.cooldownMs;
+		const gen = bossGenerationEnd(t.name, sh);
+		const genLeft = (gen.at && gen.at > now) ? (gen.at - now) : null;
+		bossState.cooldown[bossCooldownKey(t.name, sh)] = now + (genLeft || CONFIG.bossEvents.cooldownMs);
 		/* WHY, kept because "we could not kill it" and "we arrived too late"
 		   want different answers next window, and the reason string is the only
 		   place that distinction exists. */
 		bossState.lastGiveUp = { name: t.name, shard: sh, why: why, at: now };
 		/* THE TYPE-LEVEL BACKSTOP. Pruned to one event window so give-ups from
-		   a previous window never add up. The DURATION is cooldownMs, not the
-		   window remainder the spec asks for: the remainder needs the boss's
-		   spawn time, which this script does not hold - eventWindowMs() gives
-		   the window's LENGTH and scanResults carries spawnTime only for a
-		   boss that has not spawned yet. Using the existing constant keeps the
-		   backstop's behaviour identical to the pre-v103 type-wide cooldown,
-		   which is the conservative choice. */
+		   a previous window never add up. Its duration runs to the generation
+		   end only where that end is TYPE-WIDE, which is event bosses alone -
+		   see bossGenerationEnd above for why a respawn boss has no such end
+		   and keeps the constant. */
 		const win = (typeof bossHop !== 'undefined' && bossHop.eventWindowMs)
 			? (bossHop.eventWindowMs(t.name) || CONFIG.bossEvents.cooldownMs)
 			: CONFIG.bossEvents.cooldownMs;
@@ -2746,7 +2773,8 @@ function bossEnd(why) {
 			}
 		}
 		if (Object.keys(shards).length >= BOSS_TYPE_GIVEUP_MAX) {
-			bossState.cooldown[t.name] = now + CONFIG.bossEvents.cooldownMs;
+			bossState.cooldown[t.name] = now
+				+ ((gen.typeWide && genLeft) ? genLeft : CONFIG.bossEvents.cooldownMs);
 			wide = true;
 		}
 	}
@@ -3149,6 +3177,16 @@ const bossHop = {
 				hp: typeof r.hp === 'number' ? r.hp : null,
 				etaSec: typeof r.eta_sec === 'number' ? r.eta_sec : null,
 				stale: r.stale === true,
+				/* THREE STATES, and hasWindow is what separates the two that
+				   look alike. The bridge omits window_ends_at for a boss with
+				   no event window, and sends it as NULL for an event boss it
+				   found already up - so absent means "respawn boss, use
+				   estimatedRespawn" while null means "event boss, window
+				   unknown". Collapsing them would read an already-up crabxx as
+				   a respawn boss. */
+				hasWindow: Object.prototype.hasOwnProperty.call(r, 'window_ends_at'),
+				windowEndsAt: typeof r.window_ends_at === 'string' ? Date.parse(r.window_ends_at) : null,
+				estimatedRespawn: typeof r.estimated_respawn === 'string' ? Date.parse(r.estimated_respawn) : null,
 			}));
 			this.bridgeAt = Date.now();
 			this.bridgeErr = null;
@@ -3241,6 +3279,17 @@ const bossHop = {
 		   and the `r.live !== true` return below fires first.
 		   despawn and lost rows carry no death_hi and their `t` IS the
 		   detection time, so the fallback is correct rather than a concession.
+
+		   GOO ENTRIES FLAP DURING A HEALTHY GOOBRAWL, AND THAT IS NOT A BUG.
+		   goo variants die and are replaced continuously through the event, so
+		   `ev: "lost"` ("instance id changed without an observed death") fires
+		   routinely - the browser session measured the whole of it in the only
+		   goo cluster the log holds: spawn 18:01:58, lost 18:05:45, spawn
+		   18:05:45 at the SAME second, death 18:15:10. So an rgoo or bgoo entry
+		   will go live -> false -> live repeatedly while a goobrawl runs. The
+		   replacement spawn arrives in the same poll and record() re-adds it,
+		   which is the self-healing property that made treating `lost` as
+		   terminal safe in the first place. Do not "fix" the flapping.
 		   Parsed in two steps so a malformed death_hi falls back instead of
 		   dropping a real terminal. */
 		let t = Date.parse(e.death_hi);

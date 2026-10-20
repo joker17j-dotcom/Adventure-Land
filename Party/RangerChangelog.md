@@ -21,6 +21,68 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v104
+
+The give-up cooldown runs to the end of the boss's current GENERATION instead
+of a flat 30 minutes. This answers the open question v103 left, with data the
+other session measured, and corrects half of their recommendation.
+
+NO CONSTANT CAN BE RIGHT, which is why this needed a field rather than a better
+number. Against a 2400s window with a 60-minute inter-window gap, a 30-minute
+cooldown starting t minutes after the window opens: t under 10 expires INSIDE
+the window, so the generation already judged too strong on two shards becomes
+eligible again; t over 30 expires AFTER the next window opens, suppressing up
+to ten minutes of a FRESH generation on the 1-hour gaps. Only 10-30 is correct,
+and it is correct by accident. The quantity being approximated is not a
+duration - it is "until this generation is gone".
+
+BRIDGE SIDE: `window_ends_at` on `/bosses` rows. The END, not `spawn_t`: the
+end is what a consumer needs, and sending the start would make every caller
+transcribe `EVENT_WINDOW_SEC` client-side, which is exactly the config drift
+`terminal=1` was built to avoid. THREE DISTINGUISHABLE STATES, because the
+other session's "absent means not an event boss" reading has a hole - the
+poller deliberately leaves `spawn_t` as None for a boss it found ALREADY UP, so
+absence would then be ambiguous. A timestamp means an event boss whose spawn we
+saw; NULL means an event boss with no computable window; ABSENT means not an
+event boss at all.
+
+THEIR RECOMMENDATION WAS HALF RIGHT, and the half that is wrong matters.
+`estimated_respawn` is indeed the generation end for a respawn boss - but only
+for THAT SHARD's instance. Each shard's timer runs independently, so a respawn
+boss has no synchronised type-wide generation at all, and the TYPE-level
+backstop has nothing to align to. So: event boss, both keys run to
+`window_ends_at`; respawn boss, the shard key runs to its own
+`estimated_respawn` and the backstop keeps `cooldownMs`. Using
+`estimated_respawn` for the backstop would suppress every shard on one shard's
+timer.
+
+Unknowns fall back to `cooldownMs` rather than inventing a deadline: a null
+window, a window end already past, a stale bridge row, no bridge row at all.
+
+ALSO IN THIS COMMIT, AND IT IS A CORRECTION TO MY OWN BRIDGE. The comment above
+`SCHEDULE_OBSERVABLE` claimed goobrawl was "permanently invisible", and the same
+file has described the `goobrawl -> rgoo/bgoo` mapping sixty lines further down
+since 2026-10-18. The false half cost the other session two wrong sections of
+the chain queue spec. `never_observable` only ever meant "this event's own name
+is not a polled monster type" and was NAMED as something far stronger; both
+sessions believed the name over the contents. Fixed at the source rather than
+documented around: `SCHEDULE_SPAWNS`, a reverse `SCHEDULE_EVENT_OF`, mapping
+applied BEFORE the membership test in `/schedule`, so an rgoo row now counts as
+evidence the goobrawl ran and `never_observable` reads `["abtesting"]` alone.
+Both products are mapped, not just rgoo - the scripts' own `BOSS_FIGHT_TYPE`
+names only the first, so a bgoo-only goobrawl would read as unobserved on it.
+
+`applyTerminal` gains a note that goo entries FLAP during a healthy goobrawl.
+The variants die and are replaced continuously, so `ev: "lost"` fires routinely
+- measured in the only goo cluster the log holds: spawn 18:01:58, lost
+18:05:45, spawn 18:05:45 at the same second, death 18:15:10. The replacement
+arrives in the same poll and `record()` re-adds it, which is the self-healing
+property that made treating `lost` as terminal safe. Nobody should "fix" it.
+
+Suite 479 (355 JS, 124 python). Four new branches mutation-tested: ignoring
+`typeWide` on the backstop, forcing the shard key to the constant, ignoring
+`hasWindow`, and dropping the already-past check.
+
 ## v103
 
 The give-up cooldown is keyed `(type, shard)`. This is section 4 of the chain

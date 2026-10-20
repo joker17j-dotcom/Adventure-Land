@@ -135,6 +135,23 @@ two coherent configurations - v99's asymmetry with a type key, or v103's
 symmetry with a shard key - and neither half of either works alone. Changing
 one without the other reinstates a measured defect.
 
+THE DURATION BECAME THE GENERATION END IN v104, and the open question v103
+recorded here is answered. A constant cannot be right: against a 2400s window
+and a 60-minute gap, 30 minutes expires INSIDE the window for a give-up in the
+first ten minutes and past the NEXT window's open for one in the last ten. The
+bridge now serves `window_ends_at` on `/bosses` rows - the END, since sending
+`spawn_t` would make this script transcribe `EVENT_WINDOW_SEC`. Read it as three
+states: a timestamp is an event boss whose spawn the bridge saw, NULL is an
+event boss it found already up (`spawn_t` is deliberately None then), and ABSENT
+is not an event boss. `hasWindow` is what separates the middle two, and
+collapsing them reads an already-up crabxx as a respawn boss.
+Only the EVENT end is type-wide. A respawn boss's `estimated_respawn` is the
+generation end for ITS SHARD and says nothing about the others, because each
+shard's timer runs independently - so it serves the shard key and the type-level
+backstop keeps the constant, having nothing to align to. The other session
+recommended `estimated_respawn` for both; for the backstop that would suppress
+every shard on one shard's timer.
+
 THE BACKSTOP COUNTS DISTINCT SHARDS, NOT ATTEMPTS. `BOSS_TYPE_GIVEUP_MAX = 2`,
 pruned to one event window. Three give-ups on the same shard say nothing about
 the other four and must not trip it; two different shards do. The DURATION is

@@ -355,6 +355,61 @@ chk("which is exactly what an older bridge does with terminal=1",
 _srv.shutdown()
 os.unlink(_tmp.name)
 
+# ------------------------------------------- window_ends_at: the generation end
+# A consumer deciding "how long to stop considering this boss" needs the END of
+# the current generation, which is not a duration any constant approximates: a
+# 30-minute cooldown against a 2400s window expires INSIDE the window for a
+# give-up in the first ten minutes and runs past the NEXT window's open for one
+# in the last ten. So the bridge serves the end rather than spawn_t - sending
+# spawn_t would make every caller transcribe EVENT_WINDOW_SEC client-side.
+_w = b.BossWatch(["crabxx", "dragold"], interval=45, enabled=False, events_path=None)
+_t = time.time()
+def _seed(key, spawn_t, er=None):
+    _w.meta[key] = {"entry": {"id": "x", "estimatedRespawn": er}, "hp": 500,
+                    "present": True, "seen_ts": _t, "seen_raw": "x",
+                    "target": None, "has_target": True, "at": _t}
+    _w.fights[key] = {"spawn_t": spawn_t}
+_seed(("crabxx", "US", "II"), _t - 600)
+_seed(("crabxx", "EU", "I"), None)
+_seed(("dragold", "US", "II"), None, er="2026-10-20T23:00:00Z")
+_byserver = {(r["type"], r["server"]): r for r in _w.rows()}
+
+# THREE DISTINGUISHABLE STATES, which is why null and absent are not the same
+# answer. A consumer reading absent as "not an event boss" without separating
+# null would treat an already-up crabxx as a respawn boss.
+chk("an event boss whose spawn was seen carries a window end",
+    _byserver[("crabxx", "US II")]["window_ends_at"],
+    b.iso(_t - 600 + b.EVENT_WINDOW_SEC["crabxx"]))
+chk("an event boss found ALREADY UP carries null, not a guess",
+    _byserver[("crabxx", "EU I")]["window_ends_at"], None)
+chk("and the key is PRESENT in that case",
+    "window_ends_at" in _byserver[("crabxx", "EU I")], True)
+chk("a respawn boss omits the key entirely",
+    "window_ends_at" in _byserver[("dragold", "US II")], False)
+chk("and still serves estimated_respawn, which is its own generation end",
+    _byserver[("dragold", "US II")]["estimated_respawn"], "2026-10-20T23:00:00Z")
+chk("spawn_t itself is NOT exposed - the end is the quantity, not the start",
+    "spawn_t" in _byserver[("crabxx", "US II")], False)
+
+# ------------------------------------------------ goobrawl IS observable
+# `never_observable` only ever meant "this event's own name is not a polled
+# monster type", and the field name said something much stronger - it cost the
+# other session two wrong sections of a design spec, which asserted that a
+# reactive design waits forever for a goobrawl. goobrawl spawns rgoo and bgoo,
+# both polled and both in EVENT_WINDOW_SEC.
+chk("goobrawl is observable, through what it spawns", "goobrawl" in b.SCHEDULE_OBSERVABLE, True)
+chk("abtesting genuinely is not", "abtesting" in b.SCHEDULE_OBSERVABLE, False)
+chk("only abtesting remains unobservable",
+    sorted(set(b.SCHEDULE_DAILY_EVENTS + b.SCHEDULE_NIGHTLY_EVENTS) - b.SCHEDULE_OBSERVABLE),
+    ["abtesting"])
+chk("both spawn products map back to the event", b.SCHEDULE_EVENT_OF,
+    {"rgoo": "goobrawl", "bgoo": "goobrawl"})
+chk("a non-product type maps to itself",
+    b.SCHEDULE_EVENT_OF.get("crabxx", "crabxx"), "crabxx")
+# BOTH products, not just the first: the scripts' BOSS_FIGHT_TYPE names only
+# rgoo, so a bgoo-only goobrawl would read as unobserved on that mapping.
+chk("bgoo counts too, not only rgoo", b.SCHEDULE_EVENT_OF.get("bgoo"), "goobrawl")
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

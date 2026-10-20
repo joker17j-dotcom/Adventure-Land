@@ -222,10 +222,23 @@ SCHEDULE_NIGHTLY_EVENTS = ["icegolem", "franky"]
 # design/events.js durations, seconds.
 SCHEDULE_EVENT_SEC = {"crabxx": 2400, "goobrawl": 540, "abtesting": 480,
                       "icegolem": 2400, "franky": 2400}
-# Only events that spawn a MONSTER can ever be observed through ALData, so
-# goobrawl and abtesting are permanently invisible here - their absence from
-# a window says nothing about whether they ran.
-SCHEDULE_OBSERVABLE = {"crabxx", "icegolem", "franky"}
+# AN EVENT IS OBSERVABLE WHEN SOMETHING IT SPAWNS IS POLLED, NOT WHEN ITS OWN
+# NAME IS. This comment said goobrawl was "permanently invisible" until
+# 2026-10-20 and that was false, contradicted by this same file sixty lines
+# down: goobrawl spawns `rgoo` and `bgoo`, both of which are in BOSS_TYPES and
+# in EVENT_WINDOW_SEC. The claim cost the other session two wrong sections of a
+# design spec - it wrote that a reactive design "waits forever" for a goobrawl
+# and that prepositioning was the only route, on the strength of
+# `never_observable` listing it. `never_observable` only ever meant "this
+# event's own name is not a polled monster type", and the FIELD NAME said
+# something much stronger.
+# abtesting is genuinely invisible: it spawns nothing this bridge polls.
+SCHEDULE_SPAWNS = {"goobrawl": ("rgoo", "bgoo")}
+# Reverse map, so an observed rgoo row counts as evidence the goobrawl ran. The
+# scripts carry the same idea one-way as BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' },
+# which names only the first of the two.
+SCHEDULE_EVENT_OF = {m: e for e, ms in SCHEDULE_SPAWNS.items() for m in ms}
+SCHEDULE_OBSERVABLE = {"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)
 # A timed event boss that VANISHES at the close of its window has DESPAWNED,
 # not died, and the listing cannot tell them apart on its own: a kill leaves
 # `estimatedRespawn` set, a despawn leaves nothing, so a despawn lands in the
@@ -1504,11 +1517,17 @@ def schedule_windows(servers, path=None, hours_ahead=48, hours_back=24) -> dict:
     t_now = now()
     spawns: dict = {}
     for d in boss_events_load(path):
-        if d.get("ev") != "spawn" or d.get("type") not in SCHEDULE_OBSERVABLE:
+        if d.get("ev") != "spawn":
+            continue
+        # Mapped BEFORE the membership test: a goobrawl is only ever evidenced
+        # by an rgoo or bgoo spawn row, never by one naming goobrawl, so testing
+        # the raw type here is what made the event look unobservable.
+        etype = SCHEDULE_EVENT_OF.get(d.get("type"), d.get("type"))
+        if etype not in SCHEDULE_OBSERVABLE:
             continue
         ts = parse_ts(d.get("t"))
         if ts:
-            spawns.setdefault(d.get("server"), []).append((ts, d["type"]))
+            spawns.setdefault(d.get("server"), []).append((ts, etype))
 
     out = []
     for server in sorted(set(servers) or set(SCHEDULE_SEED_SERVERS)):
@@ -2514,7 +2533,7 @@ class BossWatch:
                 age = round(t - m["seen_ts"]) if m["seen_ts"] is not None else None
                 dps, win, nsamp = self._dps(self.samples.get(key))
                 eta = round(hp / dps) if (dps and dps > 0 and hp) else None
-                out.append({
+                row = {
                     "type": mtype,
                     "serverRegion": region,
                     "serverIdentifier": ident,
@@ -2543,7 +2562,36 @@ class BossWatch:
                     "estimated_respawn": entry.get("estimatedRespawn"),
                     "respawn_sec": BOSS_RESPAWN_SEC.get(mtype),
                     "observed_ago_sec": round(t - m["at"]),
-                })
+                }
+                # WHEN THIS GENERATION IS GONE, which is the quantity a consumer
+                # deciding "how long to stop considering this boss" actually
+                # needs. Deliberately the END and not spawn_t: spawn_t alone
+                # would make every caller transcribe EVENT_WINDOW_SEC, and that
+                # client-side copy of bridge config is the drift this file keeps
+                # paying for elsewhere.
+                #
+                # THREE DISTINGUISHABLE STATES, so null and absent are NOT the
+                # same answer here:
+                #   a timestamp - an event boss whose spawn this process saw
+                #   null        - an event boss found ALREADY UP, where spawn_t
+                #                 is deliberately None (see the seeding branch);
+                #                 no window can be computed and inventing one
+                #                 invents a deadline
+                #   absent      - not an event boss at all; its generation ends
+                #                 when it dies, so use estimated_respawn
+                # A consumer that reads absent as "not an event boss" without
+                # separating the null case would treat an already-up crabxx as a
+                # respawn boss, which it is not.
+                #
+                # self.fights is written by the poller OUTSIDE this lock, but
+                # each entry is replaced wholesale rather than mutated, so a
+                # reader sees one version or the other and never a torn one -
+                # the same read health() already does.
+                if mtype in EVENT_WINDOW_SEC:
+                    sp = (self.fights.get(key) or {}).get("spawn_t")
+                    row["window_ends_at"] = (iso(sp + EVENT_WINDOW_SEC[mtype])
+                                             if sp else None)
+                out.append(row)
         out.sort(key=lambda r: (r["type"], r["serverRegion"], r["serverIdentifier"]))
         return out
 

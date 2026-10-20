@@ -678,12 +678,34 @@ this ranking until a Ranger build is actually running on him.
   ASIA +7, EU +1, US -5. That lands them at 01:00, 04:00, 06:00, 12:00, 13:00,
   16:00, 18:00, 19:00 and 22:00 UTC - every adjacent pair at least an hour
   apart. The nine are a queue, not a contention problem.
-- **goobrawl CAN NEVER FIRE REACTIVELY, so its rank 3 is a scheduling input only.**
-  The bridge reports `never_observable: ["abtesting", "goobrawl"]` - no live feed can
-  report that a goobrawl is up, so nothing can react to one appearing. It is
-  reachable only by planning against the schedule, which is the same conclusion the
-  teleport requirement reaches from the other direction. A design that waits to
-  OBSERVE a goobrawl waits forever.
+- **goobrawl IS OBSERVABLE, AND THIS BULLET SAID THE OPPOSITE UNTIL 2026-10-20.**
+  It read "CAN NEVER FIRE REACTIVELY ... a design that waits to OBSERVE a goobrawl
+  waits forever", on the strength of the bridge reporting
+  `never_observable: ["abtesting", "goobrawl"]`. **That field only ever meant "this
+  event's own NAME is not a polled monster type", and the name said something much
+  stronger.** goobrawl spawns `rgoo` and `bgoo`; both are polled, both are in
+  `EVENT_WINDOW_SEC`, and the bridge's own despawn comment has described that
+  mapping since 2026-10-18 - so one file asserted and contradicted it sixty lines
+  apart. The operator caught it. Fixed at the source rather than documented around:
+  `SCHEDULE_SPAWNS` plus `SCHEDULE_EVENT_OF` now derive observability from what an
+  event SPAWNS, an rgoo row counts as evidence the goobrawl ran, and
+  `never_observable` reads `["abtesting"]` alone. abtesting really does spawn
+  nothing the bridge polls.
+  **PREPOSITIONING STILL WINS, BUT ON THE BASE RATE RATHER THAN ON IMPOSSIBILITY.**
+  Measured over 3,084 events spanning 2026-10-17 to 2026-10-20: exactly FOUR goo
+  rows exist, all rgoo, all US III, one cluster - roughly one observation in ~75
+  server-windows over 3.17 days, and nobody knows why it is that low. Detection lag
+  was ~2 minutes against an 18:00 UTC open, which is 22% of a 540s window. So a
+  reactive fallback is cheap and should exist; it just cannot be the plan. **A
+  CONSUMER MUST TREAT ANY GOO PRESENT AS "EVENT LIVE", never a specific instance** -
+  the variants die and respawn continuously, which is why `ev: "lost"` fires
+  routinely during a HEALTHY goobrawl (spawn 18:01:58, lost 18:05:45, spawn
+  18:05:45 the same second, death 18:15:10). `scanResults` flapping
+  live/false/live during one is correct behaviour, not a defect.
+  **THE GENERAL LESSON IS ABOUT THE FIELD NAME, NOT THE EVENT.** `never_observable`
+  was computed from one narrow fact and named as a sweeping one, and both sessions
+  believed the name over the file's own contents. When a derived field's name makes
+  a stronger claim than its computation, the name is the bug.
 - **THE NIGHTLY ROTATION ALTERNATES PER SERVER, AND IT HELD 13 OF 13.** Confirmed
   2026-10-19 across the 04:00 UTC window: US came out exactly as predicted on all six
   shards - I icegolem, II franky, III franky, IV icegolem, V franky, PVP icegolem -
@@ -1701,9 +1723,9 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 345 JS assertions across SIX suites, plus 112
+  **COUNT AS OF 2026-10-20, LATE: 355 JS assertions across SIX suites, plus 124
   from the python bridge suite the runner shells out to and folds in, for
-  `all 457 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 479 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
