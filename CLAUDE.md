@@ -678,6 +678,20 @@ this ranking until a Ranger build is actually running on him.
   ASIA +7, EU +1, US -5. That lands them at 01:00, 04:00, 06:00, 12:00, 13:00,
   16:00, 18:00, 19:00 and 22:00 UTC - every adjacent pair at least an hour
   apart. The nine are a queue, not a contention problem.
+- **goobrawl CAN NEVER FIRE REACTIVELY, so its rank 3 is a scheduling input only.**
+  The bridge reports `never_observable: ["abtesting", "goobrawl"]` - no live feed can
+  report that a goobrawl is up, so nothing can react to one appearing. It is
+  reachable only by planning against the schedule, which is the same conclusion the
+  teleport requirement reaches from the other direction. A design that waits to
+  OBSERVE a goobrawl waits forever.
+- **THE NIGHTLY ROTATION ALTERNATES PER SERVER, AND IT HELD 13 OF 13.** Confirmed
+  2026-10-19 across the 04:00 UTC window: US came out exactly as predicted on all six
+  shards - I icegolem, II franky, III franky, IV icegolem, V franky, PVP icegolem -
+  and EU and ASIA brought it to 13 of 13 server transitions alternating. The model is
+  the operator's, not a derived one: a server's nightly alternates unless that server
+  has been restarted. So WHICH nightly event is coming is a planning input rather
+  than a surprise, which is what lets a queue preposition. Worth more than
+  `/schedule`, which labels its own server source "NOT measured live".
 
 ## The bridge's boss log - despawn vs kill
 
@@ -708,20 +722,36 @@ time on 2026-10-18.
   IS `iso(poll_t)`, so `death_hi - spawn_t` reconstructs the true upper bound
   exactly. The fix was right; the derivation first offered for it was not, which
   is its own instance of "a comment is a claim".
-- **OPEN as of 2026-10-18: does an engaged franky persist past its 2400s
-  window?** The US IV kill row reads 3612s elapsed, 1212s past the window. If it
-  persists, the window is an ARRIVAL deadline; if that row is something else, it
-  is a COMPLETION deadline - and the chain queue's deadlines mean different
-  things in each case, so this blocks that part of the design. NOTHING IS
-  COLLECTING IT YET, and the entry claimed otherwise for an hour: `taxiProbeNote`
-  is declared only in `Party/Ranger.js`, and Dexon was measured on 2026-10-18
-  running `Party/Mage.js` out of his own slot, so the probe has never executed.
-  Collection STARTED 2026-10-19: Dexon was measured byte-identical to committed
-  v97 bar the trailing newline, so `taxiProbeNote` and `bossRank` are both
-  executing for the first time and a walk-in-sick franky now collects this
-  without anyone setting up a test. The claim was written
-  from a verification that was true when run and stale by the time it was
-  filed; see "Deploying a code slot".
+- **ANSWERED 2026-10-19: THE EVENT WINDOW IS AN ARRIVAL DEADLINE, NOT A
+  COMPLETION DEADLINE.** Measured across all 14 `despawn` rows the bridge retained
+  for 2026-10-17 to 2026-10-20: TWELVE went at essentially full health - `last_pct`
+  100, 100, 100, 100, 100, 99.99, 99.88, 99.81 and four more at 100 - clustered at
+  `elapsed_sec` 2402-2556 against `window_sec` 2400. An UNTOUCHED boss goes at the
+  window, reliably. Against that, US II franky on 2026-10-19 logged `spawn 04:00:01`
+  and `death 04:43:49` - 2,628s, 228s past the window - with no despawn row at any
+  point, because the party was fighting it. So the window governs how long an
+  unengaged boss waits to be REACHED; a damaged one can outlive it. The chain
+  queue's deadlines are arrival deadlines.
+- **BUT "DAMAGED MEANS IT PERSISTS" HAS EXCEPTIONS, AND ONE MAY BE A
+  MISCLASSIFICATION.** Two of the fourteen despawned while damaged: crabxx US I at
+  `last_pct` 97.52, `elapsed_sec` 2561; and crabxx EU III at **63.19% with elapsed
+  2226 - INSIDE its own window.** The second is exactly what this section already
+  calls counter-evidence: a low hp reading says something was killing it. Treat it
+  as a candidate false positive in `stored_row_is_despawn()` rather than a boss that
+  vanished at 63%, and do not design a deadline around the two-exception case
+  without re-measuring.
+- **A DESPAWN ROW IS NOT A DEATH ROW, AND GUESSING ITS FIELD NAMES COSTS A FALSE
+  NEGATIVE.** `despawn` is its own `ev` value, so a filter on `ev === 'death'` never
+  sees one - the retained log holds 1,095 deaths and 14 despawns. Its fields are
+  `last_hp`, `last_pct`, `spawn_t`, `window_sec`, `elapsed_sec`, `reason`, NOT the
+  `hp`/`max_hp` that spawn and death rows carry. Reading `hp_pct` or `pct` off one
+  returns undefined, which looks exactly like "the bridge records no hp at death" -
+  a reading published on 2026-10-19 and retracted the same hour.
+- **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
+  measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
+  the Ranger slot and neither had ever run. Kept because the entry above was answered
+  from BRIDGE data rather than from that probe, so the probe's state is still the
+  thing to check before citing it.
 
 ## Stopping and restarting a character's CODE
 
@@ -1281,6 +1311,20 @@ Claude Code session stops after `browser_code_eval`.
   attack, on the strength of this file saying it was undefined. It was
   innocent; the real cause was background-tab throttling (see below). One
   `typeof` check would have skipped the detour.
+- **CaveRun's Form A SURFACE WAS MEASURED INERT ON 2026-10-19 - do not reopen it on
+  a reading.** Eight `isFn(` call sites pass a BARE identifier, which evaluates it
+  and therefore throws if it is undeclared: `isFn(can_move_to)` is Form A, not a
+  guard against it, and two of the eight sit outside any try/catch. Five identifiers
+  are involved - `can_move_to` (3), `can_attack` (2), `is_on_cooldown`,
+  `is_in_range`, `get_nearest_monster`. Measured live in the CODE context of all
+  three combat characters: every one resolves, by `typeof` AND by the
+  argument-passing test, and a live `can_move_to()` call returns a boolean. None is
+  declared in `Party/*.js`, `CaveRun.js` or `Codex/`, so all five are game-provided
+  and the measurement transfers between contexts - which is the check the
+  `ms_to_next_skill` bullet above exists to force. Rewriting eight sites in a script
+  that drives three live characters was correctly declined on the strength of this.
+  CaveRun v16 carries the same note at the `isFn` declaration, where a reader of
+  `isFn(can_move_to)` lands.
 
 ## Diagnose by instrumenting, not by reading
 
@@ -1293,6 +1337,15 @@ Claude Code session stops after `browser_code_eval`.
   way: requestAnimationFrame suspension, a 240 KiB CODE size cap, the
   placeholder roster, and caching as the cause of the repeated-listing loop.
   Every correct diagnosis came from instrumentation.
+- **A NULL FROM A FIELD YOU NEVER CONFIRMED EXISTS IS NOT A MEASUREMENT.** It is
+  indistinguishable from a null from a field that is genuinely empty, and it reads as
+  a finding. 2026-10-19: a despawn row's health was read as `hp_pct` and then `pct`,
+  neither of which that row carries, and the resulting nulls were published as "the
+  bridge records no hp at death" - from a `limit=600` window running 06:28 to 01:00,
+  which could not have contained the 04:40 rows in question either. Two independent
+  errors, one conclusion, stated with confidence. `Object.keys` one real row before
+  extracting from any of them, and read the time span of the sample you actually
+  pulled rather than the one you meant to.
 
 ## Chrome throttles background tabs - it looks exactly like dead code
 
@@ -1485,6 +1538,15 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
+  **COUNT AS OF 2026-10-20: 285 JS assertions across SIX suites, plus 61 from the
+  python bridge suite the runner shells out to and folds in, for `all 346 pass`.**
+  The figure above was true when written and is kept as the instance rather than
+  overwritten - it is this file's own "claims rot" with the numbers to prove it. The
+  handoff proposing this correction said "four suites"; it is six -
+  `suite_relay`, `suite_bosshop`, `suite_opengifts`, `suite_merchantver`,
+  `suite_features`, `suite_caverun` - and quoting 346 as the JS total would overstate
+  it by the python 61. Re-derive both from a run rather than from any note, including
+  this one.
 - **Suites lift the code out of the COMMITTED file, never a copy.**
   `Tests/lift.js` pulls a named declaration by brace-matching and evaluates
   it in a vm context; the only edit is `function x` -> `globalThis.x =
