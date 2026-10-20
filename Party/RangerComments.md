@@ -143,8 +143,25 @@ the full five minutes with a dead boss ranked first. The two mechanisms are
 complementary rather than competing: broadcast present means the broadcast is
 authoritative, broadcast gone means the bridge is.
 
-THE ORDERING GUARD DOES DOUBLE DUTY. `applyTerminal()` returns early when the
-entry's `at` is newer than the event. The direct reason is that `server_info`
+THE ORDERING GUARD DOES DOUBLE DUTY, AND IT HAS TO BE ANCHORED ON THE
+OBSERVATION. `applyTerminal()` returns early when the entry's `at` is newer
+than `death_hi` - NOT than `t`. v100 used `t`, and that was a real defect for
+one version: on a death row `t` is a reconstruction, two of its three forms
+being the poll-bracket midpoint `(last_alive_t + poll_t)/2`, while `death_hi`
+is `iso(poll_t)`, the poll that proved the boss gone. Because an event boss's
+key vanishes AT the death, `at` lands at the true death, which is after the
+midpoint whenever the death fell in the later half of the bracket - so the
+guard threw away the terminal and left precisely the frozen-hp entry this
+function exists to clear, with nothing arriving later to correct it. Measured
+over 1,238 death rows: 105 of the 394 boss rows carry a bracket over 30s, 68
+over 120s, worst 2,290s, and the widest brackets are the slowest-polled shards.
+The question the guard asks is which INSTANCE a push belongs to, and only the
+observation can answer that: a push after `death_hi` postdates the absence, a
+push between `t` and `death_hi` belongs to the instance that died. `despawn`
+and `lost` rows have no `death_hi` and their `t` IS the detection time, so the
+fallback is the correct reading for them, not a concession. It is parsed in two
+steps rather than as `e.death_hi || e.t`, because that form yields NaN on a
+malformed `death_hi` and then bails, dropping a real terminal in silence. The direct reason is that `server_info`
 is the primary feed and the bridge a derivative running up to 45s behind it,
 so a push newer than the event is describing a later instance and must win.
 The second effect is that the cold start needs no special case: the first

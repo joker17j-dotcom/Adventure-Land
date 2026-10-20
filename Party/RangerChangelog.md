@@ -21,6 +21,56 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v101
+
+The v100 ordering guard compared against the wrong timestamp and discarded
+roughly half the terminals it was built to act on. Found by the browser
+session on 2026-10-20 by reading the function and then measuring the bracket
+distribution, rather than by anything going visibly wrong.
+
+WHAT WAS WRONG. `applyTerminal()` ended with `if (r.at > t) return;` where
+`t = Date.parse(e.t)`. On a death row `e.t` is a RECONSTRUCTION of when the
+boss died: of its three forms, `respawn_offset` is exact but the other two -
+`poll_bracket` and `absent_on_responding_server` - are the midpoint of the
+poll bracket, `(last_alive_t + poll_t)/2`. The observation that actually
+proved the boss gone is `death_hi`, which is `iso(poll_t)`.
+
+WHY THAT BROKE IT, and the mechanism is v100's own. An event boss's
+`server_info` key VANISHES at the death, so pushes continue right up to it and
+`at` lands at the true death D. The midpoint `t` precedes D whenever D fell in
+the later half of the bracket - about half of them, weighted by bracket width
+- so the guard returned early and the terminal was dropped. Nothing corrects
+it afterwards: the key is gone, no further push arrives, and the entry keeps
+`live: true` with a frozen hp. That is exactly the shortest-`secsToDeath`
+state the whole function exists to clear, so the defect restored the original
+defect on the rows it hit.
+
+MEASURED, `death_hi - t` over the 1,238 retained death rows: 714 inside 2s,
+77 at 2-30s, 224 at 30-120s, 223 over 120s, worst 2,290s. 58% are tight enough
+to cost a second or two. But 105 of the 394 BOSS death rows carry a bracket
+over 30s and 68 over 120s - and the widest brackets are the slowest-polled
+shards, so the guard failed hardest exactly where the feed is weakest.
+
+THE FIX PRESERVES THE INTENT RATHER THAN RELAXING IT. The guard asks which
+INSTANCE a push belongs to, so it must compare against the observation: a push
+after `death_hi` genuinely postdates the absence and is a later instance; a
+push between `t` and `death_hi` belongs to the instance that died. `despawn`
+and `lost` rows carry no `death_hi` at all and their `t` IS the detection
+time, so falling back to `t` is the correct reading for them rather than a
+concession - checked against the emitters, not assumed.
+
+PARSED IN TWO STEPS, not as `e.death_hi || e.t`. That form returns NaN on a
+death_hi that is present but malformed, and the next line then bails - losing
+a real terminal silently, which is the failure mode this function must never
+have. The suite pins it: reverting to `e.t` fails the regression case, and the
+`||` form fails the malformed case.
+
+The cold start still needs no branch. A historical row's `death_hi` is in the
+past too, so replaying the whole retained log still clears nothing live -
+asserted with 50 rows at the widest bracket ever observed.
+
+Suite 441.
+
 ## v100
 
 A boss that is already dead stops being the picker's favourite candidate.

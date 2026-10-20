@@ -521,4 +521,75 @@ module.exports = [
 		w.bossHop.termCursor, null);
 } },
 
+{ name: 'applyTerminal orders against the OBSERVATION, not the death estimate', fn(t) {
+	const NOW = Date.now();
+	function w1(at) {
+		const w = ranger({ SCAN_STALE_MS: 5 * 60 * 1000 });
+		w.bossHop.scanResults = [{ shard: 'USII', mtype: 'crabxx', live: true,
+			hp: 960000, maxHp: 960000, spawnTime: null, at }];
+		w.bossHop.currentShard = () => 'USI';
+		w.bossHop.maxHpOf = () => 960000;
+		return w;
+	}
+	const iso = (ms) => new Date(ms).toISOString();
+
+	/* THE REGRESSION. A death row's `t` is a reconstruction - two of its three
+	   forms are (last_alive_t + poll_t)/2 - while death_hi is iso(poll_t), the
+	   poll that proved the boss gone. An event boss's server_info key vanishes
+	   AT the death, so `at` lands there, which is AFTER the midpoint whenever
+	   the true death fell in the later half of the bracket. v100 compared
+	   against `t` and discarded those terminals; nothing arrives afterwards to
+	   correct it, because the key is gone. */
+	let w = w1(NOW - 60000);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+		t: iso(NOW - 120000), death_hi: iso(NOW) });
+	t.eq('a death whose MIDPOINT predates the push still clears, because death_hi does not',
+		w.bossHop.scanResults[0].live, false);
+	t.note('v100 returned early here; measured over 1,238 death rows, 105 of 394 boss rows have brackets >30s');
+
+	/* The guard is not disabled, only re-anchored: an observation genuinely
+	   older than the push is still a previous instance and still loses. */
+	w = w1(NOW);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+		t: iso(NOW - 600000), death_hi: iso(NOW - 300000) });
+	t.eq('an observation older than the push does NOT clear', w.bossHop.scanResults[0].live, true);
+
+	/* despawn and lost carry no death_hi, and their `t` IS the detection time,
+	   so the fallback is the correct reading rather than a concession. Both
+	   directions, or the fallback could be ignoring t entirely. */
+	for (const ev of ['despawn', 'lost']) {
+		let h = w1(NOW - 60000);
+		h.bossHop.applyTerminal({ ev, type: 'crabxx', server: 'US II', t: iso(NOW) });
+		t.eq(ev + ' with no death_hi clears on its own t', h.bossHop.scanResults[0].live, false);
+		h = w1(NOW);
+		h.bossHop.applyTerminal({ ev, type: 'crabxx', server: 'US II', t: iso(NOW - 600000) });
+		t.eq(ev + ' older than the push still does not clear', h.bossHop.scanResults[0].live, true);
+	}
+
+	/* A malformed death_hi must fall back to t rather than drop a real
+	   terminal - `Date.parse(e.death_hi || e.t)` would return NaN here and
+	   bail, losing the row silently. */
+	w = w1(NOW - 60000);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+		t: iso(NOW), death_hi: 'not a date' });
+	t.eq('a malformed death_hi falls back to t instead of dropping the row',
+		w.bossHop.scanResults[0].live, false);
+
+	/* Both unusable: still no throw, still no clear. */
+	w = w1(NOW - 60000);
+	w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+		t: 'rubbish', death_hi: 'rubbish' });
+	t.eq('both timestamps unusable leaves the entry alone', w.bossHop.scanResults[0].live, true);
+
+	/* THE COLD START IS STILL SAFE. death_hi on a historical row is in the
+	   past too, so replaying the whole retained log clears nothing live. */
+	w = w1(NOW);
+	for (let d = 1; d <= 50; d++) {
+		w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
+			t: iso(NOW - d * 3600000), death_hi: iso(NOW - d * 3600000 + 2290000) });
+	}
+	t.eq('50 historical rows, widest observed bracket, still clear nothing',
+		w.bossHop.scanResults[0].live, true);
+} },
+
 ];

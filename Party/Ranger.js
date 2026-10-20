@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v100
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v101
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3106,7 +3106,27 @@ const bossHop = {
 		   from no boss ever having died. */
 		const shard = String(e.server || '').replace(/\s+/g, '');
 		if (!shard) return;
-		const t = Date.parse(e.t);
+		/* death_hi, NOT t. On a death row `t` is a RECONSTRUCTION of when the
+		   boss probably died - two of its three forms are the midpoint of the
+		   poll bracket, (last_alive_t + poll_t)/2 - while death_hi is iso(poll_t),
+		   the observation that proved it gone. The guard below is about which
+		   INSTANCE a push belongs to, so it has to compare against the
+		   observation: a push after death_hi genuinely postdates the absence,
+		   a push between t and death_hi belongs to the instance that died.
+		   Comparing against t discarded the terminal whenever the true death
+		   fell in the later half of the bracket, because an event boss's key
+		   vanishes AT the death so `at` lands there - and nothing arrives
+		   afterwards to correct it, which left exactly the frozen-hp entry this
+		   whole function exists to clear. Measured by the browser session over
+		   1,238 death rows: 105 of the 394 BOSS rows carry a bracket over 30s
+		   and 68 over 120s, worst 2,290s - and the widest brackets are the
+		   slowest-polled shards, so it failed hardest where the data is weakest.
+		   despawn and lost rows carry no death_hi and their `t` IS the
+		   detection time, so the fallback is correct rather than a concession.
+		   Parsed in two steps so a malformed death_hi falls back instead of
+		   dropping a real terminal. */
+		let t = Date.parse(e.death_hi);
+		if (!(t > 0)) t = Date.parse(e.t);
 		if (!(t > 0)) return;
 		const r = this.scanResults.find(x => x.shard === shard && x.mtype === mtype);
 		if (!r || r.live !== true) return;

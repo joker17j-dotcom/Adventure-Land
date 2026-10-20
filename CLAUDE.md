@@ -777,6 +777,33 @@ time on 2026-10-18.
   and the sender's filter is an optimisation.** The unknown-parameter behaviour
   is asserted in `Tests/bridge/test_despawn.py` rather than remembered, so the
   comment in `Party/Ranger.js` that depends on it is a checked claim.
+- **AN ESTIMATED TIMESTAMP IS NOT AN ORDERING KEY. A death row's `t` IS AN
+  ESTIMATE; `death_hi` IS THE OBSERVATION.** Two of the three `death_t` forms
+  are the poll-bracket midpoint `(last_alive_t + poll_t)/2` - only
+  `respawn_offset` is exact - while `death_hi` is `iso(poll_t)`, the poll that
+  proved the boss gone. Ranger v100 ordered a scanResults entry against `t` and
+  therefore discarded the terminal whenever the true death fell in the later
+  half of the bracket, which for an event boss is about half of them: the
+  `server_info` key vanishes AT the death, so the entry's `at` lands there,
+  after the midpoint. Measured over the 1,238 retained death rows,
+  `death_hi - t` is under 2s for 714 of them but over 30s for 105 of the 394
+  BOSS rows and over 120s for 68, worst 2,290s - **and the widest brackets are
+  the slowest-polled shards, so an estimate-ordered comparison fails hardest
+  exactly where the feed is weakest.** `despawn` and `lost` rows carry no
+  `death_hi` and their `t` IS the detection time, so `death_hi` falling back to
+  `t` is correct for all three; parse it in two steps, because
+  `Date.parse(e.death_hi || e.t)` yields NaN on a malformed `death_hi` and
+  drops a real row in silence. Fixed in Ranger v101.
+- **THE BULLET BELOW ALREADY SAID THIS, AND IT WAS STILL MISSED - A FACT FILED
+  UNDER ONE CONSEQUENCE IS NOT FOUND WHEN YOU NEED ANOTHER.** The `ttk_sec`
+  entry has stated since 2026-10-18 that `death_t` is the midpoint and that
+  `death_hi` IS `iso(poll_t)`, which is the whole of what v100 needed. It was
+  read, and it did not fire, because it is filed as "why ttk_sec runs short" -
+  a question nobody was asking - rather than as "what `t` means". This is a
+  different failure from the rot this file is mostly about: the claim was true,
+  current, precise and present, and the index was wrong. **When a bullet
+  establishes what a FIELD means, say so in its own sentence, not only as the
+  premise of the bug it was written for.**
 - **`ttk_sec` IS NOT THE WRITE PATH'S QUANTITY.** `death_t` is
   `(last_alive_t + poll_t)/2`, so `ttk_sec` runs SHORT by
   `(poll_t - last_alive_t)/2` and nothing the row reports bounds that. DO NOT
@@ -1534,6 +1561,16 @@ reading.
   `CaveRun.js:52` says "EVERYTHING IS WRAPPED IN AN IIFE" eight lines above the
   opener, and `:31`'s own changelog says "v4 ... IIFE wrapper". The cheap
   discriminator is `head -60 <file> | grep -n '(function'`.
+- **A METHOD ON AN OBJECT LITERAL IS NOT A TOP-LEVEL BINDING, AND THE FALSE
+  NEGATIVE IS IDENTICAL TO THE WRAPPED-FILE ONE.** 2026-10-20: a deploy check
+  read `typeof applyTerminal` and got `undefined`, because it is
+  `bossHop.applyTerminal` - a method on an object literal - and very nearly
+  reported a successful deploy as not taken. Nothing distinguishes that
+  `undefined` from a script that never loaded. It is the same shape as
+  wrapped-versus-unwrapped above: both make a live identifier read as absent,
+  and both are settled by reading the DECLARATION before probing the name.
+  `typeof bossHop.applyTerminal` answers it; so does `PARTY_SCRIPT`, which is
+  a top-level binding and is what the deploy authority should be read from.
 - **MEASURED 2026-10-20 BY BRACE DEPTH, so neither question has to be re-argued.**
   `CaveRun.js` IS wrapped: opener at `:60`, closer on the last line, all 95
   column-0 `function` declarations at depth 1. `Party/Ranger.js`,
@@ -1622,9 +1659,9 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 320 JS assertions across SIX suites, plus 112
+  **COUNT AS OF 2026-10-20, LATE: 329 JS assertions across SIX suites, plus 112
   from the python bridge suite the runner shells out to and folds in, for
-  `all 432 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 441 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
