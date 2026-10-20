@@ -785,11 +785,24 @@ time on 2026-10-18.
   therefore discarded the terminal whenever the true death fell in the later
   half of the bracket, which for an event boss is about half of them: the
   `server_info` key vanishes AT the death, so the entry's `at` lands there,
-  after the midpoint. Measured over the 1,238 retained death rows,
-  `death_hi - t` is under 2s for 714 of them but over 30s for 105 of the 394
-  BOSS rows and over 120s for 68, worst 2,290s - **and the widest brackets are
-  the slowest-polled shards, so an estimate-ordered comparison fails hardest
-  exactly where the feed is weakest.** `despawn` and `lost` rows carry no
+  after the midpoint. **THE EXPOSURE WAS 100% OF THE ROWS
+  `applyTerminal` ACTS ON, AND THE FIRST MEASUREMENT OF IT WAS DERIVED WRONG.**
+  Bracket width (`death_hi - t`) is not a proxy for how imprecise `t` is - a
+  wide bracket on a `respawn_offset` row means the poller noticed LATE while
+  the reconstruction stayed EXACT - so an initial "105 of 394 boss rows, worst
+  2,290s" mixed two populations and meant nothing. By METHOD: `respawn_offset`
+  1,151 rows, `absent_on_responding_server` 238, `poll_bracket` 0 in 2.5 days.
+  All 238 carry the midpoint, none has gap 0, 174 (73%) exceed 30s, 44 exceed
+  120s, max 348s, so roughly 119 were discarded; bossHop's targets inside the
+  set are crabxx 21, icegolem 13, franky 12. **The partition is STRUCTURAL:
+  `BOSS_RESPAWN_SEC` (17 types) and `EVENT_WINDOW_SEC` (5) are disjoint, and a
+  boss with a known respawn keeps its `server_info` key and reports the dead
+  shape - so `record()` writes `live: false` and `applyTerminal` returns at
+  `r.live !== true` without ever reaching the guard.** The bridge terminal is
+  the only signal for the vanishing-key population and redundant for all the
+  rest, which is why the defect landed on the entire event-boss population and
+  nowhere else. **A RATIO IS ONLY AS GOOD AS ITS DENOMINATOR BEING ONE
+  POPULATION** - both figures here were honest measurements of the wrong set. `despawn` and `lost` rows carry no
   `death_hi` and their `t` IS the detection time, so `death_hi` falling back to
   `t` is correct for all three; parse it in two steps, because
   `Date.parse(e.death_hi || e.t)` yields NaN on a malformed `death_hi` and

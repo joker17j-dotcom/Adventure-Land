@@ -152,9 +152,19 @@ is `iso(poll_t)`, the poll that proved the boss gone. Because an event boss's
 key vanishes AT the death, `at` lands at the true death, which is after the
 midpoint whenever the death fell in the later half of the bracket - so the
 guard threw away the terminal and left precisely the frozen-hp entry this
-function exists to clear, with nothing arriving later to correct it. Measured
-over 1,238 death rows: 105 of the 394 boss rows carry a bracket over 30s, 68
-over 120s, worst 2,290s, and the widest brackets are the slowest-polled shards.
+function exists to clear, with nothing arriving later to correct it. Measured by
+METHOD rather than by bracket width, because width is not a proxy for
+imprecision - a wide bracket on a `respawn_offset` row means the poller
+noticed late while the reconstruction stayed exact, and mixing the two gave an
+earlier "105 of 394 boss rows" that meant nothing. `respawn_offset` 1,151
+rows, `absent_on_responding_server` 238, `poll_bracket` 0; all 238 carry the
+midpoint, none has gap 0, 174 (73%) over 30s, 44 over 120s, max 348s, so
+roughly 119 discarded in 2.5 days - crabxx 21, icegolem 13, franky 12 among
+bossHop's own targets. The set is ALSO exactly the one this function depends
+on, because `BOSS_RESPAWN_SEC` and `EVENT_WINDOW_SEC` are disjoint and a boss
+with a known respawn reports the dead shape instead of vanishing, so
+`record()` has already written `live: false` and the guard is never reached.
+The exposure was therefore 100% of the rows this function acts on.
 The question the guard asks is which INSTANCE a push belongs to, and only the
 observation can answer that: a push after `death_hi` postdates the absence, a
 push between `t` and `death_hi` belongs to the instance that died. `despawn`

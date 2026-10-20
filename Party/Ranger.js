@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v101
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v102
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3117,10 +3117,17 @@ const bossHop = {
 		   fell in the later half of the bracket, because an event boss's key
 		   vanishes AT the death so `at` lands there - and nothing arrives
 		   afterwards to correct it, which left exactly the frozen-hp entry this
-		   whole function exists to clear. Measured by the browser session over
-		   1,238 death rows: 105 of the 394 BOSS rows carry a bracket over 30s
-		   and 68 over 120s, worst 2,290s - and the widest brackets are the
-		   slowest-polled shards, so it failed hardest where the data is weakest.
+		   whole function exists to clear. Measured BY METHOD, because bracket
+		   width is not a proxy for imprecision - a wide bracket on a
+		   respawn_offset row means the poller noticed late while the
+		   reconstruction stayed exact: respawn_offset 1,151 rows,
+		   absent_on_responding_server 238, poll_bracket 0. All 238 carry the
+		   midpoint, 174 of them over 30s, max 348s, so roughly 119 terminals
+		   were discarded in 2.5 days. That set is ALSO exactly the one this
+		   function acts on at all - BOSS_RESPAWN_SEC and EVENT_WINDOW_SEC are
+		   disjoint, and a boss with a known respawn reports the dead shape
+		   rather than vanishing, so record() has already written live:false
+		   and the `r.live !== true` return below fires first.
 		   despawn and lost rows carry no death_hi and their `t` IS the
 		   detection time, so the fallback is correct rather than a concession.
 		   Parsed in two steps so a malformed death_hi falls back instead of

@@ -545,7 +545,7 @@ module.exports = [
 		t: iso(NOW - 120000), death_hi: iso(NOW) });
 	t.eq('a death whose MIDPOINT predates the push still clears, because death_hi does not',
 		w.bossHop.scanResults[0].live, false);
-	t.note('v100 returned early here; measured over 1,238 death rows, 105 of 394 boss rows have brackets >30s');
+	t.note('v100 returned early here; by METHOD, all 238 absent_on_responding_server rows carry the midpoint, 174 of them over 30s');
 
 	/* The guard is not disabled, only re-anchored: an observation genuinely
 	   older than the push is still a previous instance and still loses. */
@@ -582,13 +582,16 @@ module.exports = [
 	t.eq('both timestamps unusable leaves the entry alone', w.bossHop.scanResults[0].live, true);
 
 	/* THE COLD START IS STILL SAFE. death_hi on a historical row is in the
-	   past too, so replaying the whole retained log clears nothing live. */
+	   past too, so replaying the whole retained log clears nothing live. The
+	   2,290s bracket below is deliberately WIDER than anything the affected
+	   population produces - the real max on absent_on_responding_server rows
+	   is 348s - because the point is to stress the guard, not to model it. */
 	w = w1(NOW);
 	for (let d = 1; d <= 50; d++) {
 		w.bossHop.applyTerminal({ ev: 'death', type: 'crabxx', server: 'US II',
 			t: iso(NOW - d * 3600000), death_hi: iso(NOW - d * 3600000 + 2290000) });
 	}
-	t.eq('50 historical rows, widest observed bracket, still clear nothing',
+	t.eq('50 historical rows at a deliberately over-wide bracket, still clear nothing',
 		w.bossHop.scanResults[0].live, true);
 } },
 

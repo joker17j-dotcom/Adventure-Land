@@ -21,6 +21,51 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v102
+
+Comment-only. DO NOT DEPLOY ALONE - it changes no behaviour, and the live slot
+should not be disturbed for it.
+
+The measurement in v101's entry, in `applyTerminal`'s comment, in
+`Party/RangerComments.md#terminalInvalidation` and in CLAUDE.md was DERIVED
+WRONG, and all four are corrected here. The browser session caught its own
+figure a few hours after supplying it.
+
+WHAT WAS WRONG. Bracket width, `death_hi - t`, was used as a proxy for how
+imprecise `t` is. It is not one: on a `respawn_offset` row a wide bracket means
+the poller noticed LATE while the reconstruction stayed EXACT. So the original
+"105 of the 394 BOSS death rows carry a bracket over 30s, worst 2,290s" was an
+honest measurement of a set that mixed two populations, and it meant nothing.
+
+WHAT IS TRUE, by METHOD. `respawn_offset` 1,151 rows,
+`absent_on_responding_server` 238, `poll_bracket` 0 - the third form does not
+occur at all in 2.5 days of log. All 238 of the midpoint-bearing rows have a
+non-zero gap, 174 (73%) exceed 30s, 44 exceed 120s, max 348s, so roughly 119
+terminals were discarded. Of bossHop's own targets: crabxx 21, icegolem 13,
+franky 12.
+
+AND THE CORRECTED NUMBER IS LARGER, NOT SMALLER. That 238-row set is exactly
+the set `applyTerminal` acts on at all, so the exposure was 100% of the rows it
+depends on rather than 27% of boss deaths. Verified here as STRUCTURAL rather
+than taken from the log: `BOSS_RESPAWN_SEC` (17 types) and `EVENT_WINDOW_SEC`
+(5) are disjoint sets, and a boss with a known respawn keeps its `server_info`
+key and reports the dead shape - so `record()` writes `live: false` and the
+`r.live !== true` early-out fires before the ordering guard is ever reached.
+The bridge terminal is the only signal for the vanishing-key population and
+redundant for every other row.
+
+ON REWRITING v101's ENTRY. The convention here is to prepend and never rewrite,
+and v101's measurement paragraph WAS replaced in place rather than left standing
+- because a false measurement in a changelog is read as a measurement. The
+replacement names the figure it retracts instead of erasing it, and this entry
+exists so the rewrite is on the record rather than silent. A retraction that
+cannot be found from the entry it corrects is not a retraction.
+
+A RATIO IS ONLY AS GOOD AS ITS DENOMINATOR BEING ONE POPULATION. Both figures
+were real measurements; the first measured the wrong set. Partition by the
+MECHANISM that produces the rows - here the `method` field - before computing
+anything over them.
+
 ## v101
 
 The v100 ordering guard compared against the wrong timestamp and discarded
@@ -45,11 +90,26 @@ it afterwards: the key is gone, no further push arrives, and the entry keeps
 state the whole function exists to clear, so the defect restored the original
 defect on the rows it hit.
 
-MEASURED, `death_hi - t` over the 1,238 retained death rows: 714 inside 2s,
-77 at 2-30s, 224 at 30-120s, 223 over 120s, worst 2,290s. 58% are tight enough
-to cost a second or two. But 105 of the 394 BOSS death rows carry a bracket
-over 30s and 68 over 120s - and the widest brackets are the slowest-polled
-shards, so the guard failed hardest exactly where the feed is weakest.
+MEASURED BY METHOD, which is the partition that matters: `respawn_offset`
+1,151 rows, `absent_on_responding_server` 238, `poll_bracket` 0 - the third
+form does not occur at all in 2.5 days of log. Bracket width is NOT a proxy
+for how imprecise `t` is: a wide bracket on a `respawn_offset` row means the
+poller noticed LATE while the reconstruction stayed EXACT, so mixing the two
+populations produced an earlier "105 of 394 boss rows" figure that was
+meaningless. All 238 `absent_on_responding_server` rows carry the midpoint,
+not one has gap 0, 174 of 238 (73%) exceed 30s, 44 exceed 120s, max 348s - so
+roughly 119 rows over 2.5 days were discarded. bossHop's own targets inside
+that set: crabxx 21, icegolem 13, franky 12.
+
+AND THAT SET IS EXACTLY THE ONE `applyTerminal` DEPENDS ON, so the exposure
+was 100% of the rows it acts on rather than 27% of boss deaths.
+`BOSS_RESPAWN_SEC` (17 types) and `EVENT_WINDOW_SEC` (5) are DISJOINT, which
+makes the method partition structural and not a property of this log: a boss
+with a known respawn keeps its `server_info` key and reports the dead shape,
+`record()` writes `live: false`, and `applyTerminal` returns at its own
+`r.live !== true` without ever reaching the ordering guard. So the bridge
+terminal is the ONLY signal for the vanishing-key population and redundant for
+every other row.
 
 THE FIX PRESERVES THE INTENT RATHER THAN RELAXING IT. The guard asks which
 INSTANCE a push belongs to, so it must compare against the observation: a push
