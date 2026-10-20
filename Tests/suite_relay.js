@@ -78,6 +78,11 @@ module.exports = [
 	   Only the -> <Name>Comments.md pointer in the doc comment above it may
 	   differ, which is why the function BODY is what is compared. */
 	const { extract } = require('./lift');
+	for (const name of ['plHopPendingRead', 'plHopPendingWrite', 'plHopPendingClear',
+			'plHopPendingResolve']) {
+		const texts = FOLLOWERS.map((f) => extract(f, name));
+		t.eq(`${name} is identical in Priest and Mage`, texts.every((x) => x === texts[0]), true);
+	}
 	const bodies = FOLLOWERS.map((f) => extract(f, 'bossHopFollow'));
 	t.eq('the two bodies are identical', bodies[0] === bodies[1], true);
 	t.note(`${Buffer.byteLength(bodies[0])} bytes in both`);
@@ -205,6 +210,142 @@ module.exports = [
 		t.eq(`${f}: both goo types are named`, /goobrawl: \['rgoo', 'bgoo'\]/.test(
 			fs.readFileSync(path.join(ROOT, f), 'utf8')), true);
 	}
+} },
+
+{ name: 'a follower that fails to hop can retry - the mark waits for arrival', fn(t) {
+	/* Operator, 22:00 EU III franky: "MageofOz did not hop with the party I had
+	   to do that." The mark had to be written BEFORE change_server because
+	   nothing after that call runs - so a hop that threw or no-opped was
+	   indistinguishable from one that worked, permanently, and the durable
+	   acted-list refused every retry. */
+	const { lift, world } = require('./lift');
+	const GRACE = 15000;
+
+	function follower(store, here, over = {}) {
+		const w = world(Object.assign({
+			PL_ACTED_KEY: 'pl_acted',
+			PL_ACTED_MAX: 20,
+			PL_HOP_PENDING_KEY: 'pl_hop_pending',
+			PL_HOP_GRACE_MS: GRACE,
+			PL_HOP_TRIES_MAX: 3,
+			/* world() supplies its own `parent` with a default shard on it, so
+			   passing `parent: {}` does NOT produce an unreadable shard - it is
+			   merged over and the default survives. The null case is made by
+			   deleting the two fields from the object the lifted code actually
+			   reads, after the lift. Passing {} silently tested nothing. */
+			parent: { server_region: 'US', server_identifier: 'II' },
+			get: (k) => (k in store ? store[k] : null),
+			set: (k, v) => { store[k] = v; },
+			plLog: () => { },
+			game_log: () => { },
+		}, over));
+		w.hops = [];
+		w.change_server = (r, n) => { w.hops.push(r + n); };
+		lift(w, 'Party/Priest.js', ['plActed', 'plMarkActed', 'plHopPendingRead',
+			'plHopPendingWrite', 'plHopPendingClear', 'plHopPendingResolve']);
+		if (here) { w.parent.server_region = here.slice(0, 2); w.parent.server_identifier = here.slice(2); }
+		else { delete w.parent.server_region; delete w.parent.server_identifier; }
+		return w;
+	}
+	const pend = (over = {}) => Object.assign({
+		plid: 'Dexon-1-54', region: 'EU', name: 'III', land: 'EUIII',
+		mtype: 'franky', at: Date.now(), tries: 0,
+	}, over);
+
+	/* ARRIVED. This is the only moment success is distinguishable, because the
+	   success case destroys the page before it could report anything. */
+	let store = { pl_hop_pending: pend() };
+	let w = follower(store, 'EUIII');
+	w.plHopPendingResolve();
+	t.eq('landing on the ordered shard marks the order acted', w.plActed('Dexon-1-54'), true);
+	t.eq('and clears the pending record', store.pl_hop_pending, null);
+	t.eq('without hopping again', w.hops, []);
+
+	/* STILL IN FLIGHT. A navigation that has not landed yet must not be
+	   retried on top of itself. */
+	store = { pl_hop_pending: pend() };
+	w = follower(store, 'USII');
+	w.plHopPendingResolve();
+	t.eq('inside the grace window nothing happens', w.hops, []);
+	t.eq('and it is not marked acted', w.plActed('Dexon-1-54'), false);
+
+	/* THE DEFECT, FIXED. Past the grace window and still on the wrong shard:
+	   the hop did not take, and now it retries instead of being lost. */
+	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
+	w = follower(store, 'USII');
+	w.plHopPendingResolve();
+	t.eq('a hop that never landed is retried', w.hops, ['EUIII']);
+	t.eq('the attempt is counted', store.pl_hop_pending.tries, 1);
+	t.eq('and it is STILL not acted, so it can retry again', w.plActed('Dexon-1-54'), false);
+	t.note('before the fix this plid was already in the acted-list, and the dedupe refused every retry forever');
+
+	/* BOUNDED. A shard that refuses us forever must not reload forever. */
+	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1, tries: 3 }) };
+	w = follower(store, 'USII');
+	w.plHopPendingResolve();
+	t.eq('at the try cap it gives up rather than retrying', w.hops, []);
+	t.eq('marks the order acted so it cannot replay', w.plActed('Dexon-1-54'), true);
+	t.eq('and clears the pending record', store.pl_hop_pending, null);
+
+	/* NOWHERE IS NOT WRONG-SHARD. If the current shard cannot be read, retrying
+	   blind would hop a character that had already arrived. */
+	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
+	w = follower(store, null);
+	w.plHopPendingResolve();
+	t.eq('an unreadable shard decides nothing', w.hops, []);
+	t.eq('and marks nothing', w.plActed('Dexon-1-54'), false);
+	/* THE TRAP THIS GUARDS, pinned so the naive form cannot come back:
+	   `undefined + undefined` is a truthy STRING that equals no real shard, so
+	   a bare concatenation reads as "wrong shard" and retries a hop that may
+	   already have landed. */
+	t.eq('because undefined + undefined is truthy, not empty',
+		String(undefined) + String(undefined), 'undefinedundefined');
+	t.ok('so both halves are type-checked before concatenating',
+		/typeof rg === 'string' && rg && typeof id === 'string' && id/.test(
+			require('./lift').extract('Party/Priest.js', 'plHopPendingResolve')));
+
+	/* Nothing pending is a no-op, which is the common case on every load. */
+	store = {};
+	w = follower(store, 'EUIII');
+	w.plHopPendingResolve();
+	t.eq('no pending record does nothing at all', w.hops, []);
+
+	/* A STORAGE WRITE THAT FAILS falls back to marking acted, because without a
+	   durable pending record the retry machinery cannot work and a replay loop
+	   is the worse failure. */
+	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
+	w = follower(store, 'USII', { set: (k, v) => { if (k === 'pl_hop_pending') throw new Error('nope'); store[k] = v; } });
+	w.plHopPendingResolve();
+	t.eq('an unwritable pending record is abandoned, not looped',
+		w.plActed('Dexon-1-54'), true);
+} },
+
+{ name: 'bossHopFollow records PENDING, never acted, before it hops', fn(t) {
+	const { extract } = require('./lift');
+	for (const f of FOLLOWERS) {
+		const body = extract(f, 'bossHopFollow');
+		/* THE REGRESSION GUARD, and the first version of it PASSED FOR THE
+		   WRONG REASON: it was named "does not mark the incoming plid acted"
+		   and asserted that plMarkActed(data._plid) was PRESENT. It is present
+		   - once, inside the failed-write fallback - so the assertion held
+		   while saying the opposite of what it checked. Stated as the mechanism
+		   instead: exactly one occurrence, and none of it outside the
+		   fallback. */
+		t.eq(`${f}: plMarkActed(data._plid) appears exactly once`,
+			(body.match(/plMarkActed\(data\._plid\)/g) || []).length, 1);
+		const withoutFallback = body.replace(
+			/if \(!plHopPendingWrite\(\{[\s\S]*?\}\)\) \{\s*plMarkActed\(data\._plid\);\s*\}/, '');
+		t.eq(`${f}: and nowhere outside the failed-write fallback`,
+			/plMarkActed\(data\._plid\)/.test(withoutFallback), false);
+		t.ok(`${f}: writes a pending record`, /plHopPendingWrite\(\{/.test(body));
+		t.ok(`${f}: and only marks data._plid acted when that write FAILED`,
+			/if \(!plHopPendingWrite\(\{[\s\S]*?\}\)\) \{\s*plMarkActed\(data\._plid\);/.test(body));
+		t.ok(`${f}: refuses a replay of an order already in flight`,
+			/inFlight\.plid === data\._plid/.test(body));
+		t.ok(`${f}: compares arrival against region+name, not data.shard`,
+			/land: `\$\{data\.region\}\$\{data\.name\}`/.test(body));
+	}
+	t.note('land is region+name because that is where change_server actually sends us');
 } },
 
 ];

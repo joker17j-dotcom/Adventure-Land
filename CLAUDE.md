@@ -1411,6 +1411,21 @@ Claude Code session stops after `browser_code_eval`.
   `try { return ms_to_next_skill(name) <= 0; } catch (e) { return true; }`
   made every cooldown gate in FamilyFleet a no-op that always answered
   "ready". Worse than Form A: nothing looks broken.
+- **`undefined + undefined` IS THE TRUTHY STRING "undefinedundefined", WHICH IS
+  WHY A CONCATENATION OF TWO MAYBE-MISSING FIELDS CANNOT BE TESTED FOR
+  TRUTHINESS.** 2026-10-20, in Priest/Mage v58/v81's pending-hop resolver:
+  `here = parent.server_region + parent.server_identifier` followed by
+  `if (!here) return;` never returned, because that string is non-empty - and
+  it compares unequal to every real shard, so an UNREADABLE shard read as a
+  WRONG shard and the resolver retried a hop that may already have landed. Both
+  halves are type-checked before concatenating now. Found by the suite rather
+  than by reading, which is the only way it was going to be found: the
+  expression looks exactly like a guard.
+  **The same bare concatenation is still in `bossHopFollow`'s same-shard guard,
+  and there it is benign** - a garbage value simply fails to match, the guard
+  turns itself off, and its own comment says so. So the hazard is not the
+  expression, it is what the comparison DOES on a non-match: ignore it, or act
+  on it.
 - **A catch that returns a default must log,** or "the helper is missing" and
   "the default is correct" stay indistinguishable forever.
 - **Which helpers exist is not guessable, AND IT VARIES BY CONTEXT.** There is
@@ -1723,17 +1738,18 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 379 JS assertions across SIX suites, plus 124
+  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 124
   from the python bridge suite the runner shells out to and folds in, for
-  `all 503 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 553 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
   overwritten - it is this file's own "claims rot" with the numbers to prove it. The
-  handoff proposing this correction said "four suites"; it is six -
-  `suite_relay`, `suite_bosshop`, `suite_opengifts`, `suite_merchantver`,
-  `suite_features`, `suite_caverun` - and quoting 346 as the JS total would overstate
-  it by the python 61. Re-derive both from a run rather than from any note, including
+  handoff proposing this correction said "four suites"; it was six and is now
+  SEVEN - `suite_relay`, `suite_bosshop`, `suite_opengifts`,
+  `suite_merchantver`, `suite_features`, `suite_caverun` and `suite_priest`,
+  the last added 2026-10-20 for the priest's skill paths - and quoting 346 as
+  the JS total would overstate it by the python 61. Re-derive both from a run rather than from any note, including
   this one.
 - **Suites lift the code out of the COMMITTED file, never a copy.**
   `Tests/lift.js` pulls a named declaration by brace-matching and evaluates
@@ -1761,6 +1777,33 @@ The Claude Code session commits with git and should never use this route.
   under test never had to fire. Putting the monster BETWEEN follower and leader
   separates them. The general form: construct the case where the two branches
   must disagree, and if you cannot, the test is not testing the thing.
+- **A `const X = new Set([...])` IS NOT LIFTABLE, AND THE FAILURE IS SILENT
+  FIRST AND LOUD SECOND.** `lift()` brace-matches from the first `{` after the
+  name, and that initialiser has none - so extracting `BOSS_SET` from
+  `Party/Priest.js` ran past it and swallowed the `ZAPPER_MOB_SET` declaration
+  and `updateHomeDependentSets` with it. First consequence: the lifted blob
+  OVERWROTE the world's own `ZAPPER_MOB_SET`, so a zapper test quietly ran
+  against the wrong set and failed for a reason that had nothing to do with the
+  code. Second: a later lift in the same world threw "ZAPPER_MOB_SET has
+  already been declared". The same shape as `let merchantVerCache = null` under
+  "Version headers" - any initialiser whose first token is not a brace. Supply
+  those in the world, and pin them against the source text so a change to
+  either cannot leave every assertion testing a stale copy and still passing.
+- **A HARNESS OVERRIDE THE HARNESS MERGES OVER IS A TEST OF NOTHING.**
+  2026-10-20: `world({ parent: {} })` was meant to make the current shard
+  unreadable, and `world()` supplies its own `parent` carrying a default shard,
+  so the default survived and the case was never exercised - the assertion
+  passed on code that would have retried. Fixed by deleting the fields from the
+  object the lifted code actually reads, after the lift. **Assert the
+  PRECONDITION, not only the outcome**, whenever a test depends on something
+  being absent.
+- **"PASSED FOR THE WRONG REASON" HAS A SECOND SHAPE: THE NAME AND THE
+  MECHANISM DISAGREE.** Same day: an assertion named "does not mark the
+  incoming plid acted" asserted that `plMarkActed(data._plid)` was PRESENT. It
+  is present, once, inside a fallback - so it held while checking the opposite
+  of what it said, and a reader scanning names would have been reassured by it.
+  State the mechanism: a count, plus the same search over the body with the
+  legitimate occurrence stripped out.
 - **The divergence checks are the ones most likely to earn their keep.**
   `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
   relay block or `bossHopFollow` stop being identical.

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v80
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v81
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3494,6 +3494,102 @@ function mhStatus() {
    silently skips anyone who has left. Arriving late still counts; leaving
    early does not.
    -> MageComments.md#boss-hop-the-follower-half-byte-identical */
+/* A FOLLOWER THAT FAILS TO HOP COULD NEVER RETRY, AND THAT IS WHY THE MARK IS
+   NO LONGER WHAT GOES IN FIRST. Operator, 22:00 EU III franky window:
+   "MageofOz did not hop with the party I had to do that."
+
+   The acted-list mark had to be written BEFORE change_server, because nothing
+   after that call runs - and the consequence was that a hop which THREW or
+   no-opped became indistinguishable from one that succeeded, permanently: the
+   plid is durable in CODE storage and the dedupe refuses every retry. The catch
+   logged and gave up. Measured by the browser session with both followers on
+   EU III: identical last acted plid on each, the priest's trip starting 12s
+   after that plid's timestamp and the mage's 100s after it, which is when the
+   operator moved him by hand. One message, two consumers, one completion - and
+   the one that failed had already marked it. Background-tab throttling was ruled
+   out rather than assumed: 60 ticks in 6s on both tabs.
+
+   SO THE RECORD IS PENDING FIRST AND ACTED ONLY ON ARRIVAL. A hop that worked
+   lands on the shard it was ordered to and confirms itself on the next
+   evaluation; one that did not leaves a pending entry that retries. That is the
+   only moment the two can be told apart, because the success case destroys the
+   page before it could report anything.
+
+   THREE THINGS BOUND IT, since a retry loop is worse than a missed hop:
+   - PL_HOP_GRACE_MS before a silent navigation is called failed, so a hop still
+     in flight is not retried on top of itself.
+   - PL_HOP_TRIES_MAX, after which the plid IS marked acted and the order is
+     abandoned loudly. A shard that refuses us forever must not reload forever.
+   - A storage write that fails falls back to marking acted, because without a
+     durable pending record the retry machinery cannot work and a replay loop is
+     the worse failure. */
+const PL_HOP_PENDING_KEY = 'pl_hop_pending';
+/* Only a page teardown has to fit inside this, which is the same reasoning and
+   the same value as the leader's own HOP_RELOAD_GRACE_MS. */
+const PL_HOP_GRACE_MS = 15000;
+const PL_HOP_TRIES_MAX = 3;
+
+function plHopPendingRead() {
+	try { return get(PL_HOP_PENDING_KEY) || null; }
+	catch (e) { plLog('pending-hop read failed: ' + e, 'orange'); return null; }
+}
+function plHopPendingWrite(p) {
+	try { set(PL_HOP_PENDING_KEY, p); return true; }
+	catch (e) {
+		plLog('could not record the pending hop (' + e + ') - this hop will not retry', 'red');
+		return false;
+	}
+}
+function plHopPendingClear() {
+	try { set(PL_HOP_PENDING_KEY, null); }
+	catch (e) { plLog('could not clear the pending hop: ' + e, 'orange'); }
+}
+
+/* Runs at module load - so a successful hop confirms itself the moment the new
+   page evaluates, BEFORE the backlog that ordered it is re-read - and on an
+   interval, so a hop that never navigated is retried without one. */
+function plHopPendingResolve() {
+	const p = plHopPendingRead();
+	if (!p || !p.plid) return;
+	let here = null;
+	try {
+		const rg = parent.server_region;
+		const id = parent.server_identifier;
+		/* BOTH HALVES HAVE TO BE REAL, and a bare concatenation does not check
+		   that: `undefined + undefined` is the STRING "undefinedundefined",
+		   which is truthy and compares unequal to every real shard - so the
+		   `!here` guard below would never fire and an unreadable shard would
+		   read as "wrong shard" and retry a hop that may already have landed.
+		   Found by the suite rather than by reading. */
+		if (typeof rg === 'string' && rg && typeof id === 'string' && id) here = rg + id;
+	} catch (e) { plLog('pending-hop: cannot read the current shard (' + e + ')', 'orange'); }
+	/* Cannot tell where we are, so decide nothing. Retrying blind would hop a
+	   character that had already arrived. */
+	if (!here) return;
+	if (here === p.land) {
+		plMarkActed(p.plid);
+		plHopPendingClear();
+		plLog('boss_hop ' + p.plid + ' landed on ' + p.land, '#8b98ab');
+		return;
+	}
+	if (Date.now() - (p.at || 0) < PL_HOP_GRACE_MS) return;
+	if ((p.tries || 0) >= PL_HOP_TRIES_MAX) {
+		plMarkActed(p.plid);
+		plHopPendingClear();
+		plLog('boss_hop to ' + p.land + ' failed ' + p.tries + ' times - giving up on it', 'red');
+		return;
+	}
+	p.tries = (p.tries || 0) + 1;
+	p.at = Date.now();
+	if (!plHopPendingWrite(p)) { plMarkActed(p.plid); return; }
+	plLog('boss_hop to ' + p.land + ' did not take - retry ' + p.tries + ' of ' + PL_HOP_TRIES_MAX, 'orange');
+	try { change_server(p.region, p.name); }
+	catch (e) { plLog('boss_hop retry failed: ' + e, 'red'); }
+}
+
+plHopPendingResolve();
+setInterval(plHopPendingResolve, PL_HOP_GRACE_MS);
+
 function bossHopFollow(data) {
 	if (!data || !data.region || !data.name) {
 		game_log(`boss_hop ignored: no destination in ${JSON.stringify(data)}`, 'orange');
@@ -3526,11 +3622,34 @@ function bossHopFollow(data) {
 		game_log(`boss_hop ${data._plid} already acted on - not hopping again`, '#8b98ab');
 		return;
 	}
+	/* ALREADY IN FLIGHT. plHopPendingResolve owns the retries for a plid it is
+	   holding, so a replay of that same order must not fire a second
+	   change_server on top of the first. */
+	const inFlight = plHopPendingRead();
+	if (inFlight && inFlight.plid === data._plid) {
+		game_log(`boss_hop ${data._plid} already in flight - leaving it to the retry`, '#8b98ab');
+		return;
+	}
 	/* Both of these go BEFORE change_server, for the same reason the leader
 	   sends the message before hopping: nothing after that call runs. The log
 	   used to sit after it, which is why the follower never logged its own
 	   hop and the console looked empty while this was happening. */
-	plMarkActed(data._plid);
+	/* PENDING, not acted - see plHopPendingResolve above for why, and for what
+	   bounds the retry. `land` is region+name rather than data.shard, because
+	   that is where change_server actually sends us and therefore the only
+	   string an arrival can be compared against. */
+	if (inFlight && inFlight.plid) {
+		/* A newer order supersedes an older one, and the old plid is marked so
+		   abandoning it cannot leave it to replay later. */
+		plMarkActed(inFlight.plid);
+		plLog(`superseding the pending hop to ${inFlight.land}`, 'orange');
+	}
+	if (!plHopPendingWrite({
+		plid: data._plid, region: data.region, name: data.name,
+		land: `${data.region}${data.name}`, mtype: mtype, at: Date.now(), tries: 0,
+	})) {
+		plMarkActed(data._plid);
+	}
 	game_log(`🐉 Following Dexon to ${shard} for ${mtype}`, '#FFD700');
 	try {
 		change_server(data.region, data.name);

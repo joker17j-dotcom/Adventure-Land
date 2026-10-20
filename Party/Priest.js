@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v57
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v58
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -948,6 +948,32 @@ const BOSS_SET = new Set([...allBosses,
 	'pinkgoo', 'rharpy', 'rimedjinn', 'slenderman', 'snowman', 'tiger']);
 let ZAPPER_MOB_SET = new Set(CONFIG.combat.zapperMobs);
 
+/* THE ENGAGEMENT RULE AS ONE EXPRESSION, so every offensive path asks the same
+   question. `findBestTargetInner` has enforced it since the rule was written -
+   `boss.target` is the whole test - but it governs `cache.target`, which drives
+   the ATTACK path and nothing else. handleCurse and the zapper pick their own
+   targets and never asked, so the priest opened boss fights through SKILLS
+   while the attack path correctly refused. The operator saw it on the 22:00 EU
+   III franky window and reported it as "attacks the boss when no one else has",
+   then corrected themselves to "it may have been a skill such as curse" - which
+   was right.
+
+   WHY IT MATTERS BEYOND TIDINESS: whoever lands the first hit takes the boss's
+   aggro, and a priest tanking a franky is the worst assignment in the party.
+   Credit on a cooperative boss is shared by damage dealt, so opening one alone
+   pays nothing and costs the healer.
+
+   DELIBERATELY THE SAME TEST THE ATTACK GATE USES - BOSS_SET membership plus
+   `.target` - rather than a narrower cooperative-only one. BOSS_SET carries
+   pinkgoo, snowman, tiger and others that are not cooperative bosses, so this
+   refuses to OPEN on those too; that is already how the attack path behaves,
+   and making the skills match it is the fix. Narrowing both to cooperative-only
+   is a separate decision about existing behaviour, not part of this.
+   -> PriestComments.md#engage-a-cooperative-boss-only-once-somebody */
+function bossCold(m) {
+	return !!m && BOSS_SET.has(m.mtype) && !m.target;
+}
+
 // Rebuilds home-dependent derived structures - called once home is first
 // set, and again any time it changes via a later 'farm_spot' message.
 function updateHomeDependentSets() {
@@ -1058,8 +1084,16 @@ function findZapTargets() {
 	const targets = [];
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
-		if (e && e.type === 'monster' && !e.target && !e.dead && e.visible &&
+		if (e && e.type === 'monster' && !e.dead && e.visible &&
 			ZAPPER_MOB_SET.has(e.mtype) && is_in_range(e, 'zapperzap')) {
+			/* `!e.target` WAS THE WHOLE TEST AND IT IS THE EXACT INVERSE OF THE
+			   ENGAGEMENT RULE FOR A BOSS. It is the right preference for a FARM
+			   mob - tag the ones nobody has - but ZAPPER_MOB_SET is built from
+			   `[...allBosses, "sparkbot"]`, so every boss is in it, and the
+			   unqualified form preferentially zapped a boss precisely while it
+			   was still cold. Split by kind rather than dropped. */
+			if (BOSS_SET.has(e.mtype)) { if (bossCold(e)) continue; }
+			else if (e.target) continue;
 			targets.push(e);
 		}
 	}
@@ -1294,22 +1328,45 @@ async function handleCurse() {
 	let target = null;
 
 	for (const b of BOSS_SET) {
-		const mb = get_nearest_monster_v2({ type: b });
-		if (mb) {
+		/* max_distance mirrors the attack gate, which uses character.range: a
+		   cold-boss test on something 2,000 units away decides nothing, and the
+		   only thing that stood between this pick and a cast was the
+		   is_in_range check at the bottom. */
+		const mb = get_nearest_monster_v2({ type: b, max_distance: character.range });
+		/* A COLD BOSS MUST NOT BE SELECTED - and must not `break` either. The
+		   break would shadow the farm-mob fall-through below, leaving the priest
+		   casting nothing while a zappable mob stood in range. */
+		if (mb && !bossCold(mb)) {
 			target = mb;
 			break;
 		}
 	}
 
 	if (!target) {
+		/* BOSSES ARE EXCLUDED HERE, not merely refused later. zapperMobs is
+		   `[...allBosses, "sparkbot"]`, so this list used to carry every boss -
+		   and because the real selector returns the NEAREST of the types asked
+		   for, a cold boss standing closer than a farm mob won the pick and the
+		   cast-site guard then refused it, so the curse did nothing that tick
+		   while a perfectly good mob stood in range. Filtering costs nothing:
+		   an ENGAGED boss is already selected by the loop above, and a cold one
+		   must not be cursed by either path. The guard below stays as defence
+		   in depth for any future path into `target`. */
 		target = get_nearest_monster_v2({
-			type: [...CONFIG.combat.zapperMobs, home],
+			type: [...CONFIG.combat.zapperMobs.filter((ty) => !BOSS_SET.has(ty)), home],
 			check_min_hp: true,
 			max_distance: 175,
 			point_for_distance_check: [X, Y]
 		});
 	}
 
+	/* FINAL GUARD, AND IT COVERS A PATH THE LOOP ABOVE DOES NOT. The
+	   fall-through draws from `[...CONFIG.combat.zapperMobs, home]`, and
+	   zapperMobs is `[...allBosses, "sparkbot"]` - so it selects bosses as well,
+	   and gating only the boss loop would have left this way in. Checked at the
+	   cast rather than at each pick so every future path is covered by
+	   construction. */
+	if (bossCold(target)) return;
 	if (target && target.hp >= target.max_hp * 0.01 && !target.immune && is_in_range(target, 'curse')) {
 		await use_skill('curse', target);
 	}
@@ -4066,6 +4123,102 @@ function mhStatus() {
    silently skips anyone who has left. Arriving late still counts; leaving
    early does not.
    -> PriestComments.md#boss-hop-the-follower-half-byte-identical */
+/* A FOLLOWER THAT FAILS TO HOP COULD NEVER RETRY, AND THAT IS WHY THE MARK IS
+   NO LONGER WHAT GOES IN FIRST. Operator, 22:00 EU III franky window:
+   "MageofOz did not hop with the party I had to do that."
+
+   The acted-list mark had to be written BEFORE change_server, because nothing
+   after that call runs - and the consequence was that a hop which THREW or
+   no-opped became indistinguishable from one that succeeded, permanently: the
+   plid is durable in CODE storage and the dedupe refuses every retry. The catch
+   logged and gave up. Measured by the browser session with both followers on
+   EU III: identical last acted plid on each, the priest's trip starting 12s
+   after that plid's timestamp and the mage's 100s after it, which is when the
+   operator moved him by hand. One message, two consumers, one completion - and
+   the one that failed had already marked it. Background-tab throttling was ruled
+   out rather than assumed: 60 ticks in 6s on both tabs.
+
+   SO THE RECORD IS PENDING FIRST AND ACTED ONLY ON ARRIVAL. A hop that worked
+   lands on the shard it was ordered to and confirms itself on the next
+   evaluation; one that did not leaves a pending entry that retries. That is the
+   only moment the two can be told apart, because the success case destroys the
+   page before it could report anything.
+
+   THREE THINGS BOUND IT, since a retry loop is worse than a missed hop:
+   - PL_HOP_GRACE_MS before a silent navigation is called failed, so a hop still
+     in flight is not retried on top of itself.
+   - PL_HOP_TRIES_MAX, after which the plid IS marked acted and the order is
+     abandoned loudly. A shard that refuses us forever must not reload forever.
+   - A storage write that fails falls back to marking acted, because without a
+     durable pending record the retry machinery cannot work and a replay loop is
+     the worse failure. */
+const PL_HOP_PENDING_KEY = 'pl_hop_pending';
+/* Only a page teardown has to fit inside this, which is the same reasoning and
+   the same value as the leader's own HOP_RELOAD_GRACE_MS. */
+const PL_HOP_GRACE_MS = 15000;
+const PL_HOP_TRIES_MAX = 3;
+
+function plHopPendingRead() {
+	try { return get(PL_HOP_PENDING_KEY) || null; }
+	catch (e) { plLog('pending-hop read failed: ' + e, 'orange'); return null; }
+}
+function plHopPendingWrite(p) {
+	try { set(PL_HOP_PENDING_KEY, p); return true; }
+	catch (e) {
+		plLog('could not record the pending hop (' + e + ') - this hop will not retry', 'red');
+		return false;
+	}
+}
+function plHopPendingClear() {
+	try { set(PL_HOP_PENDING_KEY, null); }
+	catch (e) { plLog('could not clear the pending hop: ' + e, 'orange'); }
+}
+
+/* Runs at module load - so a successful hop confirms itself the moment the new
+   page evaluates, BEFORE the backlog that ordered it is re-read - and on an
+   interval, so a hop that never navigated is retried without one. */
+function plHopPendingResolve() {
+	const p = plHopPendingRead();
+	if (!p || !p.plid) return;
+	let here = null;
+	try {
+		const rg = parent.server_region;
+		const id = parent.server_identifier;
+		/* BOTH HALVES HAVE TO BE REAL, and a bare concatenation does not check
+		   that: `undefined + undefined` is the STRING "undefinedundefined",
+		   which is truthy and compares unequal to every real shard - so the
+		   `!here` guard below would never fire and an unreadable shard would
+		   read as "wrong shard" and retry a hop that may already have landed.
+		   Found by the suite rather than by reading. */
+		if (typeof rg === 'string' && rg && typeof id === 'string' && id) here = rg + id;
+	} catch (e) { plLog('pending-hop: cannot read the current shard (' + e + ')', 'orange'); }
+	/* Cannot tell where we are, so decide nothing. Retrying blind would hop a
+	   character that had already arrived. */
+	if (!here) return;
+	if (here === p.land) {
+		plMarkActed(p.plid);
+		plHopPendingClear();
+		plLog('boss_hop ' + p.plid + ' landed on ' + p.land, '#8b98ab');
+		return;
+	}
+	if (Date.now() - (p.at || 0) < PL_HOP_GRACE_MS) return;
+	if ((p.tries || 0) >= PL_HOP_TRIES_MAX) {
+		plMarkActed(p.plid);
+		plHopPendingClear();
+		plLog('boss_hop to ' + p.land + ' failed ' + p.tries + ' times - giving up on it', 'red');
+		return;
+	}
+	p.tries = (p.tries || 0) + 1;
+	p.at = Date.now();
+	if (!plHopPendingWrite(p)) { plMarkActed(p.plid); return; }
+	plLog('boss_hop to ' + p.land + ' did not take - retry ' + p.tries + ' of ' + PL_HOP_TRIES_MAX, 'orange');
+	try { change_server(p.region, p.name); }
+	catch (e) { plLog('boss_hop retry failed: ' + e, 'red'); }
+}
+
+plHopPendingResolve();
+setInterval(plHopPendingResolve, PL_HOP_GRACE_MS);
+
 function bossHopFollow(data) {
 	if (!data || !data.region || !data.name) {
 		game_log(`boss_hop ignored: no destination in ${JSON.stringify(data)}`, 'orange');
@@ -4098,11 +4251,34 @@ function bossHopFollow(data) {
 		game_log(`boss_hop ${data._plid} already acted on - not hopping again`, '#8b98ab');
 		return;
 	}
+	/* ALREADY IN FLIGHT. plHopPendingResolve owns the retries for a plid it is
+	   holding, so a replay of that same order must not fire a second
+	   change_server on top of the first. */
+	const inFlight = plHopPendingRead();
+	if (inFlight && inFlight.plid === data._plid) {
+		game_log(`boss_hop ${data._plid} already in flight - leaving it to the retry`, '#8b98ab');
+		return;
+	}
 	/* Both of these go BEFORE change_server, for the same reason the leader
 	   sends the message before hopping: nothing after that call runs. The log
 	   used to sit after it, which is why the follower never logged its own
 	   hop and the console looked empty while this was happening. */
-	plMarkActed(data._plid);
+	/* PENDING, not acted - see plHopPendingResolve above for why, and for what
+	   bounds the retry. `land` is region+name rather than data.shard, because
+	   that is where change_server actually sends us and therefore the only
+	   string an arrival can be compared against. */
+	if (inFlight && inFlight.plid) {
+		/* A newer order supersedes an older one, and the old plid is marked so
+		   abandoning it cannot leave it to replay later. */
+		plMarkActed(inFlight.plid);
+		plLog(`superseding the pending hop to ${inFlight.land}`, 'orange');
+	}
+	if (!plHopPendingWrite({
+		plid: data._plid, region: data.region, name: data.name,
+		land: `${data.region}${data.name}`, mtype: mtype, at: Date.now(), tries: 0,
+	})) {
+		plMarkActed(data._plid);
+	}
 	game_log(`🐉 Following Dexon to ${shard} for ${mtype}`, '#FFD700');
 	try {
 		change_server(data.region, data.name);

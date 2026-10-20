@@ -21,6 +21,91 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v81
+
+TWO LIVE DEFECTS the operator observed during the 22:00 UTC EU III franky
+window, reported by the browser-driven session.
+
+DEFECT A - A FOLLOWER THAT FAILED TO HOP COULD NEVER RETRY. "MageofOz did not
+hop with the party I had to do that." The acted-list mark had to be written
+BEFORE `change_server`, because nothing after that call runs - so a hop that
+threw or no-opped became indistinguishable from one that succeeded,
+permanently: the plid is durable in CODE storage and the dedupe refused every
+retry. Measured with both followers on EU III: identical last acted plid on
+each, the priest's trip starting 12s after that plid's timestamp and the
+mage's 100s after it, which is when the operator moved him by hand. One
+message, two consumers, one completion - and the one that failed had already
+marked it. Throttling was ruled out rather than assumed: 60 ticks in 6s on both
+tabs.
+
+THE RECORD IS NOW PENDING FIRST AND ACTED ONLY ON ARRIVAL. A hop that worked
+lands on the shard it was ordered to and confirms itself when the new page
+evaluates; one that did not leaves a pending entry that retries. That is the
+only moment the two are distinguishable, because the success case destroys the
+page before it could report anything. Three things bound it, since a retry loop
+is worse than a missed hop: `PL_HOP_GRACE_MS` (15s, the leader's own
+HOP_RELOAD_GRACE_MS value and reasoning) before a silent navigation is called
+failed; `PL_HOP_TRIES_MAX` (3), after which the plid IS marked and the order is
+abandoned loudly; and a storage write that fails falls back to marking acted,
+because without a durable record the machinery cannot work.
+`plHopPendingResolve` runs at module load - so arrival is confirmed before the
+backlog that ordered the hop is re-read - and on an interval, so a hop that
+never navigated is retried without one.
+
+A BUG IN THAT FIX, FOUND BY ITS OWN TEST RATHER THAN BY READING.
+`parent.server_region + parent.server_identifier` with both fields missing is
+the STRING "undefinedundefined" - truthy, and unequal to every real shard - so
+the `!here` guard never fired and an unreadable shard read as "wrong shard",
+retrying a hop that may already have landed. Both halves are now type-checked
+before concatenating. The same bare concatenation is still in bossHopFollow's
+same-shard guard, where it is benign: there a garbage value simply fails to
+match and the guard turns itself off, which that comment already says.
+
+DEFECT B IS PRIEST-ONLY and is recorded here only because
+the version moves with Defect A. DEFECT B, PRIEST ONLY - THE ENGAGEMENT RULE WAS ON THE ATTACK PATH AND NOT ON
+THE SKILLS. "Fathertoken attacks the boss when no one else has", then the
+operator's own correction: "it may have been a skill such as curse". It was.
+`findBestTargetInner` has enforced `boss.target` since the rule was written,
+but that governs `cache.target`, which drives the attack and nothing else:
+  handleCurse       picked any visible BOSS_SET monster, no .target test and no
+                    max_distance.
+  findZapTargets    was gated the WRONG WAY ROUND - `!e.target` SELECTS for
+                    monsters nobody is fighting, and ZAPPER_MOB_SET is built
+                    from [...allBosses, "sparkbot"], so the zapper
+                    preferentially tagged a boss precisely while it was cold.
+Whoever lands the first hit takes the aggro, and a priest tanking a franky is
+the worst assignment in the party.
+
+ONE PREDICATE, `bossCold(m)`, now asked by every offensive path. The zapper
+splits by kind rather than dropping the test: `!e.target` stays correct for a
+FARM mob and is inverted for a boss. The curse loop skips a cold boss WITHOUT
+breaking, since the break would shadow the farm-mob fall-through and leave the
+priest casting nothing while a zappable mob stood in range.
+
+A FOURTH PATH THE REPORT DID NOT NAME, and the loop alone would not have
+covered it: the curse fall-through draws from `[...CONFIG.combat.zapperMobs,
+home]`, and zapperMobs is every boss plus sparkbot - so it selected bosses too.
+Bosses are now filtered OUT of that list rather than merely refused later,
+because the real selector returns the NEAREST of the types asked for, so a cold
+boss standing closer than a farm mob won the pick and the cast-site guard then
+refused it, meaning no curse at all that tick. `bossCold` is still checked at
+the cast as defence in depth for any future path.
+
+focusFireTarget IS LEFT ALONE, DELIBERATELY. It returns the monster the LEADER
+is attacking, and `leader.target` on a player entity means they have engaged
+it - so the opening hit has already been landed and the follower is joining,
+not opening. Gating it would make the priest refuse to help the leader fight a
+boss until the boss retaliated. The browser session flagged it as "arguably
+benign"; it is benign for that reason, recorded so it is not re-raised.
+
+MAGE IS UNTOUCHED BY B - it has neither curse nor zapper, and its only
+use_skill with its own target pick is energize, a party buff. Which is why the
+operator saw this on the priest alone.
+
+Suite 553, and a new `Tests/suite_priest.js`. Eight mutations bound: marking
+before the hop, the bare concatenation, the grace window, the try cap, the
+ungated zapper, the curse loop, the cast guard and the fall-through filter.
+
 ## v80
 
 goobrawl's spawn-set mapping is one-to-MANY. `BOSS_FIGHT_TYPE = { goobrawl:

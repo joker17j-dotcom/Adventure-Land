@@ -20,6 +20,56 @@ Anchors match the `-> PriestComments.md#anchor` pointers in the source.
 
 ## engage-a-cooperative-boss-only-once-somebody
 
+THE RULE WAS ON THE ATTACK PATH ONLY UNTIL v58, AND THE SKILLS OPENED BOSS
+FIGHTS. `findBestTargetInner` has enforced `boss.target` since this section was
+written, and that is correct - but it governs `cache.target`, which drives
+`use_skill('attack', ...)` and nothing else. `handleCurse` and `findZapTargets`
+pick their own targets and never asked. The operator saw it on the 22:00 EU III
+franky window on 2026-10-20 and reported it as "attacks the boss when no one
+else has", then corrected themselves to "it may have been a skill such as
+curse" - which was right.
+
+THE ZAPPER WAS GATED THE WRONG WAY ROUND, which is worse than ungated.
+`!e.target` SELECTS for monsters nobody is fighting - the right preference for a
+FARM mob, and the exact inverse of this rule - and `ZAPPER_MOB_SET` is built
+from `[...allBosses, "sparkbot"]`, so every boss is in it. The zapper therefore
+preferentially tagged a boss precisely while it was still cold. It now splits by
+kind rather than dropping the test.
+
+FOUR PATHS, AND THE FOURTH WAS NOT IN THE REPORT. The curse fall-through draws
+from `[...CONFIG.combat.zapperMobs, home]`, which is every boss plus sparkbot
+plus the farm mob - so it selected bosses too, and gating only the boss loop
+above it would have left that way in. Bosses are filtered OUT of that list
+rather than merely refused at the cast, because the real selector returns the
+NEAREST of the types asked for: a cold boss standing closer than a farm mob won
+the pick, the cast-site guard refused it, and the priest cast nothing that tick
+while a perfectly good mob stood in range. The guard stays as defence in depth
+for any future path into `target`.
+
+THE LOOP SKIPS WITHOUT BREAKING, and that is deliberate. A `break` on a cold
+boss would shadow the fall-through and produce the same do-nothing tick.
+
+`bossCold` IS DELIBERATELY AS WIDE AS THE ATTACK GATE. BOSS_SET carries pinkgoo,
+snowman, rharpy, rimedjinn, slenderman and tiger alongside the cooperative
+bosses, so this refuses to OPEN on those too. That is already how the attack
+path behaves; making the skills match it is the fix. pinkgoo at 40 hp is the
+case where it is arguably wrong, and narrowing BOTH paths to cooperative-only is
+a separate decision about existing behaviour - raised with the operator rather
+than taken here.
+
+focusFireTarget IS LEFT ALONE. It returns the monster the LEADER is attacking,
+and `.target` on a player entity means they have engaged it - so the opening hit
+is already landed and the follower is joining rather than opening. Gating it
+would make the priest refuse to help the leader fight a boss until the boss
+retaliated, which is worse than the thing being prevented. The browser session
+flagged it as "arguably benign"; it is benign for that reason.
+
+WHY IT MATTERS BEYOND TIDINESS: whoever lands the first hit takes the boss's
+aggro, and a priest tanking a franky is the worst assignment in the party.
+Credit on a cooperative boss is shared by damage dealt, so opening one alone
+pays nothing and costs the healer.
+
+
 This branch used to take any BOSS_SET member in range unconditionally.
 That is the opposite failure from Ranger v64, where the gate was so
 strict the boss was never shot at: measured 2026-10-02, only Dexon stalled
