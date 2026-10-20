@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v102
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v103
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2364,9 +2364,21 @@ async function safeSmartMove(dest) {
 }
 
 const BOSS_KEY = 'boss_trip';
+/* How many SHARD-level give-ups on one boss type before the type itself is
+   cooled down. Without it, shard-keyed cooldowns let the party walk a boss it
+   cannot kill across five shards in turn. 2 is a starting value and wants
+   measuring rather than asserting. */
+const BOSS_TYPE_GIVEUP_MAX = 2;
 const bossState = {
-	trip: null,         // { name, startedAt, deaths, wasRip, src }
-	cooldown: {},       // name -> ms until we will consider it again
+	trip: null,         // { name, shard, startedAt, deaths, wasRip, src }
+	/* KEYED BY '<name>|<shard>' FOR A GIVE-UP, and by the bare '<name>' for
+	   the type-level backstop below. Both are consulted, so a bare key still
+	   forbids the type everywhere - which is also what makes the persisted
+	   pre-v103 map safe to load: its bare keys read as type backstops, which
+	   is over-restrictive for at most one cooldown and never permissive. */
+	cooldown: {},       // key -> ms until we will consider it again
+	giveUps: {},        // name -> [ms] shard-level give-ups, pruned to the window
+	lastGiveUp: null,   // { name, shard, why, at } - WHY, for the next window
 	fromLeader: null,   // { name, at } - the leader's current call
 	forced: null,       // { name, at } - bossJoin() from the console
 	lastNote: null,
@@ -2379,10 +2391,12 @@ try {
 	if (bossSaved && typeof bossSaved === 'object') {
 		bossState.trip = bossSaved.trip || null;
 		bossState.cooldown = bossSaved.cooldown || {};
+		bossState.giveUps = bossSaved.giveUps || {};
 	}
 } catch (e) { }
 function bossSave() {
-	try { set(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown }); }
+	try { set(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown,
+		giveUps: bossState.giveUps }); }
 	catch (e) { bossLog('could not persist the trip - a reload will restart its clock', 'orange'); }
 }
 function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch (e) { } console.log('[boss] ' + m); }
@@ -2413,19 +2427,67 @@ function bossLiveNames() {
    bossHop.localTarget(). It was read in exactly one place until 2026-10-20, and
    that place was on the LOCAL-pick path only, which is how the hop path came to
    ignore a give-up entirely - see localTarget for what that cost. */
-function bossCooledDown(name) {
-	return (bossState.cooldown[name] || 0) > Date.now();
+/* Our own shard, by the same expression bossHop.currentShard() uses. Declared
+   here rather than calling that method because this runs from bossEligible,
+   which is above bossHop in the file. */
+function bossShard() {
+	try { return (parent.server_region || '') + (parent.server_identifier || ''); }
+	catch (e) { return ''; }
+}
+function bossCooldownKey(name, shard) { return name + '|' + shard; }
+
+/* SHARD-KEYED AS OF v103, AND THAT IS WHAT MAKES THE v99 FIX ACTUALLY PAY.
+   v99 stopped a given-up boss pinning the party to its shard, and the party
+   then hopped correctly - but could not FIGHT when it arrived. The reason is
+   two state machines again: bossHop commits FIGHTING on arrival from
+   localBossLive() alone, while what MOVES the party to the boss and attacks it
+   is handleEvents(), gated by shouldHandleEvents() = holidaySpirit ||
+   !!bossPick() || !!bossState.trip. A type-keyed give-up made bossEligible()
+   refuse that name on EVERY shard for 30 minutes, so bossPick() returned null
+   at the destination, no trip was opened, and the party stood on the right
+   shard farming ordinary mobs beside a live franky until maxFightMs aborted.
+   The 2026-10-19 loss therefore needed BOTH halves; v99 was half of it.
+   -> RangerComments.md#shardKeyedCooldown
+
+   `shard` defaults to ours, which is the right default for every HERE-style
+   caller (bossEligible, localTarget); the hop path passes the CANDIDATE's
+   shard. The bare type key is still honoured so the backstop can forbid a
+   type outright. */
+function bossCooledDown(name, shard) {
+	const now = Date.now();
+	if ((bossState.cooldown[name] || 0) > now) return true;
+	const sh = (shard === undefined || shard === null) ? bossShard() : shard;
+	return (bossState.cooldown[bossCooldownKey(name, sh)] || 0) > now;
 }
 
-function bossEligible(name) {
+/* Clearing is BY TYPE, so it has to take the shard keys with it - an operator
+   calling the party to a boss must not be silently refused by a shard entry
+   they cannot see. */
+function bossClearCooldown(name) {
+	bossState.cooldown[name] = 0;
+	const pre = name + '|';
+	for (const k in bossState.cooldown) {
+		if (k.indexOf(pre) === 0) bossState.cooldown[k] = 0;
+	}
+	if (bossState.giveUps) bossState.giveUps[name] = [];
+}
+
+function bossEligible(name, shard) {
 	const cfg = CONFIG.bossEvents;
 	if (!cfg.enabled) return { ok: false, why: 'bossEvents.enabled is false' };
 	if (cfg.exclude.has(name)) return { ok: false, why: 'excluded' };
 	const byHand = cfg.include.indexOf(name) >= 0;
 	if (cfg.cooperativeOnly && !byHand && !bossCooperative(name)) return { ok: false, why: 'not cooperative' };
-	if (bossCooledDown(name)) {
-		const until = bossState.cooldown[name] || 0;
-		return { ok: false, why: 'gave up on it ' + Math.round((until - Date.now()) / 60000) + ' min ago' };
+	if (bossCooledDown(name, shard)) {
+		/* Which of the two keys bit is the useful half of the message: "this
+		   shard" means another shard is still worth hopping to, "everywhere"
+		   means the backstop fired and it is not. */
+		const sh = (shard === undefined || shard === null) ? bossShard() : shard;
+		const typeUntil = bossState.cooldown[name] || 0;
+		const wide = typeUntil > Date.now();
+		const until = wide ? typeUntil : (bossState.cooldown[bossCooldownKey(name, sh)] || 0);
+		return { ok: false, why: 'gave up on it ' + Math.round((until - Date.now()) / 60000)
+			+ ' min from now' + (wide ? ' EVERYWHERE (' + BOSS_TYPE_GIVEUP_MAX + ' shards failed)' : ' on ' + sh) };
 	}
 	return { ok: true, why: byHand ? 'included by hand' : 'cooperative' };
 }
@@ -2626,7 +2688,7 @@ function bossOnCall(from, data) {
 	if (data.forced) {
 		if (data.name) {
 			bossState.forced = { name: data.name, at: Date.now() };
-			bossState.cooldown[data.name] = 0;
+			bossClearCooldown(data.name);
 			bossSave();
 			bossLog(from + ' called everyone to ' + data.name, '#7FD98A');
 		} else {
@@ -2650,13 +2712,52 @@ function bossEnd(why) {
 	if (!t) return;
 	const mins = Math.round((Date.now() - t.startedAt) / 60000);
 	const gaveUp = why.indexOf('death') >= 0 || why.indexOf('cap') >= 0 || why.indexOf('by hand') >= 0;
-	if (gaveUp) bossState.cooldown[t.name] = Date.now() + CONFIG.bossEvents.cooldownMs;
+	let wide = false;
+	if (gaveUp) {
+		const sh = t.shard || bossShard();
+		const now = Date.now();
+		bossState.cooldown[bossCooldownKey(t.name, sh)] = now + CONFIG.bossEvents.cooldownMs;
+		/* WHY, kept because "we could not kill it" and "we arrived too late"
+		   want different answers next window, and the reason string is the only
+		   place that distinction exists. */
+		bossState.lastGiveUp = { name: t.name, shard: sh, why: why, at: now };
+		/* THE TYPE-LEVEL BACKSTOP. Pruned to one event window so give-ups from
+		   a previous window never add up. The DURATION is cooldownMs, not the
+		   window remainder the spec asks for: the remainder needs the boss's
+		   spawn time, which this script does not hold - eventWindowMs() gives
+		   the window's LENGTH and scanResults carries spawnTime only for a
+		   boss that has not spawned yet. Using the existing constant keeps the
+		   backstop's behaviour identical to the pre-v103 type-wide cooldown,
+		   which is the conservative choice. */
+		const win = (typeof bossHop !== 'undefined' && bossHop.eventWindowMs)
+			? (bossHop.eventWindowMs(t.name) || CONFIG.bossEvents.cooldownMs)
+			: CONFIG.bossEvents.cooldownMs;
+		if (!bossState.giveUps) bossState.giveUps = {};
+		const hist = (bossState.giveUps[t.name] || []).filter(x => now - x < win);
+		hist.push(now);
+		bossState.giveUps[t.name] = hist;
+		/* Distinct SHARDS, not attempts: two give-ups on the same shard say
+		   nothing new about the other four. */
+		const shards = {};
+		shards[sh] = 1;
+		for (const k in bossState.cooldown) {
+			if (k.indexOf(t.name + '|') === 0 && bossState.cooldown[k] > now) {
+				shards[k.slice(t.name.length + 1)] = 1;
+			}
+		}
+		if (Object.keys(shards).length >= BOSS_TYPE_GIVEUP_MAX) {
+			bossState.cooldown[t.name] = now + CONFIG.bossEvents.cooldownMs;
+			wide = true;
+		}
+	}
 	bossState.trip = null;
 	bossState.forced = null;
 	bossState.lastNote = null;
 	bossSave();
 	bossLog('leaving ' + t.name + ' after ' + mins + ' min (' + why + ') - back to farming'
-		+ (gaveUp ? ', and leaving it alone for ' + Math.round(CONFIG.bossEvents.cooldownMs / 60000) + ' min' : ''), 'orange');
+		+ (gaveUp ? ', and leaving it alone for ' + Math.round(CONFIG.bossEvents.cooldownMs / 60000)
+			+ ' min' + (wide ? ' EVERYWHERE - ' + BOSS_TYPE_GIVEUP_MAX + ' shards failed this window'
+				: ' on ' + (t.shard || bossShard()) + ' only') : ''), 'orange');
 	if (bossIsLeader()) bossBroadcast(null);
 	try { if (typeof handleReturnHome === 'function') handleReturnHome(); } catch (e) { }
 }
@@ -2678,7 +2779,10 @@ async function bossTick() {
 	if (!pick) { if (bossState.trip) bossEnd('nothing eligible is live'); return false; }
 	if (!bossState.trip || bossState.trip.name !== pick.name) {
 		if (bossState.trip) bossEnd('switching to ' + pick.name);
-		bossState.trip = { name: pick.name, startedAt: Date.now(), deaths: 0, wasRip: !!character.rip, src: pick.src };
+		/* The shard is recorded at trip START so a give-up is attributed to where
+		   the fight actually was, not to wherever we happen to stand when the
+		   budget runs out. */
+		bossState.trip = { name: pick.name, shard: bossShard(), startedAt: Date.now(), deaths: 0, wasRip: !!character.rip, src: pick.src };
 		bossSave();
 		bossLog('going to ' + pick.name + ' (' + pick.src + ', '
 			+ (BOSS_JOIN_SPOTS[pick.name] ? 'joinable' : 'on foot') + ')');
@@ -2705,7 +2809,7 @@ function bossJoin(name) {
 		return;
 	}
 	bossState.forced = { name: name, at: Date.now() };
-	bossState.cooldown[name] = 0;
+	bossClearCooldown(name);
 	bossSave();
 	bossLog('forced to ' + name + ' by hand', '#7FD98A');
 	// From ANY character, not just the leader: "go now" has to mean the party,
@@ -2737,8 +2841,15 @@ function bossStatus() {
 	}
 	for (const n in bossState.cooldown) {
 		const left = bossState.cooldown[n] - Date.now();
-		if (left > 0) bossLog('  cooling: ' + n + ' for ' + Math.round(left / 60000) + ' min', '#8b98ab');
+		/* A key with no '|' is the type-level backstop, which is the one worth
+		   calling out - it is the difference between "try another shard" and
+		   "this boss is out of reach tonight". */
+		if (left > 0) bossLog('  cooling: ' + n + (n.indexOf('|') < 0 ? ' (ALL shards)' : '')
+			+ ' for ' + Math.round(left / 60000) + ' min', '#8b98ab');
 	}
+	const lg = bossState.lastGiveUp;
+	if (lg) bossLog('  last give-up: ' + lg.name + ' on ' + lg.shard + ' (' + lg.why + ') '
+		+ Math.round((Date.now() - lg.at) / 60000) + ' min ago', '#8b98ab');
 }
 
 
@@ -3302,13 +3413,27 @@ const bossHop = {
 			   106M of live franky standing here. Cost: two franky credits and
 			   their keys, from bosses that needed sixteen seconds of presence.
 
-			   THE ASYMMETRY IS DELIBERATE: this gate is on the HERE selector and
-			   NOT on pickTarget(), so a give-up stops us re-committing to the
-			   instance we abandoned while leaving us free to hop to another one.
-			   The cooldown is keyed by TYPE and is shard-blind, so it cannot say
-			   "this franky"; applying it only where the give-up happened is what
-			   supplies the missing shard. That is a property of where the check
-			   sits, not of the cooldown, so do not "tidy" it onto pickTarget. */
+			   v99 PUT THE ASYMMETRY HERE; v103 DISSOLVED IT, and the order
+			   matters if this is ever revisited. While the cooldown was keyed
+			   by TYPE it could not say "this franky", so gating only the HERE
+			   selector was the one placement that supplied the missing shard -
+			   and gating pickTarget() too would have blocked the hop the fix
+			   exists to allow. The cooldown is now keyed (type, shard), so both
+			   selectors gate on it and each asks about its own shard; this call
+			   defaults to ours. Do not restore the asymmetry without first
+			   making the key type-wide again, and do not make the key
+			   type-wide without restoring the asymmetry - either alone
+			   reinstates a measured defect.
+
+			   v99 WAS ONLY HALF THE FIX, and that was not visible until the
+			   shard key landed: hopping away is not fighting. bossHop commits
+			   FIGHTING from localBossLive() alone, while the party only
+			   APPROACHES and attacks a boss when shouldHandleEvents() is true,
+			   which needs bossPick() - and bossPick() goes through
+			   bossEligible(), which a type-wide give-up refused on every shard.
+			   So v99 sent the party to US V and left it farming ordinary mobs
+			   beside the franky it had travelled for.
+			   -> RangerComments.md#shardKeyedCooldown */
 			if (bossCooledDown(t.mtype)) continue;
 			/* Only skip when the join is the ONLY way in. For a taxi join the
 			   refusal costs the lift, not the fight: the boss is on a walkable
@@ -3421,6 +3546,15 @@ const bossHop = {
 		const arriveSec = (c.hopLatencyMs + c.safetyMarginMs) / 1000;
 
 		const eligible = this.candidates().filter(x => {
+			/* GATED AS OF v103, WHICH v99's COMMENT EXPRESSLY FORBADE - read
+			   localTarget() before changing this back. The prohibition was
+			   sound while the cooldown was keyed by TYPE, because a type-wide
+			   entry here would have blocked the very hop the fix exists to
+			   allow. Keyed by (type, shard) it says "not THAT franky", so the
+			   candidate's own shard is the right question and the asymmetry
+			   has nothing left to do. candidates() already skips our own
+			   shard, so this only fires for a shard we abandoned and left. */
+			if (bossCooledDown(x.mtype, x.shard)) return false;
 			const k = this.contributors(x.shard, x.mtype);
 			x.requiredDwellSec = this.requiredDwellSec(x.maxHp, k, hopsick, x.mtype);
 			x.contributors = k;

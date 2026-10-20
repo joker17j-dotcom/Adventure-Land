@@ -21,6 +21,66 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v103
+
+The give-up cooldown is keyed `(type, shard)`. This is section 4 of the chain
+queue spec, and it completes v99 rather than extending it - v99 was half a fix
+and was recorded as a whole one.
+
+WHY v99 WAS HALF. It stopped an abandoned boss pinning the party to its shard,
+and the hop then fired correctly. But arriving is not fighting. `bossHop`
+commits FIGHTING from `localBossLive()` alone and performs no movement; what
+walks the party to a boss and attacks it is `handleEvents()`, gated by
+`shouldHandleEvents()` = `holidaySpirit || !!bossPick() || !!bossState.trip`.
+After a give-up the trip is null and `bossPick()` goes through
+`bossEligible()`, which a TYPE-keyed cooldown refused on every shard for 30
+minutes. So the party travelled to US V and farmed ordinary mobs beside the
+franky it had gone there for, until `maxFightMs` aborted. Shard-keying is what
+lets `bossEligible` say yes at the destination.
+
+THE SPEC'S OWN PREMISE WAS OFF, and the correction matters for what gets built.
+It says the type-keyed cooldown prevents the fall-through to the same boss
+elsewhere. It does not: `pickTarget()` had no cooldown gate at all, and
+`candidates()` skips our own shard, so the hop was already permitted after v99.
+What the type key blocked was the FIGHT after the hop. So the spec's 4(b) - a
+new mechanism to re-rank the same type's other instances before other activity
+- needs nothing built: rank-first ordering in `pickTarget` already delivers it.
+4(a) is the whole of section 4, and it is more urgent than the spec frames it.
+
+WHAT LANDED. `bossShard()`, `bossCooldownKey()`, `bossCooledDown(name, shard)`
+reading the shard key OR the bare type key, `bossClearCooldown()` so a
+by-type clear takes the shard entries with it, `bossEligible(name, shard)`
+reporting WHICH key bit, the trip recording its own shard at START so a
+give-up is attributed to where the fight was, and `bossState.lastGiveUp`
+keeping the reason - "could not kill it" and "arrived too late" want different
+answers next window.
+
+THE ASYMMETRY v99 INSTALLED IS GONE, deliberately, and the suite assertion that
+pinned it was INVERTED rather than deleted. v99's comment said not to tidy the
+gate onto `pickTarget`; that was correct for a type-wide key and wrong for a
+shard key. Both selectors now gate, each on its own shard - `localTarget` on
+the default (ours), `pickTarget` on the candidate's. Gating `pickTarget` with
+the default would ask about our own shard and be a no-op, so the suite asserts
+the two-argument form specifically. Two coherent configurations exist and
+neither half of either works alone.
+
+TYPE-LEVEL BACKSTOP, `BOSS_TYPE_GIVEUP_MAX = 2`, counting DISTINCT SHARDS
+rather than attempts and pruned to one event window. Its duration is
+`cooldownMs` and not the window remainder the spec asked for: the remainder
+needs a spawn time the script does not hold, so the existing constant is used
+and the behaviour matches the pre-v103 type-wide cooldown exactly. Open
+question for the operator and the other session - whether to pull `spawn_t`
+from the bridge to compute it properly.
+
+Migration is a no-op. The map persists to CODE storage, so a deploy meets bare
+type keys; they read as type backstops - over-restrictive for at most one
+cooldown, never permissive.
+
+Suite 457. All five new behaviours mutation-tested: type-keying the write, the
+backstop counting attempts instead of shards, attributing the give-up to the
+current shard instead of the trip's, the clear skipping shard keys, and
+`pickTarget` gating with the default argument.
+
 ## v102
 
 Comment-only. DO NOT DEPLOY ALONE - it changes no behaviour, and the live slot

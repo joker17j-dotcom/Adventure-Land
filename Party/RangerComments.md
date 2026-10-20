@@ -88,6 +88,69 @@ G's 720000 whatever the clock says, so every gate using it charged a character
 2026-10-17 - and falls back to the full duration when the field is absent,
 which is the conservative direction.
 
+## shardKeyedCooldown
+
+Why the give-up cooldown is keyed `(type, shard)` as of v103, and why v99 -
+which looked like the whole fix and was asserted as such - was half of one.
+
+WHAT v99 FIXED. `bossHop.tick()` asks `localTarget()` before `pickTarget()`
+and anything truthy commits FIGHTING and returns, so a live-but-abandoned boss
+at home pinned the party to its shard. v99 gated `localTarget()` on the
+give-up cooldown, and that worked: the party stopped re-committing here and
+`pickTarget()` was reached, returned US V franky, and the hop fired.
+
+WHAT IT DID NOT FIX, AND THE SUITE COULD NOT SEE IT. Arriving is not
+fighting. `bossHop` commits FIGHTING from `localBossLive()` alone and then does
+nothing but wait for the boss to die - it performs no movement and never opens
+a trip. What actually walks the party to a boss and attacks it is
+`handleEvents()`, reached only when `shouldHandleEvents()` is true, which is
+`holidaySpirit || !!bossPick() || !!bossState.trip`. After a give-up
+`bossState.trip` is null, and `bossPick()` goes through `bossEligible()`, which
+a TYPE-KEYED cooldown refused on every shard for 30 minutes. So the party
+hopped to US V, entered FIGHTING, and farmed ordinary mobs beside the franky it
+had travelled for until `maxFightMs` aborted. Both halves were needed for a
+credit; v99 delivered the travel.
+
+THE TESTING LESSON IS THE DURABLE PART. v99's assertions were that
+`localTarget()` skips a cooled boss and that `pickTarget()` does not - both
+true, both still true, and both about which target is CHOSEN. Nothing asserted
+that the fight then happens, because the fight is authorised by a different
+function in a different subsystem. The assertion boundary stopped exactly where
+the defect began. When a fix spans two components, assert on the far side of the
+handoff, not on the near side.
+
+THE KEY CHANGE. `bossState.cooldown` is now keyed `'<name>|<shard>'` for a
+give-up and by the bare `'<name>'` for the type-level backstop; both are
+consulted, so a bare key still forbids the type everywhere. `bossCooledDown`
+defaults its shard argument to ours, which is right for every HERE-style caller
+(`bossEligible`, `localTarget`), while `pickTarget` passes the CANDIDATE's
+shard - gating there with the default would silently ask about our own shard
+and be a no-op.
+
+THE ASYMMETRY DISSOLVED, AND THE PAIRING IS WHAT MATTERS. v99's comment said
+not to tidy the gate onto `pickTarget`, and that was correct while the key was
+type-wide: a type-wide entry there blocks the hop the fix exists to allow. With
+a shard key both selectors gate and each asks about its own shard. So there are
+two coherent configurations - v99's asymmetry with a type key, or v103's
+symmetry with a shard key - and neither half of either works alone. Changing
+one without the other reinstates a measured defect.
+
+THE BACKSTOP COUNTS DISTINCT SHARDS, NOT ATTEMPTS. `BOSS_TYPE_GIVEUP_MAX = 2`,
+pruned to one event window. Three give-ups on the same shard say nothing about
+the other four and must not trip it; two different shards do. The DURATION is
+`cooldownMs`, not the window remainder the spec asked for, because the
+remainder needs the boss's spawn time and this script does not hold it -
+`eventWindowMs()` gives the window's LENGTH, and `scanResults` carries
+`spawnTime` only for a boss that has not spawned yet. Reusing the existing
+constant makes the backstop behave exactly like the pre-v103 type-wide
+cooldown, which is the conservative reading of an open question rather than an
+invented number.
+
+MIGRATION IS A NO-OP BY CONSTRUCTION. The map is persisted to CODE storage, so
+a deploy meets bare type keys written by v102 and earlier. They read as type
+backstops: over-restrictive for at most one cooldown, never permissive. The
+safe direction, which is why there is no migration step.
+
 ## terminalInvalidation
 
 Why `scanResults` needs the bridge at all, when it already has a staleness

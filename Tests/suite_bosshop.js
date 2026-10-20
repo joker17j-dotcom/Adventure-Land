@@ -31,14 +31,17 @@ function ranger(over = {}) {
 		CONFIG: over.CONFIG || CFG(),
 		REGIONS: ['US', 'EU', 'ASIA'], HOP_ATTEMPT_CAP: 5, HOP_RELOAD_GRACE_MS: 15000,
 		TAXI_PROBE_KEY: 'taxi_probe', TAXI_PROBE_MAX: 30,
-		parent: { G: G_BASE, S: over.S || {} },
+		parent: Object.assign({ G: G_BASE, S: over.S || {}, server_region: 'US', server_identifier: 'I' }, over.parentExtra || {}),
 	}, over));
 	/* bossState and bossCooledDown are lifted because localTarget() now reads the
 	   give-up cooldown. They are declared in the same file as bossHop, so a live
 	   CODE context always has them; only a lifted world has to be told. Two
 	   existing tests threw ReferenceError the moment the gate landed, which is
 	   the suite doing its job rather than a hazard in the script. */
-	lift(w, RANGER, ['bossState', 'bossCooledDown',
+	/* bossShard and bossCooldownKey joined the list when v103 keyed the
+	   cooldown by (type, shard); four tests threw ReferenceError the moment it
+	   landed, which is the same signal bossCooledDown gave in v99. */
+	lift(w, RANGER, ['bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey',
 		'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'taxiProbeRead', 'taxiProbeWrite', 'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
 	w.bossHop.shardDps = () => 5000;
@@ -340,8 +343,10 @@ module.exports = [
 	const fs = require('fs');
 	const path = require('path');
 
-	const w = world({});
-	lift(w, RANGER, ['bossState', 'bossCooledDown', 'bossEligible']);
+	/* BOSS_TYPE_GIVEUP_MAX has a non-brace initialiser so lift() cannot
+	   brace-match it, and bossEligible names it in its refusal message. */
+	const w = world({ BOSS_TYPE_GIVEUP_MAX: 2, parent: { server_region: 'US', server_identifier: 'I' } });
+	lift(w, RANGER, ['bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey', 'bossEligible']);
 	w.CONFIG = { bossEvents: { enabled: true, exclude: new Set(), include: [], cooperativeOnly: false } };
 	w.bossCooperative = () => true;
 
@@ -373,13 +378,21 @@ module.exports = [
 	t.ok('and before paying for the feasibility test',
 		lt.indexOf('bossCooledDown(') < lt.indexOf('requiredDwellSec('));
 
-	/* THE ASYMMETRY IS THE FIX, so it is asserted. The gate belongs on the HERE
-	   selector only: the cooldown is type-keyed and shard-blind, and applying it
-	   where the give-up happened is what supplies the missing shard. On pickTarget
-	   it would block the hop that is the whole point of the fix. */
+	/* THIS ASSERTION WAS INVERTED IN v103, AND THE INVERSION IS THE POINT.
+	   It read "pickTarget does NOT gate on the cooldown" and that was correct
+	   while the key was type-wide: a type-wide entry here blocks the very hop
+	   v99 exists to allow. Keyed (type, shard) the gate is right, and what has
+	   to be asserted instead is that it asks about the CANDIDATE's shard -
+	   gating with one argument would silently ask about OURS, which is never
+	   the shard being considered and would make the check a no-op. */
 	const pt = src.slice(src.indexOf('\tpickTarget() {'), src.indexOf('\tgoHomeIfIdle'));
-	t.eq('pickTarget does NOT gate on the cooldown - that would block the hop',
-		pt.indexOf('bossCooledDown(') >= 0, false);
+	t.ok('pickTarget gates on the cooldown, by the CANDIDATE shard',
+		/bossCooledDown\(x\.mtype, x\.shard\)/.test(pt));
+	t.eq('and never with the default, which would ask about our own shard',
+		/bossCooledDown\(x\.mtype\)/.test(pt), false);
+	t.ok('localTarget still gates, and defaults to ours',
+		/if \(bossCooledDown\(t\.mtype\)\) continue;/.test(lt));
+	t.note('v99 asymmetry + type key, or v103 symmetry + shard key - either pairing works, neither half alone');
 } },
 
 { name: 'applyTerminal: a boss that stopped existing stops being a candidate', fn(t) {
@@ -593,6 +606,107 @@ module.exports = [
 	}
 	t.eq('50 historical rows at a deliberately over-wide bracket, still clear nothing',
 		w.bossHop.scanResults[0].live, true);
+} },
+
+{ name: 'the cooldown is keyed (type, shard), which is what lets the party fight on arrival', fn(t) {
+	const CD = 30 * 60 * 1000;
+	function w1(shard) {
+		const w = world({
+			BOSS_TYPE_GIVEUP_MAX: 2,
+			parent: { server_region: shard.slice(0, 2), server_identifier: shard.slice(2) },
+			character: { name: 'Dexon', rip: false },
+		});
+		lift(w, RANGER, ['bossState', 'bossShard', 'bossCooldownKey', 'bossCooledDown',
+			'bossClearCooldown', 'bossEligible', 'bossEnd']);
+		w.CONFIG = { bossEvents: { enabled: true, exclude: new Set(), include: [],
+			cooperativeOnly: false, cooldownMs: CD } };
+		w.bossCooperative = () => true;
+		w.bossSave = () => { };
+		w.bossLog = () => { };
+		w.bossIsLeader = () => false;
+		w.bossBroadcast = () => { };
+		return w;
+	}
+
+	/* THE MEASURED NIGHT. Give up on US II franky at the trip cap, then ask
+	   whether franky is takeable on US V. Under the type-keyed cooldown
+	   bossEligible said no on every shard - and bossEligible is what bossPick
+	   consults, which is what shouldHandleEvents needs, which is what makes the
+	   party APPROACH and attack. So v99 hopped to US V and then farmed ordinary
+	   mobs beside the franky it had travelled for. */
+	let w = w1('USII');
+	w.bossState.trip = { name: 'franky', shard: 'USII', startedAt: Date.now() - 1200000, deaths: 0 };
+	w.bossEnd('trip cap of 20 min');
+	t.eq('the give-up cools the shard it happened on',
+		w.bossCooledDown('franky', 'USII'), true);
+	t.eq('and NOT the same boss elsewhere', w.bossCooledDown('franky', 'USV'), false);
+	t.eq('so bossEligible refuses here', w.bossEligible('franky', 'USII').ok, false);
+	t.eq('and allows there - the half v99 was missing',
+		w.bossEligible('franky', 'USV').ok, true);
+	t.note('bossEligible -> bossPick -> shouldHandleEvents is what authorises the approach; bossHop arrival alone never did');
+
+	/* The trip's OWN shard is used, not wherever we stand when the budget runs
+	   out - otherwise a give-up after any movement is attributed to the wrong
+	   shard and cools an instance nobody fought. */
+	w = w1('EUIII');
+	w.bossState.trip = { name: 'crabxx', shard: 'USII', startedAt: Date.now() - 1200000, deaths: 0 };
+	w.bossEnd('trip cap of 20 min');
+	t.eq('the cooldown lands on the trip shard', w.bossCooledDown('crabxx', 'USII'), true);
+	t.eq('not on the shard we ended up on', w.bossCooledDown('crabxx', 'EUIII'), false);
+
+	/* AN EVENT THAT ENDED ON ITS OWN IS NOT A GIVE-UP, unchanged from before -
+	   only 'death', 'cap' and 'by hand' count. */
+	w = w1('USII');
+	w.bossState.trip = { name: 'franky', shard: 'USII', startedAt: Date.now() - 1000, deaths: 0 };
+	w.bossEnd('nothing eligible is live');
+	t.eq('a boss that died or despawned cools nothing',
+		w.bossCooledDown('franky', 'USII'), false);
+
+	/* THE TYPE-LEVEL BACKSTOP counts distinct SHARDS, not attempts, so a boss
+	   that is too strong everywhere is not walked across five shards in turn. */
+	w = w1('USII');
+	w.bossState.trip = { name: 'franky', shard: 'USII', startedAt: Date.now() - 1200000, deaths: 0 };
+	w.bossEnd('trip cap of 20 min');
+	t.eq('one shard does not trip it', w.bossCooledDown('franky', 'ASIAI'), false);
+	w.bossState.trip = { name: 'franky', shard: 'USV', startedAt: Date.now() - 1200000, deaths: 0 };
+	w.bossEnd('trip cap of 20 min');
+	t.eq('the second DISTINCT shard cools the type everywhere',
+		w.bossCooledDown('franky', 'ASIAI'), true);
+	t.ok('and says so, so the log distinguishes "try elsewhere" from "out of reach"',
+		/EVERYWHERE/.test(w.bossEligible('franky', 'ASIAI').why));
+
+	/* Twice on the SAME shard says nothing new about the other four, so it must
+	   not trip the backstop - this is the assertion that makes "distinct
+	   shards" the meaning rather than an accident of the counter. */
+	w = w1('USII');
+	for (let i = 0; i < 3; i++) {
+		w.bossState.trip = { name: 'crabxx', shard: 'USII', startedAt: Date.now() - 1200000, deaths: 0 };
+		w.bossEnd('trip cap of 20 min');
+	}
+	t.eq('three give-ups on ONE shard leave the type alone',
+		w.bossCooledDown('crabxx', 'USV'), false);
+
+	/* Clearing is by TYPE and must take the shard keys with it, or an operator
+	   calling the party to a boss is refused by an entry they cannot see. */
+	w = w1('USII');
+	w.bossState.trip = { name: 'franky', shard: 'USII', startedAt: Date.now() - 1200000, deaths: 0 };
+	w.bossEnd('trip cap of 20 min');
+	w.bossClearCooldown('franky');
+	t.eq('bossClearCooldown clears the shard entry', w.bossCooledDown('franky', 'USII'), false);
+	w = w1('USII');
+	w.bossState.cooldown.franky = Date.now() + CD;
+	w.bossClearCooldown('franky');
+	t.eq('and the type entry', w.bossCooledDown('franky', 'USII'), false);
+
+	/* MIGRATION. A map persisted before v103 holds bare type keys. They read as
+	   type backstops, which is over-restrictive for at most one cooldown and
+	   never permissive - the safe direction, and the reason no migration step
+	   is needed. */
+	w = w1('USII');
+	w.bossState.cooldown = { franky: Date.now() + CD };
+	t.eq('a pre-v103 bare key still forbids the type everywhere',
+		w.bossCooledDown('franky', 'ASIAI'), true);
+	t.note('fails safe rather than permissive, so the persisted map needs no migration');
 } },
 
 ];

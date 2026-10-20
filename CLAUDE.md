@@ -1509,11 +1509,40 @@ reading.
   it was fighting it because `localTarget()` still saw 106M of live boss standing
   there. For 23 minutes `pickTarget()` was returning a franky two shards away at
   ~15.9 SECONDS of required dwell and no hop fired. Cost two franky credits and
-  their keys. Fixed in Ranger v99 by giving both paths one `bossCooledDown()`.
+  their keys. Ranger v99 gave both paths one `bossCooledDown()`.
   **The general rule: when two components can both decide the same thing, find
   the one that is asked FIRST and check what it does not know.** A disagreement
   there produces no error and no log line - it just produces inaction, which
   reads as "nothing was available" rather than as a fault.
+- **v99 WAS HALF THAT FIX AND THIS FILE CALLED IT THE WHOLE ONE until
+  2026-10-20. ARRIVING IS NOT FIGHTING.** `bossHop` commits FIGHTING from
+  `localBossLive()` alone and performs no movement; what walks the party to a
+  boss and attacks it is `handleEvents()`, gated by `shouldHandleEvents()` =
+  `holidaySpirit || !!bossPick() || !!bossState.trip`. After a give-up the trip
+  is null and `bossPick()` goes through `bossEligible()`, which a TYPE-keyed
+  cooldown refused on every shard for 30 minutes - so v99 sent the party to US V
+  and left it farming ordinary mobs beside the franky it had travelled for,
+  until `maxFightMs` aborted. Fixed in v103 by keying the cooldown
+  `(type, shard)`; see `Party/RangerComments.md#shardKeyedCooldown`. **A THIRD
+  FAILURE MODE FOR TWO STATE MACHINES, after "they disagree" and "one cannot see
+  the predicate": one of them is never ASKED.** `bossHop` decided to fight and
+  `bossPick` decided whether to approach, and fixing the decider left the
+  executor refusing.
+- **SO ASSERT ON THE FAR SIDE OF A HANDOFF, NOT THE NEAR SIDE.** v99's suite
+  asserted that `localTarget()` skips a cooled boss and that `pickTarget()` does
+  not - both true, both still true, and both about which target is CHOSEN. Not
+  one assertion covered whether the fight then happens, because that is
+  authorised by a different function in a different subsystem. The assertion
+  boundary stopped exactly where the defect began, which is why a green suite
+  and a live loss coexisted for a day. Mutation testing cannot find this either:
+  every mutation of the code under test failed a test, as it should.
+- **TWO COHERENT CONFIGURATIONS, AND HALF OF EITHER IS A DEFECT.** v99's
+  asymmetry (gate the HERE selector only) is correct with a TYPE-keyed cooldown,
+  because a type-wide entry on `pickTarget` blocks the hop. v103's symmetry
+  (both selectors gate, each on its own shard) is correct with a SHARD-keyed
+  one. Changing the key without the placement, or the placement without the key,
+  reinstates a measured loss - the suite pins both halves and the inverted
+  assertion is kept rather than deleted so the pairing is visible.
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from
@@ -1672,9 +1701,9 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 329 JS assertions across SIX suites, plus 112
+  **COUNT AS OF 2026-10-20, LATE: 345 JS assertions across SIX suites, plus 112
   from the python bridge suite the runner shells out to and folds in, for
-  `all 441 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
+  `all 457 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
   that - three figures in one file in one day, which is the point rather than
   an embarrassment: re-derive from a run, never from any note here.
   The figure above was true when written and is kept as the instance rather than
