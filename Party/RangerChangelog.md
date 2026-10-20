@@ -21,6 +21,50 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v105
+
+goobrawl's spawn-set mapping is one-to-MANY. `BOSS_FIGHT_TYPE = { goobrawl:
+'rgoo' }` named only one of the two monsters the event spawns, and the other
+session found it while rewriting section 6 of the chain queue spec.
+
+THE DEFECT WAS AT ONE OF THREE CALL SITES, each checked rather than counted.
+`bossApproach` asked `get_nearest_monster({type:'rgoo'})`, which returns null on
+a goobrawl showing only bgoo - and because goobrawl is NOT walkable the
+fall-through re-emits the join, so the party teleports in, finds nothing it will
+posture against, and keeps re-joining beside a live goo. `bossCooperative` was
+safe either way (both types are cooperative live) and the status line was
+cosmetic.
+
+WHY IT HAD NOT VISIBLY FAILED: the single goobrawl in the bridge's retained log
+produced rgoo. Base rate is roughly one observation in ~75 server-windows over
+3.17 days, so it could have sat here for weeks. rgoo is also the valuable half -
+1,000,000 hp, funtoken at rate 20, the only `open` source - against bgoo at
+100,000 hp and 0.25, which is why the mapping pointed at the rarer one.
+
+`bossNearestMonster(name)` takes the NEAREST of any of the event's types rather
+than the first found, because on a goobrawl both may be up and posturing against
+the far one walks past the near one. Asserted in both orders so the result
+cannot come from iteration order. `bossCooperative` now answers true if ANY type
+is cooperative: no change today, but reading only the first answers FALSE when G
+does not carry it, and false removes the boss from consideration.
+
+NOTHING WAS CHECKING THESE THREE COPIES. The other session believed
+`suite_relay`'s divergence check covered it; it names `plSaveCursor`, `plActed`
+and `plMarkActed` and nothing else, so three copies could have drifted in
+silence. They had not, but nothing would have said so. `suite_relay` now asserts
+all four names byte-identical across Ranger, Priest and Mage, and that no
+single-valued `BOSS_FIGHT_TYPE` survives in any of them - a surviving copy being
+the defect itself.
+
+UNRESOLVED, flagged rather than theorised: `G.events.goobrawl.sprite` is "rgoo",
+and sprite is an ICON field. If the original single value came from there it is a
+display field read as a spawn-set claim, which is the same shape as the
+`never_observable` finding. Nobody knows that it did.
+
+Suite 502. Four mutations bound: narrowing the map back to rgoo, taking
+first-found instead of nearest, reading only the first type for cooperative, and
+dropping the G guard.
+
 ## v104
 
 The give-up cooldown runs to the end of the boss's current GENERATION instead

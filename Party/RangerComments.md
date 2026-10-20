@@ -88,6 +88,52 @@ G's 720000 whatever the clock says, so every gate using it charged a character
 2026-10-17 - and falls back to the full duration when the field is absent,
 which is the conservative direction.
 
+## bossFightTypes
+
+Why the event-to-monster mapping is one-to-many, and which of its three call
+sites actually mattered.
+
+NO MONSTER IS NAMED goobrawl. The event spawns `rgoo` and `bgoo`, so every
+lookup that wants a live entity has to translate the event name - which is what
+`BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' }` did, naming one of the two. From live
+G: rgoo 1,000,000 hp, cooperative, funtoken at rate 20 and the only `open`
+source; bgoo 100,000 hp, cooperative, funtoken at 0.25. So the single value
+pointed at the rarer and more valuable half, and CLAUDE.md already described
+goobrawl as "only a CHANCE at rgoo" - the mapping assumed the chance had come
+in.
+
+THE THREE CALL SITES, checked individually rather than reported as a count,
+because only one was a defect:
+- `bossApproach` - THE DEFECT. `get_nearest_monster({type:'rgoo'})` is null on a
+  goobrawl showing only bgoo. goobrawl is not walkable, so the fall-through
+  re-emits the join rather than walking: the party teleports in, has nothing it
+  will posture against, and re-joins every tick with a live goo beside it.
+- `bossCooperative` - safe either way, since both types are cooperative live.
+  Changed anyway for robustness: reading only the first answers false if G does
+  not carry it, and false removes the boss from consideration entirely.
+- the status line - cosmetic.
+
+NEAREST, NOT FIRST-FOUND. On a goobrawl both types can be up, and posturing
+against the far one walks past the near one. The suite asserts it in both
+orders, so a pass cannot come from the order of `BOSS_FIGHT_TYPES`.
+
+WHY IT SURVIVED. The one goobrawl in the bridge's retained log produced rgoo,
+and the base rate is roughly one observation in ~75 server-windows over 3.17
+days. Nothing had exercised the bgoo path.
+
+AND NOTHING WAS CHECKING THE THREE COPIES. `suite_relay`'s divergence check
+covers the relay block - `plSaveCursor`, `plActed`, `plMarkActed` - and was
+believed to cover this. It did not. Three identical copies of a mapping with no
+assertion over them is the exact shape the relay check exists to catch, and this
+one sat outside it; it now asserts all four names identical across the three
+scripts and that no single-valued form survives anywhere.
+
+UNRESOLVED AND NOT WORTH THEORISING. `G.events.goobrawl.sprite` is "rgoo", and
+sprite is an ICON. If the original single value was taken from there, it is a
+display field read as a spawn-set claim - the same shape as `never_observable`
+being a narrow computation under a sweeping name. Nobody knows that it was, and
+the resemblance is recorded rather than asserted.
+
 ## shardKeyedCooldown
 
 Why the give-up cooldown is keyed `(type, shard)` as of v103, and why v99 -

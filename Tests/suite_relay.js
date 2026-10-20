@@ -153,4 +153,30 @@ module.exports = [
 	}
 } },
 
+{ name: 'the goobrawl spawn-set mapping has not diverged across the three scripts', fn(t) {
+	/* IT WAS NEVER COVERED, and the other session assumed it was - the relay
+	   block check above names plSaveCursor/plActed/plMarkActed and nothing
+	   else, so three copies of BOSS_FIGHT_TYPE could have drifted silently.
+	   They did not, but nothing would have said so. This is the check. */
+	const { extract } = require('./lift');
+	for (const name of ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossNearestMonster',
+			'bossCooperative']) {
+		const texts = FILES.map((f) => extract(f, name));
+		t.eq(`${name} is identical in Ranger, Priest and Mage`,
+			texts.every((x) => x === texts[0]), true);
+	}
+	/* And that the rgoo-only form is gone from all three, not just renamed in
+	   one - a surviving single-valued copy is the defect itself. */
+	const fs = require('fs');
+	const path = require('path');
+	const { ROOT } = require('./lift');
+	for (const f of FILES) {
+		const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		t.eq(`${f}: no single-valued BOSS_FIGHT_TYPE survives`,
+			/BOSS_FIGHT_TYPE\s*=/.test(src), false);
+		t.eq(`${f}: both goo types are named`,
+			/goobrawl: \['rgoo', 'bgoo'\]/.test(src), true);
+	}
+} },
+
 ];

@@ -795,4 +795,59 @@ module.exports = [
 		{ at: null, typeWide: false });
 } },
 
+{ name: 'an event that spawns two monster types is found by either of them', fn(t) {
+	function w1(mons, G) {
+		const w = world({
+			character: { name: 'Dexon', x: 0, y: 0 },
+			parent: { G: G || { monsters: { rgoo: { cooperative: true }, bgoo: { cooperative: true } } } },
+			get_nearest_monster: (q) => mons[q.type] || null,
+		});
+		lift(w, RANGER, ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossNearestMonster',
+			'bossCooperative']);
+		return w;
+	}
+
+	let w = w1({});
+	t.eq('goobrawl maps to BOTH products', w.bossMonsterTypes('goobrawl'), ['rgoo', 'bgoo']);
+	t.eq('and anything else maps to itself', w.bossMonsterTypes('franky'), ['franky']);
+
+	/* THE DEFECT. bossApproach asked for rgoo only, so a goobrawl showing just
+	   bgoo returned null - and because goobrawl is not walkable the
+	   fall-through re-emitted the join while a live goo stood beside us. */
+	w = w1({ bgoo: { id: 'b', x: 10, y: 0 } });
+	t.eq('a bgoo-only goobrawl is found', w.bossNearestMonster('goobrawl').id, 'b');
+	t.note('the rgoo-only mapping returned null here, and goobrawl is not walkable');
+	w = w1({ rgoo: { id: 'r', x: 10, y: 0 } });
+	t.eq('an rgoo-only goobrawl is still found', w.bossNearestMonster('goobrawl').id, 'r');
+
+	/* NEAREST, not first-found: posturing against the far one walks past the
+	   near one. Asserted in BOTH orders so the result cannot come from the
+	   iteration order of BOSS_FIGHT_TYPES. */
+	w = w1({ rgoo: { id: 'r', x: 500, y: 0 }, bgoo: { id: 'b', x: 10, y: 0 } });
+	t.eq('the nearer type wins when both are up', w.bossNearestMonster('goobrawl').id, 'b');
+	w = w1({ rgoo: { id: 'r', x: 10, y: 0 }, bgoo: { id: 'b', x: 500, y: 0 } });
+	t.eq('and in the other order too', w.bossNearestMonster('goobrawl').id, 'r');
+
+	w = w1({});
+	t.eq('nothing up answers null, as the single-type form did',
+		w.bossNearestMonster('goobrawl'), null);
+	w = w1({ franky: { id: 'f', x: 5, y: 5 } });
+	t.eq('a single-type boss is unaffected', w.bossNearestMonster('franky').id, 'f');
+
+	/* bossCooperative was SAFE either way - both types are cooperative live -
+	   so this is about robustness, not a live defect: reading only the first
+	   answers false if G does not carry it, and false removes the boss. */
+	w = w1({}, { monsters: { bgoo: { cooperative: true } } });
+	t.eq('cooperative is true when only the SECOND type carries it',
+		w.bossCooperative('goobrawl'), true);
+	w = w1({}, { monsters: { rgoo: { cooperative: true } } });
+	t.eq('and when only the first does', w.bossCooperative('goobrawl'), true);
+	w = w1({}, { monsters: { rgoo: {}, bgoo: {} } });
+	t.eq('false when neither does', w.bossCooperative('goobrawl'), false);
+	w = w1({}, { monsters: {} });
+	t.eq('and when G carries neither', w.bossCooperative('goobrawl'), false);
+	w = w1({}, {});
+	t.eq('a G with no monsters table does not throw', w.bossCooperative('goobrawl'), false);
+} },
+
 ];

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v79
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v80
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1902,8 +1902,49 @@ const BOSS_JOIN_SPOTS = {
 /* goobrawl is the ONE joinable event whose parent.S key is an EVENT name and
    not a monster name.
    -> MageComments.md#goobrawl-is-the-one-joinable-event-whose */
-const BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' };
-function bossMonsterType(name) { return BOSS_FIGHT_TYPE[name] || name; }
+/* ONE EVENT CAN SPAWN MORE THAN ONE MONSTER TYPE, and this mapping was
+   rgoo-ONLY until v105. goobrawl spawns BOTH rgoo and bgoo, and they are not
+   interchangeable: from live G, rgoo is 1,000,000 hp carrying funtoken at rate
+   20 and is the only `open` source, while bgoo is 100,000 hp at 0.25 - so the
+   single-valued mapping pointed at the rarer and more valuable half of a
+   two-type set and silently failed on the other.
+
+   THE DEFECT WAS IN bossApproach. `get_nearest_monster({type:'rgoo'})` returns
+   null on a goobrawl showing only bgoo, and because goobrawl is NOT walkable
+   the fall-through re-emits the join - so the party teleports in, finds nothing
+   it will posture against, and keeps re-joining while a live goo stands beside
+   it. bossCooperative was safe either way (both types are cooperative) and the
+   status line was cosmetic; one of the three call sites mattered.
+
+   WHY IT HAD NOT VISIBLY FAILED: the single goobrawl in the bridge's retained
+   log produced rgoo. The base rate is roughly one observation in ~75
+   server-windows over 3.17 days, so this could have sat here for weeks.
+
+   UNRESOLVED, flagged rather than theorised: `G.events.goobrawl.sprite` is
+   "rgoo", and sprite is an ICON field. If the original single value came from
+   there, it is a DISPLAY field read as a spawn-set claim - the same shape as
+   the `never_observable` finding. Nobody knows that it did.
+   -> RangerComments.md#bossFightTypes */
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'] };
+function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
+
+/* The nearest of ANY of the event's monster types. Distance rather than
+   first-found: on a goobrawl both may be up, and posturing against the far one
+   walks past the near one. get_nearest_monster is called bare, as everywhere
+   else in this file - it is measured present in all three combat contexts, and
+   a catch here would return null, which is indistinguishable from "no monster"
+   and is exactly the Form B lie. */
+function bossNearestMonster(name) {
+	let best = null, bestD = Infinity;
+	for (const t of bossMonsterTypes(name)) {
+		const m = get_nearest_monster({ type: t });
+		if (!m) continue;
+		const d = (typeof m.x === 'number' && typeof character.x === 'number')
+			? Math.hypot(m.x - character.x, m.y - character.y) : 0;
+		if (d < bestD) { best = m; bestD = d; }
+	}
+	return best;
+}
 
 // ============================================================================
 // RAGE BOXES - the geometry the farm scorer did not know about
@@ -2536,8 +2577,16 @@ function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName
 
 function bossCooperative(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
-	const m = g && g.monsters && g.monsters[bossMonsterType(name)];
-	return !!(m && m.cooperative);
+	if (!g || !g.monsters) return false;
+	/* ANY of the event's types being cooperative settles it. Measured live,
+	   rgoo and bgoo are both cooperative, so this changes no answer today -
+	   but reading only the first would answer FALSE if G happened not to
+	   carry it, and false here removes the boss from consideration. */
+	for (const t of bossMonsterTypes(name)) {
+		const m = g.monsters[t];
+		if (m && m.cooperative) return true;
+	}
+	return false;
 }
 
 function bossLiveNames() {
@@ -2653,7 +2702,7 @@ function bossWalkTarget(name) {
 }
 
 async function bossApproach(name) {
-	const mon = get_nearest_monster({ type: bossMonsterType(name) });
+	const mon = bossNearestMonster(name);
 	if (mon) { await bossPosture(mon); return; }
 	if (BOSS_JOIN_SPOTS[name]) {
 		/* THE TELEPORT IS STILL PREFERRED. When it is available it costs
@@ -2815,7 +2864,7 @@ function bossStatus() {
 	for (const n of live) {
 		const g = bossEligible(n);
 		const d = parent.S[n];
-		const mon = get_nearest_monster({ type: bossMonsterType(n) });
+		const mon = bossNearestMonster(n);
 		const hold = mon ? Math.round(bossHoldDistance(mon)) : null;
 		bossLog('  ' + n + ': ' + (g.ok ? 'ELIGIBLE' : 'skip') + ' (' + g.why + ')'
 			+ (d && d.max_hp ? ' hp ' + Math.round(100 * d.hp / d.max_hp) + '%' : '')
