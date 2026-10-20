@@ -441,6 +441,24 @@ _hrow(ev="spawn", t="2026-10-20T20:00:00Z", type="phoenix", server="EU III")
 _hrow(ev="death", t="2026-10-20T20:05:00Z", type="phoenix", server="EU III",
       confidence="high", method="respawn_offset", ttk_sec=300,
       spawn_t="2026-10-20T20:00:00Z", death_hi="2026-10-20T20:05:30Z")
+# A RECLASSIFIED DESPAWN, which is the case the browser session nearly filed a
+# correction about on 2026-10-20 - that ttk_upper_* would be contaminated by the
+# 20 untouched-boss rows sitting at ~2402s. It is not, and the reason is
+# POSITIONAL rather than argued: the read path rewrites `ev` to "despawn" at the
+# top of the loop, so a reclassified row never reaches the `elif ev == "death"`
+# branch where BOTH `kills_logged` and the bound are collected. Nothing in the
+# collection site says so, so moving it one branch outward would reinstate the
+# contamination with every other assertion in this file still passing.
+#
+# THE SETUP IS NON-DEGENERATE FOR A SHARP REASON: `stored_row_elapsed` is
+# `death_hi - spawn_t`, the SAME quantity `ttk_hi` collects. So a reclassified
+# despawn is precisely a row whose bound WOULD have been admissible - the
+# assertions below pin that it is computable and excluded anyway.
+_hrow(ev="spawn", t="2026-10-20T04:00:00Z", type="franky", server="US IV")
+_hrow(ev="death", t="2026-10-20T04:40:00Z", type="franky", server="US IV",
+      confidence="low", method="absent_on_responding_server", ttk_sec=2400,
+      last_pct=100.0, spawn_t="2026-10-20T04:00:00Z",
+      death_hi="2026-10-20T04:40:50Z")
 # A death whose spawn was never observed: no bound is possible at all.
 _hrow(ev="death", t="2026-10-20T13:30:00Z", type="crabxx", server="US I",
       confidence="low", method="absent_on_responding_server",
@@ -468,6 +486,35 @@ chk("and is COUNTED, so the reason is visible rather than looking like no data",
     _by[("crabxx", "US I")]["ttk_upper_no_spawn"], 1)
 chk("while a bounded row counts zero unbounded",
     _by[("franky", "EU III")]["ttk_upper_no_spawn"], 0)
+
+# --- the reclassified despawn: excluded, and from the SAME branch as the count.
+# PRECONDITION FIRST, because the whole test is that an admissible bound is
+# dropped: if the row stopped qualifying as a despawn, every assertion below
+# would pass for the wrong reason.
+chk("the row does qualify as a despawn, so the exclusion is exercised",
+    b.stored_row_despawn_confidence(
+        {"ev": "death", "type": "franky", "method": "absent_on_responding_server",
+         "last_pct": 100.0, "spawn_t": "2026-10-20T04:00:00Z",
+         "death_hi": "2026-10-20T04:40:50Z"}) is not None, True)
+chk("and its would-be bound is computable, and is 2450s",
+    b.stored_row_elapsed(
+        {"spawn_t": "2026-10-20T04:00:00Z", "death_hi": "2026-10-20T04:40:50Z"}), 2450.0)
+chk("it was in fact reclassified", _by[("franky", "US IV")]["despawns_reclassified"], 1)
+chk("so it contributes NO bound", _by[("franky", "US IV")]["ttk_upper_sample"], 0)
+chk("and no median either", _by[("franky", "US IV")]["ttk_upper_median_sec"], None)
+# THE INVARIANT, which is stronger than "despawns are excluded": the count and
+# the bound are collected in one branch, so they describe one population. A
+# bucket reporting kills it has no bounds for, or bounds for kills it does not
+# report, means the two have been separated.
+chk("it is not counted as a kill either", _by[("franky", "US IV")]["kills_logged"], 0)
+for _k, _r in _by.items():
+    chk(f"{_k[0]} {_k[1]}: bounds never outnumber the kills they came from",
+        _r["ttk_upper_sample"] + _r["ttk_upper_no_spawn"] <= _r["kills_logged"], True)
+# An unbounded row is still a kill, which is what makes the <= above an
+# inequality rather than an equality - crabxx US I has the kill and no bound.
+chk("crabxx US I: the kill is counted though the bound is not",
+    (_by[("crabxx", "US I")]["kills_logged"],
+     _by[("crabxx", "US I")]["ttk_upper_sample"]), (1, 0))
 
 # The payload says the asymmetry out loud, because it is not guessable from it.
 chk("the payload declares the median's confidence restriction",

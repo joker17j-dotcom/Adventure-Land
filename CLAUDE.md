@@ -852,6 +852,37 @@ time on 2026-10-18.
   TIME IN ONE DAY THAT A FILTER OR A NAME HID THE POPULATION OF INTEREST**,
   after `never_observable` and `ev=despawn`; the shared tell is that the
   excluded set was defined by a mechanism nobody re-read, not by the data.
+- **`ttk_upper_*` EXCLUDES RECLASSIFIED DESPAWNS, AND IT DOES SO POSITIONALLY -
+  NOTHING AT THE COLLECTION SITE SAYS SO.** `boss_history` rewrites `ev` to
+  "despawn" at the top of its loop, so a reclassified row never reaches the
+  `elif ev == "death"` branch where BOTH `kills_logged` and the bound are
+  collected. That is the right answer - the count and the bound then describe
+  ONE population - but it is a property of WHERE the four lines sit, not of
+  anything they say, and dedenting them one level reinstates the 20
+  untouched-boss rows at ~2402s into the pessimistic end a budget decision
+  reads. **A CORRECTNESS PROPERTY THAT RESTS ON POSITION IS INVISIBLE TO A
+  READER OF THE SITE**, which is a different hazard from the drift this file
+  mostly warns about: there is no second copy and no stale claim, just a
+  silence. `Tests/bridge/test_despawn.py` pins it with the precondition as well
+  as the outcome - `stored_row_elapsed` IS `death_hi - spawn_t`, the same
+  quantity the bound collects, so a reclassified despawn is exactly a row whose
+  bound would otherwise have been admissible, and the test asserts that it is
+  computable and dropped anyway. Measured by mutation: dedenting the collection
+  fails three assertions, one of them the population invariant
+  (`ttk_upper_sample + ttk_upper_no_spawn <= kills_logged`, an inequality
+  because an unbounded death is still a kill).
+- **THE PATTERN THIS FILE INSTALLED YESTERDAY HAS NOW PRODUCED ITS FIRST FALSE
+  POSITIVE, AND THAT IS WORTH AS MUCH AS THE THREE TRUE ONES.** After
+  `never_observable`, `ev=despawn` and `ttk_median_sec` all hid exactly the
+  population of interest in one day, the browser session drafted a FOURTH -
+  that `ttk_upper_*` would be contaminated by despawn rows - and withdrew it on
+  checking the code, because the exclusion above was already there. Three
+  instances in a day is enough to make "a filter is hiding the population" the
+  first thing anyone reaches for, and a heuristic that strong starts generating
+  suspects rather than findings. The discipline that made this one cheap is the
+  one that made the three expensive ones findable: they checked the mechanism
+  before sending. **So the rule is not "suspect filters", it is "read the
+  mechanism" - which sometimes exonerates it.**
 - **SO `ttk_upper_*` IS THE FIELD THOSE BOSSES ACTUALLY HAVE, and an upper bound
   is what a budget question wants anyway.** `death_hi - spawn_t` is EXACT for
   every death row regardless of confidence - `death_hi` IS `iso(poll_t)`, the
@@ -1760,11 +1791,14 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 146
+  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 157
   from the python bridge suite the runner shells out to and folds in, for
-  `all 575 pass`.** It read 285 / 61 / 346 earlier the same day, and 114 before
-  that - three figures in one file in one day, which is the point rather than
-  an embarrassment: re-derive from a run, never from any note here.
+  `all 586 pass`.** It read 575 hours earlier, 285 / 61 / 346
+  before that the same day, and 114 before that - FIVE figures in one file in one
+  day, which is the point rather than an embarrassment: re-derive from a run,
+  never from any note here. Each supersession is appended here rather than
+  erased, which is what the sentence below means by kept as the instance - the
+  CURRENT figure is the only one that moves.
   The figure above was true when written and is kept as the instance rather than
   overwritten - it is this file's own "claims rot" with the numbers to prove it. The
   handoff proposing this correction said "four suites"; it was six and is now
