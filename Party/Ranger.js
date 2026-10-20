@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v98
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v99
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2409,14 +2409,24 @@ function bossLiveNames() {
 
 /* The gate. Returns its reason rather than logging it, so bossStatus() can
    print the whole picture in one pass. */
+/* ONE EXPRESSION FOR THE GIVE-UP COOLDOWN, read by bossEligible AND by
+   bossHop.localTarget(). It was read in exactly one place until 2026-10-20, and
+   that place was on the LOCAL-pick path only, which is how the hop path came to
+   ignore a give-up entirely - see localTarget for what that cost. */
+function bossCooledDown(name) {
+	return (bossState.cooldown[name] || 0) > Date.now();
+}
+
 function bossEligible(name) {
 	const cfg = CONFIG.bossEvents;
 	if (!cfg.enabled) return { ok: false, why: 'bossEvents.enabled is false' };
 	if (cfg.exclude.has(name)) return { ok: false, why: 'excluded' };
 	const byHand = cfg.include.indexOf(name) >= 0;
 	if (cfg.cooperativeOnly && !byHand && !bossCooperative(name)) return { ok: false, why: 'not cooperative' };
-	const until = bossState.cooldown[name] || 0;
-	if (until > Date.now()) return { ok: false, why: 'gave up on it ' + Math.round((until - Date.now()) / 60000) + ' min ago' };
+	if (bossCooledDown(name)) {
+		const until = bossState.cooldown[name] || 0;
+		return { ok: false, why: 'gave up on it ' + Math.round((until - Date.now()) / 60000) + ' min ago' };
+	}
 	return { ok: true, why: byHand ? 'included by hand' : 'cooperative' };
 }
 
@@ -3167,6 +3177,30 @@ const bossHop = {
 		let best = null;
 		for (const t of CONFIG.bossHop.targets) {
 			if (!this.localBossLive(t.mtype)) continue;
+			/* A BOSS THE COMBAT SIDE HAS GIVEN UP ON IS NOT A REASON TO STAY,
+			   AND UNTIL 2026-10-20 IT WAS. tick() asks localTarget() FIRST and
+			   anything truthy commits FIGHTING and returns, so pickTarget() is
+			   never reached - which means a live-but-abandoned boss at home
+			   pinned the party to its shard for as long as it stayed alive.
+
+			   Observed live on the 2026-10-19 nightly window: all three
+			   committed to US II franky at 04:00:01.5; by 04:20 it had gone
+			   120,000,000 -> 106,000,000 at ~11,400 dps, about 2.9 HOURS to
+			   finish, and the combat side gave up at its 1,200s trip budget and
+			   cooled franky down. From 04:20 to 04:43 pickTarget() was returning
+			   US V franky at ~15.9 SECONDS of required dwell with ~6,000s of
+			   window left and NO HOP EVER FIRED, because localTarget() still saw
+			   106M of live franky standing here. Cost: two franky credits and
+			   their keys, from bosses that needed sixteen seconds of presence.
+
+			   THE ASYMMETRY IS DELIBERATE: this gate is on the HERE selector and
+			   NOT on pickTarget(), so a give-up stops us re-committing to the
+			   instance we abandoned while leaving us free to hop to another one.
+			   The cooldown is keyed by TYPE and is shard-blind, so it cannot say
+			   "this franky"; applying it only where the give-up happened is what
+			   supplies the missing shard. That is a property of where the check
+			   sits, not of the cooldown, so do not "tidy" it onto pickTarget. */
+			if (bossCooledDown(t.mtype)) continue;
 			/* Only skip when the join is the ONLY way in. For a taxi join the
 			   refusal costs the lift, not the fight: the boss is on a walkable
 			   map and bossApproach walks to it. Skipping here was the worst of

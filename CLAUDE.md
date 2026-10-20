@@ -1428,6 +1428,26 @@ reading.
   `else if (CONFIG.movement.enabled)` branch - never runs at all. So a boss
   being merely PICKED, with no trip under way, was enough to stop the party
   holding together. Fixed in Priest v54 / Mage v77 and verified live.
+- **TWO STATE MACHINES OVER ONE DECISION WILL DISAGREE, AND THE ONE THAT ASKS
+  FIRST WINS SILENTLY.** `bossHop.tick()` asks `localTarget()` before
+  `pickTarget()`, and anything truthy commits FIGHTING and returns - so the
+  give-up cooldown, which lived only in `bossEligible()` on the local-pick path,
+  was invisible to the hop path. Observed live 2026-10-19: the combat side gave
+  up on US II franky at 04:20 and cooled it down, while bossHop went on believing
+  it was fighting it because `localTarget()` still saw 106M of live boss standing
+  there. For 23 minutes `pickTarget()` was returning a franky two shards away at
+  ~15.9 SECONDS of required dwell and no hop fired. Cost two franky credits and
+  their keys. Fixed in Ranger v99 by giving both paths one `bossCooledDown()`.
+  **The general rule: when two components can both decide the same thing, find
+  the one that is asked FIRST and check what it does not know.** A disagreement
+  there produces no error and no log line - it just produces inaction, which
+  reads as "nothing was available" rather than as a fault.
+- **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
+  cooldown comparison was a single inline expression inside `bossEligible()`, so
+  nothing had drifted and nothing looked wrong; it was simply unreachable from
+  the other path. The hazard is the mirror of the drift this file warns about
+  everywhere else - not two copies disagreeing, but one copy that half the code
+  cannot see. Extracting it is the same remedy either way.
 - **When one branch owns movement, check what the OTHER branch stopped doing.**
   The bug was not in the code that changed; it was in the code that silently
   stopped being reached.

@@ -21,6 +21,54 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v99
+
+A boss the combat side has GIVEN UP ON no longer pins the party to its shard.
+Observed live by the browser session on the 2026-10-19 nightly window; it cost
+two franky credits and their keys in one night.
+
+`bossHop.tick()` asks `localTarget()` FIRST, and anything truthy commits
+FIGHTING and returns, so `pickTarget()` is never reached. `localTarget()`
+consulted `localBossLive()` and one feasibility test and NOTHING about the
+give-up cooldown - that lived entirely in `bossEligible()`, which only
+`bossPick()` and the status dump ever called. So the hop path could not see a
+give-up at all, and two state machines disagreed: the combat side had abandoned
+the boss while bossHop still believed it was fighting it.
+
+WHAT IT PRODUCED. All three committed to US II franky at 04:00:01.5. By 04:20 it
+had gone 120,000,000 -> 106,000,000 at ~11,400 dps - about 2.9 HOURS to finish -
+and the combat side gave up at its 1,200s trip budget and cooled franky down.
+From 04:20 to 04:43 `pickTarget()` was returning US V franky at ~15.9 SECONDS of
+required dwell with ~6,000s of window left, and no hop ever fired, because
+`localTarget()` still saw 106M of live franky standing here.
+
+THE FIX IS ON THE *HERE* SELECTOR ONLY, AND THAT ASYMMETRY IS THE POINT. The
+cooldown is keyed by TYPE and is shard-blind, so it cannot say "this franky";
+applying it only where the give-up happened is what supplies the missing shard,
+and leaves the party free to hop to a different instance of the same boss -
+which is exactly the move that was being blocked. Gating `pickTarget()` on it
+too would block the hop the fix exists to allow, so the suite asserts that
+`pickTarget` does NOT read it.
+
+`bossCooledDown()` is one expression now read by both `bossEligible()` and
+`localTarget()`. It was read in exactly one place before, and that place being
+the local-pick path is precisely how the hop path came to ignore it.
+
+NOT FIXED HERE, flagged by the browser session and left to the chain queue: the
+cooldown being type-keyed is wrong for anything that ranks INSTANCES. Cooling
+down "franky" cools it on every shard. The asymmetry above works around that
+rather than curing it.
+
+11 assertions. Two EXISTING tests threw ReferenceError the moment the gate
+landed, because they lift `bossHop` and call `localTarget()` without the new
+helper in their world - the suite doing its job, not a hazard in the script,
+which declares both in the same file. All four behaviours mutation-tested: the
+gate removed, the helper neutered, `bossEligible` re-inlining the comparison,
+and the gate wrongly added to `pickTarget`. Suite 379.
+
+Not deployed.
+
+
 ## v98
 
 The PARTY_BUILD marker no longer accumulates, and the comment now names what

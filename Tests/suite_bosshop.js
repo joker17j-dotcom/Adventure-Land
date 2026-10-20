@@ -33,7 +33,13 @@ function ranger(over = {}) {
 		TAXI_PROBE_KEY: 'taxi_probe', TAXI_PROBE_MAX: 30,
 		parent: { G: G_BASE, S: over.S || {} },
 	}, over));
-	lift(w, RANGER, ['BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
+	/* bossState and bossCooledDown are lifted because localTarget() now reads the
+	   give-up cooldown. They are declared in the same file as bossHop, so a live
+	   CODE context always has them; only a lifted world has to be told. Two
+	   existing tests threw ReferenceError the moment the gate landed, which is
+	   the suite doing its job rather than a hazard in the script. */
+	lift(w, RANGER, ['bossState', 'bossCooledDown',
+		'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'taxiProbeRead', 'taxiProbeWrite', 'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
 	w.bossHop.shardDps = () => 5000;
 	w.bossHop.localBossLive = (t) => (over.live || []).includes(t);
@@ -321,6 +327,59 @@ module.exports = [
 	t.eq('the watchdog releases at 15s and the hop retries once by 20s', released.sent.length, 2);
 	t.that('the retry is 15s later, not a burst', released.sent[1].at - released.sent[0].at >= 15000,
 		released.sent[1].at - released.sent[0].at);
+} },
+
+{ name: 'a boss the combat side gave up on no longer pins the party here', fn(t) {
+	/* THE 2026-10-19 NIGHTLY WINDOW, which cost two franky credits and their keys.
+	   tick() asks localTarget() FIRST and anything truthy commits FIGHTING and
+	   returns, so pickTarget() is never reached. localTarget() consulted
+	   localBossLive() and a feasibility test and NOTHING about whether the combat
+	   side had already given up - so an abandoned-but-alive home boss pinned the
+	   party to its shard while a sixteen-second franky sat two shards away. */
+	const { extract, ROOT } = require('./lift');
+	const fs = require('fs');
+	const path = require('path');
+
+	const w = world({});
+	lift(w, RANGER, ['bossState', 'bossCooledDown', 'bossEligible']);
+	w.CONFIG = { bossEvents: { enabled: true, exclude: new Set(), include: [], cooperativeOnly: false } };
+	w.bossCooperative = () => true;
+
+	const NOW = Date.now();
+	t.eq('no cooldown entry -> not cooled down', w.bossCooledDown('franky'), false);
+	w.bossState.cooldown.franky = NOW + 30 * 60 * 1000;
+	t.eq('a live cooldown reads true', w.bossCooledDown('franky'), true);
+	t.eq('and bossEligible agrees, through the same expression', w.bossEligible('franky').ok, false);
+	w.bossState.cooldown.franky = NOW - 1;
+	t.eq('an expired cooldown reads false', w.bossCooledDown('franky'), false);
+	t.eq('and bossEligible lets it through again', w.bossEligible('franky').ok, true);
+	w.bossState.cooldown.franky = 0;
+	t.eq('a zeroed cooldown - the clear path - reads false', w.bossCooledDown('franky'), false);
+
+	/* ONE EXPRESSION, NOT TWO. The cooldown was read in exactly one place and that
+	   place was the local-pick path, which is how the hop path came to ignore a
+	   give-up. A second inlined copy would reintroduce the drift. */
+	const el = extract(RANGER, 'bossEligible');
+	t.ok('bossEligible goes through the helper', el.indexOf('bossCooledDown(') > 0);
+	t.eq('and does not re-inline the comparison',
+		/cooldown\[[^\]]+\]\s*\|\|\s*0\)\s*>\s*Date\.now\(\)/.test(el), false);
+
+	/* localTarget is a method on the bossHop object literal, so lift() cannot reach
+	   it by name - asserted at source instead, against the mechanism. */
+	const src = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
+	const lt = src.slice(src.indexOf('\tlocalTarget() {'), src.indexOf('\tpickTarget() {'));
+	t.ok('localTarget skips a cooled-down target',
+		/if \(bossCooledDown\(t\.mtype\)\) continue;/.test(lt));
+	t.ok('and before paying for the feasibility test',
+		lt.indexOf('bossCooledDown(') < lt.indexOf('requiredDwellSec('));
+
+	/* THE ASYMMETRY IS THE FIX, so it is asserted. The gate belongs on the HERE
+	   selector only: the cooldown is type-keyed and shard-blind, and applying it
+	   where the give-up happened is what supplies the missing shard. On pickTarget
+	   it would block the hop that is the whole point of the fix. */
+	const pt = src.slice(src.indexOf('\tpickTarget() {'), src.indexOf('\tgoHomeIfIdle'));
+	t.eq('pickTarget does NOT gate on the cooldown - that would block the hop',
+		pt.indexOf('bossCooledDown(') >= 0, false);
 } },
 
 ];
