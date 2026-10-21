@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v108
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v109
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -24,6 +24,8 @@
 //   farmFearReport()          the stored fear log
 //   clearFearReport()         empty it
 //   farmUiDiag()              why the farm panel is or is not on screen
+//   gyFarm()                  farm Graveyard Rising - parks outside the mummy rage box
+//   gyOff()                   undo gyFarm() and hand the spot back to the scorer
 //   mhOn()                    take monster hunts from now on
 //   mhOff()                   stop taking them and hand the spot back
 //   mhForget()                drop the stored choice and obey CONFIG again
@@ -36,6 +38,7 @@
 // Also typeable, but these HAVE internal callers, so a dead-code scan
 // would not flag them and they are listed for reference rather than
 // protection:
+//   gyStatus()           graveyard: whether we are farming it, and whether it is live
 //   mhStatus()           monster-hunt state for this character and the party
 //   restockStatus()      potion vendor, backoff and last attempt
 //   fearRecentSummary()  fear over the recent sample windows
@@ -425,7 +428,6 @@ const TOGGLES = {
 	equipmentBossSetSwapEnabled:     true,   // CONFIG.equipment.bossSetSwapEnabled
 	equipmentXpSetSwapEnabled:       false,  // CONFIG.equipment.xpSetSwapEnabled
 	equipmentUseLicence:             false,  // CONFIG.equipment.useLicence
-	graveyardFarm:                   false,  // CONFIG.graveyard.enabled
 	potionsAutoBuy:                  true,   // CONFIG.potions.autoBuy
 	partyAutoManage:                 true,   // CONFIG.party.autoManage
 	looting:                         true,   // CONFIG.looting.enabled
@@ -874,56 +876,6 @@ const CONFIG = {
 		retryMs: 5 * 60 * 1000,         // after a cycle with nothing viable, hold off this long
 	},
 
-	/* GRAVEYARD RISING - an automatic farm override for the event's monsters,
-	   which the operator asked for on 2026-10-21.
-
-	   THE EVENT SITS ENTIRELY INSIDE THE spookytown MUMMY RAGE BOX, AND THAT IS
-	   THE WHOLE DESIGN CONSTRAINT. Read from upstream `design/maps.js` at
-	   `16881a27` rather than guessed: the mummy spawn is
-	   `boundary [31, -1571, 480, -1293]`, `count: 9`, `grow: true`,
-	   `rage: [-124, -1631, 614, -1130]`. Graveyard Rising's 24 grave plots span
-	   x 65..447 and y -1550..-1312, so the graves are INSIDE the mummy spawn
-	   boundary and the whole field is inside its rage rectangle. The graveyard
-	   is not merely near the mummy field - it IS the mummy field.
-	   So `safeMove` refuses every coordinate in it by construction, and a naive
-	   override pointing at the graves would have been INERT rather than wrong:
-	   the party would never arrive and nothing would log a fault. That is the
-	   failure this repo keeps paying for, caught here before it shipped.
-
-	   SO THIS USES THE PARK-AND-PULL PATTERN THE REPO ALREADY ARRIVED AT FOR
-	   THIS EXACT RECTANGLE, rather than inventing a second answer. `park` is
-	   (290,-990) - the achievement queue's own spookytown spot, in the corridor
-	   band outside BOTH rage rectangles (y -1130..-842), entered from the west,
-	   140 from the mummy rectangle, and recorded there as "arrived at live with
-	   zero breaches". `ragePull` then takes the monsters one at a time, which is
-	   exactly what the commented-out `booboo`/`mummy` entry did. Nothing new is
-	   invented and no containment is relaxed.
-
-	   THE GARGOYLE IS DELIBERATELY NOT IN `also`, AND IT IS THE PRIZE, SO READ
-	   THIS BEFORE ADDING IT. Its spawn is FIXED at [255,-1545]: 555 units from
-	   the park point, against the longest reach in the party (the mage's 235).
-	   It is not a tuning gap - it is unreachable from anywhere outside the rage
-	   box, so taking it means entering the box with 9 growing mummies that
-	   apply `hexed` (-20 speed, independent of the priest's curse) against a
-	   leash band of 180/120. That is the operator's call and not a default, and
-	   `enterRageBox` is where it would go if they want it - see the function
-	   block for what is NOT built.
-
-	   WHAT EACH STATE OF `enabled` DOES: on, a live graveyard takes the farm
-	   spot for its window and hands it back at the close; off, nothing in this
-	   block runs and the scorer keeps the spot. The operator owns the flag. */
-	graveyard: {
-		enabled: TOGGLES.graveyardFarm,
-		/* The proven corridor point, not the grave field. */
-		park: { x: 290, y: -990 },
-		home: 'zombie',
-		/* ghoul only. zombie is 48 spawns across the three waves against
-		   ghoul's 9, so zombie is `home` and ghoul rides along - the same
-		   reason the booboo entry paired a 48s respawn with a 24s one rather
-		   than idling. gargoyle is absent on purpose; see above. */
-		also: ['ghoul'],
-		tickMs: 5000,
-	},
 	achievements: {
 		/* -> ACHIEVEMENT QUEUE below. The queue stays live whether or not this
 		   is on; see huntParkPoint(). The booboo boundary centre (415,-702)
@@ -6263,12 +6215,6 @@ async function achvTick() {
 	   hand - which stands the queue down PERMANENTLY until achvResume(). Return
 	   before that happens; the queue picks up again when mhOff() releases. */
 	if (typeof mhOwnsSpot === 'function' && mhOwnsSpot()) return;
-	/* AND FOR A LIVE GRAVEYARD, for the same reason and with the same shape.
-	   Without this the queue reads the graveyard's override as the operator
-	   moving the party by hand and stands down PERMANENTLY until achvResume() -
-	   so a ten-minute event would silently retire the queue for the rest of the
-	   day. v108. */
-	if (typeof gyOwnsSpot === 'function' && gyOwnsSpot()) return;
 	const t = achvTarget();
 	if (!t) return;
 
@@ -6351,22 +6297,68 @@ try {
 } catch (e) { }
 
 /* ============================================================================
-   GRAVEYARD RISING - THE AUTOMATIC FARM OVERRIDE
-   Read the CONFIG.graveyard block for why this parks outside the field rather
-   than walking into it, and for why the gargoyle is not in `also`.
+   GRAVEYARD RISING - A COMMAND, NOT AN AUTOMATIC OVERRIDE
+
+   OPERATOR'S CORRECTION, 2026-10-21: "not a script change / it should be an
+   override I run". v108 built this as CONFIG.graveyard plus a gyTick() that
+   polled parent.S.graveyard and took the farm spot by itself. That is the
+   wrong shape and the automation is GONE - no toggle, no interval, no
+   liveness gate, and nothing in this file decides to go. `gyFarm()` is a
+   console command beside achvStop() and mhOn(); it does exactly what the
+   operator asks and nothing on its own.
+   **AND THAT REMOVES THE REASON v108 NEEDED TO TOUCH achvTick().** An
+   automatic takeover had to be exempted from the queue's hand-move check, or a
+   ten-minute event would have retired the queue until achvResume(). A command
+   the operator runs IS a hand move, so the queue's existing behaviour - stand
+   down, wait for achvResume() - is already the right contract and is left
+   alone. The automation was carrying its own exception.
+
+   THE EVENT SITS ENTIRELY INSIDE THE spookytown MUMMY RAGE BOX, which is why
+   this parks where it does and is the half of v108 worth keeping. Read from
+   upstream `design/maps.js` at `16881a27`: the mummy spawn is
+   `boundary [31, -1571, 480, -1293]`, `count: 9`, `grow: true`,
+   `rage: [-124, -1631, 614, -1130]`. Graveyard Rising's 24 grave plots span
+   x 65..447 and y -1550..-1312, so the graves are INSIDE the mummy spawn
+   boundary and the whole field is inside its rage rectangle. The graveyard is
+   not near the mummy field - it IS the mummy field.
+   So `safeMove` refuses every coordinate in it, and a command pointing at the
+   graves would be INERT rather than wrong: the party would never arrive and
+   nothing would log a fault.
+
+   GY_PARK IS THEREFORE THE PROVEN CORRIDOR POINT AND NOT THE FIELD. (290,-990)
+   is the achievement queue's own spookytown spot, in the band outside BOTH
+   rage rectangles (y -1130..-842), entered from the west, 140 from the mummy
+   rectangle, and recorded there as "arrived at live with zero breaches".
+   `ragePull` then takes them one at a time, exactly as the commented-out
+   booboo/mummy entry did. Nothing new is invented and no containment relaxed.
+
+   THE GARGOYLE IS NOT IN GY_ALSO, AND IT IS THE PRIZE, so read this before
+   adding it. Its spawn is FIXED at [255,-1545]: 555 units from the park point
+   against the longest reach in the party (the mage's 235). Not a tuning gap -
+   unreachable from anywhere outside the rage box, so taking it means entering
+   with 9 growing mummies applying `hexed` (-20 speed, independent of the
+   priest's curse) against a 180/120 leash band. The operator's call, and not
+   something a command should decide for them.
    ========================================================================= */
 const GY_SPOT = { m: 'zombie', map: 'spookytown' };
+/* The corridor point, NOT the grave field - see above. */
+const GY_PARK = { x: 290, y: -990 };
+/* ghoul rides along: 48 zombie spawns across the three waves against ghoul's
+   9, the same reason the booboo entry paired a 48s respawn with a 24s one
+   rather than idling. gargoyle is absent on purpose. */
+const GY_ALSO = ['ghoul'];
 
-function gyCfg() { return (CONFIG.graveyard || {}); }
 function gyLog(msg, color) { try { log('[graveyard] ' + msg, color || '#9FA3A8'); } catch (e) { } }
 
-/* LIVENESS ONLY, AND DELIBERATELY NOT hp. `E.graveyard = graveyard_public()`
-   publishes `{live, map, x, y, start, wave, waves, left}` from the FIRST WAVE,
-   and only `Object.assign`s `{gargoyle, hp, max_hp, target, end}` once the
-   Gargoyle wakes - so reading hp here would be undefined for the first several
-   minutes of every event and indistinguishable from "no graveyard". The event
-   is live when it says it is live; nothing else is needed to decide where to
-   farm. `parent.S` is the same object the wabbit and crabxx reads above use. */
+/* REPORTED, NEVER GATED ON. `E.graveyard = graveyard_public()` publishes
+   `{live, map, x, y, start, wave, waves, left}` from the FIRST WAVE and only
+   `Object.assign`s `{gargoyle, hp, max_hp, target, end}` once the Gargoyle
+   wakes - so an hp-gated read is undefined for the first several minutes of
+   every event and indistinguishable from "no graveyard". `parent.S` is the
+   same object the wabbit and crabxx reads use.
+   gyFarm() PROCEEDS WHETHER OR NOT THIS RETURNS ANYTHING, because
+   prepositioning before a window opens is a thing the operator may want and a
+   command that second-guesses them is not a command. */
 function gyLive() {
 	try {
 		const g = parent && parent.S && parent.S.graveyard;
@@ -6374,97 +6366,70 @@ function gyLive() {
 	} catch (e) { return null; }
 }
 
-function gyOwnsSpot() {
-	return !!(gyCfg().enabled && gyLive() && manualOverride
-		&& manualOverride.home === GY_SPOT.m && manualOverride.mobMap === GY_SPOT.map);
-}
-
-function gyApply() {
-	const cfg = gyCfg();
-	const also = Array.isArray(cfg.also) ? cfg.also.slice() : [];
-	/* Whitelisted for the same reason the achievement queue whitelists: a
-	   10-minute window is far too short for checkFarmEconomics to have scored
-	   this spot, and an unscored spot is exactly what it drops. The `also`
-	   monsters need it too or the spot goes the moment one of them scores badly
-	   on its own. */
+/* CONSOLE: farm Graveyard Rising. Takes the farm spot the way the UI's manual
+   override does, so everything downstream - the scorer, the queue, the
+   farm_spot broadcast to Priest and Mage - treats it as what it is: the
+   operator moving the party by hand. */
+function gyFarm() {
 	try {
 		PERMANENT_WHITELIST.add(spotKey(GY_SPOT.m, GY_SPOT.map));
-		for (const a of also) PERMANENT_WHITELIST.add(spotKey(a, GY_SPOT.map));
+		for (const a of GY_ALSO) PERMANENT_WHITELIST.add(spotKey(a, GY_SPOT.map));
 		getBlacklist();
 	} catch (e) { }
-	const park = cfg.park || {};
 	manualOverride = {
 		home: GY_SPOT.m, mobMap: GY_SPOT.map,
-		x: park.x, y: park.y,
+		x: GY_PARK.x, y: GY_PARK.y,
 		expPerSecond: 0, uptimeFraction: 1,
 	};
-	rageAlso = also;
-	try { runFarmSearch(); } catch (e) { gyLog('runFarmSearch threw: ' + e, 'red'); }
-}
-
-function gyRelease(why) {
-	if (gyOwnsSpotIgnoringLiveness()) {
-		manualOverride = null;
-		rageAlso = [];
-		try { runFarmSearch(); } catch (e) { }
-		gyLog('window over (' + (why || 'closed') + ') - spot handed back to the scorer', '#FFD700');
+	rageAlso = GY_ALSO.slice();
+	const live = gyLive();
+	if (live) {
+		gyLog('live, wave ' + (live.wave || 0) + '/' + (live.waves || '?')
+			+ ' - taking ' + GY_SPOT.m + '@' + GY_SPOT.map
+			+ ', parked at ' + GY_PARK.x + ',' + GY_PARK.y + ' outside the mummy rage box', '#9FCF6D');
+	} else {
+		gyLog('NO GRAVEYARD LIVE on this shard right now - taking the spot anyway,'
+			+ ' which is prepositioning. gyOff() to hand it back.', 'orange');
 	}
+	gyLog('the gargoyle is NOT included: fixed spawn 255,-1545 is 555u from the park'
+		+ ' point against 235 of reach, so it needs the rage box entered.', '#8b98ab');
+	try { runFarmSearch(); } catch (e) { gyLog('runFarmSearch threw: ' + e, 'red'); }
+	return gyStatus();
 }
 
-/* RELEASE CANNOT USE gyOwnsSpot(), AND THAT IS THE WHOLE REASON THIS EXISTS.
-   gyOwnsSpot() requires gyLive(), so at the moment the window closes it goes
-   false and the release would decline to release - leaving the party parked on
-   a dead graveyard until something else happened to take the spot. Ownership
-   for the purpose of HANDING BACK is about what the override points at, never
-   about whether the event is still running. */
-function gyOwnsSpotIgnoringLiveness() {
+/* CONSOLE: undo gyFarm(). Only clears an override that is OURS, so running it
+   after the operator has moved the party somewhere else does not steal their
+   spot. */
+function gyOff() {
+	if (!gyOwnsSpot()) {
+		gyLog('not farming the graveyard - nothing to hand back', '#8b98ab');
+		return gyStatus();
+	}
+	manualOverride = null;
+	rageAlso = [];
+	gyLog('spot handed back to the scorer', '#FFD700');
+	try { runFarmSearch(); } catch (e) { }
+	return gyStatus();
+}
+
+function gyOwnsSpot() {
 	return !!(manualOverride
 		&& manualOverride.home === GY_SPOT.m && manualOverride.mobMap === GY_SPOT.map);
 }
 
-let gyHeld = false;
-
-function gyTick() {
-	const cfg = gyCfg();
-	if (!cfg.enabled) {
-		/* A runtime flip to off must still hand the spot back, or the party
-		   stays parked on a spot nothing is maintaining. */
-		if (gyOwnsSpotIgnoringLiveness()) gyRelease('disabled');
-		return;
-	}
+function gyStatus() {
 	const live = gyLive();
-	if (!live) { gyRelease('no graveyard'); return; }
-
-	/* THE MONSTER HUNT OUTRANKS THIS, for the reason achvTick already stands
-	   down for it: a hunt carries its own deadline and the operator turned it
-	   on deliberately, while a graveyard recurs every two hours. */
-	if (typeof mhOwnsSpot === 'function' && mhOwnsSpot()) {
-		if (!gyHeld) { gyHeld = true; gyLog('monster hunt owns the spot - standing down for it', 'orange'); }
-		return;
-	}
-	/* AN OVERRIDE THAT IS NEITHER OURS NOR THE HUNT'S IS THE OPERATOR MOVING
-	   THE PARTY BY HAND, AND THAT OUTRANKS EVERYTHING - the same rule achvTick
-	   applies. The achievement queue's spot is not exempt here: it is
-	   open-ended and resumable, where this window is 600 seconds. */
-	if (manualOverride && !gyOwnsSpotIgnoringLiveness()
-		&& !(typeof achvIsOurs === 'function' && achvIsOurs())) {
-		if (!gyHeld) {
-			gyHeld = true;
-			gyLog('override points at ' + manualOverride.home + '@' + manualOverride.mobMap
-				+ ' - leaving it alone', 'orange');
-		}
-		return;
-	}
-	gyHeld = false;
-	if (gyOwnsSpot()) return;
-	gyLog('live on ' + (live.map || '?') + ' wave ' + (live.wave || 0) + '/' + (live.waves || '?')
-		+ ' - taking the farm spot, parked outside the mummy rage box', '#9FCF6D');
-	gyApply();
+	return {
+		farming: gyOwnsSpot(),
+		eventLive: !!live,
+		wave: live ? (live.wave || 0) : null,
+		waves: live ? (live.waves || null) : null,
+		park: GY_PARK,
+		home: GY_SPOT.m,
+		also: GY_ALSO.slice(),
+		gargoyleIncluded: GY_ALSO.indexOf('gargoyle') >= 0,
+	};
 }
-
-setInterval(() => {
-	try { gyTick(); } catch (e) { gyLog('tick threw: ' + ((e && e.message) || e), 'red'); }
-}, (CONFIG.graveyard && CONFIG.graveyard.tickMs) || 5000);
 
 setInterval(() => {
 	achvTick().catch((e) => achvLog('tick threw: ' + ((e && e.message) || e), 'red'));

@@ -21,6 +21,80 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v109
+
+**GRAVEYARD RISING IS A COMMAND NOW, NOT AN AUTOMATIC OVERRIDE. v108 HAD THE
+WRONG SHAPE AND THE AUTOMATION IS GONE.** Operator, 2026-10-21: "not a script
+change / it should be an override I run". v108 built `CONFIG.graveyard` plus a
+`gyTick()` that polled `parent.S.graveyard` on a five-second interval and took
+the farm spot by itself. Removed entirely - no toggle, no `TOGGLES` entry, no
+interval, no liveness gate, and nothing in this file decides to go.
+
+`gyFarm()` and `gyOff()` are console commands beside `achvStop()` and
+`mhOn()`, documented in the header list where the operator looks for them, with
+`gyStatus()` for reading the state. `gyFarm()` sets the override the way the
+UI's manual override does, so everything downstream - the scorer, the queue,
+the `farm_spot` broadcast to Priest and Mage - treats it as what it is: the
+operator moving the party by hand.
+
+**AND THAT REMOVED v108'S EDIT TO `achvTick()`, WHICH IS THE PART WORTH
+KEEPING AS A LESSON.** An automatic takeover had to be exempted from the
+queue's hand-move check, or a ten-minute event would have stood the queue down
+until `achvResume()`. A command the operator runs IS a hand move, so the
+queue's existing contract is already correct and is untouched. **THE
+AUTOMATION WAS CARRYING ITS OWN EXCEPTION**, and the exception went out with
+it - a shape worth noticing, because the exemption looked like a necessary
+integration rather than a cost the wrong design was paying.
+
+`gyFarm()` REPORTS LIVENESS AND NEVER GATES ON IT. Prepositioning before a
+window opens is a thing the operator may want, and a command that
+second-guesses them is not a command - so it takes the spot either way and
+says which case it is in. Liveness is `parent.S.graveyard.live` and never
+`hp`: `graveyard_public()` publishes `{live, map, x, y, start, wave, waves,
+left}` from the first wave and only adds `{gargoyle, hp, max_hp, target, end}`
+once the Gargoyle wakes, so an hp-gated read is undefined for the first
+several minutes of every event. `gyOff()` clears only an override that is
+OURS, so running it after the operator has moved the party elsewhere does not
+steal their spot.
+
+THE RAGE-BOX FINDING IS UNCHANGED AND IS WHY THE PARK POINT IS WHAT IT IS.
+From upstream `design/maps.js` at `16881a27`: the spookytown mummy spawn is
+`boundary [31,-1571,480,-1293]`, `count: 9`, `grow: true`,
+`rage: [-124,-1631,614,-1130]`. The 24 grave plots span x 65..447, y
+-1550..-1312, so the graves sit inside the mummy spawn boundary and the whole
+field inside its rage rectangle - Graveyard Rising is not near the mummy field,
+it IS the mummy field. `safeMove` refuses every coordinate in that rectangle,
+so a command pointing at the graves would be INERT rather than wrong. `GY_PARK`
+is (290,-990), the achievement queue's own spookytown point in the corridor
+band outside BOTH rectangles, recorded there as "arrived at live with zero
+breaches", with `ragePull` taking them one at a time as the commented-out
+booboo/mummy entry did. `GY_ALSO` is ghoul only - 48 zombie spawns across the
+three waves against ghoul's 9.
+
+THE GARGOYLE IS STILL NOT INCLUDED AND THE COMMAND SAYS SO EVERY TIME IT RUNS.
+Fixed spawn [255,-1545] is 555 units from the park point against the mage's
+235, the longest reach in the party. Unreachable from outside the box, so
+taking it means entering with 9 growing mummies applying `hexed` (-20 speed,
+independent of the priest's curse) against a 180/120 leash band. The
+operator's call, and not something a command should make for them.
+
+v108's CONFIG block is gone, so the suite's `committedGraveyardCfg()` parser
+went with it - the values are plain constants now and a constant cannot be
+shadowed by a fixture, which was the defect that parser existed to fix.
+
+FIVE MUTATIONS MEASURED, and three of them improved the suite rather than
+confirming it. Pointing `GY_PARK` at the graves fails 5; putting gargoyle in
+`GY_ALSO` fails 3; re-adding a `gyTick()` and its interval - exactly what a
+later session would helpfully rebuild - fails 2; gating `gyFarm()` on liveness
+fails 1; making `gyOff()` steal a foreign override fails 1.
+The three repairs: the no-interval assertion used `/setInterval\([^)]*gyTick/`,
+whose `[^)]*` stops at the arrow function's own paren, so a re-added interval
+tripped only the sibling assertion - widened to match across the call. And two
+assertions subscripted `w.manualOverride` directly, so the caught `gyOff`
+mutation arrived as a THREW rather than a named failure, which is the recorded
+"a test that dies instead of reporting will be debugged as a test bug" -
+guarded, and the mutation now names itself.
+
 ## v108
 
 Graveyard Rising auto farm override, on the operator's request 2026-10-21.

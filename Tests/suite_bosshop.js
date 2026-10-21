@@ -60,82 +60,36 @@ const GRAVES_Y = [-1550, -1312];
 const GARGOYLE = [255, -1545];
 const inBox = (b, x, y) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
 
-/* THE COMMITTED CONFIG.graveyard, PARSED OUT OF THE SOURCE, because the world
-   below supplies its OWN CONFIG and `gyCfg()` reads whatever the world has -
-   so the first version of every `park` and `also` assertion here was testing
-   THE FIXTURE AND NOT THE FILE. Measured by mutation: pointing the committed
-   park at the graves, and adding gargoyle to the committed `also`, BOTH PASSED
-   until this function existed. That is "a harness override the harness merges
-   over is a test of nothing" from the other direction - there the harness
-   clobbered the subject, here it stood in for it.
-   Comments are stripped before matching. THAT STRIP IS DEFENSIVE AND NOT
-   LOAD-BEARING TODAY, and saying so is the point: the rationale block naming
-   [255,-1545] sits ABOVE `graveyard: {`, so brace-matching from that brace
-   never includes it, and the inner comments happen to carry no token these
-   patterns match. Measured by mutation - removing the strip changes nothing.
-   It stays because the inner comments are prose that will be edited, and the
-   suite_merchantsell parser is the recorded instance of exactly that going
-   wrong; but it must not be described as pinned when it is not. */
-function committedGraveyardCfg() {
-  const s = require('fs').readFileSync(
-    require('path').join(require('./lift').ROOT, 'Party/Ranger.js'), 'utf8');
-  const at = s.indexOf('\n\tgraveyard: {');
-  if (at < 0) return null;
-  let i = s.indexOf('{', at), depth = 0, end = -1;
-  for (let j = i; j < s.length; j++) {
-    if (s[j] === '{') depth++;
-    else if (s[j] === '}') { depth--; if (!depth) { end = j; break; } }
-  }
-  if (end < 0) return null;
-  const body = s.slice(i, end + 1)
-    .replace(/\/\*[\s\S]*?\*\//g, ' ')
-    .replace(/\/\/[^\n]*/g, ' ');
-  const park = body.match(/park:\s*\{\s*x:\s*(-?\d+)\s*,\s*y:\s*(-?\d+)\s*\}/);
-  const also = body.match(/also:\s*\[([^\]]*)\]/);
-  const home = body.match(/home:\s*'([a-z0-9_]+)'/);
-  return {
-    park: park ? { x: Number(park[1]), y: Number(park[2]) } : null,
-    also: also ? also[1].split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean) : null,
-    home: home ? home[1] : null,
-  };
-}
-
 function graveyardWorld(over) {
   over = over || {};
   const w = world({});
-  lift(w, RANGER, ['GY_SPOT', 'gyCfg', 'gyLog', 'gyLive', 'gyOwnsSpot',
-    'gyOwnsSpotIgnoringLiveness', 'gyApply', 'gyRelease', 'gyTick']);
-  /* `let manualOverride = null`, `let rageAlso = []` and `let gyHeld = false`
-     are not liftable - the initialiser's first token is not a brace - so the
-     world supplies them, per the rule the Priest BOSS_SET lift established.
-     Both omissions threw ReferenceError here first, which is the suite doing
-     its job rather than a hazard in the script. */
+  lift(w, RANGER, ['GY_SPOT', 'GY_PARK', 'GY_ALSO', 'gyLog', 'gyLive',
+    'gyOwnsSpot', 'gyStatus', 'gyFarm', 'gyOff']);
+  /* `let manualOverride = null` and `let rageAlso = []` are not liftable - the
+     initialiser's first token is not a brace - so the world supplies them, per
+     the rule the Priest BOSS_SET lift established. Omitting them threw
+     ReferenceError here first, which is the suite doing its job. */
   w.manualOverride = over.manualOverride === undefined ? null : over.manualOverride;
   w.rageAlso = [];
-  w.gyHeld = false;
   w.PERMANENT_WHITELIST = new Set();
   w.spotKey = (m, map) => m + '@' + map;
   w.getBlacklist = () => ({});
   w.searches = 0;
   w.runFarmSearch = () => { w.searches++; };
   w.log = () => {};
-  w.CONFIG = { graveyard: { enabled: true, park: { x: 290, y: -990 },
-    home: 'zombie', also: ['ghoul'], tickMs: 5000 } };
   w.parent = { S: over.S === undefined
     ? { graveyard: { live: true, map: 'spookytown', wave: 1, waves: 3 } } : over.S };
-  w.mhOwnsSpot = () => !!over.mhOwns;
-  w.achvIsOurs = () => !!over.achvOurs;
   return w;
 }
 
 module.exports = [
 
-{ name: 'the graveyard override parks outside the rage box it cannot enter', fn(t) {
+{ name: 'the graveyard command parks outside the rage box it cannot enter', fn(t) {
   /* THE PRECONDITION IS THE FINDING, so it is asserted before the behaviour:
      Graveyard Rising sits ENTIRELY inside the spookytown mummy rage box, which
-     is why park-and-pull is the only shape available. An override pointing at
-     the graves would have been INERT - safeMove refuses every coordinate in
-     that rectangle and nothing logs a fault. */
+     is why park-and-pull is the only shape available. A command pointing at
+     the graves would be INERT - safeMove refuses every coordinate in that
+     rectangle and nothing logs a fault. */
   for (const x of GRAVES_X) for (const y of GRAVES_Y) {
     t.ok('grave corner ' + x + ',' + y + ' is inside the mummy RAGE box',
       inBox(MUMMY_RAGE, x, y));
@@ -144,88 +98,101 @@ module.exports = [
   }
   t.ok('the gargoyle spawn is in there too', inBox(MUMMY_RAGE, GARGOYLE[0], GARGOYLE[1]));
 
-  const cfg = committedGraveyardCfg();
-  t.ok('the committed CONFIG.graveyard block parsed', !!(cfg && cfg.park && cfg.also));
-  const park = cfg.park;
-  t.eq('so the override parks OUTSIDE the rage box, not at the graves',
-    inBox(MUMMY_RAGE, park.x, park.y), false);
+  /* Read off the LIFTED constants, which come from the committed file - not
+     from a fixture this suite supplies. v108's version of these assertions
+     read a CONFIG the world itself provided, so they were statements about the
+     harness: two mutations against the real values PASSED. Constants cannot go
+     wrong that way, which is part of why they replaced the CONFIG block. */
+  const w = graveyardWorld();
+  t.eq('so the command parks OUTSIDE the rage box, not at the graves',
+    inBox(MUMMY_RAGE, w.GY_PARK.x, w.GY_PARK.y), false);
   /* The corridor band the achievement queue already proved: y -1130..-842,
      outside BOTH spookytown rectangles, "arrived at live with zero breaches". */
   t.ok('and inside the proven corridor band y -1130..-842',
-    park.y > MUMMY_RAGE[3] && park.y <= -842);
+    w.GY_PARK.y > MUMMY_RAGE[3] && w.GY_PARK.y <= -842);
 
-  /* THE GARGOYLE IS OUT OF REACH FROM THERE, WHICH IS WHY IT IS NOT IN `also`.
-     Computed, not asserted as a conclusion: the longest reach in the party is
-     the mage's 235. */
-  const reach = Math.hypot(GARGOYLE[0] - park.x, GARGOYLE[1] - park.y);
+  /* THE GARGOYLE IS OUT OF REACH FROM THERE, WHICH IS WHY IT IS NOT IN
+     GY_ALSO. Computed, not asserted as a conclusion: the longest reach in the
+     party is the mage's 235. */
+  const reach = Math.hypot(GARGOYLE[0] - w.GY_PARK.x, GARGOYLE[1] - w.GY_PARK.y);
   t.ok('the gargoyle is further from the park point than any reach in the party',
     reach > 235);
   t.ok('by a wide margin, so it is not a tuning gap', reach > 500);
-  t.eq('so gargoyle is NOT in the COMMITTED `also`', cfg.also.includes('gargoyle'), false);
-  t.eq('ghoul is, because it shares the field with zombie', cfg.also.includes('ghoul'), true);
-  t.eq('and zombie is the committed `home`, 48 spawns against ghoul\u2019s 9',
-    graveyardWorld().GY_SPOT.m, cfg.home);
+  t.eq('so gargoyle is NOT in GY_ALSO', w.GY_ALSO.includes('gargoyle'), false);
+  t.eq('ghoul is, because it shares the field with zombie', w.GY_ALSO.includes('ghoul'), true);
+  t.eq('and zombie is home, 48 spawns against ghoul’s 9', w.GY_SPOT.m, 'zombie');
 } },
 
-{ name: 'graveyard liveness never reads hp, and the close hands the spot back', fn(t) {
-  /* LIVENESS MUST NOT DEPEND ON hp. graveyard_public() carries {live, map, x, y,
-     start, wave, waves, left} from the first wave and only adds hp once the
-     Gargoyle wakes, so an hp-gated read would be undefined for the first
-     several minutes of every event - the absent-field null this repo published
-     and retracted once already. */
-  let w = graveyardWorld({ S: { graveyard: { live: true, map: 'spookytown', wave: 1, waves: 3 } } });
-  t.ok('a first-wave graveyard with NO hp field at all reads live', !!w.gyLive());
-  w.gyTick();
-  t.eq('and the override is taken', w.manualOverride && w.manualOverride.home, 'zombie');
-  t.eq('parked at the corridor point rather than the graves',
-    w.manualOverride.x + ',' + w.manualOverride.y, '290,-990');
-  t.eq('with ghoul riding along', w.rageAlso.join(','), 'ghoul');
-  t.ok('and the farm search re-ran so the spot takes effect', w.searches > 0);
-
-  /* THE RELEASE PATH CANNOT TEST LIVENESS, and this is the assertion that pins
-     it. gyOwnsSpot() requires gyLive(), so at the instant the window closes it
-     goes false - a release gated on it would DECLINE to release and leave the
-     party parked on a dead graveyard until something else took the spot.
-     Ownership for handing back is about what the override points at, never
-     about whether the event is still running. */
-  w.parent.S = {};
-  t.eq('precondition: with the event over, gyOwnsSpot reads false', w.gyOwnsSpot(), false);
-  t.eq('but the liveness-free ownership check still sees our spot',
-    w.gyOwnsSpotIgnoringLiveness(), true);
-  w.gyTick();
-  t.eq('so the close hands the spot back', w.manualOverride, null);
-  t.eq('and clears the ride-along list', w.rageAlso.length, 0);
-
-  w = graveyardWorld();
-  w.gyTick();
-  t.ok('precondition: taken while enabled', w.gyOwnsSpotIgnoringLiveness());
-  w.CONFIG.graveyard.enabled = false;
-  w.gyTick();
-  t.eq('disabling at runtime releases too', w.manualOverride, null);
-
-  /* PRECEDENCE: the hunt outranks this, a hand override outranks both, and the
-     achievement queue does not - it is open-ended where this window is 600s. */
-  w = graveyardWorld({ mhOwns: true });
-  w.gyTick();
-  t.eq('a live monster hunt keeps the spot', w.manualOverride, null);
-
-  w = graveyardWorld({ manualOverride: { home: 'poisio', mobMap: 'main' } });
-  w.gyTick();
-  t.eq('a hand override is left alone', w.manualOverride.home, 'poisio');
-
-  w = graveyardWorld({ manualOverride: { home: 'stoneworm', mobMap: 'spookytown' }, achvOurs: true });
-  w.gyTick();
-  t.eq('but the achievement queue is displaced for the window',
-    w.manualOverride.home, 'zombie');
-
-  /* AND THE QUEUE MUST STAND DOWN FOR US rather than reading it as a hand
-     move, which would retire it until achvResume() for the rest of the day. */
+{ name: 'gyFarm is a command the operator runs - nothing decides to go', fn(t) {
+  /* OPERATOR'S CORRECTION: "not a script change / it should be an override I
+     run". v108 polled parent.S.graveyard on an interval and took the spot by
+     itself. These assertions pin that the automation is GONE, because it is
+     exactly the thing a later session would helpfully rebuild. */
   const rs = require('fs').readFileSync(
     require('path').join(require('./lift').ROOT, 'Party/Ranger.js'), 'utf8');
-  t.ok('achvTick returns early on a live graveyard',
-    /gyOwnsSpot === 'function' && gyOwnsSpot\(\)\) return;/.test(rs));
-} },
+  /* `[^)]*` stopped at the arrow function's own paren, so this matched nothing
+     and a re-added interval tripped only the gyTick assertion. Match across
+     the whole call instead - measured by mutation, which is how the weak
+     version was found. */
+  t.eq('no interval polls the graveyard', /setInterval[\s\S]{0,120}?gyTick/.test(rs), false);
+  t.eq('no gyTick exists at all', /function gyTick/.test(rs), false);
+  t.eq('and no CONFIG.graveyard toggle for one to read',
+    /^\tgraveyard: \{/m.test(rs), false);
+  t.eq('nor a TOGGLES entry', /graveyardFarm:/.test(rs), false);
+  /* AND THE AUTOMATION'S OWN EXCEPTION WENT WITH IT. An automatic takeover had
+     to be exempted from achvTick's hand-move check or a ten-minute event would
+     retire the queue until achvResume(). A command the operator runs IS a hand
+     move, so the queue's existing contract is correct and untouched - the
+     exception was the automation carrying its own cost. */
+  t.eq('achvTick has no graveyard exemption', /gyOwnsSpot\(\)\) return;/.test(rs), false);
+  t.ok('while the monster-hunt exemption it was modelled on is still there',
+    /mhOwnsSpot === 'function' && mhOwnsSpot\(\)\) return;/.test(rs));
+  /* Both commands are documented where the operator looks for them. */
+  t.ok('gyFarm is in the console-command list', /\/\/\s+gyFarm\(\)/.test(rs));
+  t.ok('and gyOff', /\/\/\s+gyOff\(\)/.test(rs));
 
+  let w = graveyardWorld();
+  t.eq('precondition: nothing is overridden before the command runs', w.manualOverride, null);
+  const st = w.gyFarm();
+  t.eq('gyFarm takes the spot', w.manualOverride && w.manualOverride.home, 'zombie');
+  /* Guarded rather than subscripted: whatever a test looks up to prove
+     something must tolerate the absence, or a caught mutation arrives as a
+     traceback and gets debugged in the wrong file. Measured - the unguarded
+     form turned a correctly-caught gyOff mutation into a THREW. */
+  t.eq('parked at the corridor point rather than the graves',
+    w.manualOverride ? w.manualOverride.x + ',' + w.manualOverride.y : 'none', '290,-990');
+  t.eq('with ghoul riding along', w.rageAlso.join(','), 'ghoul');
+  t.ok('and the farm search re-ran so the spot takes effect', w.searches > 0);
+  t.eq('it reports back', st.farming + '/' + st.eventLive, 'true/true');
+  t.eq('and says plainly that the gargoyle is not included', st.gargoyleIncluded, false);
+
+  /* LIVENESS IS REPORTED, NEVER GATED ON - prepositioning before a window
+     opens is a thing the operator may want, and a command that second-guesses
+     them is not a command. graveyard_public() also carries no hp until the
+     Gargoyle wakes, so an hp-gated read would be undefined for the first
+     several minutes of every event. */
+  w = graveyardWorld({ S: {} });
+  t.eq('precondition: no graveyard live', w.gyLive(), null);
+  const st2 = w.gyFarm();
+  t.eq('gyFarm still takes the spot with nothing live', w.gyOwnsSpot(), true);
+  t.eq('and says so rather than refusing', st2.eventLive, false);
+
+  w = graveyardWorld({ S: { graveyard: { live: true, map: 'spookytown', wave: 1, waves: 3 } } });
+  t.ok('a first-wave graveyard with NO hp field at all reads live', !!w.gyLive());
+
+  /* gyOff only clears an override that is OURS, so running it after the
+     operator has moved the party elsewhere does not steal their spot. */
+  w = graveyardWorld();
+  w.gyFarm();
+  w.gyOff();
+  t.eq('gyOff hands our spot back', w.manualOverride, null);
+  t.eq('and clears the ride-along list', w.rageAlso.length, 0);
+
+  w = graveyardWorld({ manualOverride: { home: 'poisio', mobMap: 'main' } });
+  w.gyOff();
+  t.eq('but leaves someone else’s override alone',
+    w.manualOverride && w.manualOverride.home, 'poisio');
+} },
 
 { name: 'taxi joins: which refusals actually put the fight out of reach', fn(t) {
 	let w = ranger();

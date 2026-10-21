@@ -1015,6 +1015,27 @@ this ranking until a Ranger build is actually running on him.
   Taking it means entering the box with 9 growing mummies applying `hexed` (-20
   speed, independent of the priest's curse) against a 180/120 leash band. NOT
   built; `enterRageBox` is where it would go.
+  **AND THE FIRST BUILD HAD THE WRONG SHAPE: THE OPERATOR WANTS A COMMAND THEY
+  RUN, NOT SOMETHING THE SCRIPT DECIDES.** v108 shipped `CONFIG.graveyard` plus
+  a `gyTick()` polling `parent.S.graveyard` every five seconds. Operator:
+  "not a script change / it should be an override I run". Rebuilt in v109 as
+  `gyFarm()` / `gyOff()` / `gyStatus()`, console commands beside `achvStop()`
+  and `mhOn()`; the toggle, the interval and the liveness gate are gone.
+  **THE AUTOMATION WAS CARRYING ITS OWN EXCEPTION, AND THAT IS THE REUSABLE
+  PART.** v108 had to edit `achvTick()` to exempt its takeover from the
+  queue's hand-move check, or a ten-minute event would have stood the queue
+  down until `achvResume()`. A command the operator runs IS a hand move, so the
+  queue's existing contract was already right and v109 leaves it untouched -
+  the exemption went out with the automation. It had looked like a necessary
+  integration rather than a cost the wrong design was paying, which is the
+  thing to notice: **when a new subsystem needs an exception carved into an old
+  one, ask whether the exception is the price of the shape rather than a
+  feature of the problem.**
+  Two smaller rules the command keeps: it REPORTS liveness and never gates on
+  it, because prepositioning before a window opens is the operator's to want
+  and a command that second-guesses them is not a command; and liveness is
+  `.live` and never `hp`, since `graveyard_public()` carries no hp until the
+  Gargoyle wakes.
   **READING ONE DESIGN FILE ANSWERED THE EVENT AND NOT THE GROUND IT STANDS
   ON.** `design/events.js` gave the waves, the grave coordinates and the
   duration, and every one of those was right - the obstacle was in
