@@ -250,18 +250,29 @@ BOSS_RESPAWN_SEC = {
 # (js/functions.js:5765 reads S.schedule.time_offset), which makes them
 # checkable from a browser in one call.
 #
-# The mechanism, server_functions.js:2321-2345. Each server computes a game
-# hour `ch = (UTC_hour + 24 + E.schedule.time_offset) % 24` and fires a daily
-# when ch hits an hour in E.schedule.dailies, a nightly for E.schedule
-# .nightlies. So a window's UTC hour is (game_hour - offset) mod 24, and the
-# offset is per REGION, not per server: server.js:316 sets
-# E.schedule.time_offset = TIMEO[region]. Every US shard therefore runs the
-# same clock as every other US shard.
+# THE MECHANISM THIS BLOCK DESCRIBED NO LONGER EXISTS. Re-read from upstream
+# 16881a27 on 2026-10-21: the `last_daily`/`last_nightly` firing loop is GONE
+# (a grep for either name across node/ and js/ returns nothing), and with it
+# the shared-variable quirk this comment recorded as "latent rather than live".
+# `event_loop` still computes `ch = (UTC_hour + 24 + E.schedule.time_offset)
+# % 24`, but only to set `E.schedule.night`; the events themselves now fire
+# from `event_schedule_tick`, which drives node/logic/event_schedule.js.
 #
-# Quirk worth knowing: `last_daily` at server_functions.js:2330 and :2339 is
-# ONE variable shared by both loops, so if a daily hour ever equalled a
-# nightly hour only one of them would fire. The configured hours do not
-# collide, so this is latent rather than live.
+# WHAT SURVIVES: the offset is still per REGION, not per server - server.js
+# sets `E.schedule.time_offset = TIMEO[region]` - so every US shard runs the
+# same clock as every other US shard, and a window's UTC hour is still
+# (game_hour - offset) mod 24. `E.schedule.dailies` and `.nightlies` also
+# survive, but ONLY as inert initialiser fields nothing reads any more. The
+# hours below are now declared in event_schedule.js's own SLOTS table.
+#
+# AND THE BLOCK'S PREMISE IS FALSE: "it cannot be predicted from outside -
+# only observed" was true of the shuffled pools and is not true of the game
+# any more. The server publishes a SEVEN-DAY lineup naming every occurrence
+# with an absolute UTC timestamp, and the bridge already receives it - see
+# `_on_server_info`, which is handed the whole `E` object and keeps only the
+# boss entries. Reading it is additive and needs no new connection. The pools
+# below remain the fallback for `--boss-source aldata`, which fetches
+# `monsters/<types>` and carries no schedule at all.
 SCHEDULE_REGION_OFFSET = {"EU": 1, "US": -5, "ASIA": 7}   # server.js:291 TIMEO
 SCHEDULE_DAILY_HOURS = [13, 20]                           # server.js:164
 SCHEDULE_NIGHTLY_HOURS = [23]                             # server.js:165
@@ -269,11 +280,17 @@ SCHEDULE_NIGHTLY_HOURS = [23]                             # server.js:165
 # a given window fires is per-process, differs between shards and changes on
 # every restart. It cannot be predicted from outside - only observed, which is
 # what the `observed` field below does.
-SCHEDULE_DAILY_EVENTS = ["crabxx", "goobrawl", "abtesting"]
+# witchcipher JOINED the dailies pool and this list was 3 of 4 until
+# 2026-10-21. It is skipped while its own seasonal slot is open - during
+# Halloween it runs at realm 6 and 18 instead - and rejoins the 13/20 rotation
+# when the season closes, with nothing else changing.
+SCHEDULE_DAILY_EVENTS = ["crabxx", "goobrawl", "abtesting", "witchcipher"]
 SCHEDULE_NIGHTLY_EVENTS = ["icegolem", "franky"]
-# design/events.js durations, seconds.
+# design/events.js durations, seconds, read at upstream 16881a27: horseman
+# 40*60, graveyard 10*60, witchcipher 28*60.
 SCHEDULE_EVENT_SEC = {"crabxx": 2400, "goobrawl": 540, "abtesting": 480,
-                      "icegolem": 2400, "franky": 2400}
+                      "icegolem": 2400, "franky": 2400,
+                      "horseman": 2400, "graveyard": 600, "witchcipher": 1680}
 # AN EVENT IS OBSERVABLE WHEN SOMETHING IT SPAWNS IS POLLED, NOT WHEN ITS OWN
 # NAME IS. This comment said goobrawl was "permanently invisible" until
 # 2026-10-20 and that was false, contradicted by this same file sixty lines
@@ -285,12 +302,24 @@ SCHEDULE_EVENT_SEC = {"crabxx": 2400, "goobrawl": 540, "abtesting": 480,
 # event's own name is not a polled monster type", and the FIELD NAME said
 # something much stronger.
 # abtesting is genuinely invisible: it spawns nothing this bridge polls.
-SCHEDULE_SPAWNS = {"goobrawl": ("rgoo", "bgoo")}
+# graveyard's three, added 2026-10-21. Only `gargoyle` is worth polling - the
+# waves are declared in G, so a zombie or ghoul row teaches nothing a read of
+# `G.events.graveyard.waves` does not - but all three are listed because this
+# map's job is to say what an event SPAWNS, and SCHEDULE_OBSERVABLE below
+# derives the rest from what is actually polled.
+SCHEDULE_SPAWNS = {"goobrawl": ("rgoo", "bgoo"),
+                   "graveyard": ("gargoyle", "zombie", "ghoul")}
 # Reverse map, so an observed rgoo row counts as evidence the goobrawl ran. The
 # scripts carry the same idea one-way as BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' },
 # which names only the first of the two.
 SCHEDULE_EVENT_OF = {m: e for e, ms in SCHEDULE_SPAWNS.items() for m in ms}
-SCHEDULE_OBSERVABLE = {"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)
+# SCHEDULE_OBSERVABLE is DERIVED, not listed - see just below BOSS_TYPES, which
+# it needs and which is defined further down. The hand-maintained version was
+# `{"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)`, which took an
+# event's presence in SCHEDULE_SPAWNS as proof it was observable without
+# checking that any of those spawns was polled. That is the `never_observable`
+# lesson one level deeper: the old form would have called `graveyard`
+# observable even with none of its three monsters in BOSS_TYPES.
 # A timed event boss that VANISHES at the close of its window has DESPAWNED,
 # not died, and the listing cannot tell them apart on its own: a kill leaves
 # `estimatedRespawn` set, a despawn leaves nothing, so a despawn lands in the
@@ -353,6 +382,7 @@ EVENT_WINDOW_SEC = {
     "crabxx": SCHEDULE_EVENT_SEC["crabxx"],
     "franky": SCHEDULE_EVENT_SEC["franky"],
     "icegolem": SCHEDULE_EVENT_SEC["icegolem"],
+    "horseman": SCHEDULE_EVENT_SEC["horseman"],
     "rgoo": SCHEDULE_EVENT_SEC["goobrawl"],
     "bgoo": SCHEDULE_EVENT_SEC["goobrawl"],
 }
@@ -620,7 +650,48 @@ BOSS_TYPES = [
     "grinch", "icegolem", "jr", "mrgreen", "mrpumpkin", "phoenix", "rgoo",
     "wabbit",
     "pinkgoo", "rharpy", "rimedjinn", "slenderman", "snowman", "tiger",
+    # Halloween 2026, added 2026-10-21. `horseman` is the realm-hour-0 event
+    # boss - hp 30,000,000, cooperative, duration 40 minutes - and it was
+    # UNOBSERVED rather than merely unranked: no row for it could exist at all.
+    # Added ahead of the schedule rework deliberately, because it runs nightly
+    # and the season ends 2026-11-03, so every night without this name is
+    # observation that cannot be recovered afterwards.
+    "horseman",
 ]
+# VERIFIED PUBLISHED, not assumed: `horseman` is the fourth name in the event
+# boss loop at server_functions.js's `["crabxx", "franky", "icegolem",
+# "horseman"].forEach(...)`, and it is assigned `E[name] = {live, map, hp,
+# max_hp, target, x, y, end}` - the exact shape `server_info_entries` below
+# already translates. So the one name is the whole change for it.
+#
+# `gargoyle` IS NOT ADDED, AND THAT IS THE FINDING RATHER THAN AN OMISSION.
+# Graveyard Rising publishes under the EVENT's key - `E.graveyard =
+# graveyard_public()` in node/logic/halloween_events.js - and there is no
+# `E.gargoyle` for any name here to match, so adding it would poll a key that
+# never exists. Worse, adding "graveyard" instead would be actively harmful:
+# `graveyard_public()` returns `{live: true, map, x, y, start, wave, waves,
+# left}` from the first wave onward and only `Object.assign`s `{gargoyle: true,
+# hp, max_hp, target, end}` once the Gargoyle wakes, so `server_info_entries`
+# would pass the `d.get("live")` test and record `hp: None` for the first ~6
+# minutes of every graveyard - a null from a field that is genuinely absent,
+# which this project has already published once as a finding and retracted.
+# Collecting it needs a translation branch keyed on `gargoyle: True`, not a
+# name in this list.
+
+
+# AN EVENT IS OBSERVABLE WHEN SOMETHING IT SPAWNS IS POLLED, OR WHEN ITS OWN
+# NAME IS. Derived here rather than listed because it needs BOSS_TYPES, and
+# because a listed set cannot notice a spawn that stopped being polled. This
+# reproduces the old hand-maintained set exactly - crabxx, icegolem, franky by
+# their own names, goobrawl through rgoo/bgoo - and extends to horseman for
+# free. abtesting and witchcipher stay out: abtesting spawns nothing this
+# bridge polls, and the Witch's Cipher is a gathering minigame with no monster
+# of its own.
+_POLLED_TYPES = set(BOSS_TYPES)
+SCHEDULE_OBSERVABLE = {e for e in SCHEDULE_EVENT_SEC
+                       if e in _POLLED_TYPES
+                       or any(m in _POLLED_TYPES
+                              for m in SCHEDULE_SPAWNS.get(e, ()))}
 
 
 QUIET = False

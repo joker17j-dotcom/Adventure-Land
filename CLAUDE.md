@@ -3023,6 +3023,33 @@ probes are listed at the end as still-open.
   **`server.status.schedule`, i.e. `S.schedule`** - `S.schedule.events` is the
   lineup and `S.schedule.server_time` exists so a consumer can correct its own
   clock (`schedule_offset = S.schedule.server_time - Date.now()`).
+  **`S.schedule` IS RIGHT FROM THE CLIENT'S SEAT AND NAMES A DIFFERENT OBJECT
+  ON THE SERVER, WHICH IS WORTH STATING BECAUSE BOTH ARE REAL.** Read from
+  upstream `16881a27` on 2026-10-21. Server-side there are TWO: `S.schedule` is
+  the internal PERSISTED state (`{version, offset, queues, until, occurrences,
+  slots, seasons}` - the rotation queues and every occurrence's mutable status),
+  while `E.schedule` is the PUBLISHED one. `broadcast_e()` does
+  `Object.assign(E.schedule, event_schedule_state().publish())` and then
+  `broadcast("server_info", E)`; the client's handler is
+  `socket.on("server_info", data => { S = data; ... })`, so **the client's `S`
+  IS the server's `E`**. That reconciles the two readings and explains why
+  `js/game.js` can read `S.schedule.time_offset`, a field the server's own
+  `S.schedule` does not have.
+  **SO THE BRIDGE ALREADY HOLDS THIS, AND NOT BY ANALOGY: `_on_server_info` IS
+  HANDED THE SAME `E` OBJECT A CHARACTER TAB CALLS `S`.** No new connection, no
+  new polling, no character involved - the lineup has been arriving and being
+  dropped on the floor.
+  **THE LEGACY FIELDS SURVIVE THE `Object.assign` AND ARE NOW INERT.**
+  `E.schedule` is initialised `{time_offset, dailies: [13, 20],
+  nightlies: [23], night}` and `publish()` returns none of those keys, so all
+  four persist alongside the new ones. `time_offset` and `night` are still
+  written and read; **`dailies` and `nightlies` are read by NOTHING** - the
+  `last_daily`/`last_nightly` firing loop they served has been DELETED (a grep
+  for either name across `node/` and `js/` returns nothing), and with it the
+  shared-variable quirk `Codex/market_bridge.py` recorded as "latent rather
+  than live". Events now fire from `event_schedule_tick`. A consumer reading
+  `schedule.dailies` gets the right hours for the wrong reason and learns
+  nothing about the three seasonal slots.
 - **AN OCCURRENCE IS `{ id, event, at, status }`** plus optional `pool`,
   `season`, `repeat` and `late`. `event` is the event NAME and `at` is a UTC
   MILLISECOND timestamp, so "which event, on this shard, at what absolute time"
@@ -3030,6 +3057,62 @@ probes are listed at the end as still-open.
   `live` and `missed`; `LATE` is one hour (a restart at 13:20 still runs the
   13:00 slot, never later) and `KEEP` is six hours (finished and missed stay
   visible that long).
+  **THAT IS THE INTERNAL OCCURRENCE. `publish()` EMITS A NARROWER ONE, AND THE
+  DIFFERENCE IS EXACTLY THE FIELDS A CONSUMER WOULD REACH FOR.** The published
+  entry is `{id, event, at, status}` plus `season`, `started` and `ended` when
+  set - it carries **no `pool`, no `repeat`, no `late`**. Those three live only
+  on the state object, so a consumer cannot tell from the payload which pool an
+  occurrence came out of, nor that an entry is a repeat. Read off a character
+  tab or the bridge you get the narrow shape; `pool` is reachable only from the
+  server's `S.schedule.occurrences`, which nothing outside the process sees.
+- **THE PUBLISHED PAYLOAD HAS FOUR KEYS AND `events` IS NOT ALL OF IT. A
+  `repeat` SLOT NEVER APPEARS IN `events` AT ALL.** `publish()` returns
+  `{realm, server_time, events, repeats}`. `graveyard` is the only `repeat: true`
+  slot, so it is in `repeats` as ONE line - the live occurrence, else the
+  earliest scheduled - carrying an extra `every` field, `DAY / hours.length`,
+  which is 7,200,000 ms. **Pinned by the creator's own test rather than
+  inferred**: `node/test/event_schedule.test.js` asserts
+  `events.some(o => o.event === "graveyard") === false` and
+  `repeats` deep-equal `[["graveyard", <at>, 2 * HOUR]]` in the same block that
+  pins 14 witchcipher entries over seven days. So a consumer reading only
+  `S.schedule.events` sees Graveyard Rising **never**, and nothing about the
+  absence looks like a missing field - this is the `never_observable` shape
+  again, where the data is complete and the obvious read of it is not.
+  Expanding graveyard's twelve daily occurrences means `at` plus `every`, which
+  the payload gives; it does not need the slot table.
+- **SO THE BRIDGE SHOULD NOT MIRROR `SLOTS`, AND THE PROPOSAL TO DO SO WAS
+  AIMED AT A PROBLEM THE PAYLOAD HAS ALREADY SOLVED.** The structural
+  complaint was sound - `schedule_windows()` iterates two hardcoded
+  `(label, hours, events)` pool tuples and genuinely cannot express a dedicated
+  hour, a `:30` minute offset or a seasonal slot. But mirroring the table would
+  re-derive, from constants that have to be kept in step with a file this
+  container is the only one that can read, what the lineup already states
+  outright: **every occurrence named, with an absolute UTC `at`, seven days
+  ahead, per shard.** The hour/offset/pool arithmetic becomes dead weight
+  rather than a fourth special case. Mirror `SLOTS` only for the one thing the
+  payload drops - expanding a `repeat` line - and `at` plus `every` covers even
+  that. **THE HOURS TABLE IS STILL NEEDED FOR `--boss-source aldata`**, which
+  fetches `monsters/<types>` and carries no schedule, so it is a fallback and
+  no longer the mechanism.
+- **`SLOTS`' FIELD SET, FOR THE FALLBACK AND FOR READING THE SOURCE.** Seven
+  fields, `hours` the only required one: `hours` (realm hours, iterated
+  unconditionally), `minute` (realm minute, `slot.minute || 0`), `pool` (a
+  rotation queue name), `event` (a fixed event), `season` (gated by
+  `season_open(season, at)`), `repeat` (shown as one published line) and `late`
+  (per-slot override of the one-hour `LATE`; graveyard's is 600,000 ms). The
+  five live slots are the two pools, `witchcipher` at realm 6/18, `horseman` at
+  realm 0, and `graveyard` at the twelve odd realm hours, minute 30.
+- **POOL MEMBERSHIP IS NOT IN `SLOTS`, AND THE BRIDGE'S DAILY POOL WAS 3 OF 4.**
+  `pools` is a separate argument to `create_schedule`, supplied from
+  `node/server.js` as `dailies = ["crabxx", "goobrawl", "abtesting",
+  "witchcipher"]` and `nightlies = ["icegolem", "franky"]`. **witchcipher is a
+  DAILY pool member**, skipped only while its own seasonal slot is open, so
+  after Halloween it rejoins the 13/20 rotation with nothing else changing -
+  which makes the dailies pool FOUR, and `SCHEDULE_DAILY_EVENTS` named three
+  until 2026-10-21. Both lists are still `shuffle()`d at boot, but that now
+  sets only the INITIAL queue order: `create_schedule` keeps the saved order
+  for known events and appends new ones, so the shuffle is the starting phase
+  and a restart does not reshuffle a saved lineup.
 - **IT IS PER-SHARD, NOT PER-REGION, AND THAT DECIDES WHO CAN COLLECT IT.**
   `create_schedule` is called with `realm: region + server_name` and its output
   is stored back as `S.schedule`, which is also passed in as `saved` - so each
@@ -3099,6 +3182,48 @@ probes are listed at the end as still-open.
   rather than a fallback - he can confirm a shard's lineup from inside the game
   while he is there, which is an independent check on the bridge's copy, and
   the only route at all if the bridge is running `--boss-source aldata`.
+- **TWO OF THE THREE HALLOWEEN EVENTS ARE PUBLISHED AS BOSS ENTRIES AND ONE IS
+  NOT, WHICH TURNED A TWO-NAME CHANGE INTO A ONE-NAME CHANGE.** The plan was to
+  add `horseman` and `gargoyle` to `BOSS_TYPES` so the events stopped being
+  UNOBSERVED. Measured from source instead of assumed:
+  **`horseman` IS published.** It is the fourth name in `server_functions.js`'s
+  `["crabxx", "franky", "icegolem", "horseman"].forEach(...)` loop, assigned
+  `E[name] = {live, map, hp, max_hp, target, x, y, end}` - the exact shape
+  `server_info_entries` already translates - and `event_schedule_tick` sets
+  `events.horseman = true` to start it. So one name in `BOSS_TYPES` is the
+  whole change, and it landed.
+  **`gargoyle` IS NOT, AND ADDING IT WOULD HAVE POLLED A KEY THAT NEVER
+  EXISTS.** Graveyard Rising publishes under the EVENT's key -
+  `E.graveyard = graveyard_public()` in `node/logic/halloween_events.js` -
+  and there is no `E.gargoyle` at all.
+  **AND THE OBVIOUS REPAIR IS WORSE THAN THE GAP.** Adding `"graveyard"`
+  instead would pass `server_info_entries`' `d.get("live")` test from the first
+  wave onward, because `graveyard_public()` returns `{live: true, map, x, y,
+  start, wave, waves, left}` and only `Object.assign`s `{gargoyle: true, hp,
+  max_hp, target, end}` once the Gargoyle wakes - so it would record `hp: None`
+  for the first several minutes of every graveyard. That is "a null from a field
+  you never confirmed exists", which this file already carries as a finding
+  published and retracted within the hour. Collecting it needs a translation
+  branch keyed on `gargoyle: true`, not a name in a list.
+  **THE HALF-FINDING IS THE REUSABLE PART: A SET OF NAMES TO POLL IS ONLY AS
+  GOOD AS EACH NAME BEING A KEY THE PUBLISHER ACTUALLY WRITES**, and nothing in
+  a monster's existence, its hp, its cooperativeness or its event membership
+  implies that. Two names from one event, both real monsters, and only one is
+  addressable.
+- **`SCHEDULE_OBSERVABLE` IS NOW DERIVED FROM WHAT IS POLLED, AND THE OLD FORM
+  WOULD HAVE GOT `graveyard` WRONG.** It was
+  `{"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)`, which took an
+  event's PRESENCE in the spawn map as proof that something it spawns is
+  polled. graveyard has three spawns and not one of them is in `BOSS_TYPES`, so
+  that form calls it observable and the derived form does not. **The
+  `never_observable` lesson one level deeper** - there the field's NAME claimed
+  more than its computation, here the computation itself assumed its own input.
+  Asserted as a one-directional soundness invariant ("nothing is called
+  observable without a polled monster behind it") rather than as an expected
+  set, because a literal set is what broke when these two events landed and
+  would break again on the next one while saying nothing about the rule.
+  Measured by mutation: reverting the derivation fails three assertions,
+  dropping `horseman` fails one.
 - **STILL OPEN, AND ONLY THE BROWSER-DRIVEN SESSION CAN ANSWER ANY OF IT.**
   (1) Does the DEPLOYED game carry this at all - `43b2c8fc` landed hours before
   this was written, and the live realm may lag the source. (2) Is `S` reachable

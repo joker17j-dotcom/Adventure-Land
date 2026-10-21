@@ -399,11 +399,50 @@ chk("spawn_t itself is NOT exposed - the end is the quantity, not the start",
 # both polled and both in EVENT_WINDOW_SEC.
 chk("goobrawl is observable, through what it spawns", "goobrawl" in b.SCHEDULE_OBSERVABLE, True)
 chk("abtesting genuinely is not", "abtesting" in b.SCHEDULE_OBSERVABLE, False)
-chk("only abtesting remains unobservable",
+# This expected ["abtesting"] alone until 2026-10-21 and was right for its
+# date: SCHEDULE_DAILY_EVENTS held 3 of the server's 4 and witchcipher was the
+# one missing. Adding it widened this answer without changing the rule - the
+# Witch's Cipher is a gathering minigame and spawns no monster this bridge
+# polls, so it is unobservable for the same reason abtesting is.
+chk("abtesting and witchcipher are the unobservable pool events",
     sorted(set(b.SCHEDULE_DAILY_EVENTS + b.SCHEDULE_NIGHTLY_EVENTS) - b.SCHEDULE_OBSERVABLE),
-    ["abtesting"])
-chk("both spawn products map back to the event", b.SCHEDULE_EVENT_OF,
-    {"rgoo": "goobrawl", "bgoo": "goobrawl"})
+    ["abtesting", "witchcipher"])
+chk("witchcipher is in the pool at all, which is what was missing",
+    "witchcipher" in b.SCHEDULE_DAILY_EVENTS, True)
+# THE SOUNDNESS INVARIANT, which is the part a literal expected set cannot
+# state: nothing may be called observable unless some monster behind it is
+# actually polled. The superseded form was
+# `{"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)`, which took an
+# event HAVING spawns as proof they were polled - the `never_observable`
+# lesson one level deeper.
+chk("nothing is called observable without a polled monster behind it",
+    [e for e in sorted(b.SCHEDULE_OBSERVABLE)
+     if e not in set(b.BOSS_TYPES)
+     and not any(m in set(b.BOSS_TYPES) for m in b.SCHEDULE_SPAWNS.get(e, ()))],
+    [])
+chk("horseman is observable by its OWN name, being polled directly",
+    ("horseman" in b.BOSS_TYPES, "horseman" in b.SCHEDULE_OBSERVABLE), (True, True))
+# graveyard is exactly the case the superseded form got wrong, kept as an
+# inverted assertion so the pairing cannot be half-reverted: it has THREE
+# spawns and not one of them is polled, because there is no `E.gargoyle` for a
+# BOSS_TYPES entry to match - Graveyard Rising publishes under the EVENT's key.
+chk("graveyard has spawns and is still NOT observable, because none is polled",
+    ("graveyard" in b.SCHEDULE_SPAWNS, "graveyard" in b.SCHEDULE_OBSERVABLE),
+    (True, False))
+chk("the superseded form WOULD have called it observable",
+    "graveyard" in ({"crabxx", "icegolem", "franky"} | set(b.SCHEDULE_SPAWNS)), True)
+chk("and gargoyle is deliberately not polled, so adding it is not an oversight",
+    "gargoyle" in b.BOSS_TYPES, False)
+chk("every spawn product maps back to its event", b.SCHEDULE_EVENT_OF,
+    {"rgoo": "goobrawl", "bgoo": "goobrawl",
+     "gargoyle": "graveyard", "zombie": "graveyard", "ghoul": "graveyard"})
+# horseman's window is its design/events.js duration, 40*60, and it must land
+# in EVENT_WINDOW_SEC or the despawn classifier cannot grade it at all - the
+# disjointness assertion below then covers it for free.
+chk("horseman carries a window, so a despawn at its close is classifiable",
+    b.EVENT_WINDOW_SEC.get("horseman"), 2400)
+chk("and it is hp-sampled like the other event bosses",
+    b.boss_hp_sampled("horseman"), True)
 chk("a non-product type maps to itself",
     b.SCHEDULE_EVENT_OF.get("crabxx", "crabxx"), "crabxx")
 # BOTH products, not just the first: the scripts' BOSS_FIGHT_TYPE names only
