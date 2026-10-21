@@ -992,6 +992,36 @@ this ranking until a Ranger build is actually running on him.
   what makes goobrawl hard. Against that, halloween ends 2026-11-03, so the
   shelf life is short and the economics may still not justify it - but the cost
   estimate was wrong and the decision is the operator's on corrected numbers.
+  **AND THE COST ESTIMATE WAS STILL WRONG, IN THE OTHER DIRECTION: THE EVENT
+  SITS ENTIRELY INSIDE THE spookytown MUMMY RAGE BOX.** Read from upstream
+  `design/maps.js` at `16881a27` while building the farm override the operator
+  asked for on 2026-10-21: the mummy spawn is `boundary [31,-1571,480,-1293]`,
+  `count: 9`, `grow: true`, `rage: [-124,-1631,614,-1130]`. The 24 grave plots
+  span x 65..447 and y -1550..-1312, so the graves are inside the mummy SPAWN
+  boundary and the whole field is inside its RAGE rectangle. **Graveyard Rising
+  is not near the mummy field - it IS the mummy field**, and the "waves are
+  declared in G, the gargoyle position is fixed, so this is cheap" reading
+  missed that entirely because it was taken from `design/events.js` alone.
+  **SO A NAIVE OVERRIDE WOULD HAVE BEEN INERT RATHER THAN WRONG**, which is the
+  failure mode this file keeps paying for: `safeMove` refuses every coordinate
+  in a rage rectangle, so the party would never have arrived and nothing would
+  have logged a fault. Built in Ranger v108 on the park-and-pull pattern the
+  repo had already arrived at for this exact rectangle - park at (290,-990) in
+  the corridor band outside BOTH rectangles, `ragePull` one at a time - rather
+  than relaxing containment.
+  **THE GARGOYLE IS UNREACHABLE FROM OUTSIDE THE BOX AND THAT IS THE OPERATOR'S
+  DECISION, NOT A TUNING GAP.** Its spawn is fixed at [255,-1545], 555 units
+  from the park point against the longest reach in the party (the mage's 235).
+  Taking it means entering the box with 9 growing mummies applying `hexed` (-20
+  speed, independent of the priest's curse) against a 180/120 leash band. NOT
+  built; `enterRageBox` is where it would go.
+  **READING ONE DESIGN FILE ANSWERED THE EVENT AND NOT THE GROUND IT STANDS
+  ON.** `design/events.js` gave the waves, the grave coordinates and the
+  duration, and every one of those was right - the obstacle was in
+  `design/maps.js`, a file nobody thought to open because the question looked
+  like an event question. Same shape as "a patch note naming a monster is not a
+  statement about the field you care about": the answer was complete about the
+  thing asked and silent about the thing that mattered.
 - **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
   `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
   pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,

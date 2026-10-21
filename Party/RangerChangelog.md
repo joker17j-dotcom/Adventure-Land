@@ -21,6 +21,82 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v108
+
+Graveyard Rising auto farm override, on the operator's request 2026-10-21.
+`CONFIG.graveyard` plus `gyTick()`: while the event is live it takes the farm
+spot and hands it back at the close. The toggle is `TOGGLES.graveyardFarm` and
+the operator owns it. Ranger-only - Dexon is the single source of truth for the
+farm spot and broadcasts `farm_spot`, so Priest and Mage inherit it, `also`
+and `pullConcurrent` included, with no edit to either file.
+
+THE EVENT SITS ENTIRELY INSIDE THE spookytown MUMMY RAGE BOX, AND THAT IS THE
+WHOLE DESIGN. Read from upstream `design/maps.js` at `16881a27`: the mummy
+spawn is `boundary [31,-1571,480,-1293]`, `count: 9`, `grow: true`,
+`rage: [-124,-1631,614,-1130]`. The 24 grave plots span x 65..447, y
+-1550..-1312, so the graves are inside the mummy SPAWN boundary and the whole
+field is inside its RAGE rectangle - the graveyard is not near the mummy field,
+it IS the mummy field. `safeMove` refuses every coordinate in that rectangle,
+so an override pointing at the graves would have been INERT rather than wrong:
+the party would never arrive and nothing would log a fault.
+
+So this uses the park-and-pull pattern the repo already arrived at for this
+exact rectangle rather than inventing a second answer. `park` is (290,-990) -
+the achievement queue's own spookytown point, in the corridor band outside BOTH
+rage rectangles (y -1130..-842), entered from the west, 140 from the mummy
+rectangle, recorded there as "arrived at live with zero breaches" - and
+`ragePull` takes monsters one at a time exactly as the commented-out
+booboo/mummy entry did. No containment is relaxed and nothing new is invented.
+
+`home` is zombie with ghoul in `also`: 48 zombie spawns across the three waves
+against ghoul's 9, the same reason that entry paired a 48s respawn with a 24s
+one rather than idling.
+
+THE GARGOYLE IS NOT IN `also` AND IT IS THE PRIZE, so the reason is recorded
+rather than left to be rediscovered. Its spawn is FIXED at [255,-1545], 555
+units from the park point against the longest reach in the party (the mage's
+235). That is not a tuning gap - it is unreachable from anywhere outside the
+rage box, so taking it means entering the box with 9 growing mummies applying
+`hexed` (-20 speed, independent of the priest's curse) against a 180/120 leash
+band. That is the operator's call, not a default, and it is NOT built.
+
+Liveness is `parent.S.graveyard.live` and deliberately never `hp`:
+`graveyard_public()` publishes `{live, map, x, y, start, wave, waves, left}`
+from the first wave and only adds `{gargoyle, hp, max_hp, target, end}` once
+the Gargoyle wakes, so an hp-gated read is undefined for the first several
+minutes of every event and indistinguishable from "no graveyard" - the
+absent-field null this project published and retracted once already.
+
+TWO SUBTLETIES THAT WOULD HAVE BEEN SILENT. `gyRelease()` tests
+`gyOwnsSpotIgnoringLiveness()` and not `gyOwnsSpot()`, because the latter
+requires `gyLive()` - so at the instant the window closes it goes false and a
+release gated on it would DECLINE to release, leaving the party parked on a
+dead graveyard. And `achvTick()` now returns early on `gyOwnsSpot()` exactly as
+it already did for `mhOwnsSpot()`: without it the queue reads the graveyard's
+override as the operator moving the party by hand and stands down until
+`achvResume()`, so a ten-minute event would silently retire it for the day.
+
+Precedence: a monster hunt outranks this (its own deadline, deliberately
+enabled, against an event recurring every two hours); a hand override outranks
+both; the achievement queue does not, being open-ended where this window is 600
+seconds.
+
+MY FIRST SUITE TESTED ITSELF AND TWO MUTATIONS PROVED IT. `graveyardWorld()`
+supplies its own `CONFIG`, and `gyCfg()` reads whatever the world has - so the
+`park` and `also` assertions were statements about the fixture. Pointing the
+committed park at the graves and adding gargoyle to the committed `also` BOTH
+PASSED. `committedGraveyardCfg()` now parses the real block out of the source.
+That is "a harness override the harness merges over is a test of nothing" from
+the other direction: there the harness clobbered the subject, here it stood in
+for it.
+
+Five mutations measured against the fixed suite: park at the graves fails 4,
+release gated on liveness fails 3, gargoyle in `also` fails 1, dropping the
+achvTick stand-down fails 1, gating liveness on hp fails 3. One claim was
+withdrawn rather than kept - the parser's comment strip is NOT load-bearing,
+since brace-matching starts below the rationale block, and removing it changes
+nothing; it stays as defence with the comment saying which.
+
 ## v107
 
 `bossRank`: horseman inserted at 4, everything at or below shifted down one,
