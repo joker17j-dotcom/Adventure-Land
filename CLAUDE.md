@@ -1168,6 +1168,29 @@ time on 2026-10-18.
   the fight - see the attribution split under "Falsifying a design" below. It
   is equally consistent with the party's dps rising and with the static
   estimate having always been too low.
+  **ANSWERED 2026-10-21, AND THE ANSWER BREAKS BOTH MODELS: dps DIRECTION IS A
+  PROPERTY OF THE INSTANCE, NOT OF FIGHTS.** The browser session pulled the hp
+  series - 105 rows over 11 instances - and two icegolems spawning the SAME
+  SECOND ran OPPOSITE curves. US II: 44 rows, elapsed 130->2635, `min_pct` 0.07,
+  killed, `dps_since` 2462.1 rising to 8399.8 - a 3.4x climb. US IV: 43 rows,
+  elapsed 99->3972, `min_pct` 0.01, killed, `dps_since` 3272.7 FALLING to
+  1498.2, 46% of its opening rate. So the operator's "franky's dps drastically
+  increased" is reproduced as data, AND so is its opposite. **A MODEL THAT
+  ASSUMES EITHER DIRECTION IS WRONG ABOUT HALF THE INSTANCES**, which is a
+  stronger constraint than either hypothesis this bullet was weighing.
+  **AND THE SLOW ONE IS THE ONE THAT PERSISTED** - US IV died at elapsed 3972
+  against a 2400s window, 1,572s over, with dps falling the whole way. Two of
+  the three engaged instances in that window ran past their windows, which is
+  the arrival-deadline model arriving from a third independent direction.
+  **THE DENSITY IS BIMODAL AND THAT IS A CONSTRAINT ON ANY CONSUMER.** Those two
+  carried 44 and 43 rows; crabxx EU I carried 10 (dps 116 falling to 11,
+  `min_pct` 73.45, never killed); the other EIGHT instances carried exactly ONE
+  row each at elapsed ~2400, `pct` ~100, dps 0 - the closing flush on an
+  untouched boss. So a trend is computable only for CONTESTED kills, which is
+  the population that matters, and degenerate everywhere else. **A CONSUMER MUST
+  BRANCH ON n EXPLICITLY**: a single row is a measurement that nothing touched
+  the boss, not a thin curve, and computing a slope from it would manufacture a
+  direction out of the flush row the sampler adds.
 - **AN EVENT-TRIGGERED INSTRUMENT IS ASYMMETRIC IN THE THING IT MEASURES, AND
   THE SILENT DIRECTION WAS THE ONE THAT SUPPORTED THE HYPOTHESIS.** The alive-hp
   sampler (`ev: "hp"`, 2026-10-20) fires on hp MOVING, so rows bunch up as dps
@@ -1269,7 +1292,101 @@ time on 2026-10-18.
   about nulls from fields nobody confirmed. The skip-row shape will carry a
   THIRD unresolvable cause - a skip resolved against a `lost` terminal, which
   carries no hp and whose `t` is a detection time - marked unverified until a
-  `lost` row exists to look at.
+  `lost` row exists to look at. A 1,500-row window on 2026-10-21 held zero
+  `lost` rows either, so this is still unverified and is the only field in the
+  shape below that is.
+- **THE SKIP-ROW SHAPE, SPECIFIED 2026-10-21 BY THE BROWSER SESSION AND NOT YET
+  BUILT. THE IMPLEMENTER IS THIS SESSION** - recorded by name because a fix
+  nobody is named for is a fix nobody makes, and this one sat outside both
+  sessions' stated queues.
+  Written by the SCRIPT at decision time, never derived at read time, because
+  the bridge cannot see our state and both of the operator's exclusions depend
+  on it. `ev: "skip"` carrying `t`, `mtype`, `server`, `spawn_t` (the join key
+  onto the hp series), `declined_on` (`dps` | `window` | `cost`), `reason`,
+  `excluded` (`outranked` | `shard_not_candidate` | null), `committed_to`,
+  `rank`, `eta_sec_at_decision`, `contributors_at_decision`,
+  `dps_assumed_at_decision`, `hp_at_decision`, `hp_pct_at_decision`,
+  `required_dwell_sec` at THAT contributor count, and `remaining_window_sec`.
+  **ONLY `declined_on == "dps"` BEARS ON H0.** `window` and `cost` are the
+  arrival-deadline question - live, different, and merging them is how a miss
+  count silently becomes a FOMO counter.
+  **`excluded` IS RECORDED, NOT FILTERED**, because neither value is
+  reconstructable later: `outranked` needs what we took INSTEAD at that moment,
+  and `shard_not_candidate` is a judgement about reachability under the fatigue
+  and queue state then in force. A read-time filter can only approximate both.
+  **THE ATTRIBUTION SPLIT IS NOW FALSIFIABLE, which is why the sampler had to
+  come first.** Join the skip row to the hp series on `(type, server, spawn_t)`,
+  take `early_dps` over the first third of elapsed and `late_dps` over the last:
+  `late/early >= R` with `early` near `dps_assumed_at_decision` means DPS ROSE
+  and rejects H0; `early >> dps_assumed_at_decision` means our ESTIMATE was low,
+  H0 stands and `typicalPlayerDps` wants raising; `declined_on == "window"` says
+  nothing about H0 either way. R is pinned by a fixture rather than argued.
+  Verdicts use `latest_viable_join_t = death_t - required_dwell_sec`:
+  `skip_correct` (despawned, or died outside any viable join window),
+  `skip_wrong_then` (we should have gone at decision time) and
+  `skip_wrong_timing` (we should have queued a LATE arrival). Only the middle is
+  a defect in the decision rule; the third is the arrive-for-the-end branch
+  measured rather than assumed, and the bimodal data above predicts it
+  dominates.
+  Mechanics: dedup one row per `(mtype, server, spawn_t)`, re-emitted only when
+  `declined_on` or `reason` changes or an input moves materially, because a
+  40-minute decline would otherwise emit hundreds. Name the headline
+  `declined_then_killed` - what it counts, not why, per the `never_observable`
+  lesson. And GRADE rather than binarise: carry predicted `eta` against the
+  actual bound (`death_hi - spawn_t`), because that residual is the fit
+  measurement for `typicalPlayerDps`, `fallbackDps` and `dexonDps`.
+- **THE DAMAGE FORMULA IS READABLE FROM SOURCE, WHICH UNBLOCKS dexonDps - the
+  browser session lacked a server clone and this session has one.** Read from
+  upstream 2026-10-21. SOURCE-DERIVED, so a lead about the live game, not a
+  fact about it.
+  The normal-attack chain is two statements at `node/server.js:4111-4115`:
+  `ceil(combo_m * attack * (0.9 + (attack && Math.random()*0.2 || 0)))`, then
+  `ceil(attack * dmg_mult * damage_multiplier(defense - attacker[pierce] -
+  info[pierce]))`. So the spread is uniform 0.9-1.1 with MEAN 1.0 and does not
+  bias an expectation; PIERCE IS SUBTRACTED FROM TWO SOURCES, the attacker's
+  own and the skill's; and `dmg_mult` is 1 unless the target carries `for`.
+  Crit is applied before that, at `:4068`: `cmult = 2 + critdamage/100`, rolled
+  against `crit` as a PERCENT, so the expected factor is
+  `1 + (crit/100)*(1 + critdamage/100)`.
+  **`damage_multiplier(defense)` IS DECLARED TWICE AND THE DUPLICATION IS
+  EXONERATED** - the double-declaration rule fired and the check cleared it.
+  `js/old_common_functions.js:851` and `js/progression/stats.js:202` carry
+  byte-equivalent coefficients and the same `[10/12/17]` marker, one merely
+  reformatted, so load order cannot change the answer. It is a piecewise
+  taper: 0.00100 per point over the first two hundreds, then 0.00095, 0.00090,
+  0.00082, 0.00070, 0.00060, 0.00050 and 0.00040 beyond 800, clamped to
+  [0.05, 1.32], with a separate NEGATIVE ladder (0.00100 / 0.00075 / 0.00050 /
+  0.00025) that is what makes armor piercing past zero keep paying.
+  **A `/2.0` ON THE DEFENCE TERM EXISTS AND IS THE HEAL PATH, NOT AN ATTACK** -
+  `:4044`, inside `if (info.heal)`. Reading it as the attack formula would
+  have halved every effective armor figure below.
+  **AND MY FIRST GREP FOR THE SPREAD FOUND ONLY THE HEAL SITE**, because the
+  attack path writes the same idea as
+  `0.9 + ((attack && Math.random() * 0.2) || 0)` and the pattern did not match.
+  One more instance of a search telling you about your search.
+  **DEXON'S PER-BOSS dps, computed from that chain** on the browser session's
+  measured offence (attack 1792, frequency 1.394, apiercing 122, crit 24.75,
+  critdamage 14; expected crit factor 1.28215, raw 2,498 before armor):
+  crabxx armor 320 -> eff 198, mult 0.8020, **2,569**; dragold 240 -> 0.8820,
+  **2,825**; horseman 300 -> 0.8220, **2,633**; gargoyle 700 -> 0.4784,
+  **1,532**; icegolem 800 -> 0.4162, **1,333**.
+  **franky, mrgreen AND mrpumpkin CARRY NO `armor` IN THE LITERAL, so their
+  figures are NOT computed here.** Absence is not zero - `new_monster` scaling
+  and the load-time mutations both exist - and treating it as zero gives 3,518
+  for all three, which is the most optimistic number in the table and the one
+  most likely to be wrong. mrgreen's `resistance` is 900, so a physical ranger
+  reads its armor and a caster reads something very different.
+  **ONE CROSS-CHECK AGAINST THEIR LIVE SERIES, OFFERED AS A HYPOTHESIS AND NOT
+  A FINDING.** icegolem US IV opened at `dps_since` 3272.7 and fell to 1498.2,
+  and 1,333 is this table's figure for Dexon ALONE on that armor. So the
+  falling curve is at least consistent with other contributors LEAVING rather
+  than with any mechanic - which would make dps DIRECTION a function of
+  contributor count and reframe the bimodal result entirely.
+  **IT IS NOT ESTABLISHED, AND WHAT IS MISSING IS NAMED: the party is THREE
+  characters**, so a floor of ~1,500 is below what Dexon plus priest plus mage
+  should manage, and the priest's and mage's per-boss terms are unmeasured. The
+  test is the skip row's `contributors_at_decision` against the hp series, not
+  this arithmetic.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
