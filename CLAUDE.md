@@ -2367,11 +2367,26 @@ a day.
   returned 2 against a v11 build. Line 1 only, never a header scan. The retry
   requirement carries over unchanged, and the pre-slot failure is FAIL-NULL
   because the tutorial template's line 1 does not match `CaveRun.js`.
-  **SMALLEST FIRST: fix the two literals, and have `caveDump()` report line 1
-  RAW** so a reader sees the header text rather than a number derived from it.
-  This is the THIRD stale version literal in the project after the v89 header
-  and `MERCHANT_VER`, which is the argument for reporting text over any
-  hand-maintained number.
+  **DONE IN CaveRun v17, AND THE RECIPE WAS WRONG ABOUT THE COUNT: THERE WERE
+  THREE LITERALS, NOT TWO.** `clog('v14 loaded as ...')` is a third
+  hand-maintained 14 that a `ver:` search does not find, and it is the one a
+  human actually READS on every load - so the count this file gave would have
+  left the most visible copy stale. A search shaped by the field name missed
+  the string that prints it.
+  `caveHeaderVersion()` anchors on the FILE MARKER for both traps above, and
+  `caveDump()` now reports line 1 VERBATIM as `build`, which is the point:
+  text over any hand-maintained number. This was the THIRD stale version
+  literal in the project after the v89 header and `MERCHANT_VER`.
+  **THE MARKER IS LOAD-BEARING IN TWO PLACES INDEPENDENTLY**, found by
+  mutation rather than by design: it gates the line AND it sits inside the
+  version pattern, so deleting either one alone still fails null. The three
+  traps are pinned in `Tests/suite_caverun.js` with their inverted assertions
+  kept beside them - a header scan returning the OLDEST entry, the merchant's
+  end-anchored pattern matching nothing here, and an unmarked pattern reading
+  a foreign buffer's version - so the pairing cannot be half-reverted. The
+  suite also pins the COMMITTED line 1 against the reader, because every other
+  fixture is synthetic and a reshaped header would otherwise go null forever
+  with the suite still green.
 - **THREE SMALLER FINDINGS, noted rather than claimed.** `kiteRejected` exceeds
   `kiteSteps` on both followers (137/56 and 159/44), so the
   `gapNew > gapNow + 1` guard fires most times it is consulted - unknown
@@ -2492,10 +2507,10 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 429 JS assertions across SEVEN suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 446 JS assertions across SEVEN suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 673 pass`.** It read 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - SEVEN
+  `all 690 pass`.** It read 673, 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - EIGHT
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the

@@ -169,4 +169,91 @@ name: 'the leader map and position come from the beacon, never the party row', f
 			extract('CaveRun.js', fn).indexOf('parent.party'), -1);
 		t.ok(fn + ' does read the beacon', extract('CaveRun.js', fn).indexOf('beacons()') > 0);
 	}
+} },
+
+{
+
+name: 'the version is read from line 1 and fails null, never wrong', fn(t) {
+	/* `ver: 14` was hardcoded while v16 was live and a session reported a deploy
+	   against it. Replaced by a read of line 1 - but the merchant's recipe does
+	   not port straight, and each of the three differences below is a way to get
+	   a CONFIDENT WRONG NUMBER rather than a failure. Those are what this pins.
+	   -> CLAUDE.md "The cave run" */
+	const LIVE = '// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v16 (TEST BUILD)';
+	const names = ['caveHeaderLine', 'caveHeaderVersion', 'caveVerCache', 'caveVersion', 'caveBuild'];
+	const buf = (text) => {
+		const w = world({ parent: { codemirror_render: { getValue: () => text } } });
+		lift(w, 'CaveRun.js', names);
+		return w;
+	};
+
+	t.eq('reads its own header', buf(LIVE + '\nbody\n').caveVersion(), 16);
+	t.eq('and reports line 1 verbatim rather than a derived number',
+		buf(LIVE + '\nbody\n').caveBuild(), LIVE);
+
+	/* THE REAL FILE'S OWN LINE 1 IS PINNED AGAINST THE READER THAT PARSES IT.
+	   Every other fixture here is synthetic, so without this the header could be
+	   reshaped - a renamed marker, a moved version, a reflowed suffix - and the
+	   reader would go null forever with the whole suite still green. */
+	const realLine1 = src().split('\n')[0];
+	const realW = buf(src());
+	t.ok('the committed header still matches the live marker',
+		/^\/\/ CaveRun\.js\b/.test(realLine1));
+	t.ok('and the committed header still yields a version number',
+		typeof realW.caveVersion() === 'number' && realW.caveVersion() > 0);
+	t.eq('caveBuild on the real file returns line 1 verbatim',
+		realW.caveBuild(), realLine1);
+
+	/* TRAP 1: THE HEADER ACCUMULATES HISTORY, so any read taking the LAST match
+	   returns the OLDEST entry - the OpenGifts failure that returned 2 against a
+	   v11 build. The inverted assertion is kept beside it so the pairing stays
+	   visible: a scan would return 3 on this fixture, and line 1 returns 16. */
+	const hist = LIVE + '\n// v15 2026-10-18 travel leash\n// v3 2026-10-02 older\nbody';
+	t.eq('a history-carrying header still reads 16 from line 1', buf(hist).caveVersion(), 16);
+	const scanLast = (hist.match(/^\/\/ v(\d+)\b/gm) || []).pop();
+	t.eq('...where a header SCAN would have returned the oldest entry', scanLast, '// v3');
+
+	/* TRAP 2: line 1 ends "(TEST BUILD)", so the merchant's end-anchored pattern
+	   finds nothing here. Asserted directly, because a reader porting that
+	   function would otherwise ship a reader that is null forever. */
+	t.eq('the merchant end-anchored pattern does NOT match this header',
+		/\bv(\d+)\s*$/.test(LIVE), false);
+
+	/* TRAP 3: the buffer reports the slot the EDITOR has loaded, not the script
+	   executing. Without the file marker in the pattern this reads another
+	   script's header and caches it. FAIL-NULL is the whole point. */
+	const foreign = '// Ranger.js - Dexon - v105\n// slot header line 2\nbody';
+	t.eq('a foreign buffer yields null, not that script\'s version',
+		buf(foreign).caveVersion(), null);
+	t.eq('and caveBuild refuses to report a foreign line 1 raw',
+		buf(foreign).caveBuild(), null);
+	const naive = foreign.split('\n')[0].match(/v(\d+)/);
+	t.eq('...where an unmarked pattern would have returned 105', naive && naive[1], '105');
+
+	/* The pre-slot window: the tutorial template occupies the buffer for ~1.8-2.2s
+	   after a cold load. It must be null rather than anything, because the cache
+	   below keeps the first NON-null answer. */
+	t.eq('the tutorial template reads null',
+		buf('// This is CODE, lets you control your character with code.\nbody').caveVersion(), null);
+
+	/* And the absent-buffer case. The field is DELETED after the lift rather than
+	   passed as an override, because world() merges its own parent over one and a
+	   test of a merged-away precondition is a test of nothing. */
+	const gone = buf(LIVE);
+	delete gone.parent.codemirror_render;
+	t.eq('precondition: the buffer really is absent', gone.parent.codemirror_render, undefined);
+	t.eq('an absent buffer reads null', gone.caveVersion(), null);
+
+	/* THE CACHE RETRIES NULL AND KEEPS THE FIRST NON-NULL, which is what makes an
+	   early construction-time read safe. Driven through one world whose buffer
+	   changes under it, rather than asserted on the source text. */
+	let text = '// tutorial\nbody';
+	const w = world({ parent: { codemirror_render: { getValue: () => text } } });
+	lift(w, 'CaveRun.js', names);
+	t.eq('null while the slot has not arrived', w.caveVersion(), null);
+	text = LIVE + '\nbody';
+	t.eq('the retry picks it up once the slot lands', w.caveVersion(), 16);
+	text = '// CaveRun.js - one script - v99 (TEST BUILD)\nbody';
+	t.eq('and a later save_code cannot shift it under the running build',
+		w.caveVersion(), 16);
 } }];

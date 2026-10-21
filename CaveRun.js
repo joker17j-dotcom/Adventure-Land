@@ -1,4 +1,14 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v16 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v17 (TEST BUILD)
+// v17 2026-10-21 the version is READ from line 1 instead of hardcoded. ver: 14
+//                sat in the dump and in the load event while v16 was live and
+//                was believed over feature detection in a deploy report.
+//                caveHeaderVersion() anchors on the FILE MARKER rather than a
+//                trailing version, because line 1 ends "(TEST BUILD)" and
+//                because this header ACCUMULATES history, so any scan taking
+//                the last match returns the OLDEST entry. A foreign editor
+//                buffer yields null rather than another script's version, and
+//                caveDump() reports line 1 VERBATIM as `build` - text over any
+//                hand-maintained number
 // v16 2026-10-20 comment only: the isFn(bare identifier) Form A surface is
 //                recorded as MEASURED inert across all five game helpers, and
 //                the file is confirmed IIFE-wrapped by brace depth
@@ -1647,8 +1657,75 @@ const TEL_RUN_KEY = TEL_RUN_PREFIX + 'r' + Date.now().toString(36);
 const TEL_KEEP = 5;
 const TEL_ARCHIVE_MS = 30000;
 
+/* THE VERSION IS READ FROM LINE 1, NOT HAND-MAINTAINED, BECAUSE THE
+   HAND-MAINTAINED ONE WAS WRONG AND WAS BELIEVED. `ver: 14` sat in the dump
+   and in the load event while v16 was live, so nothing derived from it and it
+   was a lie rather than a defect - but a session read it as a deploy report
+   and was wrong twice over, since the second signal that agreed with it
+   (`noDoor` missing from the counter table) is an ev() and not a counter, so
+   its absence measured nothing either. The live leash band settled it from the
+   MECHANISM instead. Third stale version literal in this project after the v89
+   header and MERCHANT_VER, which is the argument for reporting TEXT over any
+   hand-maintained number. -> CLAUDE.md "The cave run"
+
+   THREE THINGS DIFFER FROM THE MERCHANT'S READER AND EACH BREAKS A STRAIGHT
+   PORT:
+   (1) THE MARKER IS ON LINE 1 here; Merchant's is on line 2.
+   (2) LINE 1 ENDS "(TEST BUILD)", so Merchant's end-anchored /\bv(\d+)\s*$/
+       returns null against it. The anchor is the FILE MARKER instead.
+   (3) CaveRun is a ROOT script, so it is NOT covered by the current-version-
+       only rule and its header ACCUMULATES HISTORY - 12 lines match
+       ^// v<digits>. Any read taking the LAST match returns the OLDEST entry,
+       which is exactly the OpenGifts failure that returned 2 against a v11
+       build. LINE 1 ONLY, never a header scan.
+
+   A FOREIGN BUFFER YIELDS NULL RATHER THAN A WRONG NUMBER, which is the whole
+   reason the file marker is in the pattern rather than just a version.
+   parent.codemirror_render reports the slot the EDITOR has LOADED, which need
+   not be the script executing - measured 2026-10-19 with slot 8 open and
+   Merchant running - so without the marker this would confidently report
+   another script's version. Requiring "// CaveRun.js" turns FAIL-WRONG into
+   FAIL-NULL, the failure the retry already handles and the only one a cache is
+   safe under.
+
+   IT IS ALSO WHAT MAKES caveHeaderLine() SAFE TO REPORT RAW. All four party
+   scripts carry the CODE-slot token on LINE 2 and CaveRun carries none, so a
+   foreign buffer's line 1 happens not to hold one today; the gate is what
+   guarantees that rather than the coincidence.
+
+   THE PRE-SLOT FAILURE IS FAIL-NULL TOO: the game's tutorial template occupies
+   the buffer for ~1.8-2.2s after a cold load and its line 1 does not match this
+   marker either, so an early read is null and the retry covers it. */
+function caveHeaderLine() {
+	try {
+		const src = parent && parent.codemirror_render && parent.codemirror_render.getValue();
+		if (typeof src !== 'string') return null;
+		const line1 = src.split('\n')[0] || '';
+		return /^\/\/ CaveRun\.js\b/.test(line1) ? line1 : null;
+	} catch (e) { return null; }
+}
+function caveHeaderVersion() {
+	const line1 = caveHeaderLine();
+	if (!line1) return null;
+	const m = line1.match(/^\/\/ CaveRun\.js\b.* - v(\d+)\b/);
+	return m ? Number(m[1]) : null;
+}
+/* FIRST SUCCESSFUL READ WINS AND IS KEPT, so a save_code part-way through a run
+   cannot shift the answer under the build that is actually executing. A null is
+   retried rather than cached, because downstream it reads exactly like a build
+   from before this marker existed - the one direction nobody can detect. */
+const caveVerCache = { v: null, line: null };
+function caveVersion() {
+	if (caveVerCache.v === null) caveVerCache.v = caveHeaderVersion();
+	return caveVerCache.v;
+}
+function caveBuild() {
+	if (caveVerCache.line === null) caveVerCache.line = caveHeaderLine();
+	return caveVerCache.line;
+}
+
 const tel = {
-	ver: 14, runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
+	ver: caveVersion(), build: caveBuild(), runId: TEL_RUN_KEY.slice(TEL_RUN_PREFIX.length), name: character.name, ctype: character.ctype,
 	loadedAt: Date.now(), at: 0,
 	/* COUNTER NAMES SAY WHAT THEY COUNT. v6 had a single `deaths` fed by
 	   game.on('death'), which fires for EVERY entity; 91 of them got read as 91
@@ -1806,6 +1883,11 @@ function telHook() {
 	try { game.on('new_map', function (d) { if (!alive()) return; ev('new_map', d && (d.name || d.map)); }); } catch (e) {}
 }
 function caveDump() {
+	/* REFRESHED HERE, NOT ONLY AT CONSTRUCTION. tel is built while the editor
+	   buffer may still hold the tutorial template, so the construction-time read
+	   is legitimately null; the memoised readers retry until the first non-null
+	   answer. `build` is line 1 VERBATIM - read the text, not the number. */
+	try { tel.ver = caveVersion(); tel.build = caveBuild(); } catch (e) {}
 	telFlush(true);
 	try { telArchive(true, JSON.stringify(tel)); } catch (e) {}
 	try { show_json(tel); } catch (e) {}
@@ -1962,12 +2044,12 @@ async function tick() {
 }
 function voteLoop() { try { voteTick(); } catch (e) { clog('vote: ' + e, 'red'); } if (alive()) setTimeout(voteLoop, CFG.voteTickMs); }
 
-clog('v14 loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
+clog((caveVersion() ? 'v' + caveVersion() : 'version unread') + ' loaded as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
 	+ '). Leader ' + leaderName() + '. caveDry() to rehearse on-map, caveGo() for a real run, caveLead(name) to retarget.', '#7FD98A');
 telCensus();
 telHook();
 hookPartyInvite();
-ev('load', { ver: 14, leader: leaderName(), role: role(), speed: character.speed, range: character.range,
+ev('load', { ver: caveVersion(), build: caveBuild(), leader: leaderName(), role: role(), speed: character.speed, range: character.range,
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 tick();
 voteLoop();
