@@ -27,12 +27,21 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 	   which the followers start following so it stops before they start moving."
 	   Out of combat `leash()` returns the TRAVEL pair, so reading L.closeAt there
 	   made the leader's stop threshold the same number the followers use to begin
-	   following. The hold must read MOVE.* so it stays on the combat pair. */
+	   following. The hold must read a FIXED pair rather than the mode-selected
+	   one - that is the durable half of this assertion, and v18 moved WHICH
+	   fixed pair without touching it. */
 	const s = src();
-	t.ok('the hold reads MOVE.releaseAt / MOVE.closeAt',
-		/const need = \(holdFrom \? worst > MOVE\.releaseAt : worst > MOVE\.closeAt\)/.test(s));
+	t.ok('the hold reads its OWN pair, MOVE.holdReleaseAt / MOVE.holdAt',
+		/const need = \(holdFrom \? worst > MOVE\.holdReleaseAt : worst > MOVE\.holdAt\)/.test(s));
 	t.eq('and nothing reads L.closeAt or L.releaseAt for the hold decision',
 		/const need = \([^)]*\bL\.(closeAt|releaseAt)/.test(s), false);
+	/* THE PREVIOUS FORM, KEPT SO THE SEPARATION CANNOT BE HALF-REVERTED. Until
+	   v18 this read MOVE.releaseAt / MOVE.closeAt, which is the pair the
+	   FOLLOWERS' combat band is built from - so the hold released at the exact
+	   gap at which a follower decides to start closing, 60u before they were
+	   gathered. 142 holds and 571s held in one 24-minute run. */
+	t.eq('the shared-constant form is gone',
+		/const need = \(holdFrom \? worst > MOVE\.releaseAt/.test(s), false);
 
 	const w = world({});
 	lift(w, 'CaveRun.js', ['MOVE', 'computeLeash']);
@@ -43,6 +52,27 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 
 	const travel = w.computeLeash();
 	t.eq('out of combat the leash is the travel pair', travel.mode, 'travel');
+
+	/* THE SEPARATION HAS TO HAVE AN EFFECT, OR IT IS CEREMONY. */
+	t.eq('holdAt matches closeAt deliberately - the TRIGGER did not change',
+		w.MOVE.holdAt, w.MOVE.closeAt);
+	t.ok('holdReleaseAt is well below releaseAt, which is the whole point',
+		w.MOVE.holdReleaseAt < w.MOVE.releaseAt);
+	t.ok('and below the followers\u2019 travel close, so the hold outlasts their start',
+		w.MOVE.holdReleaseAt < w.MOVE.travelCloseAt);
+	t.ok('the followers\u2019 combat band still comes from closeAt/releaseAt',
+		/closeAt: MOVE\.closeAt, releaseAt: MOVE\.releaseAt/.test(s));
+
+	/* RAISING THE OUT-OF-COMBAT TRIGGER IS OPTION B AND IS THE OPERATOR'S CALL,
+	   STILL HELD. A single constant cannot express it: the hold reads one
+	   threshold for both modes, so raising it to their 240 would also raise the
+	   IN-COMBAT stop and put a lagging follower outside the priest's measured
+	   201 heal range. Four constants with mode selection is the shape; it is not
+	   built, and this assertion records that it is not. */
+	t.eq('Option B is NOT built - no travelHoldAt exists',
+		/travelHoldAt|travelHoldReleaseAt/.test(s), false);
+	t.ok('the hold threshold stays inside the priest heal range of 201',
+		w.MOVE.holdAt < 201);
 	t.eq('travel closes at 60', travel.closeAt, 60);
 	t.eq('travel releases at 30', travel.releaseAt, 30);
 	t.ok('the hold threshold is 3x the follow threshold', w.MOVE.closeAt / travel.closeAt === 3);

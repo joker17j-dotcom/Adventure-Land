@@ -1,4 +1,23 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v17 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v18 (TEST BUILD)
+// v18 2026-10-21 THE LEADER HOLD GETS ITS OWN PAIR OF CONSTANTS. holdAt 180 /
+//                holdReleaseAt 30, read ONLY by the hold. MOVE.closeAt and
+//                MOVE.releaseAt kept 180/120 and still build the followers'
+//                combat band, the kite rejection and the close-step sizing, so
+//                exactly one behaviour moved. The hold used to release at the
+//                same 120 the followers use, so it let go 60u before they were
+//                gathered and the gap re-opened at once: 142 holds, 571s held,
+//                40% of a 24-minute run stopped. Follower start latency is a
+//                FIXED COST PER HOLD, so many short holds is the expensive
+//                arrangement - waiting once for 150u pays it once.
+//                PREDICTION, to be falsified by the next run: holds ~57 (from
+//                142), total held ~325s (from 571s), each hold longer. THE RISK
+//                IS holdGaveUp: a follower stalled between 30 and 120 now keeps
+//                the leader waiting where it was released before, so if that
+//                count rises materially from 9 the lever is HOLD.maxMs (20000),
+//                patchable live via caveLeash({maxMs:...}) with no redeploy.
+//                NOT Option B - the out-of-combat trigger stays 180 and the
+//                operator is still holding the four-constant mode-selecting
+//                version.
 // v17 2026-10-21 the version is READ from line 1 instead of hardcoded. ver: 14
 //                sat in the dump and in the load event while v16 was live and
 //                was believed over feature detection in a deploy report.
@@ -161,6 +180,21 @@ const MOVE = {
 	closeAt: 180,
 	releaseAt: 120,
 	ceiling: 195,
+
+	/* THE LEADER HOLD'S OWN PAIR - v18. Read ONLY at the hold; closeAt and
+	   releaseAt above keep building the followers' combat band, the kite
+	   rejection and the close-step sizing, so this separation moves exactly one
+	   behaviour and nothing else.
+	   holdAt MATCHES closeAt ON PURPOSE. The trigger is not what was wrong and
+	   180 is the value the operator's range and the priest's measured 201 heal
+	   range both admit; raising it out of combat is Option B and is theirs to
+	   call, still held. What was wrong is the RELEASE: at 120 the hold let go at
+	   the exact gap the followers use to decide to start closing, so it released
+	   60u before they were gathered and the gap re-opened immediately.
+	   holdReleaseAt 30 is NOT a retune of releaseAt - changing that in place
+	   would move three other behaviours with it. -> see the v18 header block */
+	holdAt: 180,
+	holdReleaseAt: 30,
 	kiteRadius: 90,
 	kiteStep: 55,
 	speedEdge: 1.05,
@@ -1065,7 +1099,7 @@ function warnOutrun() {
 		   down a corridor. 180 also stays inside the priest's measured 201 heal
 		   range, which is why the hold threshold cannot simply be raised to the
 		   top of the operator's range - see the v15 block. */
-		const need = (holdFrom ? worst > MOVE.releaseAt : worst > MOVE.closeAt) || troubleNow.length > 0;
+		const need = (holdFrom ? worst > MOVE.holdReleaseAt : worst > MOVE.holdAt) || troubleNow.length > 0;
 		if (!need) { holdDone = false; if (holdFrom) holdResume(); return; }
 		if (holdDone) return;
 
@@ -1106,6 +1140,9 @@ function caveLeash(patch) {
 		mode: L.mode, closeAt: L.closeAt, releaseAt: L.releaseAt, ceiling: L.ceiling, tighten: MOVE.tighten,
 		travel: { closeAt: MOVE.travelCloseAt, releaseAt: MOVE.travelReleaseAt, ceiling: MOVE.travelCeiling },
 		combat: { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling },
+		/* The hold reads neither band - v18 gave it its own pair. Reported here
+		   so a live probe shows what the LEADER is doing, not only the followers. */
+		hold: { holdAt: MOVE.holdAt, holdReleaseAt: MOVE.holdReleaseAt, maxMs: HOLD.maxMs },
 		hold: { enabled: HOLD.enabled, inCrypt: HOLD.inCrypt, active: holdActive(), maxMs: HOLD.maxMs, holding: !!holdFrom, gaveUp: holdDone },
 		trouble: troubleNow,
 		gaps: isLeader() ? followerGaps().map((g) => g.who + ':' + (g.gap === Infinity ? 'unseen' : Math.round(g.gap)) + '/' + g.src) : null,

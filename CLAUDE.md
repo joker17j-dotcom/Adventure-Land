@@ -416,6 +416,30 @@ emptied, which is the single most expensive mistake this file can cause.
   which a pointer audit finds and a reader of the line never would. 236 pointers
   now, zero dangling, asserted with no allowlist in
   `Tests/suite_merchantbuy.js`.
+- **A COMPLETE SEARCH OVER AN INCOMPLETE SET IS THE SAME ERROR AS ONE OVER THE
+  WRONG COLUMN, AND IT RECURRED TWO DAYS APART.** The browser session's own
+  naming, 2026-10-21: they reported that `market_bridge.py`'s handler held only
+  `self.store` and `self.ledger`, so skip rows could not reach the poller's
+  `_emit`. The three assignments are SIBLINGS SEVEN LINES APART -
+  `Handler.store` at `:3108`, `Handler.ledger` at `:3109`, `Handler.bosses` at
+  `:3116` - and they named the first two because the POST branches use them,
+  without looking at where those came from. Same shape as enumerating the
+  conditions carrying an `attack` field and reporting the absence as a property
+  of the data. **Both times the tell was available from the author's side and
+  not the reader's: they could name what they HAD checked and never asked what
+  else could be there.** So the discipline is not "search harder", it is to
+  state the SET a negative result was taken over, which makes its incompleteness
+  visible to the next reader.
+- **TWO INSTRUMENT-FAILURE RULES ARE A MATCHED PAIR ON ONE AXIS, and the quiet
+  end is the dangerous one.** "A test that dies instead of reporting will be
+  debugged as a test bug" is LOUD and misattributed - the traceback sends you to
+  the wrong file, but you know something is wrong. "A broken instrument that
+  returns plausible small numbers is worse than one that errors" is SILENT and
+  BELIEVED - the comment-size measurer reported `TOGGLES` at 30 characters and
+  nothing about that figure looked wrong. The first is recoverable for exactly
+  the reason the second is not, which is why a tool that cannot fail loudly
+  needs its output cross-checked against a read before anything is decided on
+  it.
 - **THE AUDIT TOOL PRODUCED FALSE POSITIVES BOTH TIMES IT WAS RUN, WHICH IS THE
   SEVENTH AND EIGHTH INSTANCE OF A SEARCH TELLING YOU ABOUT YOUR SEARCH THIS
   WEEK - FROM THE TOOL BUILT TO FIND THE OTHER SIX.** First the pointer scan
@@ -2870,6 +2894,43 @@ a day.
   three behaviours at once: the hold, the followers' combat release, and the
   close-step sizing (`gap - leash().releaseAt * 0.6`). Baseline to measure any
   change against: 571s held, 142 holds, 9 give-ups.
+- **BUILT IN CaveRun v18: THE HOLD HAS ITS OWN PAIR, `MOVE.holdAt` 180 /
+  `MOVE.holdReleaseAt` 30.** Read at exactly one site, the hold's `need`
+  expression; `closeAt`/`releaseAt` stay 180/120 and keep building the
+  followers' combat band, the kite rejection and the close-step sizing, so one
+  behaviour moved and nothing else. `holdAt` MATCHES `closeAt` on purpose - the
+  trigger was never the fault, and raising it out of combat is Option B, still
+  the operator's call and still held. `caveLeash()` reports the new pair
+  alongside the bands so a live probe sees what the LEADER is doing.
+  **THE PREDICTION IS RECORDED SO THE NEXT RUN CAN FALSIFY IT**, which is the
+  only reason the baseline was worth keeping: holds ~57 against 142, total held
+  ~325s against 571s, each individual hold LONGER. If holds do not fall by
+  roughly 2.5x the fixed-cost-per-hold argument is wrong and should be retracted
+  rather than retuned.
+  **AND THE RISK IS NAMED RATHER THAN DESIGNED AROUND: `holdGaveUp`.** A
+  follower stalled between 30 and 120 now keeps the leader waiting where it was
+  released before, so that count can rise from 9. The lever is `HOLD.maxMs`
+  (20000), patchable live through `caveLeash({maxMs: ...})` with no redeploy -
+  deliberately NOT changed in the same commit, because two tuning changes landing
+  together is how each one looks proven by the other's work.
+- **THE OSCILLATION FIX FELL OUT OF ALL THREE QUEUES AT ONCE, AND THAT IS A
+  SHARPER FORM OF "A FIX NOBODY IS NAMED FOR IS A FIX NOBODY MAKES".** On
+  2026-10-21 this session's queue read "skip row, then (c), then banking", the
+  browser session's read "nothing", and the operator's read "nothing
+  outstanding" - while the most expensive measured defect in the repo (40% of a
+  cave run stopped) sat unbuilt and unmentioned in all three. The earlier rule
+  says to name an owner when a handoff mentions a fix; this instance adds the
+  detection method, because naming failed here by OMISSION rather than by
+  dispute. **It was caught by reading all three lists TOGETHER** - the browser
+  session noticed the gap between them, not inside any one of them, exactly as
+  the skip row was. So the check is cross-queue and belongs to whoever writes
+  the status block, since a queue cannot report what is missing from itself.
+- **AND IT WAS TIME-BOXED WITHOUT ANYONE SAYING SO.** The operator is holding
+  Option B until a cave run on the updated script, and the cave is ONE RUN PER
+  DAY - so the separation landing before that run buys a measurement against a
+  baseline already in hand, and landing after it costs 24 hours and re-measures
+  the same baseline. A dependency on a once-daily event is a deadline even when
+  nothing in the handoff is phrased as one.
 - **WHY v15 HELPED WITHOUT FIXING IT, which also kills a mode-disagreement
   theory.** `computeLeash()` returns the travel band only when NOT engaged, and
   `engaged()` is a recency timer. Measured: leader engaged 35% of ticks,
@@ -3057,15 +3118,15 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 538 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 545 JS assertions across NINE suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 782 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 789 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 770, 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and
-  575 the day before, 285 / 61 / 346 before that, and 114 before that - THIRTEEN
-  figures in two days, which is the point rather than an embarrassment:
+  It read 782, 770, 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586
+  and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
+  FOURTEEN figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.
