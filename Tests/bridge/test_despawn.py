@@ -815,6 +815,21 @@ def row(seq, i):
     return seq[i] if 0 <= i < len(seq) else {}
 
 
+def byev(seq, ev, n=0):
+    """The nth row with this ev, or {}.
+
+    ROLE ASSERTIONS MUST BE KEYED BY ROLE, NOT BY POSITION. Measured 2026-10-21:
+    a mutation that removed the closing row shifted every later index, so
+    assertions reading "the death row carries last_hp" reported on an EMPTY
+    dict and still failed - correctly, but describing the wrong row. Seven
+    failures, several of them lying about which row they meant, which is the
+    name-and-mechanism-disagree trap inside a diagnostic. The ORDER assertion
+    stays positional, because order is what it is about.
+    """
+    hits = [r for r in seq if r.get("ev") == ev]
+    return hits[n] if 0 <= n < len(hits) else {}
+
+
 def _rows(path):
     out = []
     for line in io.open(path, encoding="utf-8"):
@@ -842,11 +857,11 @@ _poll(_bwA, 1225, [_ICE("s5")])                                   # absent 3 -> 
 _rA = [r for r in _rows(_lf.name) if r["type"] == "franky"]
 chk("A: the real poller wrote spawn, sample, closing sample, death",
     [r["ev"] for r in _rA], ["spawn", "hp", "hp", "death"])
-chk("A: and it IS a death, not a despawn", row(_rA, len(_rA) - 1).get("ev"), "death")
+chk("A: and it IS a death, not a despawn", byev(_rA, "death").get("ev"), "death")
 # THE ASSERTION THIS WHOLE FIXTURE EXISTS FOR: the flush fired at a real
 # terminal, reached through the real caller, not called directly.
-chk("A: the closing sample is flagged final", row(_rA, 2).get("final"), True)
-chk("A: the threshold sample is not", row(_rA, 1).get("final"), None)
+chk("A: the closing sample is flagged final", byev(_rA, "hp", 1).get("final"), True)
+chk("A: the threshold sample is not", byev(_rA, "hp", 0).get("final"), None)
 # THE LOG IS APPEND-ORDERED AND `t` IS NOT MONOTONIC WITH IT, which this
 # fixture made concrete rather than theoretical. The closing sample is written
 # BEFORE the death row and carries a LATER timestamp: a death row's `t` is the
@@ -857,20 +872,34 @@ chk("A: the threshold sample is not", row(_rA, 1).get("final"), None)
 # an estimated `t` was compared against an observation, here it reorders rows
 # within one fight.
 chk("A: the death row's t PRECEDES the closing sample's, despite being written after",
-    row(_rA, 3).get("t", "") < row(_rA, 2).get("t", ""), True)
+    byev(_rA, "death").get("t", "") < byev(_rA, "hp", 1).get("t", "zzz"), True)
 chk("A: so file order and timestamp order genuinely disagree",
     [r["ev"] for r in sorted(_rA, key=lambda r: r["t"])],
     ["spawn", "hp", "death", "hp"])
 # The stall between the last sample and the terminal is a measurement.
-chk("A: closing row reports the gap", row(_rA, 2).get("since_sec"), 135)
-chk("A: with zero loss over it", row(_rA, 2).get("hp_lost"), 0)
-chk("A: and zero dps, not null", row(_rA, 2).get("dps_since"), 0.0)
+chk("A: closing row reports the gap", byev(_rA, "hp", 1).get("since_sec"), 135)
+chk("A: with zero loss over it", byev(_rA, "hp", 1).get("hp_lost"), 0)
+chk("A: and zero dps, not null", byev(_rA, "hp", 1).get("dps_since"), 0.0)
 # Field classes, per the write path - a death row has no `hp`, which is the
 # whole reason the closing row is written in the sampler's own names.
+# THE INVARIANT THE BROWSER SESSION DERIVED FROM THE NON-MONOTONIC FINDING, and
+# it is stronger than the source-text call-site checks: the closing row's `t` is
+# "the poll that observed the end", which is the DEFINITION of death_hi. So the
+# two are ONE observation written into two fields in two rows. If they ever
+# disagree, either the flush is not firing at the terminal or death_hi has
+# stopped being iso(poll_t) - and both are caught here, where they happen,
+# rather than downstream in a consumer.
+chk("A: the closing row's t IS the death row's death_hi",
+    byev(_rA, "hp", 1).get("t"), byev(_rA, "death").get("death_hi"))
+# SCOPED DELIBERATELY: a despawn row carries no death_hi at all, so the
+# invariant is death-specific and a reader must not try to apply it there.
+chk("A: the death row does carry death_hi", "death_hi" in byev(_rA, "death"), True)
+chk("A: the death row's t is NOT death_hi - that is the whole point",
+    byev(_rA, "death").get("t") != byev(_rA, "death").get("death_hi"), True)
 chk("A: the death row carries last_hp, not hp",
-    ("last_hp" in row(_rA, 3), "hp" in row(_rA, 3)), (True, False))
+    ("last_hp" in byev(_rA, "death"), "hp" in byev(_rA, "death")), (True, False))
 chk("A: while the hp rows carry hp, not last_hp",
-    ("hp" in row(_rA, 2), "last_hp" in row(_rA, 2)), (True, False))
+    ("hp" in byev(_rA, "hp", 1), "last_hp" in byev(_rA, "hp", 1)), (True, False))
 os.unlink(_lf.name)
 
 # ---- TIMELINE B: an UNTOUCHED boss that despawns at its window.
@@ -889,15 +918,24 @@ chk("B: an untouched window emits spawn, ONE closing sample, despawn",
     [r["ev"] for r in _rB], ["spawn", "hp", "despawn"])
 chk("B: no threshold samples at all - nothing moved",
     sum(1 for r in _rB if r["ev"] == "hp" and not r.get("final")), 0)
-chk("B: the closing row spans the whole window", row(_rB, 1).get("since_sec"), 2450)
-chk("B: at zero dps", (row(_rB, 1).get("hp_lost"), row(_rB, 1).get("dps_since")), (0, 0.0))
-chk("B: full health at the close", row(_rB, 1).get("pct"), 100.0)
-chk("B: and the terminal is a despawn", row(_rB, 2).get("ev"), "despawn")
+chk("B: the closing row spans the whole window", byev(_rB, "hp").get("since_sec"), 2450)
+chk("B: at zero dps", (byev(_rB, "hp").get("hp_lost"), byev(_rB, "hp").get("dps_since")), (0, 0.0))
+chk("B: full health at the close", byev(_rB, "hp").get("pct"), 100.0)
+chk("B: and the terminal is a despawn", byev(_rB, "despawn").get("ev"), "despawn")
+# The invariant above cannot be applied to a despawn - it has no death_hi - so
+# this asserts the ABSENCE, or a future reader will try the join and get null.
+chk("B: a despawn row carries no death_hi, so the t==death_hi invariant is "
+    "death-only", "death_hi" in byev(_rB, "despawn"), False)
+# What the closing row gives INSTEAD on a despawn: its own t is still the poll
+# that observed the end, so it is the exact arrival-deadline observation even
+# where no death_hi exists.
+chk("B: but the closing row's t still brackets the despawn",
+    byev(_rB, "hp").get("t", "zzz") <= byev(_rB, "despawn").get("t", ""), True)
 # PRECONDITION: this is only a despawn because elapsed landed in the band. If
 # it came out a death the row set would look right and prove something else.
 chk("B: admitted by the band, not by luck",
-    (row(_rB, 2).get("elapsed_sec"), row(_rB, 2).get("window_sec")), (2450, 2400))
-chk("B: graded high, being untouched", row(_rB, 2).get("confidence"), "high")
+    (byev(_rB, "despawn").get("elapsed_sec"), byev(_rB, "despawn").get("window_sec")), (2450, 2400))
+chk("B: graded high, being untouched", byev(_rB, "despawn").get("confidence"), "high")
 # The kill record must not count any of it as a kill.
 _hB = b.boss_history(_lf2.name)
 _byB = {(r["type"], r["server"]): r for r in _hB["history"]}

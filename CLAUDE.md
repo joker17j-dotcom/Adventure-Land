@@ -349,6 +349,16 @@ emptied, which is the single most expensive mistake this file can cause.
   game (975u, 1418u, 2558u) and went looking for where it mattered. So when a comment
   states a limitation, read the code BESIDE it and ask what acts on it - a claim nobody
   acted on costs exactly as much as a claim that rotted, and announces itself less.
+- **A SAMPLE CANNOT PROVE A CLASS ABSENT, SO WHERE A SCHEMA QUESTION HAS A
+  WRITE PATH, READ THE WRITE PATH.** 2026-10-21: a 1,200-row window answered
+  which fields `spawn`, `death` and `despawn` rows carry, and could not show
+  that a FOURTH class exists - `lost` happened not to appear in it, and a
+  sample can only ever say what the sample contains. Enumerating every `_emit`
+  payload in `Codex/market_bridge.py` answered it completely and showed `lost`
+  carries no hp field of any kind. Neither session could have done the other's
+  half: the live read caught that the old claim was false, the write-path read
+  established what was true instead. Same family as the wrapped-prose grep
+  above - a search that comes back empty has told you about your search.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -799,8 +809,14 @@ time on 2026-10-18.
   and the sender's filter is an optimisation.** The unknown-parameter behaviour
   is asserted in `Tests/bridge/test_despawn.py` rather than remembered, so the
   comment in `Party/Ranger.js` that depends on it is a checked claim.
-- **AN ESTIMATED TIMESTAMP IS NOT AN ORDERING KEY. A death row's `t` IS AN
-  ESTIMATE; `death_hi` IS THE OBSERVATION.** Two of the three `death_t` forms
+- **AN ESTIMATED TIMESTAMP IS NOT AN ORDERING KEY ANYWHERE, INCLUDING WITHIN
+  ONE FIGHT'S OWN ROWS. A death row's `t` IS AN ESTIMATE; `death_hi` IS THE
+  OBSERVATION.** The "anywhere" was added 2026-10-21 after the second
+  consumer: v100 compared `t` against an observation and discarded real
+  terminals, then the closing `hp` row showed `t` reordering rows inside a
+  SINGLE fight. Both failures came from reasonably assuming that local
+  ordering was safe even where global ordering was not, so the scope has to be
+  stated or it gets re-narrowed by the next reader. Two of the three `death_t` forms
   are the poll-bracket midpoint `(last_alive_t + poll_t)/2` - only
   `respawn_offset` is exact - while `death_hi` is `iso(poll_t)`, the poll that
   proved the boss gone. Ranger v100 ordered a scanResults entry against `t` and
@@ -1008,6 +1024,21 @@ time on 2026-10-18.
   is terminal with no hp while an `hp` row is non-terminal with one. Enumerated
   from the `_emit` payloads rather than from a sample, so a fifth class cannot
   hide behind a window that happened to contain no examples.
+- **A NEGATIVE SIGNAL'S MEANING DEPENDS ON STATE THAT CAN CHANGE UNDER IT, AND
+  ONE HERE INVERTED WITHIN HOURS OF BEING WRITTEN.** Before the bridge was
+  restarted, "no `ev: hp` rows in this window" was sound evidence that the
+  restart was still pending, and it was used that way correctly. The operator
+  restarted the bridge at ~02:30Z on 2026-10-21 and the same observation
+  immediately stopped meaning anything: the sampler is scoped to
+  `EVENT_WINDOW_SEC`, the last event-type boss alive was crabxx US V which
+  despawned at 02:00:10Z - half an hour BEFORE the restart - and only mrpumpkin,
+  a respawn boss, has been alive since. So zero rows is exactly what the design
+  predicts and is NOT a deploy failure. **A check whose conclusion flips when a
+  deploy lands has to be retired at the deploy, not left standing**, because the
+  reader who runs it next has no way to see which side of the change they are
+  on. Read as failure, this would have been the CaveRun `ver: 14` mistake again
+  with different nouns, hours apart. First real verification is an event-type
+  boss being alive at all - the 04:00 UTC nightly window.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
@@ -1813,6 +1844,17 @@ reading.
   the page, so everything on `window` is wiped and an in-flight eval returns
   "Inspected target navigated or closed". To carry a value across a hop, write
   it to `localStorage`, which survives - and remove the key afterwards.
+- **A TRUNCATED RESULT IS REPORTED AS TRUNCATED, AND IT COSTS ONE MORE CALL.**
+  2026-10-21: a session watched a result get truncated, said "everything's
+  captured, go ahead and switch", and had stashed the dumps on `window` rather
+  than `localStorage`. The operator then changed servers - which reinitialises
+  the page, the hazard in the bullet directly above, quoted to them from this
+  file two hours earlier - and an 80-row event log, `friendly`, `objectives`,
+  `doorShape` and `skillFail` were lost. Cave is one run per day, so that was a
+  day. **Anything that must survive a hop goes to `localStorage` AND IS READ
+  BACK to confirm it landed, before anyone is told it is safe to proceed.**
+  Knowing the rule is not the same as applying it under time pressure, which is
+  why it is written as a sequence rather than as advice.
 
 ## Editing files in the GitHub web editor
 
@@ -1976,11 +2018,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   default pack scatters unclassified items through 294 slots of categorised
   stock, silently, which is the exact state the pack exists to prevent. Carrying
   on full is bounded and already logged; a buried signal is not recoverable.
-- **BANK STATE, 2026-10-20: 7 packs, 42 slots each, 294 total, 51 FREE** -
-  items0 0 free, items1 14, items2 18, items3 4, items4 4, items5 1, items6 10.
-  82.7% full. Next pack is `items7`, a couple of hundred million. Operator's
-  call: 51 free slots is enough runway at the current fill rate, so where
-  no-pack deposits land is not a problem to design around.
+- **BANK STATE, 2026-10-21: 8 packs, 42 slots each, 336 total, 93 FREE.**
+  `items7` HAS BEEN BOUGHT, so the review pack exists and the banking rung's
+  prerequisite is met. The previous reading - 7 packs, 294 total, 51 free, 82.7%
+  full, per-pack 0/14/18/4/4/1/10 - is kept as the instance rather than
+  overwritten, because a note quoting 51-of-294 after this is reading a figure
+  that moved within a day. Operator's call stands either way: the free runway is
+  ample at the current fill rate, so where no-pack deposits land is not a
+  problem to design around.
 - **THE OPERATOR'S BANK ACCESS AND THE SCRIPT'S ARE DIFFERENT OPERATIONS, so a
   hand-run UI test measures the wrong mechanism.** They must click a bank NPC to
   open one specific pack and must be in range, and the packs are not all in
@@ -2004,6 +2049,113 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   the bank is a MAP TRANSITION - check what `holdCohesion` does while a bank run
   is in flight.
 
+## The cave run - leash, roles and the party's real speeds
+
+**Both sessions.** Measured by the browser session over one 24-minute run on
+CaveRun v16, 2026-10-21. Cave is roughly one run per day, so a lost dump costs
+a day.
+
+- **FATHERTOKEN IS THE PARTY LEADER, not Dexon.** Nothing in this file said so
+  until now, and every mental model either session has brought to the cave
+  assumed the ranger leads. It does not.
+- **PARTY SPEEDS, MEASURED: FatherToken 63, Dexon 67, MageofOz 58.** So the
+  mage is 8% SLOWER than the leader and cannot close a gap at all while the
+  leader is moving. That sets a floor on how good any leash fix can be, and it
+  is a GEAR question rather than a code one - `windbelt` carries speed 2,
+  compounding 0.75 per level.
+  **A "Dexon is the fastest of the three at 78" claim was reported against this
+  measurement, and it is NOT IN THE REPO COPY** - checked flattened across the
+  whole file and against `origin/main`, zero matches for `fastest` or `78`. So
+  it exists only in a loaded copy, which per "The loaded copy and the repo copy"
+  is reported and NOT corrected from here. The ordering it asserted survives;
+  the number does not.
+- **ONE CONSTANT IN TWO ROLES IS THE ROOT CAUSE OF THE HOLD OSCILLATION, AND IT
+  IS NOT A TUNING PROBLEM.** `MOVE.closeAt` is 180 and is read by BOTH the
+  leader's hold (`worst > MOVE.closeAt`) and the followers' recovery latch
+  (`gap > L.closeAt`, combat-mode `L` built from the same constants). So a
+  follower does not BEGIN closing until the gap reaches the exact value at which
+  the leader GIVES UP and stops: the follower's start condition IS the leader's
+  stop condition. Release is 120 for both, so the follower stops 60 short and
+  the gap re-opens at once. Measured over one run: leader holds 142, holdStops
+  571, holdResumes 131, holdGaveUp 9, 571,250 ms held - **40% of the run
+  stopped** - with `outrunWarnTicks` 3,158 of 6,655 (47%); followers recoveries
+  141 and 133, maxDistLeader 216 and 210. The event tail against one fixed
+  destination is a ~3.3s cycle: hold at gap 183, resume 1.4s later, hold again
+  1.9s after that, alternating between whichever follower trips first.
+- **THE GAP RE-OPENS FASTER THAN SPEED EXPLAINS, and the arithmetic is the
+  evidence rather than the theory.** 60+ units in 1.9s against a
+  leader/slowest-follower differential of 5 units/sec, which accounts for about
+  10. The remainder is the follower being STATIONARY at resume - the operator's
+  own diagnosis, supported rather than restated.
+- **SO MANY SHORT HOLDS IS THE EXPENSIVE ARRANGEMENT, NOT THE CHEAP ONE.**
+  Follower start latency is a FIXED COST PAID PER HOLD: waiting once for 150
+  units pays it once, waiting three times for 60 pays it three times over the
+  same ground. 142 holds bought about 1.9s of travel each. The fix is a
+  SEPARATION - give the hold its own pair of constants so its release can go to
+  ~20-30 - and NOT a retune, because changing `MOVE.releaseAt` in place moves
+  three behaviours at once: the hold, the followers' combat release, and the
+  close-step sizing (`gap - leash().releaseAt * 0.6`). Baseline to measure any
+  change against: 571s held, 142 holds, 9 give-ups.
+- **WHY v15 HELPED WITHOUT FIXING IT, which also kills a mode-disagreement
+  theory.** `computeLeash()` returns the travel band only when NOT engaged, and
+  `engaged()` is a recency timer. Measured: leader engaged 35% of ticks,
+  followers 81% - so the followers ran on the COMBAT band 81% of the time and
+  v15 tightened the band that applies to the other 19%. `travelLeashTicks` is
+  the complement of `engagedTicks` BY CONSTRUCTION, so the 64/18 split that
+  looked like the two sides disagreeing about mode is an ENGAGEMENT difference:
+  the leader walks past mobs the followers aggro.
+- **OPERATOR'S CALL: DO NOT MAKE THE LEADER STOP FOR ORDINARY FOLLOWER
+  COMBAT.** Followers handle cave mobs fine and stopping for each would likely
+  be slower overall. A proposal to treat a mate's beacon `atk >= 1` as
+  engagement was WITHDRAWN for two reasons worth keeping: mechanically it aimed
+  at the wrong function, since `engaged` only selects which leash BAND the
+  leader uses while the hold reads `MOVE.*` regardless; and the path is already
+  wired - the hold already reads `troubleNow.length`, the beacon already
+  publishes raw `atk` and `hpFrac` every 250ms, and TROUBLE gates them at
+  `atkAt` 3 / `hpAt` 0.55. Deliberately conservative, and the operator's
+  position is that those thresholds already catch what needs catching.
+- **DOOR TRANSITIONS WORK: doorTry 2 / doorOk 2 on Dexon, 1/1 on MageofOz,
+  leader 0/0.** Three transitions, three successes, zero failures. That closes
+  the door question.
+- **CaveRun's `ver` FIELD IS A STALE LITERAL AND IT COST A WRONG DEPLOY
+  REPORT.** `ver: 14` is hardcoded twice - in the dump and in the load event -
+  while v16 was live, and nothing derives from it, so it is a lie rather than a
+  defect. It was believed over feature detection, and the second signal that
+  agreed with it measured nothing either: `noDoor` is NOT A COUNTER but an
+  `ev('noDoor', lm)` event, so its absence from a counter table was never going
+  to mean anything. The live leash settled it from the MECHANISM - travel 60/30
+  and combat 180/120 are exactly v15's values, where v14 was 120/60.
+  **Feature-detect, not version-detect**, demonstrated on the session that
+  wrote the rule.
+- **FIXING THAT FIELD HAS TWO TRAPS THE MERCHANT'S RECIPE DOES NOT COVER.**
+  Porting `merchantHeaderVersion()` is right in principle - CaveRun is
+  IIFE-wrapped, so a reader outside it CANNOT feature-detect its internals and
+  the dump is the only window, which is the whole argument for having an
+  honest version field at all. But: (1) the marker is on LINE 1, not line 2,
+  and the line ends `(TEST BUILD)`, so an end-anchored `/\bv(\d+)\s*$/`
+  returns null - anchor on the file marker instead, `/^\/\/ CaveRun\.js\b.* -
+  v(\d+)\b/`, line 1 only; and (2) **CaveRun is a ROOT script, so it is NOT
+  covered by the current-version-only rule and its header ACCUMULATES
+  HISTORY** - 12 lines match `^// v<digits>`, so any read taking the LAST match
+  returns the OLDEST entry, which is precisely the OpenGifts failure that
+  returned 2 against a v11 build. Line 1 only, never a header scan. The retry
+  requirement carries over unchanged, and the pre-slot failure is FAIL-NULL
+  because the tutorial template's line 1 does not match `CaveRun.js`.
+  **SMALLEST FIRST: fix the two literals, and have `caveDump()` report line 1
+  RAW** so a reader sees the header text rather than a number derived from it.
+  This is the THIRD stale version literal in the project after the v89 header
+  and `MERCHANT_VER`, which is the argument for reporting text over any
+  hand-maintained number.
+- **THREE SMALLER FINDINGS, noted rather than claimed.** `kiteRejected` exceeds
+  `kiteSteps` on both followers (137/56 and 159/44), so the
+  `gapNew > gapNow + 1` guard fires most times it is consulted - unknown
+  whether correct or over-tight. `noTargetWhileEngaged` 2,687 on Dexon, 44% of
+  ticks. And `friendly_target` 324 on the priest (175 attack, 149 curse) is the
+  SERVER'S REFUSAL REASON, not a record of attacking friendlies - cave NPCs
+  flip hostile/friendly with the choices and are reused, so it is expected
+  noise; the only open question is whether those refusals displace real
+  attacks, which the counts cannot answer.
+
 ## Testing
 
 - **There IS one now: `node Tests/run.js`.** This section said there was no
@@ -2012,9 +2164,9 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATER: 429 JS assertions across SEVEN suites, plus
-  239 from the python bridge suite the runner shells out to and folds in, for
-  `all 668 pass`.** It read 646 earlier the same day, 586 and 575 the day before, 285 / 61 / 346
+  **COUNT AS OF 2026-10-21, LATEST: 429 JS assertions across SEVEN suites, plus
+  244 from the python bridge suite the runner shells out to and folds in, for
+  `all 673 pass`.** It read 668 and 646 earlier the same day, 586 and 575 the day before, 285 / 61 / 346
   before that, and 114 before that - SEVEN figures in two days, which is the
   point rather than an embarrassment: re-derive from a run, never from any note
   here. Each supersession is appended here rather than
