@@ -1173,8 +1173,19 @@ itself.
   container held `kaansoral/adventureland_mongodb` at `2148cf25`, equal to
   upstream HEAD; the browser container held the OPERATOR'S FORK,
   `joker17j-dotcom/adventureland_mongodb`, at `9005216` - a clean ancestor
-  330 commits behind, with `node/server.js` differing by 599 insertions and
-  218 deletions. Two sessions said "the clone at /tmp/almongo" to each other
+  behind upstream, with `node/server.js` differing.
+  **THE "330 COMMITS BEHIND" AND ITS CROSS-CHECK WERE BOTH SHALLOW ARTEFACTS,
+  corrected 2026-10-21.** In a FULL clone the true distance from `9005216` was
+  73, not 330: `rev-list --count fork/main` 513 plus 73 equals `rev-list --count
+  origin/main` 586, exactly. The 330 came from a clone whose `.git/shallow` was
+  bounded at the fork's own HEAD, so every fetched upstream commit read as
+  unreachable-from-fork and the "distance" was just the size of the fetched
+  pack. **The cross-check recorded below as proof (331 = 330 + 1) confirmed the
+  artefact, because both numbers were computed from the same truncated graph** -
+  which is the real lesson: a cross-check drawn from the same degenerate source
+  is not independent evidence. `node/server.js` measured +916/-549 at the same
+  time, against the +599/-218 recorded here, so that figure moved
+  too. Two sessions said "the clone at /tmp/almongo" to each other
   all day and meant different repositories. A stale clone of THIS repo is
   the same hazard wearing different clothes: one of the browser container's
   three sat at `f8eebcd`, a v88-era commit.
@@ -2156,6 +2167,95 @@ a day.
   noise; the only open question is whether those refusals displace real
   attacks, which the counts cannot answer.
 
+## The published event schedule - upstream's new mechanism
+
+**Both sessions.** Read from upstream source 2026-10-21 at `43b2c8fc`, after
+the operator's fork was fast-forwarded to it. **SOURCE-DERIVED, SO EVERY CLAIM
+HERE IS A LEAD ABOUT THE LIVE GAME AND NOT A FACT ABOUT IT** - the standing
+rule under "Claims about the live game client" applies in full, and the live
+probes are listed at the end as still-open.
+
+- **THE GAME NOW PUBLISHES A SEVEN-DAY EVENT LINEUP, which replaces inference
+  with a read.** `node/logic/event_schedule.js` (server) with a client copy at
+  `js/event_schedule.js`. Its own opening line: "The published event lineup:
+  seven days of named occurrences on the realm clock." It reaches the client as
+  **`server.status.schedule`, i.e. `S.schedule`** - `S.schedule.events` is the
+  lineup and `S.schedule.server_time` exists so a consumer can correct its own
+  clock (`schedule_offset = S.schedule.server_time - Date.now()`).
+- **AN OCCURRENCE IS `{ id, event, at, status }`** plus optional `pool`,
+  `season`, `repeat` and `late`. `event` is the event NAME and `at` is a UTC
+  MILLISECOND timestamp, so "which event, on this shard, at what absolute time"
+  is answered directly. Statuses seen in the source include `scheduled`,
+  `live` and `missed`; `LATE` is one hour (a restart at 13:20 still runs the
+  13:00 slot, never later) and `KEEP` is six hours (finished and missed stay
+  visible that long).
+- **IT IS PER-SHARD, NOT PER-REGION, AND THAT DECIDES WHO CAN COLLECT IT.**
+  `create_schedule` is called with `realm: region + server_name` and its output
+  is stored back as `S.schedule`, which is also passed in as `saved` - so each
+  shard process owns and persists its own lineup. A character therefore sees
+  ONE shard's lineup, its own. Enough to know when the window it is standing in
+  ends; NOT enough to choose between shards, which is what prepositioning needs.
+- **THE ROTATION IS A SAVED ROUND-ROBIN QUEUE, AND THAT EXPLAINS THE 13-OF-13
+  ALTERNATION RATHER THAN REPLACING IT.** `SLOTS` declares
+  `{hours:[13,20], pool:"dailies"}` and `{hours:[23], pool:"nightlies"}` -
+  exactly the game-hours this file measured empirically, now stated in
+  source.
+  A pool pick does `queue.splice(pick, 1)` then `queue.push(event)`, so a
+  TWO-ELEMENT nightly pool IS exact alternation: the operator's model was right
+  and is now explained. Two refinements the bare model does not carry: the
+  queues live in the server's SAVED data ("a restart neither reshuffles what
+  players were shown nor starts an occurrence twice"), which is why a restart
+  resets the apparent alternation; and there is a SWAP rule - an event that ran
+  at this hour last time trades places with the next in line when that one ran
+  at another hour, so an even pool still moves every event between the slot
+  hours. A naive "it alternates" would mispredict a pool larger than two.
+- **HALLOWEEN ADDS ITS OWN SLOTS**, which is why the nine-window picture is not
+  the whole lineup any more: `witchcipher` at realm hours 6 and 18 (two rounds
+  twelve hours apart so other time zones can play, one daily limit covering
+  both), `horseman` at hour 0, and `graveyard` every two hours at minute 30 as a
+  `repeat` slot with its own shorter `late` of ten minutes. A pool skips an
+  event while that event's own seasonal slot is open.
+- **SEASONS ARE NOW CENTRALISED WITH EXACT END TIMES**, in the new
+  `design/event_flags.js`: `event_flags` holds the booleans (anniversary,
+  holidayseason, lunarnewyear, valentines, egghunt, halloween), `event_ends`
+  holds a UTC end per season, and `get_event_flags(gameplay, now)` switches a
+  season off once past it. `event_flag_overrides` gives hardcore the egghunt and
+  disables every season in dungeon. At `43b2c8fc` halloween was the open season
+  with an end of `2026-11-03T00:00:00.000Z` (last day November 2). Per this
+  file's own rule, that is what the SOURCE said at that commit and not a claim
+  about what the operator's live realm is running.
+  **`lunarnewyear` was still false**, so dragold stays gated - but the END of a
+  season is now published once it opens, while the START is still a deploy-time
+  flag flip. So the dragold entry's "the in-game start is unknown" still holds,
+  and "when does it end" stops being unknown the moment it begins.
+- **THE BRIDGE ALREADY RECEIVES THIS AND THROWS IT AWAY.** In `server_info`
+  mode `BossWatch` holds a `ServerInfoClient` per server and
+  `_on_server_info(server, payload)` is handed that shard's WHOLE `S` object -
+  the handler's own comment already names `schedule` as one of its fields.
+  `server_info_entries()` extracts boss entries and the rest is dropped, so a
+  seven-day lineup per shard has been arriving and being discarded. Reading it
+  is additive: no new connection, no new polling, no character involved.
+  **CONDITIONAL ON THE MODE, THOUGH.** `--boss-source` chooses `server_info` or
+  `aldata`, and the ALData path fetches `monsters/<types>` only - a monster
+  list with no schedule in it. So the bridge can collect this in one mode and
+  cannot in the other, and which one is running is the operator's to say.
+- **SO THE MERCHANT SHOULD NOT BE THE COLLECTOR, and the reasoning matters more
+  than the conclusion.** Sending him round the shards to read schedules would
+  cost him Hop Sickness per shard and return ONE shard's lineup per visit at one
+  moment, while the bridge already holds a socket to every shard at once - the
+  one thing no character can do. The merchant route only becomes the answer if
+  the bridge cannot see the payload at all, which is the mode question above.
+- **STILL OPEN, AND ONLY THE BROWSER-DRIVEN SESSION CAN ANSWER ANY OF IT.**
+  (1) Does the DEPLOYED game carry this at all - `43b2c8fc` landed hours before
+  this was written, and the live realm may lag the source. (2) Is `S` reachable
+  from a CHARACTER's CODE context? This file documents `S` on /hub and nothing
+  establishes it inside CODE. (3) If it is, does a character's `S` describe its
+  OWN shard? On /hub `S` reports the MONITORED server and NOT the server any
+  character is on, so the semantics differ by page and that asymmetry is exactly
+  the trap to check rather than assume. (4) Which `--boss-source` the bridge is
+  running. Nothing should be built on this section until (1) and (4) are
+  measured.
+
 ## Testing
 
 - **There IS one now: `node Tests/run.js`.** This section said there was no
@@ -2166,10 +2266,10 @@ a day.
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
   **COUNT AS OF 2026-10-21, LATEST: 429 JS assertions across SEVEN suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 673 pass`.** It read 668 and 646 earlier the same day, 586 and 575 the day before, 285 / 61 / 346
-  before that, and 114 before that - SEVEN figures in two days, which is the
-  point rather than an embarrassment: re-derive from a run, never from any note
-  here. Each supersession is appended here rather than
+  `all 673 pass`.** It read 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - SEVEN
+  figures in two days, which is the point rather than an embarrassment:
+  re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.
   The figure above was true when written and is kept as the instance rather than
