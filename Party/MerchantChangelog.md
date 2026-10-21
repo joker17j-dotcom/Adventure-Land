@@ -1,3 +1,45 @@
+## v109
+
+`dexbelt` and `intbelt` added to `PROTECTED_ITEM_NAMES`, closing a MEASURED
+hole rather than hardening a theoretical one. Operator's rule (a), 2026-10-20:
+neither belt is ever sold, on this character or the ranger.
+
+dexbelt passed EVERY guard both sell paths apply. Measured 2026-10-21 by
+lifting the real functions out of the committed file: not exchangeable, not a
+kept material, not arbitrage stock, not on the Ponty buy list, and
+`isTier2OrTier3GearItem('dexbelt')` FALSE. That last one is the whole story -
+dexbelt WAS covered by it until windbelt took the ranger belt slot on
+2026-10-10, so a `GEAR_PROGRESSION` edit silently repealed a sell protection
+that nobody had filed as a sell protection. Nothing failed and nothing logged.
+
+THE EXPOSED ITEM WAS THE EXACT ONE ANOTHER GUARD EXISTS TO PRESERVE.
+`CONFIG.craftInputCaps.dexbelt` is 2 because `G.craft.windbelt` consumes a
+dexbelt+2, and it stops that +2 being compounded into a spent +3. Meanwhile
+`sellAggressivelyIfLowOnSpace` applies no level check at all, so it would
+vendor the same +2 outright for its ~30,000. Two guards on one object, each
+correct in isolation, with nothing covering the gap between them.
+
+intbelt is named even though the tier-2/tier-3 check still covers it, because
+that is the mechanism that already failed once. The operator's rule is about
+SCARCITY, not about being a current gear goal, and an explicit name cannot be
+withdrawn by a goal edit.
+
+Deliberately NOT keyed on `CONFIG.pontyBuy.items`. That list already does
+double duty as a sell guard via `pontyWanted()`/`isPontyBought()`, so a
+scarcity protection resting on it would be repealed by removing a BUY
+preference - two unrelated intents sharing one list.
+
+`sellTrash()` is a THIRD sell path and consults none of this; it sells only
+names on `CONFIG.selling.whitelist`. The belts are beyond its reach while that
+list does not name them, which is a different kind of safety from a guard and
+is now asserted as such.
+
+Tests: new `Tests/suite_merchantsell.js`, 12 assertions, each scarcity claim
+written as PRECONDITION + OUTCOME so the inverted half stays visible and the
+explicit entries cannot be read as redundant. Mutation-verified: removing both
+belts fails 2, removing dexbelt alone fails 1, dropping either path's guard
+fails 1 each, and adding a belt to the selling whitelist fails 1.
+
 ## v108
 
 Comment only, no behaviour change. One comment asserted a party member's speed

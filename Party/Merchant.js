@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v108
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v109
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3148,6 +3148,40 @@ const PROTECTED_ITEM_NAMES = new Set([
 	// (anniversarygift) in vendor gold against an unopened NPC value of 60 -
 	// vendoring them unopened throws away 137x and 365x respectively.
 	'anniversarygift', 'marketparcel',
+	/* SCARCE BELTS - operator's rule (a), 2026-10-20: dexbelt and intbelt are
+	   never sold, on this character or the ranger.
+
+	   dexbelt WAS MEASURED UNPROTECTED IN BOTH SELL PATHS, 2026-10-21, not
+	   added here as belt-and-braces. Every guard the two paths apply returned
+	   false for it: it is not exchangeable, not a kept material, not arbitrage
+	   stock, and `isTier2OrTier3GearItem('dexbelt')` is FALSE because windbelt
+	   took the ranger belt slot on 2026-10-10 and nothing in GEAR_PROGRESSION
+	   names dexbelt any more.
+
+	   AND THE EXPOSURE WAS THE EXACT ITEM craftInputCaps EXISTS TO PRESERVE.
+	   `CONFIG.craftInputCaps.dexbelt` stops a dexbelt+2 being compounded into
+	   a +3, because +2 is what G.craft.windbelt consumes - so one subsystem
+	   guards the item's LEVEL while sellAggressivelyIfLowOnSpace, which applies
+	   no level check at all, would vendor the item outright for its ~30,000.
+	   Two guards on the same object, each correct, with nothing between them.
+
+	   intbelt is listed even though the tier-2/tier-3 check covers it today,
+	   because that is the SAME MECHANISM THAT ALREADY FAILED for dexbelt: a
+	   GEAR_PROGRESSION edit silently withdrew the protection once, and the
+	   operator's rule is about scarcity rather than about being a current gear
+	   goal. An explicit name cannot be withdrawn by a goal edit.
+
+	   DELIBERATELY NOT KEYED ON CONFIG.pontyBuy.items. That list already does
+	   double duty as a sell guard through pontyWanted()/isPontyBought(), so a
+	   scarcity protection resting on it would be silently repealed by removing
+	   a BUY preference - two unrelated intents on one list.
+	   -> CLAUDE.md "Selling, banking and what must never be vendored"
+
+	   THIS SET DOES NOT REACH sellTrash(), which sells only names present on
+	   CONFIG.selling.whitelist and consults nothing here. The belts are out of
+	   its reach while that list does not name them, and the operator edits it -
+	   so a belt added there would bypass every line above. */
+	'dexbelt', 'intbelt',
 ]);
 
 /* Items the merchant may not BUY or SELL at all - not to an NPC, not to a

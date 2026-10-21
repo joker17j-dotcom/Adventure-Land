@@ -2238,10 +2238,47 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   duty as a sell guard via `pontyWanted()`, undocumented until now, so making a
   scarcity protection depend on a BUY preference means removing the buy
   silently reopens the vendor path.
+  **THIS BULLET'S "HALF DONE" AND "needs dexbelt alone" ARE NOW HISTORICAL -
+  both landed in Merchant v109**, two bullets down, where the measurement that
+  turned the inference into a finding is recorded. Read this one for the
+  reasoning and that one for the state.
 - **THE LEVEL GUARD IS ASYMMETRIC AND THAT IS WORTH KNOWING RATHER THAN
   FLATTENING.** Relief checks `level > 0`; the merchant's aggressive pass has no
   level check at all. So a `dexbelt+2` is safe in Dexon's bag and exposed in
   Meltymerch's.
+- **DONE ON THE MERCHANT IN v109, AND IT WAS A MEASURED HOLE RATHER THAN THE
+  HARDENING THIS FILE EXPECTED.** `dexbelt` and `intbelt` are now explicit
+  entries in `PROTECTED_ITEM_NAMES`, which both of the merchant's vendoring
+  paths already consult. Measured 2026-10-21 by lifting the real functions out
+  of the committed file: dexbelt returned FALSE on every guard those paths
+  apply - not exchangeable, not a kept material, not arbitrage stock, not on
+  the Ponty buy list, and `isTier2OrTier3GearItem('dexbelt')` false. So it was
+  not merely uncovered by the rule, it was reachable.
+  **THE SILENT REPEAL IS THE DURABLE PART.** dexbelt WAS covered by the
+  tier-2/3 check until windbelt took the ranger belt slot on 2026-10-10, so a
+  `GEAR_PROGRESSION` edit withdrew a sell protection that nobody had filed as
+  one. Nothing failed, nothing logged, and the protection was never named in
+  the place it was acting. `intbelt` is therefore listed too, even though that
+  same check still covers it - the operator's rule is about SCARCITY, not about
+  being a current gear goal, and an explicit name cannot be withdrawn by a goal
+  edit. **A GUARD THAT WORKS AS A SIDE EFFECT OF SOMETHING ELSE'S DATA IS NOT A
+  GUARD, IT IS A COINCIDENCE WITH GOOD TIMING.**
+  **AND THE EXPOSED ITEM WAS THE EXACT ONE ANOTHER GUARD EXISTS TO PRESERVE** -
+  a sharper version of the asymmetry bullet above. `CONFIG.craftInputCaps.dexbelt`
+  is 2 because `G.craft.windbelt` consumes a dexbelt+2, and it stops that +2
+  being compounded into a spent +3; the aggressive pass, with no level check,
+  would have vendored the same +2 for its ~30,000. Two guards on one object,
+  each correct in isolation, with nothing covering the gap between them.
+- **THERE ARE THREE SELL PATHS ON THE MERCHANT, NOT THE TWO THIS SECTION
+  IMPLIED.** `sellTrash()` is whitelist-driven and consults
+  `PROTECTED_ITEM_NAMES` not at all - it sells only names present on
+  `CONFIG.selling.whitelist`. So the belts are beyond its reach while that list
+  does not name them, which is a DIFFERENT KIND OF SAFETY from a guard: it
+  holds by what the list omits rather than by anything the code checks, and the
+  operator edits that list. `Tests/suite_merchantsell.js` asserts the absence
+  deliberately, so the protected set cannot be read as covering all three, and
+  adding a belt to that whitelist fails an assertion rather than passing
+  quietly.
 - **THE REVIEW PACK IS THE OPEN CHANNEL, AND IT IS WHAT MAKES THIS A SYSTEM
   RATHER THAN A GUESS.** The ladder: the mule collects; else sell the
   classified-safe set; else bank the remainder TO ONE DEDICATED REVIEW PACK;
@@ -2553,10 +2590,10 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 446 JS assertions across SEVEN suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 458 JS assertions across EIGHT suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 690 pass`.** It read 673, 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - EIGHT
+  `all 702 pass`.** It read 690, 673, 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - NINE
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
