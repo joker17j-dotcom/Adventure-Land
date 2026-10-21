@@ -2188,3 +2188,51 @@ empty" and uncap everything anyway, so the loud version is strictly better.
 `ashleaf` is why the cap exists: 38,553 in the bank on 2026-10-18, 3.86 stacks
 of 9,999, bought from Ponty and banked forever because nothing consumed them at
 that rate.
+
+## isPontyBought
+
+`pontyWanted()` is a BUY preference that also acts as a SELL GUARD, and that
+double duty is the whole reason this pointer exists.
+
+The sell paths skip any name on `CONFIG.pontyBuy.items`: vendoring something
+the merchant is about to re-buy from Ponty is a round trip that loses the
+spread. Correct, and it means **the buy list silently controls what is
+protected**, so removing a buy for an unrelated reason reopens a vendor path
+nobody was looking at.
+
+That caught both sessions out on 2026-10-21. `dexbelt` was added to the buy
+list on the operator's ruling, which gave it a SECOND sell protection on top of
+its explicit `PROTECTED_ITEM_NAMES` entry - and `Tests/suite_merchantsell.js`
+failed on arrival, because it asserted dexbelt's ABSENCE from the buy list as
+the precondition recording that the explicit name was its only guard.
+
+**So the explicit name stays even though the buy now covers it.** The buy list
+is the operator's, marked EDIT THIS; dropping the buy would repeal the derived
+guard in exactly the silent way a `GEAR_PROGRESSION` edit repealed dexbelt's
+tier-2/3 coverage on 2026-10-10, which is what v109 was written to fix. Same
+hazard, opposite direction. `intbelt` is still off the buy list, so for IT the
+explicit name remains the only guard, and the suite asserts that asymmetry
+rather than flattening it.
+
+A reader who finds two guards on one name must not conclude either is
+redundant. One is a side effect of a preference; the other is the rule.
+
+## gtFailOpen
+
+`gtJudge` wraps its whole body and, on a throw, LOGS and returns
+`{ allow: true, blocks: [], detail: { threw: true } }`.
+
+The mechanism is what matters and is checkable: open, plus a `gtLog` line
+carrying the message, plus `threw: true` on the detail so a caller can tell an
+allow-by-judgement from an allow-by-accident. That last field is the part that
+makes failing open recoverable - without it the two are indistinguishable, which
+is this project's "a catch that returns a default must log" rule with a flag
+instead of only a log line.
+
+**WHY OPEN RATHER THAN CLOSED IS NOT ARGUED IN THE ORIGINAL AND IS NOT
+RECONSTRUCTED HERE.** The judge gates gear-progression STEPS, so failing closed
+would stall gear work on any unexpected throw while failing open risks one
+unnecessary step - but that trade was never written down, and inventing a
+plausible rationale for someone else's decision would read as documentation.
+Recorded as unargued, the same way the pre-v63 constants are. If you are the one
+who chose it, this is the section it belongs in.

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v112
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v113
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -341,7 +341,7 @@ setInterval(plPoll, PARTY_LINK.pollMs);
    `TOGGLES` AT RUNTIME DOES NOT - the subsystem already copied the value.
    Runtime flips still go to the CONFIG path they always did, which is what
    the console commands and the one in-code assignment already do.
-   -> MerchantComments.md#TOGGLES */
+   */
 const TOGGLES = {
 	scout:                    true,   // CONFIG.scout.enabled
 	scoutParked:              false,  // CONFIG.scout.parked
@@ -971,7 +971,7 @@ const CONFIG = {
 		// Minimum time a freshly opened stand is left alone. A teardown costs a
 		// close, a slow clamped walk, and a reopen; below this threshold the
 		// stand spends more time moving than standing.
-		// -> MerchantComments.md#minDwellMs
+		//
 		minDwellMs: 3 * 60 * 1000,
 		// How often standLoop reconciles "idle and home and no stand" -> open one.
 		reconcileMs: 4000,
@@ -1008,7 +1008,7 @@ const CONFIG = {
 	// GEAR PROGRESSION - see the "GEAR PROGRESSION SYSTEM" section below for
 	// the full table and logic. This just toggles/paces the loop.
 	/* GEAR TRIPWIRE - refuses gear steps that are not worth doing.
-	   -> MerchantComments.md#gearTripwire
+	
 
 	   mode: 'off'      nothing happens; gear behaves exactly as before
 	         'observe'  every step is judged and logged, but nothing is blocked
@@ -1026,7 +1026,7 @@ const CONFIG = {
 	gearProgression: {
 		enabled: TOGGLES.gearProgression,
 		// 8000 was far too tight for a loop that walks to the town spot and back.
-		// -> MerchantComments.md#gearPacing
+		//
 		intervalMs: 30000,
 		maxStepsPerVisit: 12,
 	},
@@ -3242,7 +3242,7 @@ const NO_TRADE_ITEM_NAMES = new Set(['anniversarygift', 'marketparcel']);
    G.items would be EMPTY, and an empty protection set protects nothing - the
    failure is silent and costs 240,000 a gem. The seed is the 45 names measured
    2026-10-03 against design/items.js; the derived half extends it. Neither can
-   shrink the other. -> MerchantComments.md#EXCHANGEABLE */
+   shrink the other. */
 const EXCHANGEABLE_SEED = ['cosmo0', 'cosmo1', 'cosmo2', 'cosmo3', 'cosmo4', 'cosmo5',
 	'sixcake', 'anniversarygift', 'gem0', 'gem1', 'candypop', 'candy0', 'candy1',
 	'candy0v2', 'candy1v2', 'candy0v3', 'candy1v3', 'bugbountybox', 'apologybox',
@@ -3883,7 +3883,7 @@ const GEAR_PROGRESSION = {
 			   grades are [0,7,10,12], so +7 is exactly where it crosses into grade 2
 			   and the cost per level jumps. Do not raise this target to +8 or +9
 			   casually: from +7 the next two steps are 19.6% then 12.5% and run to
-			   roughly a billion gold-equivalent. -> MerchantComments.md#mrnarmor */
+			   roughly a billion gold-equivalent. */
 			earring1: { item: 'dexearring', level: 4, method: 'compound' }, helmet: { item: 'fury', level: 4, method: 'upgrade' }, earring2: { item: 'dexearring', level: 4, method: 'compound' }, amulet: { item: 'dexamulet', level: 4, method: 'compound' },
 			mainhand: { item: 'bowofthedead', level: 7, method: 'upgrade' }, chest: { item: 'mrnarmor', level: 7, method: 'upgrade' }, offhand: { item: 't2quiver', level: 7, method: 'upgrade' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			/* BELT IS windbelt FROM 2026-10-10, operator's call: @2 here and @4 at
@@ -3901,12 +3901,31 @@ const GEAR_PROGRESSION = {
 			   gate material at 4 essenceofether per craft:
 			     tier 2 @2, from the +1 he wears: 6 more at +0 = 24 essenceofether
 			     tier 3 @4, from that same +1:   ~78 more at +0 = ~312
-			   Measured 2026-10-10: 18 essenceofether held, and thundergrips wants 12
-			   of the same material per copy. So tier 2 is short and contended, and
-			   tier 3 is not reachable at anything like the current supply. The other
-			   two inputs are not the problem - 1,963 stormfeather is 49 belts' worth,
-			   but there is no dexbelt+2 banked (1x +0, 2x +3) and the recipe asks for
-			   level 2 specifically. -> MerchantComments.md#windbelt */
+			   thundergrips wants 12 essenceofether per copy, so that material is
+			   CONTENDED between two goals by recipe, not by whatever is in the bank
+			   this week.
+
+			   WHICH INPUT BINDS IS STRUCTURAL, so it is worth writing down where a
+			   quantity is not. stormfeather and essenceofether are bulk drops against
+			   a small per-craft need. dexbelt is the constraint: the recipe asks for
+			   +2 SPECIFICALLY, and compounding is 3-to-1, so every single unit costs
+			   nine dexbelt+0 plus the failures - which is why dexbelt is on the Ponty
+			   buy list capped at +2 rather than being farmed.
+
+			   THIS BLOCK USED TO QUOTE BANK CONTENTS AND THEY HAD ALL ROTTED. It read
+			   "1,963 stormfeather is 49 belts' worth, but there is no dexbelt+2 banked
+			   (1x +0, 2x +3)" and "18 essenceofether held", and by 2026-10-21 the bank
+			   carried 2,735 stormfeather and exactly one dexbelt+2 - the level the
+			   recipe consumes. The conclusion drawn from them was "tier 2 is short and
+			   contended, tier 3 unreachable", which is the operator's decision to make
+			   and was wrong in the direction of pessimism.
+			   **DO NOT WRITE DOWN WHAT A SINGLE CALL ANSWERS.**
+			   `api_call('load_bank', {})` returns the whole bank from anywhere, so a
+			   comment quoting bank contents is a CACHED COPY OF A LIVE QUERY -
+			   volatile and unnecessary at once, which is the worst pair to commit.
+			   Refreshing the figures would only restart the decay, because Meltymerch
+			   banks a haul several times a day. A comment carries the reasoning the
+			   query cannot produce; the query carries the numbers. */
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'suckerpunch', level: 0, method: 'compound' }, belt: { item: 'windbelt', level: 2, method: 'compound' },
 			orb: { item: 'cave_loaded_die', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'thundergrips', level: 7, method: 'upgrade' }, elixir: null,
 		},
@@ -3994,9 +4013,11 @@ const GEAR_PROGRESSION = {
 			   goal for a copy already in hand, never a shopping list.
 
 			   grades are [0,7,10,12] - identical to mrnarmor and mmhat - so +7 is the
-			   crossing into grade 2. Expected cost to +7 at live prices is 6.9 copies
-			   (83 tokens); do not raise this casually, since +8 and +9 run to about a
-			   billion gold-equivalent. -> MerchantComments.md#mmarmor */
+			   crossing into grade 2. Expected cost to +7 is 6.9 copies (83 tokens) at
+			   the prices of 2026-10-10 - an expected-cost derivation rots more slowly
+			   than inventory but it is still quoting a market, so read the date as
+			   part of the figure. Do not raise this casually: +8 and +9 run to about a
+			   billion gold-equivalent. */
 			mainhand: { item: 'firestaff', level: 9, method: 'upgrade' }, chest: { item: 'mmarmor', level: 7, method: 'upgrade' }, offhand: { item: 'wbook0', level: 4, method: 'compound' }, cape: { item: 'ecape', level: 7, method: 'upgrade' },
 			ring1: { item: 'cring', level: 3, method: 'compound' }, pants: { item: 'frankypants', level: 6, method: 'upgrade' }, ring2: { item: 'cring', level: 3, method: 'compound' }, belt: { item: 'intbelt', level: 4, method: 'compound' },
 			orb: { item: 'jacko', level: 3, method: 'compound' }, shoes: { item: 'wingedboots', level: 8, method: 'upgrade' }, gloves: { item: 'supermittens', level: 5, method: 'upgrade' }, elixir: null,
@@ -4644,7 +4665,7 @@ async function ensureUpgradeMaterials(scrollName, offeringName) {
    would not return false, it would blow up the caller. That is CLAUDE.md's
    Form A, and it cost three rangers an afternoon. Hence the catch, and hence
    the catch logs: a silent default is indistinguishable from a working one.
-   -> MerchantComments.md#bankExchangeables */
+ */
 async function bankExchangeables() {
 	const names = exchangeableNames();
 	if (character.map !== CONFIG.bank.map) return 0;   // never travels, by design
@@ -4869,7 +4890,7 @@ async function autoCombineOneBaseDuplicateGroup(currentGold) {
 
 /* ============================================================================
    GEAR TRIPWIRE - four reasons not to attempt a gear step.
-   -> MerchantComments.md#gearTripwire
+
 
    The gear system optimises cost-per-success and nothing else, so it will
    happily grind something worth less than the scrolls, duplicate gear the
@@ -5971,7 +5992,7 @@ function pontyStackCap(name) {
    BANK button calls.
    Returns null on failure AND LOGS IT. A silent empty map would read as "the
    bank is empty" and uncap every item, which is the worse failure.
-   -> MerchantComments.md#pontyBankQty */
+ */
 async function pontyBankQty() {
 	try {
 		const d = await api_call('load_bank', {}, { timeout: 10000 });
@@ -7303,8 +7324,8 @@ function arbPlan(flip, gold) {
 		buySlot: flip.buySlot, buyIsNpc: !!flip.buyIsNpc,
 		sellTo: flip.sellTo, sellPrice: flip.sellPrice, sellShard: flip.sellShard,
 		sellSlot: flip.sellSlot,
-		// The last-known position of each side. Without these arbApproach has
-		// -> MerchantComments.md#planCoords
+		// The last-known position of each side - map plus x/y for buyer and
+		// seller - because a shard and a player name are not a destination.
 		buyMap: flip.buyMap || null, buyX: flip.buyX, buyY: flip.buyY,
 		sellMap: flip.sellMap || null, sellX: flip.sellX, sellY: flip.sellY,
 		spend: flip.spend, expectProfit: flip.profit, taxRate: flip.taxRate,
@@ -8974,7 +8995,6 @@ async function arbProbeFindFlips(opts) {
 			sellTo: sell.target, sellPrice: sell.price, sellShard: sell.shard,
 			sellAgeSec: sell.ageSec, sellSlot: sell.slot,
 			// WHERE they were standing, carried from the market row.
-			// -> MerchantComments.md#flipCoords
 			buyMap: buy.map || null, buyX: buy.x, buyY: buy.y,
 			sellMap: sell.map || null, sellX: sell.x, sellY: sell.y,
 			sameShard: buy.shard === sell.shard,

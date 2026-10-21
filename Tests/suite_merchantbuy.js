@@ -164,6 +164,77 @@ name: 'pontyStackCap: no cap on an item that does not stack', fn(t) {
 	t.ok('cscroll3 is still there', items.indexOf("'cscroll3'") > 0);
 } },
 
+{ name: 'every -> Comments.md#anchor pointer resolves', fn(t) {
+	/* A `->` pointing at an anchor that does not exist is a claim that rots in
+	   total silence: it reads as "the rationale is written down" and nothing
+	   checks it. 14 dangled in Party/Merchant.js alone on 2026-10-21, against
+	   zero in Ranger, Priest and Mage.
+
+	   NO ALLOWLIST. The 14 were resolved by DELETING the pointer wherever the
+	   reasoning was already at the call site - an archive nobody needs is a
+	   second place to keep in step, which is the drift this repo pays for
+	   everywhere else - and by writing the two sections that had real content.
+	   So this can be a plain assertion, and a new dangling pointer fails it.
+
+	   The convention line at the top of each script ("a line ending
+	   `-> XComments.md#anchor` is a SUMMARY") is not a pointer. It produced four
+	   false dangles in the first audit, from the tool built to find the real
+	   ones. */
+	const files = ['Party/Merchant.js', 'Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js'];
+	const anchorsOf = (f) => {
+		const md = path.join(ROOT, f);
+		if (!fs.existsSync(md)) return null;
+		const out = new Set();
+		for (const m of fs.readFileSync(md, 'utf8').matchAll(/^## (.+)$/gm)) out.add(m[1].trim());
+		return out;
+	};
+	const cache = {};
+	let checked = 0;
+	const dangling = [];
+	for (const f of files) {
+		const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		for (const m of src.matchAll(/\b([A-Za-z]+)Comments\.md#([A-Za-z0-9_-]+)/g)) {
+			const doc = 'Party/' + m[1] + 'Comments.md';
+			const anc = m[2];
+			/* The convention placeholder, not a pointer. */
+			if (anc === 'anchor') continue;
+			if (!(doc in cache)) cache[doc] = anchorsOf(doc);
+			if (cache[doc] === null) { dangling.push(doc + ' (missing file)'); continue; }
+			checked++;
+			if (!cache[doc].has(anc)) dangling.push(doc + '#' + anc + ' <- ' + f);
+		}
+	}
+	t.ok('pointers were actually found and checked (>200)', checked > 200);
+	t.eq('no pointer names a missing anchor: ' + dangling.slice(0, 8).join(', '), dangling.length, 0);
+} },
+
+{ name: 'the windbelt note carries structure, not bank quantities', fn(t) {
+	/* The figures it used to quote had all rotted: 1,963 stormfeather and "no
+	   dexbelt+2 banked" against 2,735 and exactly one by 2026-10-21 - and the
+	   conclusion drawn from them ("tier 2 short, tier 3 unreachable") was the
+	   operator's to make and wrong toward pessimism. Refreshing them would only
+	   restart the decay, because the bank moves several times a day. */
+	/* THE FIGURES ARE STILL IN THE FILE AND MUST BE - this repo keeps a
+	   superseded reading as the instance rather than overwriting it. So the
+	   assertion cannot be "the string is gone"; the first version of it was
+	   exactly that and failed against correct code. What matters is that every
+	   stale figure sits INSIDE the retraction rather than being asserted as
+	   current, which is a question about POSITION that a string search cannot
+	   answer. */
+	const s = text();
+	const retraction = s.indexOf('THIS BLOCK USED TO QUOTE BANK CONTENTS AND THEY HAD ALL ROTTED');
+	t.ok('the retraction is present', retraction > 0);
+	for (const stale of ['1,963 stormfeather', 'no dexbelt+2 banked', '18 essenceofether held']) {
+		const at = s.indexOf(stale);
+		t.ok('"' + stale + '" appears only inside the retraction', at > retraction);
+		t.eq('and appears exactly once', s.split(stale).length - 1, 1);
+	}
+	t.ok('the recipe is kept', s.indexOf("1x dexbelt+2 + 40x stormfeather") > 0);
+	t.ok('the binding input is named as structural', s.indexOf('WHICH INPUT BINDS IS STRUCTURAL') > 0);
+	t.ok('and the rule is stated where the rot was',
+		s.indexOf('DO NOT WRITE DOWN WHAT A SINGLE CALL ANSWERS') > 0);
+} },
+
 { name: 'the config comment no longer promises a single-copy cap', fn(t) {
 	/* The comment on capAtOneStack said "one copy for anything that does not
 	   stack" - a correct description of the old code and a direct contradiction

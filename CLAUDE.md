@@ -384,6 +384,50 @@ emptied, which is the single most expensive mistake this file can cause.
   with the prose giving a reader no way to tell them apart. **So when a claim
   is a comparison, say where EACH side came from** - and if one side is this
   file, that side is a lead and not a measurement.
+- **DO NOT WRITE DOWN WHAT A SINGLE CALL ANSWERS.** 2026-10-21, found by the
+  browser session: `Party/Merchant.js`'s `windbelt` note quoted bank contents -
+  "1,963 stormfeather is 49 belts' worth, but there is no dexbelt+2 banked (1x
+  +0, 2x +3)", "18 essenceofether held" - and the bank by then held 2,735
+  stormfeather and exactly ONE dexbelt+2, the level the recipe consumes. The
+  conclusion built on them read "tier 2 is short and contended, tier 3
+  unreachable", which is the operator's call to make and was wrong toward
+  PESSIMISM. `api_call('load_bank', {})` returns the whole bank from anywhere, so
+  that comment was a CACHED COPY OF A LIVE QUERY - volatile and unnecessary at
+  the same time, which is the worst pair to commit.
+  **AND THE OPERATOR'S POINT IS WHAT MAKES IT A RULE RATHER THAN A FIX:
+  refreshing the numbers only restarts the decay**, because Meltymerch banks a
+  haul several times a day. So strip the quantities and keep what cannot move
+  without a patch - the recipe, the 3-to-1 compounding ratio, the six-unit tier-2
+  requirement, and WHICH INPUT BINDS AND WHY. Fixed in Merchant v113. This is the
+  version-header lesson in another costume: "do not cite a character count, the
+  durable fact is the ordering, not the size."
+- **A `->` POINTER TO AN ANCHOR THAT DOES NOT EXIST IS A CLAIM THAT ROTS IN
+  TOTAL SILENCE, AND THE FIX WAS MOSTLY DELETION.** Measured 2026-10-21: 253
+  pointers across the four party scripts, 14 real dangles, ALL of them in
+  `Party/Merchant.js` - Ranger, Priest and Mage were clean. A pointer naming a
+  missing section reads as "the rationale is written down" and nothing checked
+  it. **Ten carried their reasoning at the CALL SITE already, so the pointer went
+  rather than an archive being written**: an archive nobody needs is a second
+  place to keep in step, which is the drift this file warns about everywhere
+  else. Two were written because they had real content (`isPontyBought`,
+  `gtFailOpen`, the latter recording its open-over-closed preference as UNARGUED
+  rather than reconstructing it). `planCoords` was worse than thin - its sentence
+  was TRUNCATED MID-CLAUSE because the rationale was moved out and never written,
+  which a pointer audit finds and a reader of the line never would. 236 pointers
+  now, zero dangling, asserted with no allowlist in
+  `Tests/suite_merchantbuy.js`.
+- **THE AUDIT TOOL PRODUCED FALSE POSITIVES BOTH TIMES IT WAS RUN, WHICH IS THE
+  SEVENTH AND EIGHTH INSTANCE OF A SEARCH TELLING YOU ABOUT YOUR SEARCH THIS
+  WEEK - FROM THE TOOL BUILT TO FIND THE OTHER SIX.** First the pointer scan
+  counted the CONVENTION LINE at the top of each script ("a line ending
+  `-> XComments.md#anchor` is a SUMMARY") as four dangling pointers. Then a
+  second pass tried to measure each pointer's attached comment mechanically to
+  decide delete-or-write, and its walk-back never fired on a block whose `/*`
+  sits ABOVE the pointer line - it reported `TOGGLES` at 30 characters against a
+  block of roughly 400 that had just been read by eye. **The numbers were
+  discarded and the reads were used instead.** A judgement about whether prose
+  suffices is not a character count, and a broken instrument that returns
+  plausible small numbers is worse than one that errors.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -1295,6 +1339,28 @@ time on 2026-10-18.
   `lost` row exists to look at. A 1,500-row window on 2026-10-21 held zero
   `lost` rows either, so this is still unverified and is the only field in the
   shape below that is.
+- **THE BRIDGE ALREADY HAS A WRITE PATH, AND THE POLLER/HANDLER BOUNDARY THE
+  SKIP-ROW DESIGN WAS WORRIED ABOUT DOES NOT EXIST.** Measured 2026-10-21 in
+  `Codex/market_bridge.py`: `do_POST` exists with an allowlist of `/scan`,
+  `/msg` and `/trade` - anything else 404s - the body must be a JSON dict,
+  `do_OPTIONS` answers CORS, and `/trade` appends to an append-only JSONL
+  ledger that loads on startup and is defaulted ON. So the transport is one
+  `elif` plus a store method, and the DURABILITY argument for skip rows is
+  already made and already won by precedent in the same file.
+  **THE FORK WAS: skip rows to their own ledger-style store (A) or into the boss
+  log beside the terminal and hp rows (B).** The browser session leaned B and
+  flagged that their spec assumes the join is cheap, which under A it is not -
+  every verdict becomes a cross-store join on `spawn_t` across two files with
+  two retention policies, and a retention mismatch can silently drop one side.
+  **B, AND THE COST ASSIGNED TO IT IS ZERO, because the handler already holds
+  the poller and already takes its lock.** `Handler.bosses` is set at startup;
+  the handler reads `self.bosses.events_path` at three sites and already does
+  `with self.bosses.lock:`. `_emit` only appends to `self._pending` and
+  `_flush_events` owns the file, so one public queue method on `BossWatch`
+  taking that same lock puts skip rows in the boss log with no new writer and no
+  boundary crossed. The fork was premised on a separation that the `/boss_events`
+  GET had already dissolved - **read the coupling that exists before designing
+  around the one you expect.**
 - **THE SKIP-ROW SHAPE, SPECIFIED 2026-10-21 BY THE BROWSER SESSION AND NOT YET
   BUILT. THE IMPLEMENTER IS THIS SESSION** - recorded by name because a fix
   nobody is named for is a fix nobody makes, and this one sat outside both
@@ -1942,6 +2008,15 @@ Claude Code session stops after `browser_code_eval`.
   and was a different script entirely. `parent.PARTY_BUILD[...].script` and the
   live lexical scope answer WHICH SCRIPT; neither answers WHEN the operator
   will next rotate it, and nothing in the repo records that.
+- **MEASURED 2026-10-21: MERCHANT v112 IS LIVE AND ACTIVE**, by
+  `merchantHeaderVersion()` and `merchantVersion()` both returning 112 from
+  inside the running CODE context - the feature-detect rather than the header.
+  **AND `CONFIG` IS NOT REACHABLE AS A PROPERTY OF THE IFRAME'S WINDOW**, because
+  it is a `const` and lives in script scope, while the two functions are
+  reachable being function declarations. This file already records that under
+  "Reading a running script's state" and the browser session still reached for
+  the property first - so it is worth noting as RECURRENT rather than new:
+  indirect eval through the frame is the documented bridge.
 - **A DEPLOY IS PER-SLOT, AND IS NOT VERIFIED BY HAVING BEEN PERFORMED.** "The
   operator pushed the files" is not "the files are live on every character", and
   the gap is not visible from here. Three times on 2026-10-18 a session asserted
@@ -2982,14 +3057,14 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 526 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 538 JS assertions across NINE suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 770 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 782 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - TWELVE
+  It read 770, 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and
+  575 the day before, 285 / 61 / 346 before that, and 114 before that - THIRTEEN
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
@@ -3056,6 +3131,17 @@ probes are listed at the end as still-open.
   of what it said, and a reader scanning names would have been reassured by it.
   State the mechanism: a count, plus the same search over the body with the
   legitimate occurrence stripped out.
+- **AN ASSERTION THAT A SUPERSEDED FIGURE IS GONE CONTRADICTS THIS REPO'S OWN
+  KEEP-THE-INSTANCE CONVENTION, AND POSITION IS WHAT IT SHOULD CHECK INSTEAD.**
+  2026-10-21: the v113 windbelt assertions were first written as "the stale
+  stormfeather count is gone" and failed against correct code, because the new
+  comment QUOTES all three rotted figures inside an explicit retraction - which
+  is what this file does everywhere ("kept as the instance rather than
+  overwritten"). A string search cannot tell quoted-as-superseded from
+  asserted-as-current. The working form finds the retraction marker and asserts
+  each stale figure appears AFTER it and exactly once, which is a question about
+  POSITION - the same shape as `ttk_upper_*`'s positional exclusion in the bridge
+  suite.
 - **A TEST THAT DIES INSTEAD OF REPORTING WILL BE DEBUGGED AS A TEST BUG.**
   Measured twice in `Tests/bridge/test_despawn.py` on 2026-10-21, both times
   while the assertion was CORRECTLY catching a real mutation: `str.index` raised

@@ -1,3 +1,58 @@
+## v113
+
+**Comment-only, and it removes a rotted claim the operator could have acted on.**
+
+**`windbelt`'s note quoted bank contents and every figure had rotted.** It read
+"1,963 stormfeather is 49 belts' worth, but there is no dexbelt+2 banked (1x +0,
+2x +3)" and "18 essenceofether held", and by 2026-10-21 the bank carried 2,735
+stormfeather and exactly ONE dexbelt+2 - the level the recipe consumes. The
+conclusion built on them was "tier 2 is short and contended, tier 3 unreachable",
+which is the operator's call to make and was wrong toward pessimism. Found by the
+browser session reading the live bank.
+
+**The fix is structural, not fresher numbers**, on the operator's point that
+refreshing them only restarts the decay - Meltymerch banks a haul several times a
+day. Kept: the recipe, the 3-to-1 compounding ratio, the six-windbelt tier-2
+requirement, thundergrips contending for essenceofether by RECIPE, and which
+input binds and why (stormfeather and essenceofether are bulk drops against a
+small per-craft need; dexbelt needs nine compounded copies per unit, so it is the
+constraint whatever is in the bank). The stale figures are quoted inside an
+explicit retraction rather than deleted, per this repo's keep-the-instance
+convention.
+
+**DO NOT WRITE DOWN WHAT A SINGLE CALL ANSWERS.** `api_call('load_bank', {})`
+returns the whole bank from anywhere, so a comment quoting bank contents is a
+cached copy of a live query - volatile and unnecessary at once. A comment carries
+the reasoning the query cannot produce.
+
+**The 14 dangling `-> MerchantComments.md#x` pointers are resolved, mostly by
+DELETION.** A `->` naming an anchor that does not exist reads as "the rationale
+is written down" and nothing checked it. Ten carried their reasoning at the call
+site already, so the pointer was removed rather than an archive written: an
+archive nobody needs is a second place to keep in step, which is the drift this
+repo pays for everywhere else. `flipCoords` was a complete one-liner, same
+treatment. `planCoords` was worse than thin - its sentence was TRUNCATED
+mid-clause ("Without these arbApproach has") because the rationale was moved out
+and never written - and is now a complete statement.
+
+**Two were written, because they had real content.** `isPontyBought`, for the
+double duty that surprised both sessions today: `pontyWanted()` is a buy
+preference that also acts as a sell guard, so the buy list silently controls what
+is protected. `gtFailOpen`, for the mechanism - open, plus a log line, plus
+`threw: true` so an allow-by-judgement can be told from an allow-by-accident -
+with the open-over-closed preference recorded as UNARGUED rather than
+reconstructed, the same way the pre-v63 constants are.
+
+**236 pointers across all four party scripts, zero dangling**, and
+`Tests/suite_merchantbuy.js` now asserts that with no allowlist. Mutation-tested:
+renaming one anchor fails it.
+
+The `mrnarmor` expected-cost figures carry an explicit as-of date now. An
+expected-cost derivation rots more slowly than inventory but it is still quoting
+a market.
+
+Not deployed: the operator batches deploys. v112 is the live build, measured.
+
 ## v112
 
 **The operator's two buy-list rulings, 2026-10-21.**
