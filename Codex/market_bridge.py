@@ -2429,6 +2429,66 @@ class BossWatch:
                     "dps_since": dps})
         f["hp_s_hp"], f["hp_s_t"] = hp, poll_t
 
+    def _hp_final(self, f: dict, key: tuple, server: str, poll_t: float) -> None:
+        """One closing sample when a fight ends, so a STALL is a measurement.
+
+        THE SAMPLER IS HP-TRIGGERED, WHICH MAKES IT ASYMMETRIC IN THE THING IT
+        WAS BUILT TO DETECT. Rows bunch up as dps rises and go sparse as it
+        falls, and a fully stalled fight emits none at all - so "dps rose"
+        arrives as data while "dps fell to zero" arrives as silence. The
+        browser session caught this on 2026-10-20. It matters for the
+        hypothesis specifically: the rejection condition is about dps GROWING
+        after a decision point, so the detectable direction is the one that
+        REJECTS and the undetectable one is the one that SUPPORTS. A fight that
+        starts fast, stalls at 40% and despawns is strong evidence that
+        declining was right, and without this it reads as a burst of high dps
+        followed by nothing.
+
+        A WEAKER DEFENCE THAN IT LOOKS, WHICH IS WHY THIS EXISTS ANYWAY. The
+        stall was already reconstructible - death and despawn rows both carry
+        `last_hp` and `last_pct`, so the closing interval is the last hp row
+        against the terminal row. But that join crosses ROW CLASSES into
+        DIFFERENTLY-NAMED fields, and reading `hp` or `pct` off a despawn row
+        returns undefined, which is the precise trap that has already cost a
+        false negative here and been published and retracted. A closing row in
+        the sampler's own field names needs no join.
+
+        `dps_since` is 0.0 on a stall, NOT null. Everywhere else in this class
+        a null dps means "not computable"; here zero IS the finding, and
+        collapsing the two would rebuild the silence this removes.
+
+        NOT emitted on an instance-change `lost`. That is the one terminal
+        where the old instance's end was never observed AND the new instance's
+        hp is already the current reading, so a flush there would be the only
+        row in the set whose hp might belong to a different instance.
+        """
+        mtype = key[0]
+        if not boss_hp_sampled(mtype):
+            return
+        prev_hp, prev_t = f.get("hp_s_hp"), f.get("hp_s_t")
+        hp = f.get("last_hp")
+        if not isinstance(prev_hp, (int, float)) or not isinstance(prev_t, (int, float)):
+            return
+        if not isinstance(hp, (int, float)) or isinstance(hp, bool):
+            return
+        dt = poll_t - prev_t
+        if not (dt > 0):
+            return
+        drop = prev_hp - hp
+        if drop < 0:
+            drop = 0.0
+        mx = self.max_hp.get(mtype)
+        spawn_t = f.get("spawn_t")
+        self._emit({"ev": "hp", "t": iso(poll_t), "type": mtype,
+                    "server": server, "id": f.get("id"), "hp": hp,
+                    "max_hp": mx if (isinstance(mx, (int, float)) and mx > 0) else None,
+                    "pct": f.get("last_pct"),
+                    "spawn_t": iso(spawn_t) if spawn_t else None,
+                    "elapsed_sec": round(poll_t - spawn_t) if spawn_t else None,
+                    "since_sec": round(dt), "hp_lost": round(drop),
+                    "dps_since": round(drop / dt, 1), "final": True})
+        f["hp_s_hp"], f["hp_s_t"] = hp, poll_t
+
     def _emit(self, ev: dict) -> None:
         """Queue one event. Written to disk by the caller, outside the lock."""
         self._pending.append(ev)
@@ -2588,6 +2648,9 @@ class BossWatch:
                     # A timed event boss gone at the close of its window with no
                     # respawn estimate DESPAWNED; it was not killed. Positive
                     # evidence only - see BOSS_DESPAWN_WINDOW_SLACK.
+                    # Before either terminal emit, so the log reads
+                    # closing-sample then terminal.
+                    self._hp_final(f, key, server, poll_t)
                     despawned = bool(
                         er is None and not dead_reported and win
                         and elapsed is not None
@@ -2640,6 +2703,7 @@ class BossWatch:
                 if f is not None and f.get("alive"):
                     f["absent"] = f.get("absent", 0) + 1
                     if f["absent"] >= BOSS_ABSENT_CONFIRM:
+                        self._hp_final(f, key, server, poll_t)
                         self._emit({
                             "ev": "lost", "t": iso(poll_t), "type": mtype, "server": server,
                             "id": f.get("id"),

@@ -931,6 +931,35 @@ time on 2026-10-18.
   the fight - see the attribution split under "Falsifying a design" below. It
   is equally consistent with the party's dps rising and with the static
   estimate having always been too low.
+- **AN EVENT-TRIGGERED INSTRUMENT IS ASYMMETRIC IN THE THING IT MEASURES, AND
+  THE SILENT DIRECTION WAS THE ONE THAT SUPPORTED THE HYPOTHESIS.** The alive-hp
+  sampler (`ev: "hp"`, 2026-10-20) fires on hp MOVING, so rows bunch up as dps
+  rises and go sparse as it falls - and a fully stalled fight emitted none at
+  all. The hypothesis it was built to test is about dps GROWING, so the
+  detectable direction was the one that REJECTS and the undetectable one the one
+  that SUPPORTS: a fight that starts fast, stalls at 40% and despawns is strong
+  evidence that declining was right, and it read as a burst followed by nothing.
+  The browser session caught it. **A THRESHOLD IS A BOUND ON VOLUME AND A BIAS
+  ON EVIDENCE AT THE SAME TIME**, and the second does not announce itself the
+  way the first does.
+  **THE DEFENCE THAT LOOKED SUFFICIENT WAS NOT, AND WHY IS THE DURABLE PART.**
+  The stall was ALREADY reconstructible - death and despawn rows both carry
+  `last_hp` and `last_pct`, so the closing interval is the last hp row against
+  the terminal row. But that join crosses ROW CLASSES into DIFFERENTLY-NAMED
+  fields, and this file already records `hp_pct`/`pct` read off a despawn row
+  returning undefined, published as a finding and retracted the same hour. So
+  "the data is technically present" was an argument for building the fix rather
+  than against it: `_hp_final()` writes one closing row in the sampler's own
+  field names at every terminal that observed an end. An untouched window now
+  emits exactly one row saying zero, where it used to emit nothing.
+  **`dps_since` IS 0.0 ON A STALL, NEVER NULL.** Everywhere else in that class a
+  null dps means "not computable"; there zero IS the finding, and collapsing the
+  two rebuilds the silence the row exists to remove. Pinned by mutation - making
+  it null fails three assertions.
+  **NOT emitted on an instance-change `lost`**, the one terminal where the old
+  instance's end was never observed and the new instance's hp is already the
+  current reading, so a flush there would be the only row whose hp might belong
+  to a different instance.
 - **THE DESPAWN VETO'S FIRST LIVE WINDOW BEHAVED, 2026-10-20.** franky EU III
   `last_pct` 100 elapsed 2401, and icegolem EU PVP `last_pct` 100 elapsed 2442
   - both intact and at the window, both in the 2402-2556 cluster the band
@@ -1818,11 +1847,10 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-20, LATE: 429 JS assertions across SEVEN suites, plus 157
+  **COUNT AS OF 2026-10-21: 429 JS assertions across SEVEN suites, plus 217
   from the python bridge suite the runner shells out to and folds in, for
-  `all 586 pass`.** It read 575 hours earlier, 285 / 61 / 346
-  before that the same day, and 114 before that - FIVE figures in one file in one
-  day, which is the point rather than an embarrassment: re-derive from a run,
+  `all 646 pass`.** It read 586 and 575 the previous day, 285 / 61 / 346
+  before that, and 114 before that - SIX figures in two days, which is the point rather than an embarrassment: re-derive from a run,
   never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.

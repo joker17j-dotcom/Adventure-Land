@@ -684,6 +684,94 @@ _f4 = _fight(120000000.0, 0.0)
 chk("an untouched boss emits nothing across a whole window",
     sum(len(_sample(_f4, 120000000.0, float(_i * 45))) for _i in range(1, 54)), 0)
 
+# ---- the closing sample: a STALL must be a measurement, not silence
+# The sampler is hp-triggered, so it is asymmetric in the thing it detects -
+# rows bunch as dps rises and vanish as it falls. The detectable direction is
+# the one that REJECTS H0 and the undetectable one is the one that SUPPORTS it,
+# which is the wrong way round for a falsifier.
+def _final(f, hp, pct, t, mtype="franky"):
+    f["last_hp"], f["last_pct"] = hp, pct
+    _bw._pending = []
+    _bw._hp_final(f, (mtype, "EU", "IV"), "EU IV", t)
+    return list(_bw._pending)
+
+# A FULLY STALLED FIGHT - the malignant case. Fast start, then nothing.
+_st = _fight(120000000.0, 0.0, spawn_t=0.0)
+_burst = _sample(_st, 90000000.0, 300.0)
+chk("the burst is sampled", len(_burst), 1)
+_fin = _final(_st, 90000000.0, 75.0, 2400.0)
+chk("and the stall closes with exactly one row", len(_fin), 1)
+chk("reporting no loss over the gap", _fin[0]["hp_lost"], 0)
+chk("the gap itself", _fin[0]["since_sec"], 2100)
+# THE WHOLE POINT: zero, not null. A null dps means "not computable"
+# everywhere else in this class; here zero IS the finding, and collapsing the
+# two rebuilds the silence this removes.
+chk("and ZERO dps rather than null", _fin[0]["dps_since"], 0.0)
+chk("flagged so a consumer can tell it from a threshold sample",
+    _fin[0]["final"], True)
+# A threshold sample does NOT carry the flag, or the distinction is useless.
+chk("a threshold sample is not flagged", _burst[0].get("final"), None)
+# AN UNTOUCHED BOSS: the benign case, previously silent, now one positive row.
+# This is the 2026-10-20 EU III franky - zero damage across its whole window.
+_un = _fight(120000000.0, 0.0, spawn_t=0.0)
+chk("an untouched window still emits no threshold samples",
+    sum(len(_sample(_un, 120000000.0, float(_i * 45))) for _i in range(1, 54)), 0)
+_unf = _final(_un, 120000000.0, 100.0, 2401.0)
+chk("but closes with one row saying so", len(_unf), 1)
+chk("at zero dps over the whole window",
+    (_unf[0]["hp_lost"], _unf[0]["dps_since"], _unf[0]["since_sec"]),
+    (0, 0.0, 2401))
+chk("and it is still an observation, not a transition",
+    b.boss_ev_is_transition(_unf[0]["ev"]), False)
+# Scope and guards.
+chk("an out-of-scope type closes nothing",
+    _final(_fight(1000000.0, 0.0), 1.0, 0.1, 500.0, mtype="phoenix"), [])
+chk("a zero-length interval closes nothing",
+    _final(_fight(120000000.0, 500.0, spawn_t=0.0), 120000000.0, 100.0, 500.0), [])
+# An hp RISE between the last sample and termination is clamped, never negative:
+# a negative hp_lost would read as healing on a row that reports an ending.
+_rsf = _final(_fight(10000000.0, 0.0, spawn_t=0.0), 60000000.0, 50.0, 100.0)
+chk("a rise clamps to zero rather than reporting negative loss",
+    (_rsf[0]["hp_lost"], _rsf[0]["dps_since"]), (0, 0.0))
+# The closing row advances the baseline too, so a second flush is a no-op
+# rather than re-reporting the same interval.
+chk("a second flush at the same instant adds nothing",
+    _final(_st, 90000000.0, 75.0, 2400.0), [])
+
+# ---- THE CALL SITES, because every assertion above drives _hp_final DIRECTLY
+# and therefore cannot see whether _transitions ever calls it. That is the
+# near-side/far-side gap this repo has already paid for once: a correct
+# selector and an executor that never ran. Driving _transitions needs the whole
+# meta/fights/servers_seen fixture, so this asserts on the SOURCE TEXT instead -
+# weaker than execution, and it does catch a deleted or reordered call.
+_src = TARGET.read_text(encoding="utf-8")
+chk("the flush is called exactly twice", _src.count("self._hp_final("), 2)
+chk("the threshold sampler is called once", _src.count("self._hp_sample("), 1)
+# at() rather than str.index, because a MISSING call site is the defect these
+# assertions exist to catch - and index() raises, which aborts the run before
+# the summary prints and reads as broken tooling rather than a caught defect.
+# Measured: deleting either flush crashed this block until it returned -1.
+def at(hay, needle, start=0):
+    i = hay.find(needle, start)
+    return i if i >= 0 else -1
+_i_flush = at(_src, "self._hp_final(")
+_i_flush2 = at(_src, "self._hp_final(", _i_flush + 1) if _i_flush >= 0 else -1
+_i_despawn = at(_src, '"ev": "despawn"')
+_i_death = at(_src, '"ev": "death"')
+_i_lost_absent = at(_src, 'reason": f"server ')
+_i_lost_inst = at(_src, '"instance id changed')
+chk("both flush call sites are present", (_i_flush >= 0, _i_flush2 >= 0),
+    (True, True))
+chk("the first flush precedes the despawn emit",
+    0 <= _i_flush < _i_despawn, True)
+chk("and precedes the death emit", 0 <= _i_flush < _i_death, True)
+chk("the second precedes the absent-confirm lost emit",
+    0 <= _i_flush2 < _i_lost_absent, True)
+# NOT on the instance-change lost - the one terminal where the new instance's
+# hp is already current, so a flush could attribute it to the old instance.
+chk("the instance-change lost is BEFORE both flushes, so neither covers it",
+    0 <= _i_lost_inst < _i_flush, True)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)
