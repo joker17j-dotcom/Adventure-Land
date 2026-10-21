@@ -3004,15 +3004,40 @@ a day.
   / max 36 (n=125). Three comparisons - sequential, simultaneous control and
   within-subject - all agreeing, and the SLOWER character tightened most, so
   speed is not the driver.
-  **THIS APPARENTLY CONTRADICTS `CaveRun.js:470-476` AND THE CONFOUND IS NAMED
-  RATHER THAN BURIED.** That comment says a follower cannot converge on a faster
-  leader, and the mage held mean 10 / p50 3 against a leader at 62-63 across
-  12.5s. But the leader was under `smart_move`, which paths and pauses, so his
-  effective speed was below 62. The comment is about a follower CATCHING UP from
-  behind and does not forbid tight tracking by one who never falls behind -
-  `staleSlack` is what was making them fall behind. **Flagged as needing a clean
-  constant-velocity re-measure before either session writes it down**, which is
-  the browser session's own call on their own result.
+  **THE APPARENT CONTRADICTION WITH THE "CANNOT CONVERGE" CLAIM MOSTLY
+  DISSOLVES, AND IT DISSOLVES FOR A REASON NEITHER SESSION EXPECTED: THAT CLAIM
+  WAS MEASURED WITH A LEADER WE NO LONGER USE.** The browser session measured the
+  mage holding mean 10 / p50 3 against a leader at 62-63 and flagged it as
+  contradicting `CaveRun.js`, asking for a check. Checked, and the file does
+  carry the claim - THREE times - but all three rest on ONE measurement, at
+  `CaveRun.js:102`: "2026-10-06: Dexon 74 speed, FatherToken 59, MageofOz 55 ...
+  driving Dexon gave closing rates of -15 and -19 u/s". **Its own conclusion is
+  "Drive the priest", the operator did, and FatherToken has led ever since** - so
+  the measurement establishing the claim was taken in the configuration it was
+  written to argue AGAINST. The deficit it measured is 15-19 u/s; against the
+  current leader it is 5 (resting 62 / 66 / 57).
+  **AND EVERY SPEED IN BOTH SUPPORTING MEASUREMENTS IS A BUFFED SNAPSHOT, so the
+  `character.speed` retraction this file already carries had never been carried
+  into the code that depends on it.** 74/59/55 are instants and 74 is the exact
+  figure recorded here as a buffed Dexon reading; the second site's "mage 57
+  against leader 65, 8u/s of bleed" uses a buffed FatherToken whose resting value
+  is 62, making it 5 u/s and the band last 12s rather than 7.5. Scoped at all
+  three sites in CaveRun v20, comment-only, with nothing behavioural changed.
+  **A RETRACTION IS NOT FINISHED WHEN THE CLAIM IS WITHDRAWN - IT IS FINISHED
+  WHEN EVERYTHING DERIVED FROM IT HAS BEEN RE-DERIVED.** The buffed-speed
+  retraction was made carefully, kept its instance, and named what it did and did
+  not retract - and three live comments went on quoting the withdrawn figures,
+  because nobody asked what had been BUILT on them. That is a different failure
+  from rot: the correction existed and was correct, and did not propagate.
+  **TWO SMALLER THINGS WORTH KEEPING.** The confound the browser session named
+  themselves - the leader under `smart_move`, which paths and pauses, so his
+  effective speed was below 62 - makes the deficit smaller again, so the clean
+  constant-velocity re-measure is still the right next step before any tight
+  number is planned on. And their cited `:470-476` points at the RIP/trouble
+  comment rather than at this claim: **line numbers are build-local, and that
+  citation was already stale when it was written** - the flattened all-tracked-
+  files search this file prescribes is what located the real sites, a plain grep
+  having missed them across line breaks exactly as recorded.
 - **`closeAt` SETS THE FOLLOWER START LAG, AND IT IS ARITHMETIC:
   `closeAt / leaderSpeed + tickMs/2`.** Measured at `closeAt` 60: Dexon mean
   957ms, MageofOz mean 926ms over 8 events - IDENTICAL despite resting speeds 66

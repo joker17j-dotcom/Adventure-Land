@@ -1,4 +1,39 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v19 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v20 (TEST BUILD)
+// v20 2026-10-21 THE "A FOLLOWER CANNOT CONVERGE ON A FASTER LEADER" CLAIM IS
+//                SCOPED TO A LEADER WE NO LONGER USE, AND ALL THREE SITES NOW
+//                SAY SO. Comment-only. The claim is asserted three times and
+//                all three rest on ONE measurement, at :102 - "2026-10-06:
+//                Dexon 74 speed, FatherToken 59, MageofOz 55 ... driving Dexon
+//                gave closing rates of -15 and -19 u/s". Its own conclusion is
+//                "Drive the priest", THE OPERATOR DID, and FatherToken has led
+//                ever since - so the measurement that establishes the claim was
+//                taken in the configuration it was written to argue against.
+//                The deficit it measured is 15-19 u/s. Against the current
+//                leader it is 5: resting speeds are FatherToken 62, Dexon 66,
+//                MageofOz 57, measured 2026-10-21 by subtracting the active
+//                speed conditions rather than reading character.speed raw.
+//                AND EVERY SPEED IN BOTH OLD MEASUREMENTS IS A BUFFED SNAPSHOT.
+//                74/59/55 are instants, and 74 is the exact figure recorded
+//                elsewhere as a buffed Dexon reading; the :512 note's "leader
+//                65" is a buffed FatherToken whose resting value is 62, so its
+//                8u/s of bleed is really 5. character.speed is a live value and
+//                not a stat - that retraction had already been made, and it had
+//                not been carried into the three comments that depend on it.
+//                SO THE BROWSER SESSION'S DRY-RUN RESULT CONTRADICTS A
+//                STALE-SCOPED CLAIM RATHER THAN A LIVE ONE. They measured the
+//                mage holding mean 10 / p50 3 against a leader at 62-63 with
+//                MOVE.staleSlack at 15, and flagged it as an apparent
+//                contradiction of this file. It mostly dissolves: a 5u/s
+//                deficit is not a 15-19u/s one, and their own named confound -
+//                the leader under smart_move, which paths and pauses - makes
+//                the effective deficit smaller still. The clean
+//                constant-velocity re-measure is still worth doing before
+//                anything is planned on the tight numbers; what is settled is
+//                that these three comments were overstating their own reach.
+//                NOTHING BEHAVIOURAL CHANGED. staleSlack stays 60 and the
+//                bands stay as v19 left them, because the re-measure has not
+//                happened - this commit only stops three comments asserting
+//                more than their measurement supports.
 // v19 2026-10-21 holdReleaseAt 30 WAS UNREACHABLE AND 120 IS A FLOOR, NOT A
 //                RETUNE. v18 shipped 30 and the live run could not complete a
 //                hold: holds 8, holdGaveUp 5 - 62% - and the give-up LATCHES,
@@ -102,6 +137,16 @@
 // 2026-10-06: Dexon 74 speed, FatherToken 59, MageofOz 55. A follower CANNOT
 // converge on a faster leader; driving Dexon gave closing rates of -15 and
 // -19 u/s and 11-12 minutes per character outside the leash. Drive the priest.
+// THAT ADVICE WAS TAKEN AND IT RETIRED ITS OWN EVIDENCE - v20. FatherToken has
+// led since, so the only measurement behind "cannot converge" was taken under
+// the arrangement it argued against, and the two sites below that cite it
+// inherit that scope. Against the CURRENT leader the deficit is 5 u/s, not
+// 15-19: resting speeds are FatherToken 62, Dexon 66, MageofOz 57, measured
+// 2026-10-21 by subtracting active speed conditions. The figures on the line
+// above are BUFFED INSTANTS - character.speed is a live value, not a stat, and
+// 74 is a known buffed Dexon reading - so they overstate every differential
+// they are used for. Re-measure against a constant-velocity leader before
+// planning on any of it.
 //
 // COMMANDS   caveDry()   on-map rehearsal - never enters, no staging, no votes
 //            caveGo()    restock potions, THEN gather at Dorr for a real run
@@ -260,7 +305,11 @@ const MOVE = {
    THE TRAVEL LEASH, THE TROUBLE BEACON AND THE LEADER HOLD. Three changes
    that only work as one: a tighter leash on its own just moves where the
    follower gives up, because this file already measures that a follower
-   CANNOT converge on a faster leader. The leader holding is what makes a
+   CANNOT converge on a faster leader - SCOPED, see :102 and v20: that was
+   measured with DEXON leading at a 15-19 u/s deficit, and the current leader
+   gives 5. The argument for the three changes being one does not rest on the
+   size of the deficit, only on its sign, so it survives the rescoping; a
+   quantitative claim built on it would not. The leader holding is what makes a
    tight band reachable, and the beacon is what tells the leader to hold.
 
    HYSTERESIS WAS PRESERVED EXACTLY, AND v15 BROKE THAT ON PURPOSE. 120-60 was
@@ -515,7 +564,16 @@ function mateTrouble() {
    also stops kiting and looting. Worse than the 180 it replaced. Measured
    2026-10-18: mage 57 against leader 65, which is 8u/s of bleed, so 60u of
    band is gone in 7.5s and never comes back while the leader walks. So travel
-   numbers apply only where a hold will actually stop the leader. */
+   numbers apply only where a hold will actually stop the leader.
+   THE 8u/s IS REALLY 5, AND THE BAND LASTS 12s RATHER THAN 7.5 - v20. "Leader
+   65" is a buffed FatherToken instant; his resting speed is 62 against the
+   mage's 57, both measured 2026-10-21 by subtracting active speed conditions.
+   The conclusion is unchanged in kind - the band still bleeds away while the
+   leader walks, which is the whole point - but do not quote 8u/s or 7.5s, and
+   note that a leader under smart_move paths and pauses, so the effective
+   deficit is smaller again. The browser session measured the mage tracking at
+   mean 10 with MOVE.staleSlack cut to 15, which is the lever this note does
+   not mention and which was doing much of the bleeding. */
 function holdActive() { return HOLD.enabled && !(mode === 'crypt' && !HOLD.inCrypt); }
 function computeLeash() {
 	const base = { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling, mode: 'combat' };
