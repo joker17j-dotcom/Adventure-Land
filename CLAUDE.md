@@ -2269,8 +2269,31 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   being compounded into a spent +3; the aggressive pass, with no level check,
   would have vendored the same +2 for its ~30,000. Two guards on one object,
   each correct in isolation, with nothing covering the gap between them.
+- **DONE ON THE RANGER IN v106: (a) AND (b) NOW REACH BOTH OF ITS SELL PATHS,
+  AND NEITHER RULE EXISTED THERE AT ALL.** `isExchangeable()` is derived the
+  merchant's way (the seed unioned with every `G.items` entry carrying `.e`,
+  cached only once the derived half read something), and `dexbelt`/`intbelt` are
+  an explicit `SCARCE_ITEM_NAMES` set rather than a gear-table lookup - for the
+  reason the merchant's repeal gives. Both are applied in `reliefSellable()` AND
+  `sellItems()`, which fail differently: relief refused `level > 0` so only a +0
+  belt was reachable there, while `sellItems()` has no level check and runs
+  every `maintenanceLoop` tick.
+  **ONE NAME'S BEHAVIOUR CHANGED AND IT IS A RECORDED DECISION, NOT A SIDE
+  EFFECT.** `lostearring` sits on `CONFIG.selling.whitelist` and carries `e=1`,
+  so `sellItems()` vendored it on sight; rule (b) now outranks the whitelist for
+  it, exactly as the same guard outranks `gem0` and `seashell` on the merchant's.
+  That whitelist is the operator's and is CLOSED - this is not an edit to it -
+  and the operator can overrule by name if that sale was wanted.
+  **THE DUPLICATION IS DELIBERATE AND PINNED.** Two CODE slots share no module,
+  so the remedy for a copied predicate is an assertion that the copies stay
+  equal: the suite now checks the two exchangeable seeds are IDENTICAL and that
+  both scripts derive as well as seed.
 - **THERE ARE THREE SELL PATHS ON THE MERCHANT, NOT THE TWO THIS SECTION
-  IMPLIED.** `sellTrash()` is whitelist-driven and consults
+  IMPLIED**, and the omission-safety it describes applies IDENTICALLY to the
+  ranger - the browser session's catch. `sellItems()` is whitelist-driven with
+  no level check, so the belts are safe there only by ABSENCE from a list the
+  operator edited on 2026-10-20. Asserted in the suite on BOTH files now, so
+  adding a belt to either whitelist fails rather than passing quietly.** `sellTrash()` is whitelist-driven and consults
   `PROTECTED_ITEM_NAMES` not at all - it sells only names present on
   `CONFIG.selling.whitelist`. So the belts are beyond its reach while that list
   does not name them, which is a DIFFERENT KIND OF SAFETY from a guard: it
@@ -2279,6 +2302,33 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   deliberately, so the protected set cannot be read as covering all three, and
   adding a belt to that whitelist fails an assertion rather than passing
   quietly.
+- **THE dexbelt PONTY CURVE, MEASURED 2026-10-21, AND THE ONE COMBINATION THAT
+  IS HARMFUL.** Ponty's ask is `calculate_item_value(item)` x
+  `G.multipliers.secondhands_mult`, and that multiplier read 2 live. Per level:
+  +0 30,000 npc -> 60,000 Ponty; +1 98,667 -> 197,334; +2 318,400 -> 636,800;
+  +3 1,118,880 -> 2,237,760; +4 3,680,416 -> 7,360,832. `G.craft.windbelt`
+  consumes a dexbelt+2 EXACTLY and a +3 is a SPENT belt, which is what
+  `CONFIG.craftInputCaps.dexbelt` is for - so a ceiling anywhere in
+  (636,800 , 2,237,760) admits the +2 and refuses the +3. The browser session's
+  recommendation is `maxPrice: { dexbelt: 1000000 }`: round, clear margin both
+  sides, and it turns a level-blind buy rule into a level filter without adding
+  one. `intbelt+0` prices identically, so the same ceiling works there.
+  **NEITHER HALF IS INSTALLED, AND THE ORDER MATTERS: `maxPrice` ALONE IS
+  INERT, THE BUY ALONE IS UNCAPPED.** `dexbelt` is NOT on
+  `CONFIG.pontyBuy.items`, measured, so a `maxPrice` entry would do nothing
+  today - and `maxPrice`'s documented default is NO CEILING, so adding the buy
+  WITHOUT the cap in the same edit buys +3s at 2,237,760 and +4s at 7,360,832,
+  which is exactly the spent-belt purchase `craftInputCaps` exists to prevent.
+  The buy list is the operator's ("EDIT THIS"), so this is their call and the
+  two lines land together or not at all.
+  **THE ECONOMICS ARGUE FOR BUYING +2s RATHER THAN TOLERATING THEM.**
+  Compounding is 3-to-1 per level, so a +2 built from scratch is 9x dexbelt+0 =
+  540,000 at Ponty BEFORE compound failures, which destroy all three inputs; a
+  +2 bought outright is 636,800 with no variance. Within ~18% before failures
+  and the bought route wins after them. The tier-2 goal needs SIX dexbelt+2
+  (windbelt@2 from the +1 Dexon wears) = ~3.8M against 1.79B banked, so GOLD IS
+  NOT THE CONSTRAINT - Ponty stock is, which makes the stack-cap exemption
+  matter more than the price cap: without it the buy never fires at all.
 - **THE REVIEW PACK IS THE OPEN CHANNEL, AND IT IS WHAT MAKES THIS A SYSTEM
   RATHER THAN A GUESS.** The ladder: the mule collects; else sell the
   classified-safe set; else bank the remainder TO ONE DEDICATED REVIEW PACK;
@@ -2353,8 +2403,30 @@ a day.
   (+7) and `warcry` (+20) entering and leaving. Decomposed: ranger base 45, gear
   +7.75 (windbelt+1 2.75, bowofthedead+8 -12, paradequiver+6 1, frankypants+7 1,
   wingedboots+7 15), remainder from conditions - so even the LOWEST of the three
-  readings is not an unbuffed figure. **NO UNBUFFED SPEED IS KNOWN FOR ANY OF
-  THE THREE.**
+  readings is not an unbuffed figure. **NO UNBUFFED SPEED WAS KNOWN FOR ANY OF
+  THE THREE UNTIL 2026-10-21, WHEN THEY WERE MEASURED PROPERLY - SEE THE NEXT
+  BULLET. The retracted claim turned out to be TRUE.**
+- **THE RESTING SPEEDS, AND THE METHOD THAT MAKES THEM A MEASUREMENT.** Read
+  each character on its own tab, enumerate the active conditions carrying a
+  `speed` field in `G`, and subtract. Two of the three had NO speed condition
+  active, so their observed values ARE resting values with nothing to subtract:
+  FatherToken 62 observed / none active / **62 resting** (the LEADER);
+  Dexon 73 / `rspeed` +7 / **66**; MageofOz 57 / none / **57**.
+  So Dexon is +6.5% against the leader and MageofOz is -8.1%, which REPRODUCES
+  the retracted 63/67/58 reading: the mage really is about 8% slower than the
+  leader and cannot close a gap while the leader moves. Reinstated on the
+  resting figures and the method, never on the snapshots.
+  **AND THE RETRACTION WAS STILL THE RIGHT CALL - this is the half worth
+  keeping.** A true claim resting on an unsound measurement is not a finding, it
+  is a coincidence that has not been caught yet. The cheap lesson here is "you
+  retracted something true"; the useful one is the opposite, and a session that
+  learns the cheap one will start defending numbers it cannot support.
+  **ONE RESIDUAL IS FLAGGED UNEXPLAINED RATHER THAN THEORISED.** Class base is
+  45 for all three and gear speed is +7.75 / +15 / +15, so base+gear gives
+  52.75 / 60 / 60 against resting 66 / 62 / 57. The residuals +13.25 / +2 / -3
+  share no story - not level (77/73/73 does not fit), not gear. Something else
+  contributes to speed and nobody has found it. It does not move the
+  COMPARATIVE figures, which is what the cohesion work needs.
   **WHAT THAT RETRACTS AND WHAT IT DOES NOT.** The `bowofthedead` speed -12 IS
   proven, from the live slot's own gear sum. The claim that the mage is "8%
   slower than the leader and cannot close a gap while the leader moves" rested
@@ -2590,10 +2662,10 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 458 JS assertions across EIGHT suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 486 JS assertions across EIGHT suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 702 pass`.** It read 690, 673, 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - NINE
+  `all 730 pass`.** It read 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - TEN
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
@@ -2672,6 +2744,31 @@ probes are listed at the end as still-open.
   than `index` raising, a `row(seq, i)` helper returning `{}` rather than bare
   subscripting. The hardened versions turn the same two mutations into 5 and 10
   named failures.
+- **A TEST HELPER IS CODE, AND THE ONE WRITTEN TO AVOID A KNOWN TRAP FELL INTO
+  A NEIGHBOURING ONE.** 2026-10-21: `const X = new Set([...])` is not liftable,
+  so `suite_merchantsell.js` parses those literals out of the source text
+  instead - and the parse used `/'[^']*'/`, which pairs an apostrophe in
+  ordinary PROSE ("operator's rule") with the next one and swallows every real
+  name between them. The merchant set parsed as 23 "names", mostly comment
+  fragments, and the suite reported `dexbelt` ABSENT from a set that contained
+  it two lines below. Same class as the committed lift matcher ignoring strings
+  and comments. Strip comments before parsing, and test the helper on fixtures.
+- **WHETHER THAT NAIVE PARSE CORRUPTS ANYTHING DEPENDS ON THE PARITY OF
+  APOSTROPHES IN THE PROSE ABOVE IT, WHICH IS WHY IT IS INTERMITTENT.** With an
+  EVEN count the pairs close inside the comment and the real names survive BY
+  LUCK; with an ODD count the first real quote is consumed. The inverted
+  assertion written to prove the guard necessary FAILED on its first attempt
+  because its fixture had two apostrophes - the parser was correctly broken and
+  the test was wrong. **So a passing naive parse is evidence of nothing**, and
+  both parities are now fixtures.
+- **TWO FIXES LANDING IN ONE EDIT CAN EACH LOOK PROVEN BY THE OTHER'S WORK.**
+  The comment strip and a newline guard were added together; mutating away the
+  strip then broke NOTHING, because the newline guard silently covered it, and
+  the strip would have sat there looking load-bearing while inert. Measured the
+  other way round it is the strip that does the work and the newline guard that
+  is inert. The comment beside them now says which, because the first version
+  claimed both were pinned. **Mutate each half of a combined fix separately, or
+  neither is tested.**
 - **The divergence checks are the ones most likely to earn their keep.**
   `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
   relay block or `bossHopFollow` stop being identical.

@@ -1,6 +1,6 @@
-/* Tests/suite_merchantsell.js - the merchant's sell guards, and specifically
-   that the scarcity protections do not rest on a mechanism that can be
-   withdrawn by an unrelated edit.
+/* Tests/suite_merchantsell.js - the sell guards on BOTH the merchant and the
+   ranger, and specifically that the scarcity protections do not rest on a
+   mechanism an unrelated edit can withdraw.
 
    WHY THIS SUITE EXISTS. dexbelt was measured UNPROTECTED in both of the
    merchant's sell paths on 2026-10-21 - every guard they apply returned false
@@ -13,14 +13,71 @@
    the guard that does NOT cover the item, then asserts it is protected anyway.
    Keeping the inverted half visible is what stops a future reader concluding
    the explicit entry is redundant and deleting it.
-   -> CLAUDE.md "Selling, banking and what must never be vendored" */
-const { lift, world, extract } = require('./lift');
 
-const NAMES = ['PARTY_CLASSES', 'GEAR_PROGRESSION', 'isTier2OrTier3GearItem',
-	'PROTECTED_ITEM_NAMES', 'TOGGLES', 'CONFIG', 'pontyWanted'];
+   NAME SETS ARE PARSED FROM THE SOURCE TEXT, NOT LIFTED. `const X = new Set([
+   ... ])` has no brace after the name, so lift() brace-matches past it into
+   whatever follows - measured on PROTECTED_ITEM_NAMES, the extraction ran 112
+   lines and swallowed exchangeableNames() whole. It happened to evaluate and
+   the assertions happened to hold, which is the "silent first, loud second"
+   failure CLAUDE.md warns about: the next declaration added in that span either
+   changes the blob or throws "already declared". namesIn() below reads the
+   bracketed literal instead, which answers the membership question directly.
+   -> CLAUDE.md "Selling, banking and what must never be vendored", "Testing" */
+const fs = require('fs');
+const path = require('path');
+const { lift, world, extract, ROOT } = require('./lift');
+
+const text = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
+
+/* Quoted names inside the first bracketed literal following a declaration. */
+function namesIn(file, decl) {
+	const s = text(file);
+	const at = s.indexOf(decl);
+	if (at < 0) return null;
+	const open = s.indexOf('[', at);
+	if (open < 0) return null;
+	let d = 0, end = -1;
+	for (let i = open; i < s.length; i++) {
+		if (s[i] === '[') d++;
+		else if (s[i] === ']') { d--; if (d === 0) { end = i; break; } }
+	}
+	if (end < 0) return null;
+	return namesFrom(s.slice(open, end + 1));
+}
+
+/* THE PARSE HAS TWO INDEPENDENT DEFENCES AND THEY COVER DIFFERENT CASES, which
+   is why it is split out and tested directly rather than only through the real
+   files.
+
+   An apostrophe in ordinary prose - "operator's rule", "the item's level" -
+   pairs with the next one, so a naive /'[^']*'/ swallows every real name
+   between them. Measured on the merchant set: 23 "names", most of them prose
+   fragments, reporting dexbelt ABSENT while it sat in the literal two lines
+   below. Same class as the committed lift matcher ignoring strings and
+   comments, hit in the helper written to avoid lifting at all.
+
+   STRIPPING COMMENTS IS THE DEFENCE THAT WORKS. The newline guard in the regex
+   is a backstop and is NOT independently load-bearing - measured by mutation:
+   widening it back to /'[^']*'/ breaks nothing once comments are gone, because
+   nothing outside a comment puts a stray apostrophe in these literals. It stays
+   as cheap insurance against a comment the stripper cannot see (an unterminated
+   block, say), and this note says so rather than implying two live defences.
+   The reverse mutation DOES bite: removing the strip fails three assertions.
+   Both claims were established the hard way. Removing the strip was first
+   measured as breaking NOTHING, because the newline guard had been added in the
+   same edit and was silently covering it - two fixes landing together, each
+   looking proven by the other's work. */
+function namesFrom(lit) {
+	const bare = String(lit)
+		.replace(/\/\*[\s\S]*?\*\//g, ' ')
+		.replace(/\/\/[^\n]*/g, ' ');
+	return (bare.match(/'[^'\n]*'|"[^"\n]*"/g) || []).map((q) => q.slice(1, -1));
+}
+
 const merchant = () => {
 	const w = world({});
-	lift(w, 'Party/Merchant.js', NAMES);
+	lift(w, 'Party/Merchant.js', ['PARTY_CLASSES', 'GEAR_PROGRESSION',
+		'isTier2OrTier3GearItem', 'TOGGLES', 'CONFIG', 'pontyWanted']);
 	return w;
 };
 
@@ -28,9 +85,11 @@ module.exports = [{
 
 name: 'the scarce belts are protected by NAME, not by any withdrawable mechanism', fn(t) {
 	const w = merchant();
+	const protectedNames = namesIn('Party/Merchant.js', 'const PROTECTED_ITEM_NAMES');
+	t.ok('PROTECTED_ITEM_NAMES parsed', Array.isArray(protectedNames) && protectedNames.length > 5);
 
 	for (const belt of ['dexbelt', 'intbelt']) {
-		t.ok(belt + ' is in PROTECTED_ITEM_NAMES', w.PROTECTED_ITEM_NAMES.has(belt));
+		t.ok(belt + ' is in the merchant PROTECTED_ITEM_NAMES', protectedNames.includes(belt));
 	}
 
 	/* PRECONDITION for dexbelt: the mechanism that used to cover it. If this
@@ -46,24 +105,18 @@ name: 'the scarce belts are protected by NAME, not by any withdrawable mechanism
 	t.eq('precondition: dexbelt is NOT on the Ponty buy list', w.pontyWanted().has('dexbelt'), false);
 	t.eq('precondition: intbelt is NOT on the Ponty buy list', w.pontyWanted().has('intbelt'), false);
 
-	/* intbelt's own mechanism DOES currently cover it - asserted so the pairing
-	   with dexbelt is explicit: one belt lost its implicit cover, the other has
-	   not yet, and both are now named regardless. */
+	/* intbelt's own mechanism DOES still cover it - asserted so the pairing with
+	   dexbelt stays explicit: one belt lost its implicit cover, the other has
+	   not yet, and both are named regardless. */
 	t.eq('intbelt IS still covered by the tier-2/3 check as well',
 		w.isTier2OrTier3GearItem('intbelt'), true);
 
-	/* The reason dexbelt is scarce enough to matter: it is a craft input whose
-	   level is already guarded, which is what made the sell path's silence
-	   expensive. */
 	t.ok('craftInputCaps still names dexbelt', (w.CONFIG.craftInputCaps || {}).dexbelt === 2);
 },
 
 }, {
 
-name: 'both sell paths consult the protected set, and sellTrash notably does not', fn(t) {
-	/* Asserted on the extracted bodies rather than a line window, so the long
-	   comment block inside the set - which names every function below - cannot
-	   satisfy or fail these. */
+name: 'merchant: both vendoring paths consult the set, and sellTrash notably does not', fn(t) {
 	for (const fn of ['sellAggressivelyIfLowOnSpace', 'ssVendorBound']) {
 		t.ok(fn + ' consults PROTECTED_ITEM_NAMES',
 			extract('Party/Merchant.js', fn).indexOf('PROTECTED_ITEM_NAMES') > 0);
@@ -72,14 +125,118 @@ name: 'both sell paths consult the protected set, and sellTrash notably does not
 	/* THE ASYMMETRY IS PINNED DELIBERATELY. sellTrash() is whitelist-driven and
 	   consults nothing here, so the belts are beyond its reach only while
 	   CONFIG.selling.whitelist does not name them. Asserting the absence stops
-	   a reader assuming the protected set covers all three paths; if sellTrash
-	   is ever given this guard, this assertion fails and says why. */
+	   a reader assuming the protected set covers all three paths. */
 	t.eq('sellTrash does NOT consult PROTECTED_ITEM_NAMES - it is whitelist-gated',
 		extract('Party/Merchant.js', 'sellTrash').indexOf('PROTECTED_ITEM_NAMES'), -1);
 
 	const w = merchant();
 	for (const belt of ['dexbelt', 'intbelt']) {
-		t.eq('and ' + belt + ' is not on the selling whitelist, which is what keeps it out of that path',
+		t.eq('and ' + belt + ' is off the merchant selling whitelist, which is what keeps it out of that path',
 			(w.CONFIG.selling.whitelist || []).includes(belt), false);
+	}
+
+}, }, {
+
+name: 'ranger: rules (a) and (b) reach BOTH of its sell paths', fn(t) {
+	/* allBosses is `const allBosses = [...]` - an array, so lift() cannot reach
+	   it either, and CONFIG reads it. Supplied from the SOURCE TEXT rather than
+	   retyped, and pinned below, so the world cannot quietly hold a stale copy
+	   while every assertion still passes. */
+	const bosses = namesIn('Party/Ranger.js', 'const allBosses');
+	t.ok('allBosses parsed from source and non-empty', Array.isArray(bosses) && bosses.length > 5);
+	t.ok('...and still contains the event bosses CONFIG is built around',
+		['crabxx', 'franky', 'icegolem'].every((b) => bosses.includes(b)));
+	const w = world({ allBosses: bosses });
+	lift(w, 'Party/Ranger.js', ['TOGGLES', 'CONFIG']);
+
+	/* THE SAME OMISSION-SAFETY APPLIES HERE AND IS LOAD-BEARING ON A LIST THE
+	   OPERATOR EDITED YESTERDAY. sellItems() is whitelist-driven with no level
+	   check at all, so a belt added to that list would go at any level. */
+	const wl = w.CONFIG.selling.whitelist || [];
+	for (const belt of ['dexbelt', 'intbelt']) {
+		t.eq(belt + ' is absent from the ranger selling whitelist', wl.includes(belt), false);
+	}
+
+	const scarce = namesIn('Party/Ranger.js', 'const SCARCE_ITEM_NAMES');
+	t.ok('ranger SCARCE_ITEM_NAMES parsed', Array.isArray(scarce));
+	for (const belt of ['dexbelt', 'intbelt']) {
+		t.ok(belt + ' is in the ranger SCARCE_ITEM_NAMES', scarce.includes(belt));
+	}
+
+	for (const fn of ['reliefSellable', 'sellItems']) {
+		const body = extract('Party/Ranger.js', fn);
+		t.ok(fn + ' consults isExchangeable (rule b)', body.indexOf('isExchangeable(') > 0);
+		t.ok(fn + ' consults isScarceItem (rule a)', body.indexOf('isScarceItem(') > 0);
+	}
+
+	/* THE ONE NAME WHOSE BEHAVIOUR CHANGED. lostearring is on the ranger
+	   whitelist and carries e=1, so rule (b) now outranks the whitelist for it -
+	   the same relationship the guard has to gem0/seashell on the merchant.
+	   Asserted so the change is a recorded decision rather than a side effect. */
+	t.ok('lostearring IS on the ranger whitelist (the name rule (b) now outranks)',
+		wl.includes('lostearring'));
+	t.ok('and lostearring is in the exchangeable seed, so the guard catches it',
+		namesIn('Party/Ranger.js', 'const EXCHANGEABLE_SEED').includes('lostearring'));
+
+}, }, {
+
+name: "the suite's own name parser survives prose in the literal", fn(t) {
+	/* Tested on fixtures because the real files exercise only one of the two
+	   defences - see namesFrom(). A helper that mis-parses silently is how an
+	   assertion passes for the wrong reason, and this suite already hit that
+	   once: it reported dexbelt absent from a set that contained it. */
+	t.eq('a clean literal parses', namesFrom("['a', 'b']").join(','), 'a,b');
+
+	/* Defence 2: a block comment whose apostrophes span lines. */
+	const multi = "[\n/* operator's rule\n   the item's level */\n'dexbelt', 'intbelt',\n]";
+	t.eq('a multi-line comment with apostrophes does not swallow the names',
+		namesFrom(multi).join(','), 'dexbelt,intbelt');
+
+	/* Defence 1: TWO apostrophes on ONE line, which the newline guard cannot
+	   see. This is the case no real file currently contains. */
+	const oneLine = "[\n/* the operator's own rule, the item's level */\n'dexbelt', 'intbelt',\n]";
+	t.eq('two apostrophes on one comment line do not swallow the names either',
+		namesFrom(oneLine).join(','), 'dexbelt,intbelt');
+
+	const lineComment = "[\n// operator's call, the item's level\n'dexbelt',\n]";
+	t.eq('a // comment with apostrophes is stripped too',
+		namesFrom(lineComment).join(','), 'dexbelt');
+
+	/* THE INVERTED ASSERTION, AND IT TOOK TWO GOES - WHICH IS THE FINDING.
+	   An unguarded parse breaks only on an ODD number of prose apostrophes: with
+	   two, the pairs close inside the comment and the real names survive BY LUCK.
+	   The first version of this assertion used the two-apostrophe fixture above
+	   and failed against a correctly-broken parser. So whether a naive parse
+	   corrupts a literal depends on the PARITY of apostrophes in whatever prose
+	   precedes it, which is why the fault is intermittent and why it reached the
+	   merchant set - and it means a passing naive parse is evidence of nothing. */
+	const naiveOf = (lit) => (lit.match(/'[^']*'/g) || []).map((q) => q.slice(1, -1));
+	const odd = "[\n/* the operator's rule */\n'dexbelt', 'intbelt',\n]";
+	t.eq('an ODD apostrophe count breaks an unguarded parse', naiveOf(odd).includes('dexbelt'), false);
+	t.eq('an EVEN count leaves it intact, which is luck and not safety',
+		naiveOf(oneLine).includes('dexbelt'), true);
+	t.eq('the guarded parse is correct in BOTH cases',
+		namesFrom(odd).join(',') + '|' + namesFrom(oneLine).join(','),
+		'dexbelt,intbelt|dexbelt,intbelt');
+
+}, }, {
+
+name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
+	/* Deliberate duplication: these are separate CODE slots with no shared
+	   module, so the remedy for a copied predicate is an assertion that the
+	   copies stay equal - not a promise that nobody will touch one. */
+	const mSeed = namesIn('Party/Merchant.js', 'const EXCHANGEABLE_SEED');
+	const rSeed = namesIn('Party/Ranger.js', 'const EXCHANGEABLE_SEED');
+	t.ok('both seeds parsed', Array.isArray(mSeed) && Array.isArray(rSeed));
+	t.eq('the two seeds are the same length', rSeed.length, mSeed.length);
+	t.eq('the two seeds are identical', rSeed.join(','), mSeed.join(','));
+
+	/* And both must DERIVE as well as seed, or a game update that adds an
+	   exchangeable is covered on one character and not the other. */
+	for (const f of ['Party/Merchant.js', 'Party/Ranger.js']) {
+		const body = extract(f, 'exchangeableNames');
+		t.ok(f + ' derives from G.items .e as well as seeding', body.indexOf('it.e !== undefined') > 0);
+		t.ok(f + ' only caches once the derived half read something',
+			body.indexOf('out.size > EXCHANGEABLE_SEED.length') > 0);
 	}
 } }];

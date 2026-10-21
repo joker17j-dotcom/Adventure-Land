@@ -21,6 +21,46 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v106
+
+Rules (a) and (b) from the operator's 2026-10-20 sell rulings reach this
+character for the first time. Neither existed here: the merchant had both and
+this file had neither, which is "a warning in one script does not protect
+another" with the warning on the other side.
+
+(b) EXCHANGEABLES. `isExchangeable()` is now derived the same way the merchant
+derives it - the SEED unioned with everything in `G.items` carrying `.e`,
+because a derived-only set that reads a missing `G.items` is EMPTY and an empty
+protection set protects nothing, silently. The cache is taken only once the
+derived half actually read something.
+
+THIS GUARD OUTRANKS `CONFIG.selling.whitelist`, AND ONE NAME'S BEHAVIOUR
+CHANGES. `lostearring` is on that whitelist and carries `e=1`, so `sellItems()`
+vendored it on sight; it is kept now. The whitelist is the operator's and is
+closed, so this is not an edit to it - rule (b) outranks it, exactly as the
+same guard outranks `gem0` and `seashell` on the merchant's whitelist. Flagged
+rather than buried: the operator can overrule by name if that sale was wanted.
+
+(a) THE SCARCE BELTS. `dexbelt` and `intbelt` are an explicit name set, NOT
+derived from any gear table. On the merchant that is precisely how the
+protection was silently repealed - dexbelt was covered by a tier-2/3 lookup
+until windbelt took the ranger belt slot, and a `GEAR_PROGRESSION` edit
+withdrew a sell guard with nothing failing and nothing logging.
+
+BOTH SELL PATHS, because they fail differently. `reliefSellable()` already
+refused `level > 0`, so only a +0 belt was reachable there; `sellItems()`
+applies no level check at all and runs every `maintenanceLoop` tick, so a
+whitelisted belt would go at any level. The belts are absent from that
+whitelist and therefore were already safe there BY OMISSION - on a list the
+operator edited yesterday, which is why the suite now asserts the absence.
+
+Tests: `Tests/suite_merchantsell.js` extended to both scripts, 38 assertions,
+including a divergence check that the two exchangeable seeds stay identical and
+that both scripts derive as well as seed. Mutation-verified eight ways on this
+file: dropping either rule from either path, emptying the scarce set, drifting
+the seed, seeding without deriving, caching a failed read, and adding a belt to
+the whitelist each fail assertions. 702 -> 730.
+
 ## v105
 
 goobrawl's spawn-set mapping is one-to-MANY. `BOSS_FIGHT_TYPE = { goobrawl:

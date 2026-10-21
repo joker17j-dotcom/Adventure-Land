@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v105
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v106
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4902,6 +4902,71 @@ let reliefRunning = false;
    not a price: an upgraded or special item represents work, a locked one was
    deliberately protected, and the named list is things whose usefulness has
    nothing to do with their vendor value. */
+/* NEVER SOLD: EXCHANGEABLES (rule b) AND THE SCARCE BELTS (rule a).
+   Operator's rulings 2026-10-20, in force on BOTH this character and the
+   merchant. Neither existed here until v106 - the merchant had both and this
+   file had neither, which is the "a warning in one script does not protect
+   another" hazard with the warning on the other side.
+
+   WHY A SEED UNIONED WITH THE DERIVED SET, rather than either alone. An
+   exchangeable is one Wizard/Ponty trades for a random reward: G.items[name].e,
+   which is the QUANTITY the exchange consumes and not a boolean. Deriving it
+   means a game update that adds one is covered without a redeploy. But a
+   DERIVED-ONLY set that reads an empty or missing G.items is EMPTY, and an
+   empty protection set protects nothing - silently, which is the worst shape a
+   guard can fail in. So the seed is the floor and the derived half extends it;
+   neither can shrink the other. Mirrored from Party/Merchant.js, whose
+   measurement this seed is, and pinned against it in Tests/suite_merchantsell.js
+   so the two cannot drift.
+
+   THE CACHE IS ONLY TAKEN ONCE THE DERIVED HALF READ SOMETHING. Caching a
+   failed read would freeze the seed-only gap in for the whole session.
+
+   THIS GUARD OUTRANKS CONFIG.selling.whitelist AND CHANGES ONE NAME'S
+   BEHAVIOUR. `lostearring` is on that whitelist and carries e=1, so sellItems()
+   vendored it on sight; it is now kept. That list is the operator's and is
+   closed, so this is NOT an edit to it - rule (b) simply outranks it, exactly
+   as the same guard outranks gem0 and seashell on the merchant's whitelist.
+   The operator can overrule by name if that sale was wanted.
+
+   THE BELTS ARE NAMED EXPLICITLY AND NOT DERIVED FROM ANY GEAR TABLE, because
+   on the merchant that is precisely how the protection was silently repealed:
+   dexbelt was covered by a tier-2/3 lookup until windbelt took the ranger belt
+   slot, and a GEAR_PROGRESSION edit withdrew a sell guard with nothing failing
+   and nothing logging. A name cannot be withdrawn by a goal edit.
+   -> CLAUDE.md "Selling, banking and what must never be vendored" */
+const EXCHANGEABLE_SEED = ['cosmo0', 'cosmo1', 'cosmo2', 'cosmo3', 'cosmo4', 'cosmo5',
+	'sixcake', 'anniversarygift', 'gem0', 'gem1', 'candypop', 'candy0', 'candy1',
+	'candy0v2', 'candy1v2', 'candy0v3', 'candy1v3', 'bugbountybox', 'apologybox',
+	'weaponbox', 'armorbox', 'jewellerybox', 'mistletoe', 'candycane', 'marketparcel',
+	'gift0', 'gift1', 'redenvelope', 'redenvelopev2', 'redenvelopev3', 'redenvelopev4',
+	'greenenvelope', 'brownenvelope', 'mysterybox', 'troll', 'glitch', '5bucks',
+	'seashell', 'leather', 'gemfragment', 'ornament', 'lostearring', 'xbox',
+	'goldenegg', 'basketofeggs'];
+
+let exchangeableCache = null;
+function exchangeableNames() {
+	if (exchangeableCache) return exchangeableCache;
+	const out = new Set(EXCHANGEABLE_SEED);
+	try {
+		const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
+		for (const id in (g && g.items) || {}) {
+			const it = g.items[id];
+			if (it && it.e !== undefined) out.add(String(id));
+		}
+	} catch (e) { }
+	if (out.size > EXCHANGEABLE_SEED.length) exchangeableCache = out;
+	return out;
+}
+function isExchangeable(name) { return !!name && exchangeableNames().has(String(name)); }
+
+/* Scarce enough that losing one is a real loss, at ANY level. Relief already
+   refuses level > 0, but sellItems() applies no level check at all, so a
+   whitelisted belt would go whatever its level - and the merchant's exposure
+   was exactly a dexbelt+2, the windbelt craft input. */
+const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt']);
+function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name)); }
+
 function reliefSellable() {
 	const cfg = CONFIG.inventoryRelief;
 	const out = [];
@@ -4909,6 +4974,8 @@ function reliefSellable() {
 		const it = character.items[i];
 		if (!it || !it.name) continue;
 		if (cfg.neverSell.has(it.name)) continue;
+		if (isExchangeable(it.name)) continue;      // rule (b) - never sold at any price
+		if (isScarceItem(it.name)) continue;        // rule (a) - dexbelt / intbelt
 		if (it.l === 'l') continue;                 // locked by hand
 		if (it.p) continue;                         // special / shiny
 		if ((it.level || 0) > 0) continue;          // upgraded: someone paid for that
@@ -5061,7 +5128,13 @@ function sellItems() {
 	if (!CONFIG.selling.enabled) return;
 	for (let i = 0; i < character.items.length; i++) {
 		const item = character.items[i];
-		if (item && SELL_WHITELIST.has(item.name) && item.p === undefined && item.l !== 'l') sell(i);
+		if (!item || !SELL_WHITELIST.has(item.name)) continue;
+		if (item.p !== undefined || item.l === 'l') continue;
+		/* THE WHITELIST IS NOT THE LAST WORD. lostearring is on it and is
+		   exchangeable; these two guards outrank it. */
+		if (isExchangeable(item.name)) continue;
+		if (isScarceItem(item.name)) continue;
+		sell(i);
 	}
 }
 
