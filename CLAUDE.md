@@ -558,9 +558,13 @@ first - this section is what it was learned on.
   `monsters_home_server`, `global`, `global_static`. A monster's score is
   `monsters[n] + monsters_diff[n]`. Keep the raw payload on `window.__X` and
   report only derived numbers; it is large and trips the result filter.
-- **`drops_home` is a home-shard-EXCLUSIVE drop table**, present for exactly
-  eight monsters - crabxx, rharpy, phoenix, icegolem, dragold, franky, mrgreen,
-  mrpumpkin - and additive to the normal table, which all eight also have. It
+- **`drops_home` is a home-shard-EXCLUSIVE drop table**, present for TEN
+  monsters as of 2026-10-21 - crabxx, rharpy, phoenix, icegolem, dragold,
+  franky, mrgreen, mrpumpkin, plus snowman and grinch added that day - and
+  additive to the normal table, which all ten also have. It read EIGHT
+  through 2026-10-18 and that reading was correct for its date; see the
+  home-table bullet under "Drop rolls" for what moved, and do not read the
+  count as the interesting part of the change. It
   is static reference data, NOT personal history; an attempt to use it for
   per-kill drop-rate history was a dead end. Operator's 2026-10-17 call: these
   are not worth planning around, the normal drops are.
@@ -629,8 +633,10 @@ summary of it.
   `dragold`, `franky`, `crabxx`, `icegolem`, `mrgreen`, `mrpumpkin`, `rgoo`
   or `bgoo` is mutated at load, so every figure here survives - it just was
   not established by a sound method. Two consequences that are not luck:
-  the only funtoken sources in the whole file are crabxx (rates
-  1000/1000/1000/10/10), rgoo (20), bgoo (0.25) and `cutebee` (1, added by
+  the only funtoken sources in the whole file are crabxx - SPLIT ACROSS TWO
+  TABLES since 2026-10-21, normal `1000/10/10` and home `1000/1000/1000`;
+  this line read `1000/1000/1000/10/10` as one table and was correct then -
+  rgoo (20), bgoo (0.25) and `cutebee` (1, added by
   a push), and FOUR of the mutated tables are `cave_*`, so anything
   reasoning about cave drops from the literal is reading a partial table.
   `cave_snake` carries `snakeoil` at 0.03 - the Hop Sickness cure, from a
@@ -642,27 +648,111 @@ summary of it.
   and `:2776` resets it. `issue_monster_award` reaches that code only
   `if (monster.cooperative)`. So a crowd cuts each roll's share AND multiplies
   the number of rolls, and where the lines are saturated the rolls win
-  outright. Modelled on crabxx with equal contributions and `luckm` 1.5:
-  5 funtokens a kill solo, 18.8 at 40 contributors, 30.4 at 80. A busy shard
-  is BETTER for a funtoken run, which is the opposite of the obvious instinct.
+  outright. **THE MULTIPLIED LOOP IS THE NORMAL TABLE ONLY**, measured by
+  brace depth 2026-10-21 rather than eyeballed: the `for (let d = 0; d <
+  B.drop_table_multiplier; d++)` loop opens inside the
+  `D.drops.monsters[type]` forEach and CLOSES four lines later, well before
+  the `monsters_home_server` block, so THE HOME TABLE ROLLS EXACTLY ONCE
+  however crowded the shard is. That asymmetry is the whole reason the home
+  bonus is worth proportionally less the busier a shard gets, and it is
+  invisible to a reader of either table.
+  Modelled on crabxx with equal contributions and `luckm` 1.5, OFF-HOME:
+  3 funtokens a kill at K=1 and K=5, 6 at K=10, 7.5 at K=20, 8.75 at K=40,
+  12.4 at K=80, 19.2 at K=150. A busy shard is still BETTER for a funtoken
+  run, which is the opposite of the obvious instinct - but the whole curve
+  dropped on 2026-10-21: off-home K=80 went from 30.4 to 12.4, because three
+  saturated lines left the multiplied loop for the once-only one.
+  **THE SUPERSEDED FIGURES ARE 5 / 18.8 / 30.4 at K=1/40/80**, correct for the
+  five-line normal table they were computed from, and kept because a note
+  quoting 30.4 is reading a table that no longer exists.
 
-- **THE HOME-ONLY DROP TABLES ARE WORTH ABOUT A FIFTH OF ONE ITEM PER KILL,
-  WHICH IS THE NUMBER BEHIND THE OPERATOR'S "NOT WORTH PLANNING AROUND".**
-  They use rates near `1.0`, not crabxx's `1000`s, so they go through the
-  same `share * luckm` modifier and are NOT guaranteed. crabxx's
-  `[1.0, "reefglass", 3]` at `luckm` 1.5, equal contributions:
-  0.300 expected at K=5 and K=10, 0.225 at K=20, 0.188 at K=40, 0.169 at
-  K=80, 0.160 at K=150. dragold's `essenceoffire` is identical (same rate)
-  and its `embercore` at 0.005 is ~0.001. So the entire home-server bonus on
-  a crabxx run is worth roughly one fifth of one reefglass per credited kill,
-  against 19-30 funtokens from the normal table - which closes the chaining
-  question: going off-home costs that fifth of a reefglass and the
-  cooperative x5 on points, and nothing else.
-  Verified 2026-10-18 by bracket-matching the whole `monsters_home_server`
-  object rather than regexing it: exactly EIGHT entries as this file already
-  claims, and no `funtoken` line in any of them. Two regex reads of that
-  object disagreed first - one truncated at the first `]`, the other had
-  dragold's two items reversed.
+- **THE HOME-ONLY DROP TABLES WERE WORTH ABOUT A FIFTH OF ONE ITEM PER KILL.
+  ON 2026-10-21 crabxx's BECAME WORTH THREE GUARANTEED FUNTOKENS, SO THE
+  CHAINING QUESTION THIS BULLET CLAIMED TO CLOSE IS REOPENED.** The browser
+  session pulled the assembled `G.drops` from the live client; this session
+  confirmed every figure independently from upstream source at `f0d331a7`. The
+  two agree, so the change is LIVE and not merely committed.
+  crabxx's home table now holds `[1.0, "reefglass", 3]`,
+  `[1.0/1000, "suckerpunch"]` and `[1000, "funtoken"]` THREE TIMES. A
+  rate-1000 line is saturated for anyone with credit at all - credit requires
+  `share > 0.0025`, so `1000 * share * luckm >= 1` at any `luckm >= 0.4` - so
+  those are three guaranteed funtokens per credited kill, additive to the
+  normal table.
+  **AND THE NORMAL TABLE LOST THEM. crabxx normal is now `[1000, "funtoken"]`
+  ONCE plus two at `[10]`, where it carried three 1000s and two 10s before.**
+  The patch did not simply add a home bonus; it MOVED three saturated lines
+  out of the crowding-multiplied loop into the once-only one, which cuts the
+  off-home yield by more than half on a busy shard and cuts the home yield
+  too. Expected funtokens per credited kill, equal contributions, `luckm` 1.5:
+  K=1 and K=5 3 away / 6 home; K=10 6 / 9; K=20 7.5 / 10.5; K=40 8.75 / 11.75;
+  K=80 12.4 / 15.4; K=150 19.2 / 22.2.
+  **THE TABLE-ONLY HOME ADVANTAGE IS A FLAT +3** - +100% solo, +24% at K=80 -
+  because the three home lines are saturated and roll once, so the bonus is
+  constant while the off-home yield grows with the crowd.
+  **THE x5 ON POINTS IS NOT A SEPARATE SMALL TERM ONCE A LINE IS UNSATURATED,
+  AND THIS IS WHERE THE HONEST ANSWER IS A BRACKET RATHER THAN A NUMBER.**
+  Home multiplies `mnet` by 5 on a cooperative monster, which raises `share`
+  (`Math.pow(points, 0.65) / total`, so 1/K for equal contributions), which
+  raises every line still below saturation - INSIDE the multiplied loop. If
+  every contributor is home the x5 cancels in the ratio and the advantage is
+  the flat +3. If ours is the only one home at K=40, `points^0.65` scales by
+  `5**0.65 = 2.63`, share goes 0.025 -> 0.063, crabxx's two `[10]` lines go
+  from 0.375 to 0.95 each, and the advantage reaches +9.3. So the real figure
+  sits between +3 and about +9 and DEPENDS ON HOW MANY OTHER CONTRIBUTORS
+  SHARE THE HOME SHARD, which is not knowable before arriving. Quote the +3
+  floor; never quote the ceiling as the expectation.
+  **dragold's `embercore` IS `[1, "embercore", 2]` ON THE HOME TABLE**, against
+  `[0.005, "embercore"]` on the normal one. This bullet recorded only the
+  normal figure and called it "~0.001", which is wrong by three orders for a
+  character on its home shard. Its home `essenceoffire` lines are `[50]`,
+  `[40]`, `[30]` and `[1.0]`.
+  **franky's keys are rate 30 on the NORMAL table** - `[30, "cryptkey"]` and
+  `[30, "tombkey"]`, saturated for anyone with credit - so the key supply the
+  boss ranking is built on costs nothing to collect off-home, and its home
+  table carries no key at all. The ranking's franky-over-funtokens rationale
+  is therefore untouched by any of this.
+  **SO: SETTLED, AND NOT.** Settled - the mechanism, the once-only loop, the
+  +3 floor, and that going off-home now costs something material rather than a
+  fifth of a reefglass. NOT settled, and the operator's to weigh: whether
+  +3-to-+9 funtokens plus the reefglass outweigh reaching a boss at all, given
+  that the window is an ARRIVAL deadline. Flagged REOPENED rather than
+  answered; the operator's instinct that home may now be worth considering was
+  right.
+- **THE OLD READING IS KEPT BECAUSE IT WAS RIGHT WHEN TAKEN, AND THE HISTORY
+  PROVES IT RATHER THAN EXCUSING IT.** This bullet read "exactly EIGHT entries
+  ... and no `funtoken` line in any of them", verified 2026-10-18 by
+  bracket-matching the whole object. `git log` on `design/drops.js` in a FULL
+  clone settles that this was correct, not sloppy: `87f571e5` (2026-10-06,
+  "Rebalance co-op drops between normal and home servers") first made the move
+  and took the table to ten entries; `cd62207a` (2026-10-07) put drops.js back
+  to the eight-entry, no-funtoken state; it stayed there through 2026-10-18,
+  which is the window the measurement was taken in; and `f0d331a7`
+  (2026-10-21, "Merge cooperative boss drop adjustments and correct Crabxx
+  rewards") re-landed it. So a sound method gave a right answer and a merge
+  three days later moved the ground under it. **PRECISION IS NOT DURABILITY,
+  AND FRESHNESS IS A SEPARATE PROPERTY FROM RIGOUR** - the browser session's
+  phrasing, on their own two falsified claims. The practical consequence is
+  narrower than "re-measure everything": a figure read from a table the
+  creator is actively rebalancing has a short shelf life, and THIS one
+  flip-flopped twice in fifteen days, so the drop tables specifically are
+  worth re-reading before any decision rests on them.
+  Bracket-match the object rather than regexing it - two regex reads
+  disagreed when this was first done, one truncating at the first `]` and the
+  other reversing dragold's two items - and read the DATE as part of the
+  answer.
+- **AND ONE RECORDED SERIES DOES NOT FOLLOW FROM THE MECHANISM THIS FILE
+  DOCUMENTS, WHICH IS A DIFFERENT FAULT FROM ROT.** The reefglass figures
+  above used to read 0.300 at K=5 AND K=10, 0.225 at K=20, 0.188 at K=40,
+  0.169 at K=80, 0.160 at K=150. Two different K giving the same value, and a
+  tail flattening at 0.160, cannot come from `share = 1/K` - a 1/K law keeps
+  halving. Recomputed from the documented roll
+  (`min(1, rate * share * luckm) * qty`, `rate` 1.0, `qty` 3, `luckm` 1.5):
+  0.900 at K=5, 0.450 at K=10, 0.225 at K=20, 0.113 at K=40, 0.056 at K=80,
+  0.030 at K=150 - agreeing at K=20 only, which is presumably why it passed.
+  The old series' derivation could not be reconstructed and is NOT retained as
+  an alternative reading; it is recorded as unexplained. **A NUMBER THAT
+  CANNOT BE RE-DERIVED FROM THE MECHANISM BESIDE IT IS A LOOSE NUMBER EVEN
+  WHILE IT LOOKS PRECISE**, and unlike a stale figure it was never true.
 
 ## Boss priority and the event schedule
 
