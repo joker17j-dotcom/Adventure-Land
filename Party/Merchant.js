@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v110
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v111
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5910,23 +5910,29 @@ function isPontyBought(name) {
    does not stack. Operator's ruling 2026-10-21: "For items that do not stack
    there is not supposed to be a buy cap from ponty." The cap only ever meant
    "stop once the bank holds a full stack", and an unstackable piece has no
-   stack to fill, so the old single-copy fallback was answering a question
-   nobody asked.
-   `s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, NOT A NUMBER. 201 entries
-   in design/items.js carry `s: true` and 43 carry a count, and the GAME ITSELF
-   resolves the boolean - can_stack() bounds a merge by
-   `(G.items[name].s===true && 9999 || G.items[name].s)`. The 9999 below is that
-   expression's own answer, not a default chosen here.
-   THE ORDER OF THESE TESTS IS LOAD-BEARING. `it.s || 1` returned the BOOLEAN
-   for an `s: true` item, and the call site's `have >= stackCap` coerces true to
-   1 - so 19 of the 58 ids were capped at ONE COPY while the comment on this
-   very function said they stack at 9,999. A correct comment sat above
-   contradicting code for three days. Number() would reinstate it, Number(true)
-   being 1, which is why `=== true` is tested BEFORE the numeric branch.
-   Measured 2026-10-21 across the 58 pontyBuy ids: 23 do not stack, 19 carry
-   `s: true`, 8 dungeon keys stack at 50, 4 at 9,999, offeringp 1000, offering
-   100, offeringx 10. `cscroll4` is not an item at all - the game has cscroll0
-   through cscroll3 - so that id matches nothing and is inert on the list.
+   stack to fill, so the old `it.s || 1` fallback of ONE COPY was answering a
+   question nobody asked. Measured against LIVE G: 23 of the 58 live buy-list
+   ids carry no `s` and were capped at a single copy by it.
+   `s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, AND THE SOURCE AND THE
+   LIVE CLIENT DISAGREE ABOUT WHICH SHAPE IT TAKES. `design/items.js` carries
+   `s: true` on 201 of 671 entries at current upstream HEAD; live G, read off a
+   character tab 2026-10-21, carries NO BOOLEAN AT ALL - 653 entries, 216
+   reading 9999 and not one reading true. Something between the data and the
+   served G resolves it and NOBODY HAS FOUND WHAT: there is no normaliser
+   anywhere in the server source, and the two sites that consume `s` resolve
+   the boolean INLINE - `(G.items[n].s === true && 9999 || G.items[n].s)` in
+   can_stack() - which is what you only write when the data really does carry
+   booleans. Flagged unexplained rather than theorised about.
+   SO BOTH SHAPES ARE HANDLED, AND THAT IS THE POINT RATHER THAN MERE CAUTION.
+   A reader of the source would write the boolean branch and call the numeric
+   one redundant; a reader of live G would do the exact reverse. Each would be
+   right about its own evidence and wrong about the other's, and with the
+   resolution site unknown either shape may be what arrives.
+   ORDER IS LOAD-BEARING: `Number(true)` is 1, so testing the numeric branch
+   first - the natural way to tidy this up - would cap a boolean-shaped
+   stackable at ONE COPY. That is not reachable in the live client today; it is
+   one unexplained change away from being reachable, which is the whole reason
+   the ordering is pinned rather than left to taste.
    -> MerchantComments.md#pontyStackCap */
 function pontyStackCap(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);

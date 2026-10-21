@@ -2512,34 +2512,75 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   COPY - 23 of the 58 on the buy list, dexbelt included once it is added, which
   is why the bullet above needed an exemption at all. Fixed in Merchant v110;
   no exemption line is needed any more.
-- **`G.items[name].s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, NOT A
-  NUMBER - AND READING IT AS ONE CAPPED 19 MORE IDS AT A SINGLE COPY.** 201
-  entries in `design/items.js` carry `s: true` and 43 carry a count. `it.s || 1`
-  returned the BOOLEAN for the first group, and the call site's
-  `have >= stackCap` coerces `true` to 1 - so leather, funtoken, monstertoken,
-  both boxes, the six cake slices, the scrolls, the essences, feather0 and
-  candy0 were all bought one-at-a-time while stacking to 9,999. **THE GAME
-  RESOLVES THE BOOLEAN ITSELF**, in `can_stack()` at
-  `js/old_common_functions.js:409`:
-  `a.q+b.q+(d||0) <= (G.items[a.name].s===true && 9999 || G.items[a.name].s)`,
-  so 9999 is the game's own answer and not a default anyone chose. Order is
-  load-bearing in any rewrite: `Number(true)` is 1, so testing the numeric
-  branch first - the natural way to tidy this up - reinstates the bug exactly.
-  **AND MY FIRST SCAN OF THE BUY LIST MISCLASSIFIED ALL 19**, because it matched
-  `"s"\s*:\s*(\d+)` and an integer pattern cannot see `true`. Same family as
-  "a design value may be an expression, not a literal": the regex answered a
-  question about integers and was read as an answer about stackability.
-- **A CORRECT COMMENT SAT ON TOP OF THAT CODE THE WHOLE TIME, WHICH IS THE PART
-  NO CHECK HERE WOULD HAVE CAUGHT.** The comment above `pontyStackCap()` read
-  "23 stack at 9,999" - 19 with `s: true` plus 4 with `s: 9999`, exactly right -
-  while the function capped 19 of those 23 at one copy. Re-verifying the claim
-  confirms the claim; the blob matches; a grep finds the text present and
-  correct. It is the `CaveRun.js:227` shape from a third direction, and the only
-  thing that finds it is reading the code BESIDE a claim and asking whether it
-  does what the claim says.
-- **`cscroll4` IS NOT AN ITEM.** The game has cscroll0 through cscroll3, so that
-  id on `CONFIG.pontyBuy.items` matches nothing Ponty can offer. Reported rather
-  than removed - that list is marked EDIT THIS and is the operator's.
+- **`G.items[name].s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, AND THE
+  SOURCE AND THE LIVE CLIENT CARRY DIFFERENT SHAPES OF IT.** `design/items.js`
+  holds `s: true` on 201 of 671 entries, byte-identical at upstream HEAD
+  `16881a27`. **LIVE G HOLDS NO BOOLEAN AT ALL** - 653 entries read off a
+  character tab 2026-10-21, 216 reading 9999, 411 absent, 26 specific counts,
+  not one `true`. **THE RESOLUTION SITE IS UNEXPLAINED AND IS RECORDED THAT WAY**:
+  there is no normaliser anywhere in the server source, and the two sites that
+  consume `s` resolve the boolean INLINE - `(G.items[n].s === true && 9999 ||
+  G.items[n].s)` in `can_stack()` at `js/old_common_functions.js:409`, and the
+  same at `:505` - which is exactly what you write when the data really does
+  carry booleans. So something between the data and the served G converts it and
+  nobody has found what. This is the first time the source-is-a-lead rule has
+  landed on ITEM FLAGS rather than on the DOM or monster data, and the direction
+  matters: **a source read makes this look like a type bug the client has
+  already fixed.**
+- **SO MERCHANT v110 CLAIMED TWO DEFECTS AND THERE WAS ONE. THE SECOND IS
+  RETRACTED.** Real: `it.s || 1` returns `1` for an item with no `s`, capping
+  every unstackable id at a single copy - 23 of the 58 live buy-list ids, the
+  operator's reported defect. Retracted: that a further 19 ids returned the
+  BOOLEAN, which `have >= stackCap` coerces to 1, so leather, funtoken,
+  monstertoken, the boxes, the six cake slices, the scrolls and the essences
+  were each capped at one copy. The coercion is real arithmetic and the
+  conclusion was false - on the buy list the 19 "booleans" and the 4 explicit
+  9999s are the SAME 23 ids, all reading 9999, and those items were buying fine.
+  **THE SHARP PART: `pontyStackCap` READS G IN THE SCRIPT'S OWN CONTEXT, SO LIVE
+  G IS NOT A SECOND COPY THAT MIGHT DISAGREE - IT IS THE INPUT TO THE
+  FUNCTION.** There was never a gap between what was measured and what the code
+  saw, which is what makes this a plain inference error rather than version
+  skew, and why "the source is a lead" was not a hedge that could have covered
+  it. The fix itself stands unchanged and handles both shapes; only the
+  rationale moved, in v111.
+- **A FALSE DEFECT GENERATES ITS OWN CORROBORATING NARRATIVE, AND THAT IS THE
+  EXPENSIVE HALF.** v110 also reported the comment above `pontyStackCap()` -
+  "23 stack at 9,999" - as a correct claim sitting on top of contradicting code,
+  filed as the `CaveRun.js:227` shape from a third direction. It was nothing of
+  the kind: the comment was right, the code returned 9999 for exactly those ids,
+  and the two agreed all along. Having "found" the bug, the next move was to ask
+  why nobody had caught it, and a tidy answer arrived for a question that should
+  never have been asked. **So a finding that explains its own invisibility
+  deserves MORE scrutiny than one that does not**, because the explanation is
+  evidence about the finder rather than about the code.
+- **AND THE CLONE WAS STALE WHILE ALL OF THIS WAS READ FROM IT.** `/tmp/almongo`
+  sat at `43b2c8fc` while upstream HEAD was `16881a27`, and the three-line
+  freshness check under "The loaded copy and the repo copy" was not run until
+  after the browser session's correction arrived. `design/items.js` turned out
+  unchanged between the two, so nothing rests on it - which is luck, not
+  method, and the second time in two days that reading upstream without the
+  check preceded a retraction.
+- **MY FIRST SCAN OF THE BUY LIST MISCLASSIFIED THE 9999 GROUP**, because it
+  matched `"s"\s*:\s*(\d+)` and an integer pattern cannot see `true`. Same
+  family as "a design value may be an expression, not a literal": the regex
+  answered a question about integers and was read as an answer about
+  stackability.
+- **A QUOTE SCAN OVER SOURCE TEXT THAT DOES NOT STRIP LINE COMMENTS COUNTS
+  COMMENTED-OUT ENTRIES, AND BOTH SESSIONS HIT IT THE SAME DAY.** The live
+  `pontyBuy.items` list is 58 ids; a scan without comment-stripping returns 59,
+  because `jacko` sits on it as `//'jacko', too many durring halloween event`.
+  The browser session's otherwise-decisive live-G census reported 59 and "24
+  absent" for that reason, against 58 and 23. Identical class to the apostrophe
+  bug in `suite_merchantsell.js`'s name parser, which is why that helper strips
+  comments before parsing. Neither error touched its block's conclusion, and the
+  pair is worth keeping precisely because the same defect appeared in two
+  different tools within hours.
+- **`cscroll4` IS NOT AN ITEM, CONFIRMED FROM BOTH SIDES.** The game has
+  cscroll0 through cscroll3 - against scroll0 through scroll4, which is where
+  the mistake comes from - so that id on `CONFIG.pontyBuy.items` matches nothing
+  Ponty can offer. Read from source here and from live `G.items` by the browser
+  session, independently. Reported rather than removed: that list is marked EDIT
+  THIS and is the operator's.
 - **THE REVIEW PACK IS THE OPEN CHANNEL, AND IT IS WHAT MAKES THIS A SYSTEM
   RATHER THAN A GUESS.** The ladder: the mule collects; else sell the
   classified-safe set; else bank the remainder TO ONE DEDICATED REVIEW PACK;

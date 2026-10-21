@@ -2074,58 +2074,85 @@ it belongs in.
 ## pontyStackCap
 
 `G.items[name].s` IS NOT A NUMBER. It is a truthiness flag that sometimes
-carries a size: 201 entries in `design/items.js` have `s: true` and 43 have a
-count. The game resolves the boolean itself, in `can_stack()` at
-`js/old_common_functions.js:409`:
+carries a size - and **the source and the live client disagree about which
+shape it actually takes**, which is the part that cost a published finding.
 
-    a.q+b.q+(d||0) <= (G.items[a.name].s===true && 9999 || G.items[a.name].s)
+  - `design/items.js` at current upstream HEAD (`16881a27`): 671 entries, 244
+    carrying `s`, of which **201 are the boolean `true`** and 43 are counts.
+  - **Live G, read off a character tab 2026-10-21: 653 entries, ZERO
+    booleans.** 216 read 9999, 411 have no `s`, 26 carry specific counts.
 
-So 9999 is the GAME's answer for `s: true`, not a default this script picked.
-The same file's `create_new_item` and the inventory merge at `server.js:2069`
-read `s` purely for truthiness, which is why the numeric values never appear in
-the add path and why it is easy to read `s` as a boolean and stop there.
+The 9999 is not arbitrary - `can_stack()` in `js/old_common_functions.js:409`
+resolves the boolean with `(G.items[a.name].s === true && 9999 ||
+G.items[a.name].s)`, and `:505` does the same. **But those are CONSUMERS
+resolving it inline, which is what you write only when the data really does
+carry booleans** - and no normaliser exists anywhere in the server source. So
+the live client's shape is UNEXPLAINED, flagged rather than theorised.
 
-THE FUNCTION HAD BOTH POSSIBLE ERRORS AT ONCE, and only one of them was the one
-the operator reported.
+### What the defect actually was
 
-  - `it.s || 1` returned `1` for an item with no `s`. That is a cap of one copy
-    on every unstackable id - 23 of the 58 on the buy list. Operator's ruling,
-    2026-10-21: "For items that do not stack there is not supposed to be a buy
-    cap from ponty." An unstackable piece has no stack to fill, so there is
-    nothing for the cap to mean.
-  - `it.s || 1` returned `true` for an `s: true` item, and the call site's
-    `have >= stackCap` coerces `true` to 1. So 19 MORE ids - leather, funtoken,
-    monstertoken, mysterybox, weaponbox, armorbox, the six cake slices,
-    scroll3/scroll4/cscroll3, essenceofether, essenceoffire, feather0, candy0 -
-    were also capped at a single copy, silently, while stacking to 9,999.
+ONE defect, not two. `pontyStackCap()` returned `it.s || 1`:
 
-That second one is the interesting half, because THE COMMENT ABOVE THE FUNCTION
-DESCRIBED THE CORRECT BEHAVIOUR THE WHOLE TIME. It read "23 stack at 9,999",
-which is exactly right - 19 with `s: true` plus 4 with `s: 9999`. A true,
-current, precisely-worded claim sat directly on top of code that did something
-else, and every check this project runs would have passed: re-verifying the
-claim confirms the claim, the blob matches, a grep finds the text present and
-correct. It is CLAUDE.md's "a correct comment that nobody acted on" with the
-item counts attached, and the only thing that would have caught it is reading
-the code BESIDE the claim and asking whether it does what the claim says.
+  - **`s` absent -> 1.** A cap of one copy on every unstackable id, **23 of
+    the 58 live buy-list ids**. This is the operator's reported defect and it
+    is entirely real. There is no stack to fill, so the cap had nothing to
+    mean. Operator, 2026-10-21: "For items that do not stack there is not
+    supposed to be a buy cap from ponty."
+  - **`s` = 9999 -> 9999.** Uncapped, correctly. The 23 stacking ids on the
+    list were buying fine.
 
-ORDER IS LOAD-BEARING in the replacement. `Number(true)` is 1, so a
-numeric-first rewrite - which is the natural way to tidy this up - reinstates
-the exact bug. `=== true` is therefore tested before the numeric branch, and
-`Tests/suite_merchantbuy.js` pins the ordering as well as the outcomes, with
-all four mutations (old expression, each branch alone, swapped order) measured
-as caught.
+A SECOND DEFECT WAS PUBLISHED AND IS RETRACTED. It claimed `it.s || 1` returned
+the BOOLEAN for 19 ids, which `have >= stackCap` then coerces to 1, so leather,
+funtoken, monstertoken, the boxes, the cake slices, the scrolls and the essences
+were each capped at one copy. The coercion is real arithmetic - `1 >= true` is
+true - and the conclusion was false, because **live G hands those ids 9999 and
+never a boolean.** The claim was inferred from upstream source and asserted
+about the running game.
+
+**`pontyStackCap` reads G in the script's own context, so live G is not a
+second copy that might disagree - it IS the input to the function.** That is
+what makes this a plain error rather than a version skew: there was never a gap
+between what the browser session measured and what the code saw.
+
+And the retraction takes a THIRD claim with it. The comment above this function
+used to read "23 stack at 9,999", and that was published as a correct comment
+sitting on top of contradicting code - the `CaveRun.js:227` shape. It was
+nothing of the kind: the comment was right, the code gave 9999 for exactly
+those ids, and the two agreed all along. **A FALSE DEFECT GENERATES ITS OWN
+CORROBORATING NARRATIVE** - having "found" the bug, the next step was to look
+for why nobody had caught it, and a tidy answer arrived for a question that
+should never have been asked.
+
+### Why both shapes are still handled
+
+Not defensiveness. A reader of the source would write the boolean branch and
+call the numeric one redundant; a reader of live G would do the exact reverse.
+Each is right about its own evidence and wrong about the other's, and the
+resolution site is unknown, so either shape may be what arrives.
+
+ORDER IS LOAD-BEARING. `Number(true)` is 1, so a numeric-first rewrite - the
+natural way to tidy this up - would cap a boolean-shaped stackable at one copy.
+Unreachable in the live client today; one unexplained change away from
+reachable. `Tests/suite_merchantbuy.js` pins the ordering and the outcomes,
+with all four mutations measured as caught.
 
 A `null` return means NO CAP only because the call site is
-`if (stackCap && have >= stackCap)`. If that guard ever becomes `stackCap !=
-null`, `have >= null` is `have >= 0` and every id caps immediately. The suite
-asserts the guard's text for that reason.
+`if (stackCap && have >= stackCap)`. If that guard ever becomes
+`stackCap != null`, `have >= null` is `have >= 0` and every id caps
+immediately. The suite asserts the guard's text for that reason.
 
-Measured 2026-10-21 across the 58 `pontyBuy` ids: 23 do not stack, 19 carry
-`s: true`, 8 dungeon keys at 50, 4 at 9,999, offeringp 1000, offering 100,
-offeringx 10. **`cscroll4` is not an item** - the game has cscroll0 through
-cscroll3 - so that id matches nothing and is inert on the list. The buy list is
-the operator's to edit.
+### The live buy list, 2026-10-21
+
+58 ids: 23 with no `s`, 23 at 9999, 8 dungeon keys at 50, offeringp 1000,
+offering 100, offeringx 10 - and **`cscroll4`, which is not an item at all.**
+The game has cscroll0 through cscroll3 (against scroll0 through scroll4), so
+that id matches nothing Ponty can offer. Confirmed independently from source
+and from live G. The list is the operator's to edit.
+
+`jacko` is on that list COMMENTED OUT, which is worth knowing because a quote
+scan over the source text that does not strip line comments counts it and
+reports 59. That happened, on both sides of this exchange in different forms:
+the same shape as the apostrophe bug in `suite_merchantsell.js`'s name parser.
 
 ## capAtOneStack
 

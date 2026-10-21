@@ -5,18 +5,29 @@
    was predicated on items that stack and only buying up to a single full
    stack. For items that do not stack there is not supposed to be a buy cap
    from ponty." pontyStackCap() returned `it.s || 1`, so an unstackable id
-   capped at one copy - and a SECOND defect rode along that nobody had filed:
-   `s` is a truthiness flag carrying an optional size, so `s: true` returned
-   the BOOLEAN, and the call site's `have >= stackCap` coerces true to 1. 19 of
-   the 58 pontyBuy ids were therefore capped at ONE COPY - leather, funtoken,
-   monstertoken, both boxes, the six cake slices, the scrolls, the essences.
+   capped at one copy - 23 of the 58 live buy-list ids.
 
-   THE COMMENT ABOVE THE FUNCTION WAS RIGHT THE WHOLE TIME. It read "23 stack
-   at 9,999", which is exactly what can_stack() does with `s: true`
-   (`G.items[n].s===true && 9999 || G.items[n].s`). A correct claim sat on top
-   of code that did something else, and re-verifying the claim would have
-   confirmed the claim. That is CLAUDE.md's "a correct comment that nobody
-   acted on is invisible to every check" with the numbers attached.
+   THE SOURCE AND THE LIVE CLIENT DISAGREE ABOUT `s`'s SHAPE, AND THAT IS WHY
+   BOTH BRANCHES EXIST. `design/items.js` carries `s: true` on 201 of 671
+   entries at current upstream HEAD. Live G, read off a character tab, carries
+   NO BOOLEAN AT ALL - 653 entries, 216 reading 9999, not one reading true. No
+   normaliser exists in the server source, and the two sites that consume `s`
+   resolve the boolean inline (`s === true && 9999 || s` in can_stack), which
+   is what you write only when the data really does carry booleans. The
+   resolution site is unexplained.
+
+   SO THE BOOLEAN ASSERTIONS BELOW PIN ARITHMETIC, NOT A LIVE DEFECT. An
+   earlier version of this header claimed 19 further ids were capped at one
+   copy by `true` coercing through `have >= stackCap`. The coercion is real;
+   the conclusion was not, because live G hands those ids 9999. It was inferred
+   from source and asserted about the running game, and pontyStackCap() reads G
+   in the script's own context - so live G is not a second copy that might
+   disagree, it is the input to the function. Retracted in v111.
+
+   A numeric-first rewrite would still cap a boolean-shaped stackable at one
+   copy, because Number(true) is 1. Unreachable today, one unexplained change
+   away from reachable, which is why the ordering is pinned rather than left to
+   taste.
 
    -> CLAUDE.md "Selling, banking and what must never be vendored", "Testing"
    -> Party/MerchantComments.md#pontyStackCap */
@@ -63,23 +74,25 @@ name: 'pontyStackCap: no cap on an item that does not stack', fn(t) {
 { name: 'pontyStackCap: s: true resolves to the game’s own 9999', fn(t) {
 	const w = itemsWorld();
 	lift(w, MERCHANT, 'pontyStackCap');
-	t.eq('s: true caps at a full stack, not one copy', w.pontyStackCap('leather'), 9999);
+	t.eq('a source-shaped s: true caps at a full stack, not one copy', w.pontyStackCap('leather'), 9999);
 	t.eq('an explicit size is used as given', w.pontyStackCap('dkey'), 50);
 	t.eq('an explicit 9999 is used as given', w.pontyStackCap('ashleaf'), 9999);
 
-	/* THE DEFECT, PRESERVED. Both halves of the old expression, so a reader
-	   cannot conclude the boolean branch is redundant and collapse it. */
+	/* THE OLD EXPRESSION, PRESERVED AS ARITHMETIC. Both halves, so a reader
+	   cannot conclude either branch is redundant and collapse it. The absent-`s`
+	   case below is the defect that was real on live data; the boolean case is
+	   reachable only if the client ever serves the shape the source carries. */
 	const old = (it) => it.s || 1;
-	t.eq('the old expression returned the BOOLEAN for s: true', old({ s: true }), true);
+	t.eq('the old expression returned the BOOLEAN for a source-shaped s', old({ s: true }), true);
 	t.ok('and the call site coerces it to a cap of one', (1 >= true) === true && (0 >= true) === false);
-	t.eq('the old expression capped an unstackable id at one', old({}), 1);
+	t.eq('the old expression capped an unstackable id at one - the REAL defect', old({}), 1);
 } },
 
 { name: 'pontyStackCap: the order of the tests is load-bearing', fn(t) {
 	/* Number(true) is 1, so a numeric-first rewrite reinstates the exact bug
 	   this function was fixed for. Pinned as arithmetic rather than as advice. */
 	t.eq('Number(true) is 1', Number(true), 1);
-	t.ok('so a Number()-first branch would cap s: true at one copy',
+	t.ok('so a Number()-first branch would cap a boolean-shaped s at one copy',
 		(typeof Number(true) === 'number') && Number(true) === 1);
 
 	const body = extract(MERCHANT, 'pontyStackCap');

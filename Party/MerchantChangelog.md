@@ -1,3 +1,58 @@
+## v111
+
+**Comment-only. v110's RATIONALE was half wrong and this corrects it; the code
+it describes is unchanged and still right.** The browser session read live G on
+a character tab and the partition v110 was built on does not exist there.
+
+**v110 claimed two defects. There was one.**
+
+  - **REAL, and the operator's reported one.** `it.s || 1` returns `1` when an
+    item carries no `s`, capping every unstackable id at a single copy - 23 of
+    the 58 live buy-list ids. Fixed, correctly, in v110.
+  - **RETRACTED.** v110 claimed a further 19 ids returned the BOOLEAN `true`,
+    which `have >= stackCap` coerces to 1, so leather, funtoken, monstertoken,
+    the boxes, the six cake slices, the scrolls and the essences were each
+    capped at one copy while stacking to 9,999. **Live G carries NO BOOLEAN.**
+    653 entries measured, 216 reading 9999, not one reading `true`; on the buy
+    list the 19 "booleans" and the 4 explicit 9999s are the same 23 ids, all
+    reading 9999. Those items were buying fine the whole time.
+
+The claim came from `design/items.js`, which carries `s: true` on 201 of 671
+entries at current upstream HEAD - unchanged there - and was asserted about the
+running game. `pontyStackCap()` reads G in the script's own context, so live G
+is not a second copy that might disagree: **it is the input to the function**,
+which makes this a plain inference error rather than version skew.
+
+**The resolution site is UNEXPLAINED and is recorded that way.** No normaliser
+exists anywhere in the server source, and the two sites that consume `s`
+resolve the boolean INLINE - `(G.items[n].s === true && 9999 ||
+G.items[n].s)` in `can_stack()` - which is what you write only when the data
+really does carry booleans. Something between the data and the served G
+converts it and nobody has found what.
+
+**So both shapes are still handled, and the ordering is still pinned.** Not
+caution: a reader of the source would write the boolean branch and call the
+numeric one redundant, a reader of live G the exact reverse, and each would be
+right about its own evidence. `Number(true)` is 1, so a numeric-first tidy-up
+would cap a boolean-shaped stackable at one copy - unreachable today, one
+unexplained change away from reachable.
+
+**A third claim falls with it.** v110 reported the comment above the function
+("23 stack at 9,999") as a correct claim sitting on top of contradicting code.
+It was not: the comment was right, the code returned 9999 for exactly those
+ids, and they agreed all along. Having "found" a defect, the next move was to
+explain why nobody had caught it, and a tidy answer arrived for a question that
+should never have been asked.
+
+Suite unchanged in substance - the assertions describe the function's behaviour,
+which has not moved - with the narrative corrected so the arithmetic is no
+longer labelled a live defect.
+
+`cscroll4` is confirmed from both sides as not an item (cscroll0-3 only, against
+scroll0-4), so that buy-list id matches nothing. Still the operator's to remove.
+
+Not deployed: the operator batches deploys. v109 is the live build.
+
 ## v110
 
 **The Ponty buy cap no longer applies to items that do not stack**, and a
