@@ -372,6 +372,18 @@ emptied, which is the single most expensive mistake this file can cause.
   half: the live read caught that the old claim was false, the write-path read
   established what was true instead. Same family as the wrapped-prose grep
   above - a search that comes back empty has told you about your search.
+- **A DELTA IS ONLY AS SOUND AS ITS WEAKER TERM, AND NOTHING IN THE SENTENCE
+  SAYS WHICH TERM THAT IS.** 2026-10-21, the browser session's own naming of
+  it: the crabxx home table was read LIVE, the normal table was quoted from
+  THIS FILE, both had moved, and only one was checked - then the difference
+  between them was reported as measured. Every figure in the block was
+  individually defensible and the comparison was not.
+  It is adjacent to "a ratio is only as good as its denominator being one
+  population" under the bridge section, but the fault is PROVENANCE rather than
+  population: two terms of different epistemic status, silently combined,
+  with the prose giving a reader no way to tell them apart. **So when a claim
+  is a comparison, say where EACH side came from** - and if one side is this
+  file, that side is a lead and not a measurement.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -672,6 +684,15 @@ summary of it.
   session pulled the assembled `G.drops` from the live client; this session
   confirmed every figure independently from upstream source at `f0d331a7`. The
   two agree, so the change is LIVE and not merely committed.
+  **THE ARITHMETIC WAS THEN IMPLEMENTED TWICE FROM TWO DIFFERENT SOURCES AND
+  AGREES TO THE DECIMAL AT ALL SEVEN POINTS** - this session from the upstream
+  literal, the browser session from the live assembled object, neither looking
+  at the other's series before computing. That is a stronger warrant than
+  either read alone, and it is the warrant these figures carry; the one piece
+  with NO second source is the multiplier-loop boundary, because only the
+  Claude Code container holds a clone of the server source. Brace depth is the
+  right method for it, and it is still single-sourced - re-measure it there if
+  anything ever turns on it.
   crabxx's home table now holds `[1.0, "reefglass", 3]`,
   `[1.0/1000, "suckerpunch"]` and `[1000, "funtoken"]` THREE TIMES. A
   rate-1000 line is saturated for anyone with credit at all - credit requires
@@ -706,6 +727,20 @@ summary of it.
   normal figure and called it "~0.001", which is wrong by three orders for a
   character on its home shard. Its home `essenceoffire` lines are `[50]`,
   `[40]`, `[30]` and `[1.0]`.
+  **THE PATCH CUT THE YIELD RATHER THAN REDISTRIBUTING IT, which is the part a
+  planner needs and neither column above states on its own.** Off-home K=80
+  fell from the modelled 30.4 to 12.4, and even HOME-shard 15.4 is about half
+  the old AWAY figure. So the home-versus-away question is a second-order one:
+  whatever it resolves to, a crabxx run yields roughly half what it did, and
+  anything planning against 19-30 funtokens per kill is planning against a
+  world that ended on 2026-10-21.
+  **THE SOURCE CENSUS IS OTHERWISE INTACT, CHECKED RATHER THAN ASSUMED.** All
+  122 assembled monster tables scanned 2026-10-21: normal-table funtoken
+  sources are crabxx `[1000, 10, 10]`, rgoo `[20]`, bgoo `[0.25]` and cutebee
+  `[1]`; the only HOME-table source is crabxx. So the list above survives BY
+  NAME and only crabxx's rates moved - worth recording as checked, because the
+  same patch that moved them could have added one and a name-level re-read is
+  what would have caught it.
   **franky's keys are rate 30 on the NORMAL table** - `[30, "cryptkey"]` and
   `[30, "tombkey"]`, saturated for anyone with credit - so the key supply the
   boss ranking is built on costs nothing to collect off-home, and its home
@@ -2062,6 +2097,15 @@ reading.
   BACK to confirm it landed, before anyone is told it is safe to proceed.**
   Knowing the rule is not the same as applying it under time pressure, which is
   why it is written as a sequence rather than as advice.
+  **THE RULE WAS BROKEN AGAIN THE NEXT MORNING, BY ITS OWN AUTHOR, AND THE
+  SECOND INSTANCE GIVES IT A STRONGER FORM.** 2026-10-21: a `G.drops` pull
+  requested dragold, franky, snowman, grinch AND crabxx; the result truncated
+  during snowman; the block was written anyway, quoting crabxx's normal table
+  from this file instead of from the read that had been cut off. Both had moved.
+  **A TRUNCATED RESULT MEANS THE FIELDS YOU DID NOT SEE ARE UNREAD, NOT
+  UNCHANGED** - and the tell is that you can NAME exactly which ones they were,
+  which is what makes this cheap to check and inexcusable to skip. Under
+  twenty-four hours between paying for this twice.
 
 ## Editing files in the GitHub web editor
 
@@ -2344,9 +2388,11 @@ a day.
   leader 0/0.** Three transitions, three successes, zero failures. That closes
   the door question.
 - **CaveRun's `ver` FIELD IS A STALE LITERAL AND IT COST A WRONG DEPLOY
-  REPORT.** `ver: 14` is hardcoded twice - in the dump and in the load event -
-  while v16 was live, and nothing derives from it, so it is a lie rather than a
-  defect. It was believed over feature detection, and the second signal that
+  REPORT.** `ver: 14` is hardcoded in THREE places - the dump, the load event
+  and the `clog('v14 loaded as ...')` line - while v16 was live, and nothing
+  derives from it, so it is a lie rather than a defect. This bullet said TWICE
+  until v17 fixed it, because a `ver:` search finds the two FIELDS and not the
+  string that prints the number to a human on every load. It was believed over feature detection, and the second signal that
   agreed with it measured nothing either: `noDoor` is NOT A COUNTER but an
   `ev('noDoor', lm)` event, so its absence from a counter table was never going
   to mean anything. The live leash settled it from the MECHANISM - travel 60/30
@@ -2362,7 +2408,7 @@ a day.
   returns null - anchor on the file marker instead, `/^\/\/ CaveRun\.js\b.* -
   v(\d+)\b/`, line 1 only; and (2) **CaveRun is a ROOT script, so it is NOT
   covered by the current-version-only rule and its header ACCUMULATES
-  HISTORY** - 12 lines match `^// v<digits>`, so any read taking the LAST match
+  HISTORY** - 13 lines match `^// v<digits>` as of v17, so any read taking the LAST match
   returns the OLDEST entry, which is precisely the OpenGifts failure that
   returned 2 against a v11 build. Line 1 only, never a header scan. The retry
   requirement carries over unchanged, and the pre-slot failure is FAIL-NULL
