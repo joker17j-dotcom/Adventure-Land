@@ -17,7 +17,7 @@ BOSS_RESPAWN_SEC entry (respawn -1), so the high-confidence respawn_offset path
 can never fire for them either. Measured on the live log: 20 of 37 event-boss
 "deaths" were despawns.
 """
-import importlib.util, json, os, sys, tempfile, time, datetime, pathlib
+import importlib.util, io, json, os, sys, tempfile, time, datetime, pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 TARGET = ROOT / "Codex" / "market_bridge.py"
@@ -771,6 +771,148 @@ chk("the second precedes the absent-confirm lost emit",
 # hp is already current, so a flush could attribute it to the old instance.
 chk("the instance-change lost is BEFORE both flushes, so neither covers it",
     0 <= _i_lost_inst < _i_flush, True)
+
+# ===================== DRIVING THE REAL POLLER =====================
+# THE GAP THE SOURCE-TEXT ASSERTIONS ABOVE CANNOT CLOSE. They catch a deleted
+# or reordered flush call; they cannot catch one CALLED IN A STATE WHERE IT
+# DOES NOTHING, which is exactly the near-side/far-side failure that cost
+# Ranger v99 a day - a correct selector and an executor that never ran.
+#
+# So this drives `poll_once()` itself with only the CLOCK and the FETCH stubbed:
+# _record, the present-marking loop, _transitions, _hp_sample, _hp_final and
+# _flush_events are all the real thing, and the assertions read the JSONL the
+# poller actually wrote. Nothing here mirrors the caller's sequence, because a
+# mirrored sequence is one more copy to drift.
+_T = [0.0]
+_real_now = b.now
+def _poll(bw, t, entries):
+    _T[0] = float(t)
+    b.now = lambda: _T[0]
+    try:
+        bw._fetch = lambda: list(entries)
+        bw.poll_once()
+    finally:
+        b.now = _real_now
+
+def _ent(mtype, hp, seen, ident="IV", eid=None, er=None):
+    e = {"type": mtype, "serverRegion": "EU", "serverIdentifier": ident,
+         "hp": hp, "max_hp": 120000000, "lastSeen": seen,
+         "id": eid or (mtype + "-1")}
+    if er is not None:
+        e["estimatedRespawn"] = er
+    return e
+
+def row(seq, i):
+    """seq[i] or {} - NEVER an IndexError.
+
+    A SHORT ROW SET IS THE DEFECT THESE ASSERTIONS EXIST TO CATCH, so indexing
+    bare is the one thing they must not do. Measured twice in this file: the
+    str.index version of the call-site block, and this fixture under the
+    mutation that stops the spawn branch seeding the sampler baseline - both
+    raised, which aborts before the summary prints and presents a caught defect
+    as broken tooling, in the wrong file.
+    """
+    return seq[i] if 0 <= i < len(seq) else {}
+
+
+def _rows(path):
+    out = []
+    for line in io.open(path, encoding="utf-8"):
+        line = line.strip()
+        if line:
+            out.append(json.loads(line))
+    return out
+
+# icegolem is carried on every poll for ONE reason: guard 2. A boss absent from
+# a server that did not ANSWER is never a death, and servers_seen is built from
+# the entries returned - so without a second entry an empty response reads as
+# "the shard went away" and the run ends in `lost` instead. Its own hp never
+# moves, so it contributes no rows of its own.
+_ICE = lambda seen: _ent("icegolem", 16000000, seen, eid="ice-1")
+
+# ---- TIMELINE A: a sampled fight that ends in a DEATH
+_lf = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf.close()
+_bwA = b.BossWatch(["franky"], enabled=False, events_path=_lf.name)
+_poll(_bwA, 1000, [_ICE("s0")])                                   # seeds the shard
+_poll(_bwA, 1045, [_ICE("s1"), _ent("franky", 120000000, "f1")])   # franky spawns
+_poll(_bwA, 1090, [_ICE("s2"), _ent("franky", 117000000, "f2")])   # 3M lost: sampled
+_poll(_bwA, 1135, [_ICE("s3")])                                   # absent 1
+_poll(_bwA, 1180, [_ICE("s4")])                                   # absent 2
+_poll(_bwA, 1225, [_ICE("s5")])                                   # absent 3 -> terminal
+_rA = [r for r in _rows(_lf.name) if r["type"] == "franky"]
+chk("A: the real poller wrote spawn, sample, closing sample, death",
+    [r["ev"] for r in _rA], ["spawn", "hp", "hp", "death"])
+chk("A: and it IS a death, not a despawn", row(_rA, len(_rA) - 1).get("ev"), "death")
+# THE ASSERTION THIS WHOLE FIXTURE EXISTS FOR: the flush fired at a real
+# terminal, reached through the real caller, not called directly.
+chk("A: the closing sample is flagged final", row(_rA, 2).get("final"), True)
+chk("A: the threshold sample is not", row(_rA, 1).get("final"), None)
+# THE LOG IS APPEND-ORDERED AND `t` IS NOT MONOTONIC WITH IT, which this
+# fixture made concrete rather than theoretical. The closing sample is written
+# BEFORE the death row and carries a LATER timestamp: a death row's `t` is the
+# poll-bracket midpoint (1090+1225)/2 = 1157.5, while the closing row's `t` is
+# the poll that observed the end, 1225. So a consumer sorting these rows by `t`
+# puts the death BEFORE the final hp reading of the fight it ended. This is the
+# same hazard as Ranger v100's ordering guard, from the other direction - there
+# an estimated `t` was compared against an observation, here it reorders rows
+# within one fight.
+chk("A: the death row's t PRECEDES the closing sample's, despite being written after",
+    row(_rA, 3).get("t", "") < row(_rA, 2).get("t", ""), True)
+chk("A: so file order and timestamp order genuinely disagree",
+    [r["ev"] for r in sorted(_rA, key=lambda r: r["t"])],
+    ["spawn", "hp", "death", "hp"])
+# The stall between the last sample and the terminal is a measurement.
+chk("A: closing row reports the gap", row(_rA, 2).get("since_sec"), 135)
+chk("A: with zero loss over it", row(_rA, 2).get("hp_lost"), 0)
+chk("A: and zero dps, not null", row(_rA, 2).get("dps_since"), 0.0)
+# Field classes, per the write path - a death row has no `hp`, which is the
+# whole reason the closing row is written in the sampler's own names.
+chk("A: the death row carries last_hp, not hp",
+    ("last_hp" in row(_rA, 3), "hp" in row(_rA, 3)), (True, False))
+chk("A: while the hp rows carry hp, not last_hp",
+    ("hp" in row(_rA, 2), "last_hp" in row(_rA, 2)), (True, False))
+os.unlink(_lf.name)
+
+# ---- TIMELINE B: an UNTOUCHED boss that despawns at its window.
+# The case that used to emit NOTHING at all, and the one the hypothesis needs
+# most: it is evidence that declining was right.
+_lf2 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf2.close()
+_bwB = b.BossWatch(["franky"], enabled=False, events_path=_lf2.name)
+_poll(_bwB, 5000, [_ICE("t0")])
+_poll(_bwB, 5045, [_ICE("t1"), _ent("franky", 120000000, "g1")])   # spawn
+for _i, _t in enumerate((5500, 6000, 6500, 7000)):                 # untouched
+    _poll(_bwB, _t, [_ICE("t%d" % (_i + 2)), _ent("franky", 120000000, "g1")])
+for _i, _t in enumerate((7405, 7450, 7495)):                       # gone
+    _poll(_bwB, _t, [_ICE("u%d" % _i)])
+_rB = [r for r in _rows(_lf2.name) if r["type"] == "franky"]
+chk("B: an untouched window emits spawn, ONE closing sample, despawn",
+    [r["ev"] for r in _rB], ["spawn", "hp", "despawn"])
+chk("B: no threshold samples at all - nothing moved",
+    sum(1 for r in _rB if r["ev"] == "hp" and not r.get("final")), 0)
+chk("B: the closing row spans the whole window", row(_rB, 1).get("since_sec"), 2450)
+chk("B: at zero dps", (row(_rB, 1).get("hp_lost"), row(_rB, 1).get("dps_since")), (0, 0.0))
+chk("B: full health at the close", row(_rB, 1).get("pct"), 100.0)
+chk("B: and the terminal is a despawn", row(_rB, 2).get("ev"), "despawn")
+# PRECONDITION: this is only a despawn because elapsed landed in the band. If
+# it came out a death the row set would look right and prove something else.
+chk("B: admitted by the band, not by luck",
+    (row(_rB, 2).get("elapsed_sec"), row(_rB, 2).get("window_sec")), (2450, 2400))
+chk("B: graded high, being untouched", row(_rB, 2).get("confidence"), "high")
+# The kill record must not count any of it as a kill.
+_hB = b.boss_history(_lf2.name)
+_byB = {(r["type"], r["server"]): r for r in _hB["history"]}
+chk("B: a despawned boss logs no kill",
+    _byB[("franky", "EU IV")]["kills_logged"], 0)
+# icegolem wrote NOTHING across either timeline, and the reason is the SEEDING
+# guard rather than anything about observation rows: a boss already alive when
+# its shard is first seen emits no spawn row, because spawn_t would have to be
+# invented. So it has no bucket at all - which also means this fixture's
+# second entry, carried purely to satisfy guard 2, adds no rows to assert around.
+chk("B: the carrier boss wrote no rows, being alive when its shard was seeded",
+    [r for r in _rows(_lf2.name) if r["type"] == "icegolem"], [])
+chk("B: so it has no history bucket either",
+    ("icegolem", "EU IV") in _byB, False)
+os.unlink(_lf2.name)
 
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")

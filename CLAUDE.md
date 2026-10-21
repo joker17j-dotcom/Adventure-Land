@@ -829,6 +829,16 @@ time on 2026-10-18.
   `t` is correct for all three; parse it in two steps, because
   `Date.parse(e.death_hi || e.t)` yields NaN on a malformed `death_hi` and
   drops a real row in silence. Fixed in Ranger v101.
+- **THE LOG IS APPEND-ORDERED AND `t` IS NOT MONOTONIC WITH IT, WITHIN A
+  SINGLE FIGHT.** Made concrete 2026-10-21 by driving the real poller: the
+  closing `hp` row is WRITTEN BEFORE the death row and carries a LATER
+  timestamp, because a death row's `t` is the poll-bracket midpoint while the
+  closing row's `t` is the poll that observed the end. In the fixture the death
+  reads 1157.5 against a closing sample at 1225, so sorting those rows by `t`
+  puts the death BEFORE the final hp reading of the fight it ended. Same hazard
+  as Ranger v100's ordering guard from the other direction - there an estimate
+  was compared against an observation, here it reorders rows inside one fight -
+  and it is asserted in both directions so neither reading can drift.
 - **THE BULLET BELOW ALREADY SAID THIS, AND IT WAS STILL MISSED - A FACT FILED
   UNDER ONE CONSEQUENCE IS NOT FOUND WHEN YOU NEED ANOTHER.** The `ttk_sec`
   entry has stated since 2026-10-18 that `death_t` is the midpoint and that
@@ -978,10 +988,26 @@ time on 2026-10-18.
 - **A DESPAWN ROW IS NOT A DEATH ROW, AND GUESSING ITS FIELD NAMES COSTS A FALSE
   NEGATIVE.** `despawn` is its own `ev` value, so a filter on `ev === 'death'` never
   sees one - the retained log holds 1,095 deaths and 14 despawns. Its fields are
-  `last_hp`, `last_pct`, `spawn_t`, `window_sec`, `elapsed_sec`, `reason`, NOT the
-  `hp`/`max_hp` that spawn and death rows carry. Reading `hp_pct` or `pct` off one
-  returns undefined, which looks exactly like "the bridge records no hp at death" -
-  a reading published on 2026-10-19 and retracted the same hour.
+  `last_hp`, `last_pct`, `spawn_t`, `window_sec`, `elapsed_sec`, `reason`.
+  Reading `hp_pct` or `pct` off one returns undefined, which looks exactly like
+  "the bridge records no hp at death" - a reading published on 2026-10-19 and
+  retracted the same hour.
+  **THIS BULLET THEN MISDIRECTED ABOUT WHICH CLASS DIFFERS, until 2026-10-21.**
+  It ended "NOT the `hp`/`max_hp` that spawn and DEATH rows carry", and a death
+  row carries no `hp`/`max_hp` at all - it carries `last_hp`/`last_pct` exactly
+  like a despawn row. So following the bullet written to prevent this trap, to
+  read `hp` off a death row, returns undefined: the original error relocated
+  into its own warning. The browser session caught it against the live log and
+  it was re-derived from the write path the same hour.
+  **THE SPLIT IS NOT death-vs-despawn AND NOT spawn-vs-terminal EITHER. There
+  are FOUR classes, by what KIND of reading the row holds:**
+  `spawn` -> `hp`, `max_hp`; `hp` (the observation row) -> `hp`, `max_hp`,
+  `pct`; `death` and `despawn` -> `last_hp`, `last_pct`; `lost` -> NEITHER, no
+  hp field of any kind. So a LIVE reading is `hp` and a LAST-KNOWN reading is
+  `last_hp`, `lost` has nothing, and "terminal" is not the predicate - `lost`
+  is terminal with no hp while an `hp` row is non-terminal with one. Enumerated
+  from the `_emit` payloads rather than from a sample, so a fifth class cannot
+  hide behind a window that happened to contain no examples.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
@@ -1839,6 +1865,145 @@ The Claude Code session commits with git and should never use this route.
   ("invalid literal/lengths set"), and `DecompressionStream` via Blob/Response
   is CSP-blocked on GitHub. Plain base64 of the JSON works.
 
+## Selling, banking and what must never be vendored
+
+**Both sessions.** Operator's rulings 2026-10-20, in force on BOTH the merchant
+and the ranger. Analysis by the browser session; the figures were measured live.
+
+- **FOUR THINGS ARE NEVER SOLD, on either character.** (a) `dexbelt` and
+  `intbelt`, which are not plentiful; (b) exchangeables, restating the
+  2026-10-03 rule that currently exists in `Party/Merchant.js` and nowhere
+  else; (c) anything valuable on the MARKET; (d) and when the bag is full and
+  cannot be emptied safely, THE BANK IS THE NEXT RUNG, NOT THE VENDOR.
+- **`CONFIG.selling.whitelist` IN `Party/Ranger.js` IS CLOSED - DO NOT "FIX"
+  IT.** `dexamulet`, `intamulet`, `harmor` and `wbook0` sit on it and look like
+  live `GEAR_PROGRESSION` items. Operator's call: wbook0's slot has been moved
+  past, and the amulets are plentiful enough that losing one is not a real
+  loss. This is a recorded decision in the same class as the
+  angelwings/puppyer/tshirt7 removals in the OpenGifts changelog.
+- **THE VENDOR PRICE LIES ABOUT A WHOLE CLASS OF ITEM, AND A CHEAPEST-FIRST
+  SORT PUTS EXACTLY THAT CLASS FIRST.** `Party/Merchant.js` has carried the
+  warning since OpenGifts v3, naming the two worked examples: `cxjar` vendors
+  for 1 and sells for ~1,000,000; `tshirt3` vendors for 72 and sells for
+  ~200,000,000. `runInventoryRelief()` in `Party/Ranger.js` then reimplemented
+  a cheapest-first sort - `reliefSellable()` orders ASCENDING by
+  `calculate_item_value` - without the guard that warning exists for, and
+  `targetFreeSlots` is 21, so a run works a long way down the list. Measured
+  live in departure order: cxjar 1, ashleaf 21, tshirt3 72, reefglass 108,
+  snakeoil 120, feather0/seashell 480, stormfeather 1,080, leather 1,800,
+  funtoken/monstertoken 7,200, voidthread 14,400,
+  essenceofether/essenceoffire 24,000, then all five DUNGEON keys and
+  dexbelt+0 at 30,000. The three BANK keys survive BY ACCIDENT ONLY - dkey
+  43,200,000, ukey 30,000,000, bkey 3,000,000 sort to the bottom. `neverSell`
+  is 19 potions, boosters and scrolls and catches none of it.
+  **A WARNING IN ONE SCRIPT DOES NOT PROTECT ANOTHER**, which is the same shape
+  as the single-valued goobrawl mapping sitting in four files.
+- **THE FREE PRICE SOURCE IS THE ONE THAT CANNOT DO THE JOB.**
+  `scoutItemPrice()` is the obvious thing to reach for - no network, already
+  written, already used - and it is `calculate_item_value(it)` times
+  `G.multipliers.secondhands_mult`, so it is derived from THE SAME NUMBER that
+  lies about this class. cxjar stays ~1 gold through it; tshirt3 stays ~72. It
+  is a sound replacement-cost anchor and useless as a market guard, so reaching
+  for it because it is cheap produces a rule that passes review and protects
+  nothing. Rule (c) needs a real feed: ALData or `pull_merchants`.
+- **THERE ARE THREE INDEPENDENT PRICE SOURCES AND NONE OF THEM IS THE BRIDGE** -
+  `aldata.earthiverse.ca`, the game's own
+  `https://adventure.land/api/pull_merchants`, and `scoutItemPrice()` which
+  touches no network at all. A "protections and caps want opposite fail-safes"
+  dilemma was raised and WITHDRAWN on the operator's correction: it only bites
+  with all three down at once, and the review pack removes even that corner.
+- **THE RANGER NEEDS NO NEW INFRASTRUCTURE TO READ A REAL FEED, and the
+  reasoning that said otherwise was wrong in an instructive way.**
+  `Party/Ranger.js` has ZERO market plumbing and does already speak to the
+  bridge for boss events, and that pair was read as "rule (c) REQUIRES the
+  bridge". It does not: the ranger runs at the `adventure.land` origin, so
+  `pull_merchants` is same-origin and credentialed from its own CODE context -
+  which `Party/Merchant.js` proves by construction, fetching that exact URL
+  from exactly there. **THE BRIDGE IS A PUBLISHER, NOT A SOURCE.** What stays
+  true is the reason the bridge was attractive, which was never the data: do
+  NOT duplicate the merchant's market client in the ranger. `gtQuote`,
+  `gvBaseValue`, the fallback chain, the caching and the pacing are a few
+  hundred lines that exist because the feed needs handling, and a second copy
+  drifting from the first is the whole-file-handoff hazard in another costume.
+  So: ONE computed never-sell set - names whose best market bid materially
+  exceeds their vendor value - published where both scripts can read it, with
+  the bridge as the natural publisher BECAUSE BOTH ALREADY POLL IT.
+- **RELIEF MUST NOT REUSE `CONFIG.selling.whitelist`, AND THE REASON IS THAT IT
+  WOULD BE INERT RATHER THAN WRONG.** One curated list with two consumers looks
+  like the elegant answer. `sellItems()` runs every `maintenanceLoop` tick and
+  vendors every whitelist name on sight, so by the time the pack is full there
+  are no whitelist items left in it - the bag fills with precisely the
+  non-whitelist set a whitelisted relief would refuse to touch. Dead code in
+  every state that matters, retracted by its own author before anyone built it.
+- **(a) AND (b) ARE ALREADY HALF DONE ON THE MERCHANT, measured not assumed.**
+  `isExchangeable()` gates both sell paths, so (b) is done. `intbelt` is
+  already covered because `isTier2OrTier3GearItem('intbelt')` is TRUE - priest
+  tier2 belt intbelt@4, mage tier2 intbelt@4, mage tier3 intbelt@5 - while
+  `dexbelt` has ZERO `GEAR_PROGRESSION` entries since `windbelt` took the
+  ranger belt slot. So the merchant needs `dexbelt` alone, and it must NOT lean
+  on `CONFIG.pontyBuy.items` membership for it: that list already does double
+  duty as a sell guard via `pontyWanted()`, undocumented until now, so making a
+  scarcity protection depend on a BUY preference means removing the buy
+  silently reopens the vendor path.
+- **THE LEVEL GUARD IS ASYMMETRIC AND THAT IS WORTH KNOWING RATHER THAN
+  FLATTENING.** Relief checks `level > 0`; the merchant's aggressive pass has no
+  level check at all. So a `dexbelt+2` is safe in Dexon's bag and exposed in
+  Meltymerch's.
+- **THE REVIEW PACK IS THE OPEN CHANNEL, AND IT IS WHAT MAKES THIS A SYSTEM
+  RATHER THAN A GUESS.** The ladder: the mule collects; else sell the
+  classified-safe set; else bank the remainder TO ONE DEDICATED REVIEW PACK;
+  else carry on. The operator drains that pack by hand and rules on each item.
+  The derived rules are a CLOSED set and "the vendor price lies about this
+  item" is not a type, so they can never cover the class completely - cxjar and
+  tshirt3 are known only because somebody hit them once and wrote it down.
+  Closed rules plus an open discovery channel improves; closed rules alone rot.
+  **SO THE CORRECT RESPONSE TO A BAG THAT KEEPS FILLING IS TO READ THE PACK,
+  NEVER TO WIDEN WHAT RELIEF WILL SELL.** Widening is the tempting fix and it
+  is the one that silently reopens everything above.
+- **STANDING CONVENTION: THE SCRIPTS MUST NOT ENCODE THE OPERATOR'S PACK
+  CATEGORISATION.** Operator 2026-10-20: the packs are roughly categorised and
+  that scheme is explicitly IN FLUX, so a script mirroring it becomes a second
+  thing to keep in step with something still moving. The scripts therefore know
+  exactly ONE pack name - the review pack - and use the no-pack default for
+  everything else, which is why `Party/Merchant.js`'s seven `bank_store()` call
+  sites keep passing no pack and the server keeps choosing. A proposal to name
+  the packs at each site was WITHDRAWN. Teaching a script which pack holds what
+  is precisely the improvement a future session will offer; it is the thing not
+  to do.
+- **ON A FULL OR MISSING REVIEW PACK, STOP AND REPORT - DO NOT FALL BACK TO THE
+  DEFAULT.** This is the one place the explicit pack matters, and the obvious
+  safety net is what breaks the instrument: a `storage_full` spill into the
+  default pack scatters unclassified items through 294 slots of categorised
+  stock, silently, which is the exact state the pack exists to prevent. Carrying
+  on full is bounded and already logged; a buried signal is not recoverable.
+- **BANK STATE, 2026-10-20: 7 packs, 42 slots each, 294 total, 51 FREE** -
+  items0 0 free, items1 14, items2 18, items3 4, items4 4, items5 1, items6 10.
+  82.7% full. Next pack is `items7`, a couple of hundred million. Operator's
+  call: 51 free slots is enough runway at the current fill rate, so where
+  no-pack deposits land is not a problem to design around.
+- **THE OPERATOR'S BANK ACCESS AND THE SCRIPT'S ARE DIFFERENT OPERATIONS, so a
+  hand-run UI test measures the wrong mechanism.** They must click a bank NPC to
+  open one specific pack and must be in range, and the packs are not all in
+  range of the entrance; the SCRIPT reaches every pack from anywhere in the bank
+  map once `character.bank` populates, with no UI involved. A proposed test -
+  buy a pack, deposit one non-stackable with no pack argument, see where it
+  lands - could not have worked for this reason. It also explains why
+  `api_call('load_bank')` returns all seven packs from anywhere and why
+  `bank_store(idx, pack)` needs no positioning.
+- **`Party/Ranger.js` HAS NO BANK PLUMBING AT ALL - this is new capability, not
+  config.** Measured: zero `bank_store`, zero `bank_retrieve`, no `CONFIG.bank`,
+  no bank map. Every "bank" string in that file is monster-hunt token language
+  ("banking a hunt"), which is the false positive a name search invites. It
+  needs `CONFIG.bank = { map: 'bank' }` in the merchant's shape, a `smart_move`
+  into that map, and `bank_store(idx, reviewPack)`. Read the merchant's banking
+  first so the `storage_full` and `not_in_bank` handling matches -
+  `character.bank` populates on ARRIVAL rather than with the map change, and
+  `arbStockRetrieve` already carries a branch for "at the bank but
+  `character.bank` is empty". One hazard, not a blocker: relief already leaves
+  the farm spot and sets `state.sellingOff`, so an excursion is sanctioned, but
+  the bank is a MAP TRANSITION - check what `holdCohesion` does while a bank run
+  is in flight.
+
 ## Testing
 
 - **There IS one now: `node Tests/run.js`.** This section said there was no
@@ -1847,11 +2012,12 @@ The Claude Code session commits with git and should never use this route.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21: 429 JS assertions across SEVEN suites, plus 217
-  from the python bridge suite the runner shells out to and folds in, for
-  `all 646 pass`.** It read 586 and 575 the previous day, 285 / 61 / 346
-  before that, and 114 before that - SIX figures in two days, which is the point rather than an embarrassment: re-derive from a run,
-  never from any note here. Each supersession is appended here rather than
+  **COUNT AS OF 2026-10-21, LATER: 429 JS assertions across SEVEN suites, plus
+  239 from the python bridge suite the runner shells out to and folds in, for
+  `all 668 pass`.** It read 646 earlier the same day, 586 and 575 the day before, 285 / 61 / 346
+  before that, and 114 before that - SEVEN figures in two days, which is the
+  point rather than an embarrassment: re-derive from a run, never from any note
+  here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.
   The figure above was true when written and is kept as the instance rather than
@@ -1916,6 +2082,18 @@ The Claude Code session commits with git and should never use this route.
   of what it said, and a reader scanning names would have been reassured by it.
   State the mechanism: a count, plus the same search over the body with the
   legitimate occurrence stripped out.
+- **A TEST THAT DIES INSTEAD OF REPORTING WILL BE DEBUGGED AS A TEST BUG.**
+  Measured twice in `Tests/bridge/test_despawn.py` on 2026-10-21, both times
+  while the assertion was CORRECTLY catching a real mutation: `str.index` raised
+  when a call site was missing, and `seq[i]` raised when the row set came back
+  short. A raise aborts before the summary line, so the output is a traceback
+  rather than a named failure - and a traceback inside the harness presents a
+  caught defect as broken tooling, which is the one failure mode guaranteed to
+  be investigated in the wrong file. **Whatever a test looks up to prove
+  something is ABSENT must tolerate the absence**: `find` returning -1 rather
+  than `index` raising, a `row(seq, i)` helper returning `{}` rather than bare
+  subscripting. The hardened versions turn the same two mutations into 5 and 10
+  named failures.
 - **The divergence checks are the ones most likely to earn their keep.**
   `suite_relay.js` runs against Ranger, Priest AND Mage and fails if the
   relay block or `bossHopFollow` stop being identical.
