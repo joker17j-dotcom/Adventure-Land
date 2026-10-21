@@ -1,3 +1,51 @@
+## v110
+
+**The Ponty buy cap no longer applies to items that do not stack**, and a
+second defect found on the way there is fixed with it. Operator's ruling,
+2026-10-21: "The previous buy cap was predicated on items that stack and only
+buying up to a single full stack. For items that do not stack there is not
+supposed to be a buy cap from ponty. There may be adjustments if this causes
+bank space issues but at this time it is deemed unlikely."
+
+`pontyStackCap()` returned `it.s || 1`. Two separate things were wrong with
+that one expression:
+
+1. **An unstackable id capped at one copy** - 23 of the 58 ids on the buy list.
+   This is the one the operator reported. There is no stack to fill, so the cap
+   had nothing to mean.
+2. **An `s: true` id returned the BOOLEAN**, and the call site's
+   `have >= stackCap` coerces `true` to 1 - so a further 19 ids were ALSO
+   capped at a single copy while stacking to 9,999: leather, funtoken,
+   monstertoken, mysterybox, weaponbox, armorbox, the six cake slices,
+   scroll3/scroll4/cscroll3, essenceofether, essenceoffire, feather0, candy0.
+
+`G.items[name].s` is a truthiness flag carrying an OPTIONAL size - 201 entries
+in `design/items.js` are `s: true` and 43 carry a count - and the game resolves
+the boolean itself, in `can_stack()`:
+`(G.items[n].s===true && 9999 || G.items[n].s)`. The 9999 the function now
+returns is that expression's own answer, not a number chosen here.
+
+**The comment above the function was right the whole time.** It read "23 stack
+at 9,999" - 19 with `s: true` plus 4 with `s: 9999`, exactly correct - sitting
+directly on top of code that capped 19 of those 23 at one copy. Nothing this
+project checks would have caught it: re-verifying the claim confirms the claim,
+the blob matches, a grep finds the text present and correct.
+
+Order is load-bearing: `Number(true)` is 1, so a numeric-first tidy-up
+reinstates the bug. `=== true` is tested first and the ordering is pinned.
+
+`Tests/suite_merchantbuy.js` is new - 23 assertions, a separate suite because
+this is a BUY concern and filing it under `suite_merchantsell.js` is the
+name-lies-about-contents trap. All four mutations measured as caught: the old
+expression (7 failures), each branch removed alone (2 and 2, so neither half is
+proven by the other's work), and the order swapped (1). Full run: all 753 pass.
+
+**One dead entry reported, not changed: `cscroll4` is not an item.** The game
+has cscroll0 through cscroll3, so that id matches nothing Ponty can offer. The
+buy list is marked EDIT THIS and is the operator's.
+
+Not deployed: the operator batches deploys.
+
 ## v109
 
 `dexbelt` and `intbelt` added to `PROTECTED_ITEM_NAMES`, closing a MEASURED

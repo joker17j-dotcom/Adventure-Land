@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v109
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v110
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -860,8 +860,9 @@ const CONFIG = {
 		/* 'always' | 'low' | 'never'. The bank trip happens AFTER the buying is
 		   finished, never between two purchases, so a hop is never taken with the
 		   list half-bought. */
-		/* Stop buying an id once the bank already holds a full stack of it -
-		   one copy for anything that does not stack. ashleaf is why: 38,553 in
+		/* Stop buying an id once the bank already holds a full stack of it, and
+		   NEVER on an id that does not stack - operator 2026-10-21, an unstackable
+		   piece has no stack to fill. ashleaf is why the cap exists: 38,553 in
 		   the bank on 2026-10-18, 3.86 stacks, bought here and banked forever.
 		   Reads live quantities via pontyBankQty(); if that read fails the pass
 		   proceeds uncapped and says so. -> MerchantComments.md#capAtOneStack */
@@ -5905,16 +5906,35 @@ function isPontyBought(name) {
 	return !!name && pontyWanted().has(String(name));
 }
 
-/* One full stack, as the game defines it. Anything that does not stack has no
-   `s` and caps at a single copy, which is the point - Ponty re-offers the same
-   pieces forever. Measured 2026-10-18 across the 58 pontyBuy ids: 22 do not
-   stack, 10 stack at 10-100 (the dungeon keys at 50), 23 stack at 9,999.
+/* One full stack, as the game defines it - and NO CAP AT ALL on an item that
+   does not stack. Operator's ruling 2026-10-21: "For items that do not stack
+   there is not supposed to be a buy cap from ponty." The cap only ever meant
+   "stop once the bank holds a full stack", and an unstackable piece has no
+   stack to fill, so the old single-copy fallback was answering a question
+   nobody asked.
+   `s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, NOT A NUMBER. 201 entries
+   in design/items.js carry `s: true` and 43 carry a count, and the GAME ITSELF
+   resolves the boolean - can_stack() bounds a merge by
+   `(G.items[name].s===true && 9999 || G.items[name].s)`. The 9999 below is that
+   expression's own answer, not a default chosen here.
+   THE ORDER OF THESE TESTS IS LOAD-BEARING. `it.s || 1` returned the BOOLEAN
+   for an `s: true` item, and the call site's `have >= stackCap` coerces true to
+   1 - so 19 of the 58 ids were capped at ONE COPY while the comment on this
+   very function said they stack at 9,999. A correct comment sat above
+   contradicting code for three days. Number() would reinstate it, Number(true)
+   being 1, which is why `=== true` is tested BEFORE the numeric branch.
+   Measured 2026-10-21 across the 58 pontyBuy ids: 23 do not stack, 19 carry
+   `s: true`, 8 dungeon keys stack at 50, 4 at 9,999, offeringp 1000, offering
+   100, offeringx 10. `cscroll4` is not an item at all - the game has cscroll0
+   through cscroll3 - so that id matches nothing and is inert on the list.
    -> MerchantComments.md#pontyStackCap */
 function pontyStackCap(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
 	const it = g && g.items && g.items[String(name)];
 	if (!it) return null;
-	return it.s || 1;
+	if (it.s === true) return 9999;
+	if (typeof it.s === 'number' && it.s > 0) return it.s;
+	return null;
 }
 
 /* Live bank quantities without travelling. api_call('load_bank') answers from

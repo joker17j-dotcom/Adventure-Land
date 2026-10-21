@@ -2493,6 +2493,41 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   (windbelt@2 from the +1 Dexon wears) = ~3.8M against 1.79B banked, so GOLD IS
   NOT THE CONSTRAINT - Ponty stock is, which makes the stack-cap exemption
   matter more than the price cap: without it the buy never fires at all.
+- **THAT STACK-CAP EXEMPTION IS NOW AUTOMATIC, AND THE RULING THAT SUPPLIED IT
+  UNCOVERED A SECOND DEFECT NOBODY HAD REPORTED.** Operator 2026-10-21: "For
+  items that do not stack there is not supposed to be a buy cap from ponty."
+  `pontyStackCap()` returned `it.s || 1`, so every unstackable id capped at ONE
+  COPY - 23 of the 58 on the buy list, dexbelt included once it is added, which
+  is why the bullet above needed an exemption at all. Fixed in Merchant v110;
+  no exemption line is needed any more.
+- **`G.items[name].s` IS A TRUTHINESS FLAG CARRYING AN OPTIONAL SIZE, NOT A
+  NUMBER - AND READING IT AS ONE CAPPED 19 MORE IDS AT A SINGLE COPY.** 201
+  entries in `design/items.js` carry `s: true` and 43 carry a count. `it.s || 1`
+  returned the BOOLEAN for the first group, and the call site's
+  `have >= stackCap` coerces `true` to 1 - so leather, funtoken, monstertoken,
+  both boxes, the six cake slices, the scrolls, the essences, feather0 and
+  candy0 were all bought one-at-a-time while stacking to 9,999. **THE GAME
+  RESOLVES THE BOOLEAN ITSELF**, in `can_stack()` at
+  `js/old_common_functions.js:409`:
+  `a.q+b.q+(d||0) <= (G.items[a.name].s===true && 9999 || G.items[a.name].s)`,
+  so 9999 is the game's own answer and not a default anyone chose. Order is
+  load-bearing in any rewrite: `Number(true)` is 1, so testing the numeric
+  branch first - the natural way to tidy this up - reinstates the bug exactly.
+  **AND MY FIRST SCAN OF THE BUY LIST MISCLASSIFIED ALL 19**, because it matched
+  `"s"\s*:\s*(\d+)` and an integer pattern cannot see `true`. Same family as
+  "a design value may be an expression, not a literal": the regex answered a
+  question about integers and was read as an answer about stackability.
+- **A CORRECT COMMENT SAT ON TOP OF THAT CODE THE WHOLE TIME, WHICH IS THE PART
+  NO CHECK HERE WOULD HAVE CAUGHT.** The comment above `pontyStackCap()` read
+  "23 stack at 9,999" - 19 with `s: true` plus 4 with `s: 9999`, exactly right -
+  while the function capped 19 of those 23 at one copy. Re-verifying the claim
+  confirms the claim; the blob matches; a grep finds the text present and
+  correct. It is the `CaveRun.js:227` shape from a third direction, and the only
+  thing that finds it is reading the code BESIDE a claim and asking whether it
+  does what the claim says.
+- **`cscroll4` IS NOT AN ITEM.** The game has cscroll0 through cscroll3, so that
+  id on `CONFIG.pontyBuy.items` matches nothing Ponty can offer. Reported rather
+  than removed - that list is marked EDIT THIS and is the operator's.
 - **THE REVIEW PACK IS THE OPEN CHANNEL, AND IT IS WHAT MAKES THIS A SYSTEM
   RATHER THAN A GUESS.** The ladder: the mule collects; else sell the
   classified-safe set; else bank the remainder TO ONE DEDICATED REVIEW PACK;
@@ -2826,10 +2861,14 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 486 JS assertions across EIGHT suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 509 JS assertions across NINE suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 730 pass`.** It read 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - TEN
+  `all 753 pass`.** The ninth is `suite_merchantbuy`, split from
+  `suite_merchantsell` rather than added to it because the stack cap is a BUY
+  concern and the sell suite's name would have stopped being true of its
+  contents - the `never_observable` lesson applied before it cost anything.
+  It read 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - ELEVEN
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
