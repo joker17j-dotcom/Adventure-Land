@@ -3110,6 +3110,47 @@ a day.
   in 4.011s, the signature this file records). So a tuning loop no longer costs
   a day and no longer waits on a cave run, which retires the once-daily time-box
   that applied to v18.
+- **ITEM 2 WAS BUILT AND REVERTED UNBUILT, BECAUSE IT CONTRADICTS A RECORDED
+  OPERATOR RULING THAT NEITHER SESSION HAD IN FRONT OF IT. THE OPERATOR HAS TO
+  RULE BEFORE IT CAN LAND.** Written as CaveRun v21 on 2026-10-21 - the clause
+  `gapNow > L.releaseAt || L.mode === 'travel'` deleted so the no-ratchet rule
+  is unconditional - and three assertions in `Tests/suite_caverun.js` went red
+  on it. Not stale assertions: one of them carries **"COMBAT IS DELIBERATELY
+  UNCHANGED - the operator's rule is that kite range is normal in combat and may
+  be exceeded out of combat"**, and the other two pin the retreat still being
+  allowed below the combat `releaseAt`. So the change removes a freedom the
+  operator decided to keep.
+  **THE SUITE CAUGHT A POLICY CONFLICT RATHER THAN A DEFECT, which is a use it
+  was not designed for and the most valuable red it has produced.** Everything
+  else this file records about the harness is about catching code that is wrong;
+  this was correct code implementing an agreed plan, refused because an earlier
+  decision said otherwise. **A GREEN SUITE MEANS "NOTHING I KNOW OF OBJECTS",
+  AND AN ASSERTION THAT ENCODES A RULING IS THE ONLY THING THAT CAN OBJECT ON
+  THE OPERATOR'S BEHALF WHEN THEY ARE NOT IN THE ROOM.**
+  **AND REVERTING WAS THE CALL EVEN THOUGH THE PLAN WAS AGREED**, because the
+  agreement was between the two sessions: the browser session proposed item 2,
+  this session accepted the packaging, and neither of us had seen the ruling.
+  Two Claudes agreeing is not an operator decision, and the tempting move -
+  rewrite the three assertions to match the new behaviour - would have erased
+  the only record of the ruling in the process.
+  **THE TENSION IS REAL AND WORTH STATING PRECISELY, so the operator is not
+  asked a vague question.** The ruling is about kite RANGE: in combat the band
+  is 180/120 and a follower may stray further. Item 2 does not narrow that band
+  - it removes DIRECTION freedom, so a follower inside `releaseAt` could
+  retreat from a threat and no longer could, kiting tangentially instead. So the
+  two are not flatly contradictory, and the question is whether "kite range is
+  normal in combat" was meant to cover retreating at close range or only the
+  width of the band. Against allowing it: the oscillation mechanism lives
+  exactly there, and a tighter combat band is unsafe until it is gone. For
+  keeping it: kiting is a survival mechanism and the mage has died to a single
+  attacker before.
+  **ITS PROVENANCE IS THIN AND THAT IS RECORDED RATHER THAN USED AS A REASON TO
+  OVERRIDE IT.** Searched every tracked file at the revision,
+  whitespace-flattened: the ruling appears ONCE, in that test comment, and
+  nowhere in `CLAUDE.md`, `CaveRun.js` or any changelog. So it is single-sourced
+  and undated, which makes it worth re-confirming with the operator - but a
+  thinly-sourced ruling is still a ruling, and "I could only find it in one
+  place" is not authority to reverse it.
 - **THE OSCILLATION FIX FELL OUT OF ALL THREE QUEUES AT ONCE, AND THAT IS A
   SHARPER FORM OF "A FIX NOBODY IS NAMED FOR IS A FIX NOBODY MAKES".** On
   2026-10-21 this session's queue read "skip row, then (c), then banking", the
