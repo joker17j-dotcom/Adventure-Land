@@ -1903,6 +1903,18 @@ Claude Code session stops after `browser_code_eval`.
   `merchantHeaderVersion()` returned null, the ungated regex was measured
   beside it returning 2, and the memoised `merchantVersion()` held 106 with
   `parent.MERCHANT_VER` 106 and `merchantBuild()` "v106".
+- **"DEPLOYED" AND "RUNNING" ARE A THIRD PAIR, AFTER viewed-vs-engaged AND
+  repo-vs-slot, AND MELTYMERCH IS IN IT RIGHT NOW BY DESIGN.** Operator,
+  2026-10-21: OpenGifts v11 is LIVE IN ITS SLOT BUT NOT ACTIVE, and becomes
+  active the next time they have the merchant open boxes. So a probe of
+  Meltymerch legitimately finds `Party/Merchant.js` today and `OpenGifts.js`
+  tomorrow with NOTHING having been deployed in between - the slot content did
+  not change, the operator's rotation did. This is the confound that already
+  produced a retracted paste block, where `CONFIG.homeServer` and
+  `parent.MERCHANT_VER` reading undefined looked exactly like a stale merchant
+  and was a different script entirely. `parent.PARTY_BUILD[...].script` and the
+  live lexical scope answer WHICH SCRIPT; neither answers WHEN the operator
+  will next rotate it, and nothing in the repo records that.
 - **A DEPLOY IS PER-SLOT, AND IS NOT VERIFIED BY HAVING BEEN PERFORMED.** "The
   operator pushed the files" is not "the files are live on every character", and
   the gap is not visible from here. Three times on 2026-10-18 a session asserted
