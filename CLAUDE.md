@@ -304,6 +304,19 @@ emptied, which is the single most expensive mistake this file can cause.
   is a 2x error in how long the party is told to stay. The real values:
   dragold 25,600,000, crabxx 960,000, franky 120,000,000, icegolem
   16,000,000, mrgreen 36,000,000, all `cooperative: true`.
+  **RE-READ FROM LIVE `G` ON 2026-10-21 AND EVERY ONE IS UNCHANGED, which
+  RETRACTS the largest item on the patch-rot list.** The update notes say many
+  monsters were changed "including Giga Crab and Dragold", and that was raised
+  here as the change that would move every bossHop number. It moves NONE of
+  them: the five figures above are intact, so `requiredDwellSec` is unaffected
+  and the dwell maths needs no revision. Whatever changed about those monsters
+  was not their hp. **A PATCH NOTE NAMING A MONSTER IS NOT A STATEMENT ABOUT THE
+  FIELD YOU CARE ABOUT**, and reading the notes rather than `G` would have cost
+  both sessions a day of re-derivation.
+  Also read the same morning, worth having: mrpumpkin 36,000,000, grinch
+  24,000,000, rgoo 1,000,000, bgoo 100,000, phoenix 160,000, snowman 1,200,
+  horseman 30,000,000, zombie 9,000, ghoul 32,000, gargoyle 6,000,000 - all
+  cooperative - and mummy 12,000, which is NOT cooperative.
 
 ## A comment is a claim, and claims rot
 
@@ -458,10 +471,21 @@ first - this section is what it was learned on.
   `realmfatigue` has NO `debuff` flag, so the loop never considers it - Realm
   Fatigue remains the irreducible cost of a hop, 30 minutes, flat in the
   number of hops, which is still the argument for batching.
-  The same drink clears the 23 non-persistent debuffs (frozen, poisoned,
+  The same drink clears the NON-PERSISTENT debuffs (frozen, poisoned,
   stunned, cursed, deepfreezed, sundered and the rest), so it is a combat
   panic button too; of the six PERSISTENT debuffs - withdrawal, xshotted,
   notverified, authfail, hopsickness, block - only hopsickness is carved out.
+  **COUNTED LIVE 2026-10-21: 30 debuffs total, 6 persistent, 24
+  non-persistent** - this read "23 non-persistent" until then, so ONE DIGIT
+  MOVED AND NOTHING ELSE DID. Of the three conditions added by the Halloween
+  patch only `hexed` is a debuff at all (`debuff` true, `persistent` false,
+  duration 5000); `rising` and `spooked` are not debuffs. **THE SIX PERSISTENT
+  DEBUFFS ARE UNCHANGED**, so the carve-out argument above survives untouched
+  and the patch needed a recount rather than a rewrite.
+  **`hexed` IS -20 SPEED AND MUMMIES APPLY IT INDEPENDENTLY OF THE PRIEST'S
+  CURSE**, which makes it a live movement debuff in circulation against a leash
+  band of 180/120 - relevant to the cohesion work rather than to snakeoil.
+  `spooked` is +40 the other way.
 - **Realm Fatigue's own G entry**: duration 1800000, persistent, and NO
   penalty fields at all - it is purely the home-bonus and kiss block described
   above. `realmfatigue_logic` opens
@@ -682,12 +706,74 @@ this ranking until a Ranger build is actually running on him.
   interrupt to absorb. Where a scheduled event is known for a slot, no
   higher-ranked boss outranks it, and it is not spawning on home, a PREPOSITION
   on that server is required.
-- **THE NINE EVENT WINDOWS NEVER OVERLAP, so nothing ever has to arbitrate
-  between two scheduled events.** Measured 2026-10-18: dailies at game-hours 13
-  and 20, nightly at 23; windows 2400s except goobrawl at 540s; region offsets
-  ASIA +7, EU +1, US -5. That lands them at 01:00, 04:00, 06:00, 12:00, 13:00,
-  16:00, 18:00, 19:00 and 22:00 UTC - every adjacent pair at least an hour
-  apart. The nine are a queue, not a contention problem.
+- **THE NINE BASE WINDOWS NEVER OVERLAP, AND THAT HELD UP EXACTLY - BUT THE
+  "NOT A CONTENTION PROBLEM" HALF IS FALSE DURING A SEASON.** The base
+  arithmetic is CONFIRMED against upstream `43b2c8fc`: dailies at realm hours 13
+  and 20, nightly at 23, offsets `TIMEO = {EU: 1, US: -5, ASIA: 7}`, and
+  `realm = (UTC + offset) % 24` so `UTC = realm - offset`. Recomputed rather
+  than re-derived by hand, it reproduces 01:00, 04:00, 06:00, 12:00, 13:00,
+  16:00, 18:00, 19:00 and 22:00 UTC exactly - which is the check that the method
+  is right, not just the answer.
+  **HALLOWEEN ADDS 22 CROSS-EVENT OVERLAPS, so a queue DOES have to arbitrate.**
+  `SLOTS` in `node/logic/event_schedule.js` carries three seasonal slots beyond
+  the two pools, and they collide in two distinct ways:
+  (1) `graveyard` runs at realm ODD hours, minute 30, for 600s - which lands on
+  EVEN UTC hours at :30 in ALL THREE regions at once, 12 times a day each. The
+  pool slots run :00 to :40 (2400s), so graveyard overlaps the LAST TEN MINUTES
+  of six of the nine base windows - 04, 06, 12, 16, 18 and 22 UTC, the even ones
+  - in every region. 18 of the 22. The three ODD base hours (01, 13, 19) are
+  untouched, because graveyard never lands on an odd UTC hour.
+  (2) `witchcipher` (realm 6 and 18, 1680s) and `horseman` (realm 0, 2400s)
+  open SIMULTANEOUSLY ON DIFFERENT REGIONS at 05:00, 17:00 and 23:00 UTC - four
+  collisions, because 23:00 carries witchcipher on BOTH US and ASIA against
+  horseman on EU. Three events at one instant, on three different shards, and
+  the party can be on one.
+  So "the nine are a queue, not a contention problem" was true of the base three
+  slots and is not true of the live lineup. **A NO-CONTENTION PROPERTY PROVED
+  OVER ONE SLOT SET DOES NOT SURVIVE THE SET GROWING**, and seasons grow it.
+- **`horseman` IS ITS OWN SLOT AT REALM HOUR 0, NOT A THIRD MEMBER OF THE
+  NIGHTLY POOL - which settles a question `G.events` could not.** Its `G` entry
+  reads `type: "nightly"` with the same shape as franky and icegolem, so it
+  looked as though the nightly rotation might have gone three-way; the patch
+  notes placing it at 00:00 realm looked like a contradiction. `SLOTS` resolves
+  it: `{ hours: [0], event: "horseman", season: "halloween" }` is a DEDICATED
+  slot, outside `pool: "nightlies"`. **So the nightly pool is still two
+  elements and its exact alternation is untouched.** `type` on a `G.events`
+  entry describes the event's own shape (duration, join); the SCHEDULE decides
+  when it runs, and only `SLOTS` answers that. Monster `horseman`, hp
+  30,000,000, cooperative - so as a boss it is a drop-in: one `EVENT_WINDOW_SEC`
+  entry at 2400 and one `bossRank` entry.
+- **`witchcipher` IS IN THE DAILIES QUEUE BUT SKIPPED WHILE ITS OWN SEASONAL
+  SLOT IS OPEN.** The pool pick computes `own` as the events holding an open
+  seasonal slot and refuses queue entries in it, and the source comment says the
+  rest of the year it is simply one of the dailies. So during Halloween it runs
+  at realm 6 and 18 instead of in the 13/20 rotation, and afterwards it rejoins
+  that rotation without anything changing. Not a boss: `duration` 1680,
+  `gathering` 1200, `slots` 5, `mixes` 5, `loot` 0.003, payout 1 per right
+  answer and 50 per crack, with four ingredients dropping at 0.003 from
+  ORDINARY farm monsters the party already kills (verdantspore from
+  goo/bee/spider/croc, frostscale from arcticbee/boar/wolfie/iceroamer,
+  embercoal from plantoid/porcupine/fireroamer/gscorpion, gloomfeather from
+  snake/osnake/minimush/ghost). The gathering half is close to free; the 5-mix
+  daily cap is the limit. **So its only claim on the scripts is NOT VENDORING
+  THE FOUR INGREDIENTS**, which is a sell-protection question rather than an
+  event one.
+- **`graveyard` IS CHEAPER THAN IT WAS FIRST CALLED, and the first estimate was
+  retracted by its own author.** It was guessed to need state tracking for a
+  multi-stage sequence. It does not: the waves are DECLARED in `G` with their
+  offsets - `[[0,{zombie:12}],[180,{zombie:16,ghoul:3}],[360,{zombie:20,ghoul:6}]]`
+  - the gargoyle has a FIXED spawn coordinate `[255,-1545]`, there are 24 fixed
+  grave positions, and the whole thing is 600s. zombie 9,000, ghoul 32,000,
+  gargoyle 6,000,000, all cooperative; mummy 12,000 and NOT cooperative. The
+  gargoyle is the prize and its position is known in advance, which is most of
+  what makes goobrawl hard. Against that, halloween ends 2026-11-03, so the
+  shelf life is short and the economics may still not justify it - but the cost
+  estimate was wrong and the decision is the operator's on corrected numbers.
+- **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
+  `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
+  pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,
+  holidayseason, lunarnewyear, valentines and egghunt. Read from live `G` on
+  2026-10-21.
 - **goobrawl IS OBSERVABLE, AND THIS BULLET SAID THE OPPOSITE UNTIL 2026-10-20.**
   It read "CAN NEVER FIRE REACTIVELY ... a design that waits to OBSERVE a goobrawl
   waits forever", on the strength of the bridge reporting
@@ -1039,6 +1125,26 @@ time on 2026-10-18.
   on. Read as failure, this would have been the CaveRun `ver: 14` mistake again
   with different nouns, hours apart. First real verification is an event-type
   boss being alive at all - the 04:00 UTC nightly window.
+- **THE hp SAMPLER AND ITS CLOSING FLUSH ARE VERIFIED IN PRODUCTION, 04:00 UTC
+  2026-10-21.** Over a 900-row window spanning 2026-10-20T12:48:22Z to
+  2026-10-21T13:25:51Z: death 389, spawn 396, despawn 12, **hp 103 of which 9
+  carry `final: true`**, lost 0. First hp row at 04:01:41Z, the 04:00 window on
+  cue. Threshold rows carry real dps - icegolem US IV `pct` 97.98, `since_sec`
+  99, `hp_lost` 323,011, `dps_since` 3272.7, and two more at 2462.1 and 4748.2.
+  And the case the flush was built for fires exactly as designed: at 04:40:02
+  and 04:40:03, three untouched bosses closed with `dps_since` 0.9, 0 and 0 over
+  `since_sec` 2400/2401/2400. **An untouched boss now emits one row saying zero
+  where it used to emit nothing, and `dps_since` 0.0 rather than null is doing
+  its job on live data.**
+- **THE `lost` ROW QUESTION IS OPEN AND WAS CORRECTLY LEFT OPEN.** That same
+  900-row window held ZERO `lost` rows, so nobody has had a real one to
+  `Object.keys`, and whether the `reason` string separates
+  instance-changed from shard-unlistable is unverified. Reported rather than
+  inferred from the two emit sites, which is the rule this file already carries
+  about nulls from fields nobody confirmed. The skip-row shape will carry a
+  THIRD unresolvable cause - a skip resolved against a `lost` terminal, which
+  carries no hp and whose `t` is a detection time - marked unverified until a
+  `lost` row exists to look at.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
@@ -2069,17 +2175,36 @@ a day.
 - **FATHERTOKEN IS THE PARTY LEADER, not Dexon.** Nothing in this file said so
   until now, and every mental model either session has brought to the cave
   assumed the ranger leads. It does not.
-- **PARTY SPEEDS, MEASURED: FatherToken 63, Dexon 67, MageofOz 58.** So the
-  mage is 8% SLOWER than the leader and cannot close a gap at all while the
-  leader is moving. That sets a floor on how good any leash fix can be, and it
-  is a GEAR question rather than a code one - `windbelt` carries speed 2,
-  compounding 0.75 per level.
-  **A "Dexon is the fastest of the three at 78" claim was reported against this
-  measurement, and it is NOT IN THE REPO COPY** - checked flattened across the
-  whole file and against `origin/main`, zero matches for `fastest` or `78`. So
-  it exists only in a loaded copy, which per "The loaded copy and the repo copy"
-  is reported and NOT corrected from here. The ordering it asserted survives;
-  the number does not.
+- **`character.speed` IS A LIVE BUFFED VALUE AND NOT A STAT, SO THE "PARTY
+  SPEEDS" FILED HERE ON 2026-10-21 WERE SNAPSHOTS AND ARE RETRACTED.** They read
+  FatherToken 63, Dexon 67, MageofOz 58, and the browser session then read Dexon
+  three times in one evening: 67, 74, 87. The differences are exactly `rspeed`
+  (+7) and `warcry` (+20) entering and leaving. Decomposed: ranger base 45, gear
+  +7.75 (windbelt+1 2.75, bowofthedead+8 -12, paradequiver+6 1, frankypants+7 1,
+  wingedboots+7 15), remainder from conditions - so even the LOWEST of the three
+  readings is not an unbuffed figure. **NO UNBUFFED SPEED IS KNOWN FOR ANY OF
+  THE THREE.**
+  **WHAT THAT RETRACTS AND WHAT IT DOES NOT.** The `bowofthedead` speed -12 IS
+  proven, from the live slot's own gear sum. The claim that the mage is "8%
+  slower than the leader and cannot close a gap while the leader moves" rested
+  on three single-instant readings that may have carried different buffs, so it
+  is NOT established - do not plan against it; re-measure unbuffed first. The
+  `MOVE.closeAt` root cause and the fixed-cost-per-hold argument below depend on
+  neither figure and both stand unchanged.
+  **A "Dexon is the fastest of the three at 78" CLAIM IS IN THE REPO, IN
+  `Party/Merchant.js`** - the `bowofthedead` note inside `GEAR_PROGRESSION` -
+  and was corrected there in v108, since 78 is one more buffed instant. **THIS
+  BULLET PREVIOUSLY SAID IT WAS NOT IN THE REPO COPY, WHICH WAS FALSE, AND THE
+  WAY IT WENT WRONG IS WORTH MORE THAN THE FIX.** Two errors stacked. The
+  browser session cited `CLAUDE.md` for a line it had read in `Party/Merchant.js`
+  - "CHECK THE FILE YOU ACTUALLY MEAN" from the other end, reading a real file
+  and then naming a different one. This session then searched only the file it
+  had been handed and phrased the conclusion as being about THE REPO, so a
+  one-file miss was published as repo-wide absence. **THE SEARCH THAT SETTLES IT
+  IS EVERY TRACKED FILE AT THE REVISION, WHITESPACE-FLATTENED** - `git ls-tree
+  -r --name-only origin/main` into a flattened read of each - which found it
+  immediately, and a plain `grep` over the working tree missed it AGAIN because
+  the phrase wraps across lines exactly as the wrapped-prose bullet warns.
 - **ONE CONSTANT IN TWO ROLES IS THE ROOT CAUSE OF THE HOLD OSCILLATION, AND IT
   IS NOT A TUNING PROBLEM.** `MOVE.closeAt` is 180 and is read by BOTH the
   leader's hold (`worst > MOVE.closeAt`) and the followers' recovery latch
@@ -2239,12 +2364,25 @@ probes are listed at the end as still-open.
   `aldata`, and the ALData path fetches `monsters/<types>` only - a monster
   list with no schedule in it. So the bridge can collect this in one mode and
   cannot in the other, and which one is running is the operator's to say.
-- **SO THE MERCHANT SHOULD NOT BE THE COLLECTOR, and the reasoning matters more
-  than the conclusion.** Sending him round the shards to read schedules would
-  cost him Hop Sickness per shard and return ONE shard's lineup per visit at one
-  moment, while the bridge already holds a socket to every shard at once - the
-  one thing no character can do. The merchant route only becomes the answer if
-  the bridge cannot see the payload at all, which is the mode question above.
+- **THE BRIDGE IS STILL THE RIGHT COLLECTOR, BUT THE COST ARGUMENT FOR IT WAS
+  WRONG AND THE OPERATOR CORRECTED IT.** This bullet said sending the merchant
+  round the shards "would cost him Hop Sickness per shard". **HOPPING COSTS THE
+  MERCHANT EFFECTIVELY NOTHING, AND THIS FILE ALREADY SAID SO** - see the
+  merchant exemption under "Server hopping": he never takes Realm Fatigue and
+  never inflicts either condition on the party, and Hop Sickness's `luck`/`gold`
+  penalties apply to LOOTING, which he does not do. He is ALREADY hopping
+  continuously for scouting and arbitrage, so a schedule read on a shard he was
+  visiting anyway is free. Writing a cost argument that the file refutes three
+  sections earlier is the same failure as the `ev=despawn` design: the answer
+  was on the page and the freshly-active reasoning won.
+  **THE REAL ARGUMENT IS SIMULTANEITY, NOT COST.** A merchant visit yields ONE
+  shard's lineup at ONE moment; the bridge holds a socket to every shard at
+  once and sees all of them continuously, which is the thing no character can
+  do. That argument survives the correction intact, and it is the only one that
+  was ever load-bearing. The merchant becomes a genuinely useful SUPPLEMENT
+  rather than a fallback - he can confirm a shard's lineup from inside the game
+  while he is there, which is an independent check on the bridge's copy, and
+  the only route at all if the bridge is running `--boss-source aldata`.
 - **STILL OPEN, AND ONLY THE BROWSER-DRIVEN SESSION CAN ANSWER ANY OF IT.**
   (1) Does the DEPLOYED game carry this at all - `43b2c8fc` landed hours before
   this was written, and the live realm may lag the source. (2) Is `S` reachable

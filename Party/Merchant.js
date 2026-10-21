@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v107
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v108
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3790,9 +3790,18 @@ const GEAR_PROGRESSION = {
 			   bowofthedead against 8 for firebow, so +7 and +9 both sit inside
 			   grade 1 where the cost per level is already raised - this is not
 			   the cheap end of the curve that firebow+7 would have been. And it
-			   carries speed -12, which firebow does not; Dexon is the fastest of
-			   the three at 78, so he can absorb it, but it is a real cost on a
-			   party whose cohesion work all season has been about closing rates.
+			   carries speed -12, which firebow does not - proven from the live
+			   slot's own gear sum, so that cost is real. WHAT WAS WRONG HERE
+			   until v108 was the next clause: "Dexon is the fastest of the three
+			   at 78, so he can absorb it". `character.speed` is a LIVE BUFFED
+			   value and not a stat - Dexon read 67, 74 and 87 in one evening as
+			   `rspeed` (+7) and `warcry` (+20) came and went - so 78 was one
+			   instant's snapshot presented as a characteristic. No UNBUFFED
+			   speed is known for any of the three, which means "he can absorb
+			   it" is unsupported rather than merely imprecise. The -12 stands on
+			   its own as a cost on a party whose cohesion work all season has
+			   been about closing rates; whether this character in particular can
+			   carry it is open until someone reads the three unbuffed.
 
 			   GLOVES ARE thundergrips+7, NOT supermittens, for now. supermittens
 			   is still the tier-3 target and still the better item under the

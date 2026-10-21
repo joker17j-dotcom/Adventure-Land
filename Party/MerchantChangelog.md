@@ -1,3 +1,26 @@
+## v108
+
+Comment only, no behaviour change. One comment asserted a party member's speed
+as a characteristic when it was a buffed snapshot.
+
+The `bowofthedead` note inside `GEAR_PROGRESSION` read "Dexon is the fastest of
+the three at 78, so he can absorb it" about that mainhand's speed -12. The
+browser session re-measured and `character.speed` is a LIVE BUFFED value, not a
+stat: Dexon read 67, 74 and 87 across one evening as `rspeed` (+7) and `warcry`
+(+20) entered and left. So 78 was one instant, and no unbuffed speed is known
+for any of the three.
+
+The speed -12 itself is UNCHANGED and still proven - it comes out of the live
+slot's own gear sum (ranger base 45, gear +7.75: windbelt+1 2.75,
+bowofthedead+8 -12, paradequiver+6 1, frankypants+7 1, wingedboots+7 15). What
+the comment can no longer claim is that this particular character absorbs it,
+so that clause now says so instead of asserting a number.
+
+Found because the same figure had been copied into `CLAUDE.md` as a claim about
+the cave leash, where it supported an "8% slower" deficit that the same
+measurement retracts. A stat asserted in a comment is a claim like any other,
+and this one travelled.
+
 ## v107
 
 Comment only, no behaviour change. Two comments asserted an IIFE this file does
