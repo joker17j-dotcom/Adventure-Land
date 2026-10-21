@@ -120,6 +120,50 @@ name: 'pontyStackCap: no cap on an item that does not stack', fn(t) {
 	t.ok('0 >= null would otherwise be true', (0 >= null) === true);
 } },
 
+{ name: 'the level ceiling is a level, not a price in disguise', fn(t) {
+	/* Operator's ruling 2026-10-21 on dexbelt: "+0, +1, +2 ONLY - they are an
+	   ingredient, higher is not acceptable." A 1,000,000 price ceiling does
+	   implement that at secondhands_mult 2, and STOPS implementing it if that
+	   multiplier moves - at 4 the +2 asks 1,273,600 and the same ceiling
+	   refuses the belt the craft needs. So the level rule is stated as a level
+	   and the arithmetic that makes the price proxy fragile is pinned here. */
+	const s = text();
+	t.ok('the buy is on the list', s.indexOf("'dexbelt',") > 0);
+	t.ok('the price ceiling is set', s.indexOf('maxPrice: { dexbelt: 1000000 }') > 0);
+	t.ok('the level ceiling is set', s.indexOf('maxLevel: { dexbelt: 2 }') > 0);
+	t.ok('the guard reads maxLevel', s.indexOf("const lvlCap = (cfg.maxLevel || {})[r.name];") > 0);
+	t.ok('and refuses only ABOVE the ceiling',
+		s.indexOf("typeof lvlCap === 'number' && (r.level || 0) > lvlCap") > 0);
+
+	/* The arithmetic. Ponty asks calculate_item_value(item) x secondhands_mult,
+	   and the per-level npc values were measured 2026-10-21. */
+	const npc = { 0: 30000, 1: 98667, 2: 318400, 3: 1118880, 4: 3680416 };
+	const ask = (lvl, mult) => npc[lvl] * mult;
+	t.ok('at mult 2 a 1,000,000 ceiling admits the +2', ask(2, 2) < 1000000);
+	t.ok('at mult 2 a 1,000,000 ceiling refuses the +3', ask(3, 2) > 1000000);
+	t.ok('AT MULT 4 THE SAME CEILING REFUSES THE +2 the craft needs', ask(2, 4) > 1000000);
+	t.eq('which is why the level cap is not redundant', 2, 2);
+
+	/* A non-upgradeable row carries no level and must not be refused. */
+	const refuse = (lvl, lvlCap) => (typeof lvlCap === 'number' && (lvl || 0) > lvlCap);
+	t.ok('an absent level reads as 0 and passes', !refuse(undefined, 2));
+	t.ok('+2 passes', !refuse(2, 2));
+	t.ok('+3 is refused', refuse(3, 2));
+	t.ok('an id with no ceiling is never refused', !refuse(9, undefined));
+} },
+
+{ name: 'cscroll4 is off the buy list', fn(t) {
+	/* Not an item - the game has cscroll0 through cscroll3, against scroll0
+	   through scroll4. Confirmed from source here and from live G.items by the
+	   browser session, then removed on the operator's ruling. */
+	const s = text();
+	const at = s.indexOf('pontyBuy: {');
+	const items = s.slice(at, s.indexOf('goldFloor', at));
+	t.ok('the buy list block was located', at > 0 && items.length > 0);
+	t.eq('cscroll4 is absent', items.indexOf("'cscroll4'"), -1);
+	t.ok('cscroll3 is still there', items.indexOf("'cscroll3'") > 0);
+} },
+
 { name: 'the config comment no longer promises a single-copy cap', fn(t) {
 	/* The comment on capAtOneStack said "one copy for anything that does not
 	   stack" - a correct description of the old code and a direct contradiction

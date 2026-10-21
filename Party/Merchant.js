@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v111
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v112
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -839,8 +839,11 @@ const CONFIG = {
 			'leather', 'mysterybox', 'weaponbox', 'armorbox','funtoken', 'anniversarygift', 'feather0', 'monstertoken', 'candy0', 'voidthread', 'essenceofether',
 			// emberhood craft inputs - Ponty only, never from a player stand
 			'ashleaf', 'embercore', 'essenceoffire',
+			// windbelt craft input. CAPPED AT +2 BY maxLevel BELOW - a +3 is a SPENT
+			// belt, so the cap is part of the entry rather than a separate tuning.
+			'dexbelt',
 			//upgrade
-			'scroll3', 'scroll4', 'cscroll3', 'cscroll4', 'offeringp', 'offering', 'offeringx',
+			'scroll3', 'scroll4', 'cscroll3', 'offeringp', 'offering', 'offeringx',
 			//keys
 			'dkey', 'bkey', 'ukey', 'cryptkey', 'frozenkey', 'spiderkey', 'stonekey', 'tombkey',
 		],
@@ -855,7 +858,24 @@ const CONFIG = {
 		   Ponty's price is calculate_item_value(item) x G.multipliers
 		   .secondhands_mult, so it is a function of the item and its level, not a
 		   seller's asking price. */
-		maxPrice: {},
+		maxPrice: { dexbelt: 1000000 },
+
+		/* Optional per-item LEVEL ceiling, id -> highest +level worth buying. An
+		   id absent from here is unrestricted, which is the buy list's own "any
+		   level found is bought" default.
+		   THIS EXISTS BECAUSE THE PRICE CEILING ABOVE EXPRESSES A LEVEL RULE
+		   THROUGH A VALUE THAT IS NOT OURS. Operator's ruling 2026-10-21 on
+		   dexbelt: "+0, +1, +2 ONLY - they are an ingredient, higher is not
+		   acceptable", because G.craft.windbelt consumes a dexbelt+2 exactly and a
+		   +3 is a SPENT belt. A 1,000,000 ceiling does implement that TODAY:
+		   measured 2026-10-21 at secondhands_mult 2, Ponty asks 60,000 / 197,334 /
+		   636,800 for +0/+1/+2 and 2,237,760 for a +3. But the boundary sits where
+		   it does only because that multiplier reads 2 - at 4 the +2 asks
+		   1,273,600 and the SAME ceiling starts refusing the belt the craft needs.
+		   CLAUDE.md: "a guard that works as a side effect of something else's data
+		   is not a guard, it is a coincidence with good timing." So the level rule
+		   is stated as a level, and the price ceiling stays as a cost guard. */
+		maxLevel: { dexbelt: 2 },
 
 		/* 'always' | 'low' | 'never'. The bank trip happens AFTER the buying is
 		   finished, never between two purchases, so a hop is never taken with the
@@ -6037,6 +6057,14 @@ async function pontyBuyPass(rows) {
 		const cap = (cfg.maxPrice || {})[r.name];
 		if (typeof cap === 'number' && r.price != null && r.price > cap) {
 			pontyLog('skipping ' + r.name + '+' + r.level + ' at ' + pontyFmt(r.price) + ' - over its ' + pontyFmt(cap) + ' cap', '#8b98ab');
+			continue;
+		}
+		/* Level ceiling, independent of the price one - see CONFIG.pontyBuy
+		   .maxLevel for why both exist. An absent `level` is a non-upgradeable
+		   item and reads as 0, so it is never refused by this. */
+		const lvlCap = (cfg.maxLevel || {})[r.name];
+		if (typeof lvlCap === 'number' && (r.level || 0) > lvlCap) {
+			pontyLog('skipping ' + r.name + '+' + r.level + ' - over its +' + lvlCap + ' level cap', '#8b98ab');
 			continue;
 		}
 		if (bankQty) {

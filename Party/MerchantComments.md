@@ -2084,10 +2084,30 @@ shape it actually takes**, which is the part that cost a published finding.
 
 The 9999 is not arbitrary - `can_stack()` in `js/old_common_functions.js:409`
 resolves the boolean with `(G.items[a.name].s === true && 9999 ||
-G.items[a.name].s)`, and `:505` does the same. **But those are CONSUMERS
-resolving it inline, which is what you write only when the data really does
-carry booleans** - and no normaliser exists anywhere in the server source. So
-the live client's shape is UNEXPLAINED, flagged rather than theorised.
+G.items[a.name].s)`, and `:505` does the same. Those are CONSUMERS resolving it
+inline, which is what you write only when the data really does carry booleans,
+and no normaliser exists anywhere in the server source.
+
+**ANSWERED 2026-10-21: THE CONVERSION IS AN EXPORT STEP, NOT RUNTIME.** The
+browser session fetched `/data.js` - the payload the client actually loads - and
+censused the raw text: 2,820,908 bytes, `"s":true` **zero times**, `"s":9999`
+**216 times**, which is exactly the live-G count. So the served payload already
+carries 9999 and nothing converts it in the browser. That it is TARGETED rather
+than a blanket coercion is settled by the same census: `:true` survives 1,496
+times elsewhere in the file.
+
+So the resolution sits between `design/items.js` and `/data.js`, in an export
+the served source does not contain - which is why it is invisible from a clone
+and why the two inline resolvers still exist. **They are dead with respect to
+this payload and would come alive for any consumer fed the design files
+directly.** The `=== true` branch in `pontyStackCap()` is in exactly that
+category: inert against today's G, correct against the data the game is built
+from.
+
+**`G.version` IS A FREE IDENTITY STAMP** - 18183 when this was measured. One
+read says whether the tables moved since a figure was recorded, which is worth
+more than a date beside a number given that the drop tables flip-flopped twice
+in fifteen days.
 
 ### What the defect actually was
 

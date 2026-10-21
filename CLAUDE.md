@@ -1379,12 +1379,39 @@ time on 2026-10-18.
   moves damage by moving `output` and never touches `attack` at all. From
   `design/conditions.js`: `darkblessing` **+25**, `mfrenzy` +40, `purifier`
   +20, `anniversary_kiss` +6, `halloween1` +2, `halloween2` +3, and on the
-  other side `hopsickness` **-20** and `cursed` -20. The earlier reading carried
-  darkblessing and the later one hopsickness, so 80/125 = **0.6400** against a
-  measured 0.6485 - 98.7% of the ratio from those two values alone. The ~1%
-  residual is NOT explained here; the candidates are the small seasonal
-  `output` entries and the rounding at the sites below, and it is left open
-  rather than fitted.
+  other side `hopsickness` **-20** and `cursed` -20, plus `hexed` **-20**,
+  counted 2026-10-21 - NINE conditions in all.
+  **THE TERMS SUM AS PERCENTAGES AND THE WHOLE THING IS NOW CONFIRMED TO SIX
+  FIGURES: `character.attack = base * (1 + SUM(output)/100)`.** Measured by the
+  browser session on two characters: Dexon hopsick 1162 against clean 1442 is
+  0.80583, predicted `(1 - 0.20 + 0.03) / 1.03` = 0.80583 EXACT; buffed 1792
+  against clean 1442 is 1.242718, predicted `1.28 / 1.03` = 1.242718 EXACT;
+  MageofOz reproduces both within integer rounding.
+  **AND THE ~1% RESIDUAL THIS BULLET LEFT OPEN IS CLOSED - IT WAS `halloween2`
+  +3, PRESENT IN BOTH READINGS.** The prediction recorded here was 80/125 =
+  0.6400 against a measured 0.6485, with the seasonal entries named as
+  candidates and deliberately not fitted. Carrying halloween2 through both
+  terms gives 83/128 = **0.6484375**, which is the measurement to four figures.
+  So the candidate list was right, the arithmetic was one term short, and
+  leaving it open rather than fitting it is what let the closure be a
+  confirmation instead of a coincidence.
+  **`rspeed` IS A FLAT +0.08 ON FREQUENCY, NOT A PERCENTAGE** - the mage read
+  1.03528 without it and 1.11528 with, Dexon 1.3936 and 1.4736. So frequency
+  does not take the `output` treatment and must not be normalised the same way.
+- **AN EXHAUSTIVE SEARCH OVER THE WRONG COLUMN IS NOT A NEGATIVE RESULT, AND
+  THAT IS A DISTINCT SHAPE FROM THE FOUR OTHER SEARCH FAILURES THIS WEEK.** The
+  browser session's own naming of it: they enumerated the conditions carrying an
+  `attack` field, found them genuinely empty, and reported that ABSENCE as a
+  property of the data - "attack cannot be decomposed the way speed was, only a
+  parked clean reading will do". The enumeration was complete and correct; the
+  FIELD LIST was wrong, because the volatile term is `output`. Compare the other
+  four - an integer-only `"s":\d+` scan, an apostrophe-pairing name parser, a
+  comment-counting extractor, and a partial grep for the damage spread - every
+  one of those UNDER-MATCHED a field it was aimed at, which eventually shows up
+  as an inconsistency. This one matched its target exhaustively and was aimed at
+  the wrong target, so nothing about the result looks incomplete. **A complete
+  search over the wrong column returns a confident, internally consistent
+  nothing**, and the only tell is asking what else could carry the effect.
   **SO NO PARKED CLEAN READING IS NEEDED - THE CORRECTION IS DIVISION BY A
   FIELD THE CLIENT ALREADY HAS.** `output` sits in the same server-sent
   property list as `attack`, `frequency`, `apiercing`, `rpiercing`, `crit` and
@@ -2489,14 +2516,38 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   recommendation is `maxPrice: { dexbelt: 1000000 }`: round, clear margin both
   sides, and it turns a level-blind buy rule into a level filter without adding
   one. `intbelt+0` prices identically, so the same ceiling works there.
-  **NEITHER HALF IS INSTALLED, AND THE ORDER MATTERS: `maxPrice` ALONE IS
-  INERT, THE BUY ALONE IS UNCAPPED.** `dexbelt` is NOT on
-  `CONFIG.pontyBuy.items`, measured, so a `maxPrice` entry would do nothing
-  today - and `maxPrice`'s documented default is NO CEILING, so adding the buy
-  WITHOUT the cap in the same edit buys +3s at 2,237,760 and +4s at 7,360,832,
-  which is exactly the spent-belt purchase `craftInputCaps` exists to prevent.
-  The buy list is the operator's ("EDIT THIS"), so this is their call and the
-  two lines land together or not at all.
+  **INSTALLED IN MERCHANT v112, ON THE OPERATOR'S RULING: "+0, +1, +2 ONLY -
+  they are an ingredient, higher is not acceptable."** Both lines landed
+  together, as they had to: `maxPrice` alone is inert while the id is off the
+  buy list, and the buy alone is uncapped (`maxPrice`'s default is NO CEILING),
+  which would buy +3s at 2,237,760 and +4s at 7,360,832 - exactly the
+  spent-belt purchase `craftInputCaps` exists to prevent.
+  **AND A THIRD LINE WAS ADDED THAT THE AGREED PLAN DID NOT HAVE: THE RULING IS
+  ABOUT LEVELS AND A PRICE CEILING EXPRESSES IT THROUGH A NUMBER THAT IS NOT
+  OURS.** 1,000,000 implements "+2 and no higher" only because
+  `G.multipliers.secondhands_mult` read 2 when the curve was measured; at mult 4
+  the +2 asks 1,273,600 and the SAME ceiling starts refusing the belt the craft
+  needs. That is this file's own "a guard that works as a side effect of
+  something else's data is not a guard, it is a coincidence with good timing",
+  caught BEFORE it cost anything rather than after - so `CONFIG.pontyBuy
+  .maxLevel` states the level rule as a level and the price ceiling stays as a
+  cost guard beside it. Absent means unrestricted, preserving the list's own
+  "any level found is bought" default, and a row with no `level` reads as 0 so a
+  non-upgradeable item is never refused.
+- **PUTTING `dexbelt` ON THE BUY LIST GAVE IT A SECOND SELL GUARD, AND THE SUITE
+  CAUGHT THAT AS A FAILING PRECONDITION RATHER THAN A PASSING ONE.**
+  `pontyWanted()` doubles as a sell guard, so the buy makes `PROTECTED_ITEM_NAMES`
+  no longer dexbelt's only protection - and `suite_merchantsell.js` asserted the
+  ABSENCE as the precondition establishing exactly that, so v112 could not land
+  without confronting it. **The explicit name must stay regardless**: the buy
+  list is the operator's and marked EDIT THIS, so dropping the buy would repeal
+  the derived guard in precisely the silent way the `GEAR_PROGRESSION` edit did
+  in v109 - same hazard, opposite direction. `intbelt` is still off the list, so
+  for it the explicit name remains the only guard, and the asymmetry is asserted
+  rather than flattened. A reader who finds two guards must not conclude either
+  is redundant.
+- **`cscroll4` REMOVED FROM THE BUY LIST in v112**, on the operator's ruling. The
+  list is 58 ids either side of the edit - one out, one in.
   **THE ECONOMICS ARGUE FOR BUYING +2s RATHER THAN TOLERATING THEM.**
   Compounding is 3-to-1 per level, so a +2 built from scratch is 9x dexbelt+0 =
   540,000 at Ponty BEFORE compound failures, which destroy all three inputs; a
@@ -2522,11 +2573,28 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   consume `s` resolve the boolean INLINE - `(G.items[n].s === true && 9999 ||
   G.items[n].s)` in `can_stack()` at `js/old_common_functions.js:409`, and the
   same at `:505` - which is exactly what you write when the data really does
-  carry booleans. So something between the data and the served G converts it and
-  nobody has found what. This is the first time the source-is-a-lead rule has
+  carry booleans. This is the first time the source-is-a-lead rule has
   landed on ITEM FLAGS rather than on the DOM or monster data, and the direction
   matters: **a source read makes this look like a type bug the client has
   already fixed.**
+  **ANSWERED 2026-10-21: IT IS AN EXPORT STEP, NOT RUNTIME.** The browser
+  session fetched `/data.js`, the payload the client actually loads, and
+  censused the RAW TEXT: 2,820,908 bytes, `"s":true` ZERO times, `"s":9999`
+  **216 times** - exactly the live-G count. So the served payload already
+  carries 9999 and nothing converts it in the browser. That it is TARGETED
+  rather than a blanket coercion is settled by the same census: `:true`
+  survives 1,496 times elsewhere in that file. The resolution therefore sits
+  between `design/items.js` and `/data.js`, in an export the served source does
+  not contain, which is why it is invisible from a clone. **The two inline
+  resolvers are dead against this payload and would come alive for any consumer
+  fed the design files directly**, which is the category `pontyStackCap()`'s
+  `=== true` branch is in: inert against today's G, correct against the data
+  the game is built from.
+- **`G.version` IS A FREE IDENTITY STAMP FOR EVERY TABLE IN THIS FILE** - 18183
+  as of 2026-10-21. One read says whether the tables moved since a figure was
+  recorded, and given that the drop tables flip-flopped twice in fifteen days
+  that is worth more beside a number than its date is. The browser session's
+  suggestion; adopt it when recording anything read from `G`.
 - **SO MERCHANT v110 CLAIMED TWO DEFECTS AND THERE WAS ONE. THE SECOND IS
   RETRACTED.** Real: `it.s || 1` returns `1` for an item with no `s`, capping
   every unstackable id at a single copy - 23 of the 58 live buy-list ids, the
@@ -2914,14 +2982,14 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 509 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-21, LATEST: 526 JS assertions across NINE suites, plus
   244 from the python bridge suite the runner shells out to and folds in, for
-  `all 753 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 770 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
-  the day before, 285 / 61 / 346 before that, and 114 before that - ELEVEN
+  It read 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586 and 575
+  the day before, 285 / 61 / 346 before that, and 114 before that - TWELVE
   figures in two days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the

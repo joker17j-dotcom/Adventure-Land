@@ -1,3 +1,43 @@
+## v112
+
+**The operator's two buy-list rulings, 2026-10-21.**
+
+**`cscroll4` REMOVED.** It is not an item - the game has cscroll0 through
+cscroll3, against scroll0 through scroll4, which is where the mistake comes
+from. Confirmed independently from upstream source and from live `G.items`, so
+the id matched nothing Ponty could ever offer.
+
+**`dexbelt` ADDED, capped at +2.** Operator: "+0, +1, +2 ONLY - they are an
+ingredient, higher is not acceptable." `G.craft.windbelt` consumes a dexbelt+2
+exactly, so a +3 is a SPENT belt and `CONFIG.craftInputCaps.dexbelt` already
+exists to stop one being compounded into existence.
+
+**THE CAP IS STATED AS A LEVEL, NOT ONLY AS A PRICE, AND THAT IS THE ONE PLACE
+THIS ENTRY DEPARTS FROM THE AGREED PLAN.** `maxPrice: { dexbelt: 1000000 }` is
+installed as agreed and does implement the ruling today - measured 2026-10-21 at
+`G.multipliers.secondhands_mult` 2, Ponty asks 60,000 / 197,334 / 636,800 for
++0/+1/+2 and 2,237,760 for a +3, so the ceiling sits in a clean gap. But the
+boundary is where it is only because that multiplier reads 2, and it is not
+ours: at mult 4 the +2 asks 1,273,600 and the SAME ceiling begins refusing the
+belt the craft needs. The operator ruled on LEVELS, so a new
+`CONFIG.pontyBuy.maxLevel` states it as one, and the price ceiling stays as a
+cost guard beside it.
+
+This is CLAUDE.md's own rule applied before it cost anything rather than after:
+"a guard that works as a side effect of something else's data is not a guard, it
+is a coincidence with good timing" - the same shape as dexbelt's sell protection
+being silently repealed by a `GEAR_PROGRESSION` edit, which is what v109 fixed.
+
+`maxLevel` is per-id and absent means unrestricted, preserving the buy list's
+own "any level found is bought" default. A row with no `level` is a
+non-upgradeable item and reads as 0, so the guard never refuses one.
+
+`Tests/suite_merchantbuy.js` grew 16 assertions, including the mult-4 arithmetic
+that makes the price proxy fragile - so the reason both ceilings exist is pinned
+rather than explained in prose only.
+
+Not deployed: the operator batches deploys. v111 is the live build.
+
 ## v111
 
 **Comment-only. v110's RATIONALE was half wrong and this corrects it; the code

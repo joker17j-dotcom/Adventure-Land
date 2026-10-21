@@ -99,11 +99,25 @@ name: 'the scarce belts are protected by NAME, not by any withdrawable mechanism
 	t.eq('precondition: isTier2OrTier3GearItem(dexbelt) is FALSE, so the name is the only guard',
 		w.isTier2OrTier3GearItem('dexbelt'), false);
 
-	/* PRECONDITION: the protection must not be keyed on the buy list, because
-	   that list doubles as a sell guard and a buy preference is editable for
-	   entirely unrelated reasons. */
-	t.eq('precondition: dexbelt is NOT on the Ponty buy list', w.pontyWanted().has('dexbelt'), false);
-	t.eq('precondition: intbelt is NOT on the Ponty buy list', w.pontyWanted().has('intbelt'), false);
+	/* THE BUY LIST IS NOW A SECOND GUARD ON dexbelt, AND THAT MAKES THE
+	   EXPLICIT ENTRY MORE LOAD-BEARING RATHER THAN LESS.
+	   This pair asserted dexbelt was ABSENT from the buy list until v112, as the
+	   precondition establishing that `PROTECTED_ITEM_NAMES` was its only sell
+	   guard. The operator added the buy on 2026-10-21 ("+0, +1, +2 ONLY - they
+	   are an ingredient"), so `pontyWanted()` now covers it too.
+	   That is exactly the state v109 was written about, arriving from the other
+	   direction: dexbelt's protection was once a SIDE EFFECT of
+	   GEAR_PROGRESSION's contents and a gear edit silently repealed it. The buy
+	   list is the operator's, marked EDIT THIS, and dropping the buy would
+	   repeal this one the same silent way - so the explicit name must stay, and
+	   a reader who finds two guards must not conclude either is redundant.
+	   intbelt is still absent, so for IT the explicit name remains the only
+	   guard - the asymmetry is asserted rather than flattened. */
+	t.eq('dexbelt IS on the Ponty buy list since v112, so pontyWanted also covers it',
+		w.pontyWanted().has('dexbelt'), true);
+	t.eq('intbelt is NOT on the buy list, so its explicit name is still the only guard',
+		w.pontyWanted().has('intbelt'), false);
+	t.ok('so the explicit entry is what survives a buy-list edit', protectedNames.includes('dexbelt'));
 
 	/* intbelt's own mechanism DOES still cover it - asserted so the pairing with
 	   dexbelt stays explicit: one belt lost its implicit cover, the other has
