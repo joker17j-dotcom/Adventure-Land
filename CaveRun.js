@@ -1,4 +1,35 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v18 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v19 (TEST BUILD)
+// v19 2026-10-21 holdReleaseAt 30 WAS UNREACHABLE AND 120 IS A FLOOR, NOT A
+//                RETUNE. v18 shipped 30 and the live run could not complete a
+//                hold: holds 8, holdGaveUp 5 - 62% - and the give-up LATCHES,
+//                so the leader then stopped holding at all and the party
+//                trailed freely. Operator's report was that movement was worse
+//                than before, and it was.
+//                THE MECHANISM IS A COUPLING, NOT A TUNING. A follower stops
+//                closing at HIS OWN releaseAt (120 in the combat band), so the
+//                hold's exit condition can only ever be satisfied by follower
+//                movement that stops there. THE LEADER'S RELEASE CANNOT BE SET
+//                BELOW THE FOLLOWERS' RELEASE. v18's risk note named "a
+//                follower stalled between 30 and 120" and modelled it as rare;
+//                that band is not a stall, it is the followers' RESTING STATE,
+//                so the risk was the default path rather than an edge.
+//                holdReleaseAt is now 120, which the operator patched live and
+//                confirmed working. The SEPARATION STAYS and is still worth its
+//                keep - the hold owns a knob that can move without dragging the
+//                kite rejection and the close-step sizing with it, and ABOVE 120
+//                is the untested direction - but it is numerically inert at this
+//                value and the suite now says so rather than asserting the
+//                separation has an effect.
+//                ALSO FIXED: caveLeash() returned `hold:` TWICE, so the pair
+//                v18 added for observability never reached a reader - the
+//                second key silently won. Object-literal form of the
+//                serverhop_logic double-declaration trap, in the file that
+//                documents that trap, and it cost the browser session a wrong
+//                deploy call: they feature-detected on the hold pair, found it
+//                absent and reported pre-v18 while v18 was running.
+//                A FEATURE ADDED IN THE SAME COMMIT AS THE BEHAVIOUR IT
+//                REPORTS IS THE WORST POSSIBLE DEPLOY PROBE - nothing has ever
+//                confirmed it reaches a reader. The two keys are one now.
 // v18 2026-10-21 THE LEADER HOLD GETS ITS OWN PAIR OF CONSTANTS. holdAt 180 /
 //                holdReleaseAt 30, read ONLY by the hold. MOVE.closeAt and
 //                MOVE.releaseAt kept 180/120 and still build the followers'
@@ -188,13 +219,24 @@ const MOVE = {
 	   holdAt MATCHES closeAt ON PURPOSE. The trigger is not what was wrong and
 	   180 is the value the operator's range and the priest's measured 201 heal
 	   range both admit; raising it out of combat is Option B and is theirs to
-	   call, still held. What was wrong is the RELEASE: at 120 the hold let go at
-	   the exact gap the followers use to decide to start closing, so it released
-	   60u before they were gathered and the gap re-opened immediately.
-	   holdReleaseAt 30 is NOT a retune of releaseAt - changing that in place
-	   would move three other behaviours with it. -> see the v18 header block */
+	   call, still held.
+	   holdReleaseAt IS AT ITS FLOOR, AND THE FLOOR IS THE FOLLOWERS' OWN
+	   releaseAt - v19, measured. v18 read this as a free tuning knob and set it
+	   to 30; the hold then could not complete at all (holds 8, holdGaveUp 5,
+	   and the give-up latches, so the leader stops holding entirely). The
+	   coupling is one-way and structural: a follower stops closing at HIS
+	   releaseAt, so no value below it can ever be reached, however long the
+	   leader waits. v18's own comment had the diagnosis exactly inverted - it
+	   called releasing at 120 the fault, when 120 is the only gap the followers
+	   will actually deliver.
+	   SO THIS PAIR IS NUMERICALLY INERT AT 120 AND STRUCTURALLY STILL RIGHT.
+	   What it buys is that the hold owns a threshold which can be moved on its
+	   own, without dragging the kite rejection and the close-step sizing along;
+	   what it cannot buy is a release tighter than the followers'. Moving it
+	   UP is untested and is the direction Option B lives in.
+	   -> see the v19 header block */
 	holdAt: 180,
-	holdReleaseAt: 30,
+	holdReleaseAt: 120,
 	kiteRadius: 90,
 	kiteStep: 55,
 	speedEdge: 1.05,
@@ -1140,10 +1182,16 @@ function caveLeash(patch) {
 		mode: L.mode, closeAt: L.closeAt, releaseAt: L.releaseAt, ceiling: L.ceiling, tighten: MOVE.tighten,
 		travel: { closeAt: MOVE.travelCloseAt, releaseAt: MOVE.travelReleaseAt, ceiling: MOVE.travelCeiling },
 		combat: { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling },
-		/* The hold reads neither band - v18 gave it its own pair. Reported here
-		   so a live probe shows what the LEADER is doing, not only the followers. */
-		hold: { holdAt: MOVE.holdAt, holdReleaseAt: MOVE.holdReleaseAt, maxMs: HOLD.maxMs },
-		hold: { enabled: HOLD.enabled, inCrypt: HOLD.inCrypt, active: holdActive(), maxMs: HOLD.maxMs, holding: !!holdFrom, gaveUp: holdDone },
+		/* ONE `hold` KEY. v18 added a second one above the existing report and
+		   the later literal silently won, so the pair it added never reached a
+		   reader and a deploy probe for it answered "not deployed" on a build
+		   that was deployed. Merged in v19 - if a field is wanted here it goes
+		   INTO this object, never into a sibling with the same key. */
+		hold: {
+			holdAt: MOVE.holdAt, holdReleaseAt: MOVE.holdReleaseAt,
+			enabled: HOLD.enabled, inCrypt: HOLD.inCrypt, active: holdActive(),
+			maxMs: HOLD.maxMs, holding: !!holdFrom, gaveUp: holdDone,
+		},
 		trouble: troubleNow,
 		gaps: isLeader() ? followerGaps().map((g) => g.who + ':' + (g.gap === Infinity ? 'unseen' : Math.round(g.gap)) + '/' + g.src) : null,
 	};

@@ -53,13 +53,37 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 	const travel = w.computeLeash();
 	t.eq('out of combat the leash is the travel pair', travel.mode, 'travel');
 
-	/* THE SEPARATION HAS TO HAVE AN EFFECT, OR IT IS CEREMONY. */
 	t.eq('holdAt matches closeAt deliberately - the TRIGGER did not change',
 		w.MOVE.holdAt, w.MOVE.closeAt);
-	t.ok('holdReleaseAt is well below releaseAt, which is the whole point',
-		w.MOVE.holdReleaseAt < w.MOVE.releaseAt);
-	t.ok('and below the followers\u2019 travel close, so the hold outlasts their start',
-		w.MOVE.holdReleaseAt < w.MOVE.travelCloseAt);
+
+	/* THIS BLOCK ASSERTED "THE SEPARATION HAS TO HAVE AN EFFECT, OR IT IS
+	   CEREMONY" AND THE EFFECT IT DEMANDED WAS MEASURED IMPOSSIBLE. v18 set
+	   holdReleaseAt to 30 and pinned `holdReleaseAt < releaseAt`; the live run
+	   gave holds 8 and holdGaveUp 5, and because the give-up LATCHES the leader
+	   then stopped holding at all. So the suite was pinning a belief, not a
+	   mechanism, and the operator's hand-patch to 120 correctly failed it.
+	   THE FLOOR IS THE FOLLOWERS' OWN releaseAt, and the coupling is one-way: a
+	   follower stops closing at HIS releaseAt, so the hold's exit condition can
+	   only be satisfied by movement that stops there and no lower value is
+	   reachable at any timeout. Assert the FLOOR, which is a property of the
+	   coupling, rather than a gap, which was a guess. */
+	t.ok('holdReleaseAt is at or above the followers\u2019 release - the measured floor',
+		w.MOVE.holdReleaseAt >= w.MOVE.releaseAt);
+	/* THE FALSIFIED FORM, KEPT SO IT CANNOT BE REINSTATED AS AN IMPROVEMENT.
+	   Tightening the leader's release below the followers' looks like exactly
+	   the fix a reader of the v18 rationale would reach for, and it is the thing
+	   that broke. */
+	t.eq('the sub-release form that could never complete a hold is gone',
+		w.MOVE.holdReleaseAt < w.MOVE.releaseAt, false);
+	t.eq('and 30 specifically, which was v18\u2019s value', w.MOVE.holdReleaseAt === 30, false);
+
+	/* SO THE SEPARATION IS NUMERICALLY INERT AND STRUCTURALLY LIVE, which is a
+	   state the previous assertion had no way to express. What it still buys is
+	   a threshold the hold owns, movable without dragging the kite rejection and
+	   the close-step sizing with it - so the STRUCTURE is what gets pinned now,
+	   and the value is free to move UP, which is the untested direction. */
+	t.ok('the hold still reads its own constants, inert value or not',
+		/MOVE\.holdReleaseAt/.test(s) && /MOVE\.holdAt/.test(s));
 	t.ok('the followers\u2019 combat band still comes from closeAt/releaseAt',
 		/closeAt: MOVE\.closeAt, releaseAt: MOVE\.releaseAt/.test(s));
 
@@ -75,6 +99,25 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 		w.MOVE.holdAt < 201);
 	t.eq('travel closes at 60', travel.closeAt, 60);
 	t.eq('travel releases at 30', travel.releaseAt, 30);
+
+	/* THE OSCILLATION INVARIANT, the browser session's 2026-10-21 finding, which
+	   explains both shipped bands and is the thing any future band change has to
+	   respect: the sawtooth fires when `releaseAt + kiteStep > closeAt`. A
+	   follower sitting at releaseAt takes a free outward kite step - the
+	   no-ratchet guard is INACTIVE below releaseAt in combat - and if that step
+	   lands past closeAt he latches and closes back in, forever.
+	     combat 120 + 55 = 175 < 180  safe, BY FIVE UNITS
+	     travel  30 + 55 =  85 >  60  violates, and survives only because the
+	                                  no-ratchet is UNCONDITIONAL in travel
+	   So combat satisfies it ACCIDENTALLY with five units of margin, and the
+	   tight band plus the unconditional no-ratchet are ONE change rather than
+	   two. Pinned in both directions so neither half can land alone. */
+	t.ok('the combat band satisfies the oscillation invariant',
+		w.MOVE.releaseAt + w.MOVE.kiteStep < w.MOVE.closeAt);
+	t.eq('the travel band does NOT, which is why it needs the unconditional rule',
+		w.MOVE.travelReleaseAt + w.MOVE.kiteStep < w.MOVE.travelCloseAt, false);
+	t.ok('so travel exempts itself from the no-ratchet gate by mode, not by gap',
+		/gapNow > L\.releaseAt \|\| L\.mode === 'travel'/.test(s));
 	t.ok('the hold threshold is 3x the follow threshold', w.MOVE.closeAt / travel.closeAt === 3);
 	t.eq('and the hold threshold stays inside the priest 201 heal range',
 		w.MOVE.closeAt <= 201, true);
@@ -286,4 +329,53 @@ name: 'the version is read from line 1 and fails null, never wrong', fn(t) {
 	text = '// CaveRun.js - one script - v99 (TEST BUILD)\nbody';
 	t.eq('and a later save_code cannot shift it under the running build',
 		w.caveVersion(), 16);
+} },
+
+{
+
+name: 'caveLeash reports every field it names - no duplicate object keys', fn(t) {
+	/* v18 RETURNED `hold:` TWICE from caveLeash and the LATER literal silently
+	   won, so the pair it had just added for observability never reached a
+	   reader - and a deploy probe written against that pair answered "not
+	   deployed" for a build that WAS deployed. Object-literal form of the
+	   serverhop_logic double-declaration trap, in the one file whose own header
+	   documents that trap.
+	   THE DEPLOY LESSON IS THE EXPENSIVE HALF AND IT IS NOT TESTABLE HERE: a
+	   feature added in the same commit as the behaviour it reports is the worst
+	   possible probe for that behaviour, because nothing has ever confirmed it
+	   reaches a reader. What IS testable is the duplicate, so that is pinned.
+	   Depth-tracked rather than regexed, because the keys are not one per line
+	   (`mode: L.mode, closeAt: L.closeAt, ...` share a line) and nested objects
+	   legitimately reuse names - `closeAt` appears inside travel, combat AND at
+	   the top level, so a flat scan would report three false duplicates. */
+	const s = src();
+	const open = s.indexOf('function caveLeash');
+	t.ok('caveLeash is in the committed file', open >= 0);
+	const retAt = s.indexOf('return {', open);
+	t.ok('and it returns an object literal', retAt > open);
+
+	// Walk the literal, collecting identifiers followed by ':' at depth 1 only.
+	let depth = 0, i = retAt + 'return '.length, keys = [], tok = '';
+	for (; i < s.length; i++) {
+		const c = s[i];
+		if (c === '{' || c === '[' || c === '(') { depth++; tok = ''; continue; }
+		if (c === '}' || c === ']' || c === ')') { depth--; tok = ''; if (depth === 0) break; continue; }
+		if (depth !== 1) continue;
+		if (/[A-Za-z0-9_$]/.test(c)) { tok += c; continue; }
+		if (c === ':' && tok) keys.push(tok);
+		tok = '';
+	}
+	t.eq('the literal closed, so the walk covered it', depth, 0);
+	t.ok('and it found the keys a reader expects', keys.includes('hold') && keys.includes('mode'));
+
+	const dupes = keys.filter((k, n) => keys.indexOf(k) !== n);
+	t.eq('no top-level key is declared twice', dupes.join(','), '');
+	t.eq('`hold` in particular appears exactly once',
+		keys.filter((k) => k === 'hold').length, 1);
+	/* THE WALK HAS TO BE ABLE TO SEE A DUPLICATE, or the assertion above passes
+	   on a broken detector - the degenerate-setup trap this suite already
+	   records for the kiting comparison. Same collector, v18's actual text. */
+	const broken = ['mode', 'hold', 'trouble', 'hold'];
+	t.eq('the detector reports a duplicate when there is one',
+		broken.filter((k, n) => broken.indexOf(k) !== n).join(','), 'hold');
 } }];

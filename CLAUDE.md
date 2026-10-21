@@ -2913,6 +2913,148 @@ a day.
   (20000), patchable live through `caveLeash({maxMs: ...})` with no redeploy -
   deliberately NOT changed in the same commit, because two tuning changes landing
   together is how each one looks proven by the other's work.
+- **THAT RISK WAS THE DEFAULT PATH, NOT AN EDGE, AND 120 IS A FLOOR RATHER THAN
+  THE BUG. CaveRun v19 PUTS IT BACK.** Measured live by the browser session
+  2026-10-21: v18 could not COMPLETE a hold - holds 8, `holdGaveUp` 5 (62%),
+  `outrunWarnTicks` 650 of 2555 - and because the give-up LATCHES the leader
+  then stopped holding at all and the party trailed freely. The operator's
+  report was that movement was worse than before, and it was.
+  **THE MECHANISM IS A ONE-WAY COUPLING, WHICH IS WHY IT IS NOT A TUNING
+  PROBLEM.** A follower stops closing at HIS OWN `releaseAt` - 120 in the combat
+  band - so the hold's exit condition can only ever be satisfied by follower
+  movement that stops there. **THE LEADER'S RELEASE CANNOT BE SET BELOW THE
+  FOLLOWERS' RELEASE**, at any timeout. The bullet above names the hazard as "a
+  follower stalled between 30 and 120" and modelled it as rare; that band is not
+  a stall, it is the followers' RESTING STATE. v18's own rationale had the
+  diagnosis exactly inverted - it called releasing at 120 the fault, when 120 is
+  the only gap the followers will actually deliver.
+  **SO THE SEPARATION IS NUMERICALLY INERT AND STRUCTURALLY LIVE, a state the
+  suite had no way to express.** It still buys a threshold the hold OWNS, movable
+  without dragging the kite rejection and the close-step sizing along; what it
+  cannot buy is a tighter release. Moving it UP is the untested direction and is
+  where Option B lives.
+  **THE PREDICTION CANNOT BE SCORED EITHER WAY, AND THAT IS THE HONEST VERDICT.**
+  The bullet above says to retract the fixed-cost-per-hold argument if holds do
+  not fall ~2.5x. Observed 8 against 142 - but that is the give-up latch
+  switching the feature OFF, not fewer-and-longer holds. The experiment did not
+  run, so the argument is neither confirmed nor falsified, and the browser
+  session declined to claim either. **A RESULT IN THE PREDICTED DIRECTION
+  PRODUCED BY A MECHANISM THE PREDICTION DID NOT DESCRIBE IS NOT A
+  CONFIRMATION**, and it would have read as a strong one.
+  **THE END-OF-RUN COUNTERS SPAN THREE CONFIGURATIONS AND MUST NOT BE SCORED** -
+  v18 as shipped, then `holdReleaseAt` 120, then a live-patched 60/30 band. A
+  ratio is only as good as its denominator being one population and this
+  denominator is three. The only clean single-configuration numbers are two 70s
+  sampler windows at 60/30: Dexon kite 8 / recoveries 20 / gaps 2-74 / hp ended
+  FULL, MageofOz kite 8 / 16 / 5-65 / hp 89%->85%.
+- **MY `caveLeash()` RETURNED `hold:` TWICE, SO THE PAIR v18 ADDED FOR
+  OBSERVABILITY NEVER REACHED A READER - THE OBJECT-LITERAL FORM OF THE
+  `serverhop_logic` TRAP, IN THE FILE WHOSE OWN HEADER DOCUMENTS THAT TRAP.**
+  The later literal silently wins, exactly as the later function declaration
+  does. Merged into one key in v19 and pinned by a depth-tracked duplicate-key
+  scan over the returned literal - depth-tracked rather than regexed because the
+  keys are not one per line and nested objects legitimately reuse names
+  (`closeAt` appears in `travel`, in `combat` and at the top level, so a flat
+  scan reports three false duplicates).
+  **AND IT COST A WRONG DEPLOY CALL, WHICH IS THE EXPENSIVE HALF.** The browser
+  session feature-detected rather than trusting `ver` - correct, and `ver` reads
+  18 regardless - and chose the new hold pair as the feature. Absent, so they
+  reported pre-v18 running. The build WAS v18. **A FEATURE ADDED IN THE SAME
+  COMMIT AS THE BEHAVIOUR IT REPORTS IS THE WORST POSSIBLE DEPLOY PROBE**,
+  because nothing has ever confirmed it reaches a reader - the probe and the
+  thing being probed fail together and the failure reads as "not deployed".
+  Settled instead with `caveLeash.toString().indexOf('holdReleaseAt')`, a derived
+  boolean, which should have been the first probe. This sharpens
+  "feature-detect, not version-detect" rather than contradicting it: prefer a
+  feature that has ALREADY been observed reaching a reader, and where none
+  exists, probe the source text rather than the output.
+  `msHolding` is on `tel`, not `counters`, so it is not pullable where the v18
+  handoff asked for it.
+- **THE OSCILLATION INVARIANT, WHICH EXPLAINS BOTH SHIPPED BANDS AND CONSTRAINS
+  EVERY FUTURE ONE.** The browser session's finding: the sawtooth fires when
+  `releaseAt + kiteStep > closeAt`. A follower sitting at `releaseAt` takes a
+  free outward kite step - the no-ratchet guard is INACTIVE below `releaseAt` in
+  combat - and if that step lands past `closeAt` he latches and closes back in,
+  forever.
+  combat `120 + 55 = 175 < 180` is SAFE BY FIVE UNITS; travel
+  `30 + 55 = 85 > 60` VIOLATES it and survives only because the no-ratchet is
+  UNCONDITIONAL in travel (`gapNow > L.releaseAt || L.mode === 'travel'`); a
+  live-patched 60/30 combat band oscillated at a measured 1 recovery per 3.5s.
+  **So combat satisfies it ACCIDENTALLY, and the tight band plus the
+  unconditional no-ratchet are ONE change rather than two.** Pinned in both
+  directions in `Tests/suite_caverun.js` so neither half can land alone.
+- **THE BAND SELECTOR IS GATED ENTIRELY ON FOLLOWER-SIDE FACTS AND ASKS NOTHING
+  ABOUT WHETHER THE LEADER IS GOING ANYWHERE - third sighting of the
+  wrong-actor shape.** `computeLeash()` picks the loose band on `engaged() ||
+  attackersOnMe() || troubleNow.length`. Caught live: leader STATIONARY, Dexon
+  171u away, `recovering` false, `moving` false, `closeAt` 180 - nobody objects
+  to 171. **AND ON OPEN GROUND, DOING NOTHING, `engagedNow` WAS TRUE ALL
+  SESSION**, so the travel band never applied at all and every dry-run figure
+  below is the COMBAT band. Tuning `travelCloseAt` would have been near-pointless.
+  Not yet built; it is item 1 of the three code changes below and the only one
+  that reaches the 171u standoff, which no constant does.
+- **`MOVE.staleSlack` SETS HOW TIGHTLY FOLLOWERS TRACK A MOVING LEADER, AND
+  NEITHER SESSION KNEW IT EXISTED.** `recoverStep` aims at a CACHED leader point
+  and refreshes it only once the leader is more than `staleSlack` (60) from it,
+  so a follower in pursuit chases where the leader WAS. Measured by the browser
+  session over sustained travel on the same route, varying only that constant:
+  Dexon at 60 mean 44 / p50 39 / p90 73 / max 84 (n=165) against 15 giving mean
+  18 / p50 16 / p90 30 / max 55 (n=121); MageofOz at 60 mean 37 / p50 35 on the
+  SAME trip as Dexon-at-15 as a simultaneous control, and at 15 mean 10 / p50 3
+  / max 36 (n=125). Three comparisons - sequential, simultaneous control and
+  within-subject - all agreeing, and the SLOWER character tightened most, so
+  speed is not the driver.
+  **THIS APPARENTLY CONTRADICTS `CaveRun.js:470-476` AND THE CONFOUND IS NAMED
+  RATHER THAN BURIED.** That comment says a follower cannot converge on a faster
+  leader, and the mage held mean 10 / p50 3 against a leader at 62-63 across
+  12.5s. But the leader was under `smart_move`, which paths and pauses, so his
+  effective speed was below 62. The comment is about a follower CATCHING UP from
+  behind and does not forbid tight tracking by one who never falls behind -
+  `staleSlack` is what was making them fall behind. **Flagged as needing a clean
+  constant-velocity re-measure before either session writes it down**, which is
+  the browser session's own call on their own result.
+- **`closeAt` SETS THE FOLLOWER START LAG, AND IT IS ARITHMETIC:
+  `closeAt / leaderSpeed + tickMs/2`.** Measured at `closeAt` 60: Dexon mean
+  957ms, MageofOz mean 926ms over 8 events - IDENTICAL despite resting speeds 66
+  and 57, because it is the LEADER's speed that sets it. Model says 1085ms and a
+  200ms sampler detects the leader's start ~100ms late, which biases the
+  measurement low by about that. **At the committed 180 that is 2.9 SECONDS
+  before a follower twitches**, and the follower is not reacting late - waiting
+  for `closeAt` IS his trigger.
+  **THIS PRICES THE FIXED-COST-PER-HOLD ARGUMENT RATHER THAN COMPETING WITH
+  IT.** Many short holds are expensive BECAUSE each pays that reaction delay;
+  remove the delay and a low `holdAt` becomes affordable. The operator's spec
+  and the v18 argument are the same change from two ends.
+- **TWO CLAIMS THE DRY RUN KILLED, both the browser session's own.** (1) "Kiting
+  is largely suppressed by a tight `releaseAt`" is FALSE - past `releaseAt` a
+  kite step may hold or shrink the gap but never grow it, so kiting goes
+  TANGENTIAL rather than stopping: 8 kite steps per ~70s per follower at
+  `releaseAt` 30, against a cave run's own 114/65 and 154/80 `kiteRejected` /
+  `kiteSteps`, a 64% rejection rate that is already the normal regime at 120. No
+  health cost either. (2) The band-selector claim above retracts their drafted
+  conclusion that no follower trigger could ever meet the operator's spec.
+- **THREE CODE CHANGES PROPOSED, IN VALUE ORDER, AND `closeAt` 20 IS
+  DELIBERATELY NOT AMONG THEM.** (1) Gate the band selector on LEADER MOTION, so
+  a stationary leader uses the travel band regardless of follower engagement.
+  (2) Make the no-ratchet unconditional in combat - drop the
+  `gapNow > L.releaseAt` half - which is what makes tight combat numbers safe at
+  all. (3) Follower start-on-leader-motion, inferred from successive
+  `leaderPos()` readings since it returns `{x,y}` with no `moving` flag (a stale
+  source never changes, so it fails safe to the existing band), and it needs a
+  LIGHTER follow step than the `recovering` latch.
+  **`closeAt` 20 IS HELD on two unmeasured risks**: it violates the oscillation
+  invariant above, and `recovering` is UNINTERRUPTIBLE and stops kiting AND
+  LOOTING, so followers would be near-permanently recovering. That matters
+  because the cave run shows `lootOutOfRange` ~1030 against ~15 successful
+  `lootCalls` on both followers - roughly 65:1 - and `attackFail` exceeding
+  `attacks` on both (358/249, 378/216). **Those two are flagged as QUESTIONS,
+  not defects**, because nobody has read those counters' call sites; a tight
+  `closeAt` could make both worse and nothing measured so far touches it.
+  **DRY RUNS ARE NOW AVAILABLE ON DEMAND** - operator's word - via `caveDry()`
+  plus `caveLeash()` patching, with Chrome verified unthrottled first (40 ticks
+  in 4.011s, the signature this file records). So a tuning loop no longer costs
+  a day and no longer waits on a cave run, which retires the once-daily time-box
+  that applied to v18.
 - **THE OSCILLATION FIX FELL OUT OF ALL THREE QUEUES AT ONCE, AND THAT IS A
   SHARPER FORM OF "A FIX NOBODY IS NAMED FOR IS A FIX NOBODY MAKES".** On
   2026-10-21 this session's queue read "skip row, then (c), then banking", the
