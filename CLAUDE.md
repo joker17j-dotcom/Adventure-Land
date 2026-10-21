@@ -1364,18 +1364,59 @@ time on 2026-10-18.
   attack path writes the same idea as
   `0.9 + ((attack && Math.random() * 0.2) || 0)` and the pattern did not match.
   One more instance of a search telling you about your search.
-  **DEXON'S PER-BOSS dps, computed from that chain** on the browser session's
-  measured offence (attack 1792, frequency 1.394, apiercing 122, crit 24.75,
-  critdamage 14; expected crit factor 1.28215, raw 2,498 before armor):
-  crabxx armor 320 -> eff 198, mult 0.8020, **2,569**; dragold 240 -> 0.8820,
-  **2,825**; horseman 300 -> 0.8220, **2,633**; gargoyle 700 -> 0.4784,
-  **1,532**; icegolem 800 -> 0.4162, **1,333**.
-  **franky, mrgreen AND mrpumpkin CARRY NO `armor` IN THE LITERAL, so their
-  figures are NOT computed here.** Absence is not zero - `new_monster` scaling
-  and the load-time mutations both exist - and treating it as zero gives 3,518
-  for all three, which is the most optimistic number in the table and the one
-  most likely to be wrong. mrgreen's `resistance` is 900, so a physical ranger
-  reads its armor and a caster reads something very different.
+  **THE dps FIGURES THIS BULLET CARRIED ARE RETRACTED - THE OFFENCE READING
+  THEY RESTED ON WAS BUFFED.** They read crabxx 2,569, dragold 2,825, horseman
+  2,633, gargoyle 1,532, icegolem 1,333 off attack 1792 / frequency 1.394.
+  The browser session re-read the same characters a day later: Dexon 1792 ->
+  1162 and MageofOz 2358 -> 1529, **ratio 0.6485 on BOTH to four figures**. One
+  shared multiplicative term, present in one reading and absent in the other -
+  so every figure above is one multiplication away from right and none is right.
+  The DEFENCE half of the calculation is unaffected and is below; it is design
+  data and gear, and does not move.
+- **THE VOLATILE TERM IS `output`, NOT `attack`, WHICH IS WHY AN ENUMERATION OF
+  CONDITIONS CARRYING AN `attack` FIELD FOUND NOTHING.** `node/server.js:1679`
+  is `player.attack = (player.attack * player.output) / 100.0`, so a condition
+  moves damage by moving `output` and never touches `attack` at all. From
+  `design/conditions.js`: `darkblessing` **+25**, `mfrenzy` +40, `purifier`
+  +20, `anniversary_kiss` +6, `halloween1` +2, `halloween2` +3, and on the
+  other side `hopsickness` **-20** and `cursed` -20. The earlier reading carried
+  darkblessing and the later one hopsickness, so 80/125 = **0.6400** against a
+  measured 0.6485 - 98.7% of the ratio from those two values alone. The ~1%
+  residual is NOT explained here; the candidates are the small seasonal
+  `output` entries and the rounding at the sites below, and it is left open
+  rather than fitted.
+  **SO NO PARKED CLEAN READING IS NEEDED - THE CORRECTION IS DIVISION BY A
+  FIELD THE CLIENT ALREADY HAS.** `output` sits in the same server-sent
+  property list as `attack`, `frequency`, `apiercing`, `rpiercing`, `crit` and
+  `critdamage` (`server.js:1414-1440`), every one of which is already read off
+  `character`. So the stable stat is `attack * 100 / output`, and for LIVE dps
+  the attack value as-read is already correct because `output` genuinely
+  changes damage dealt. Record the normalised one; compute with the live one.
+  **AND THE OTHER THREE MULTIPLIERS ARE READABLE STATES TOO**, so the
+  normalisation is complete rather than partial: `invis` x1.25 (`:1725`),
+  `invincible` x0.45 (`:1728`), and a `fear` ladder x0.2 / x0.4 / x0.6 for
+  `fear` > 2 / > 1 / >= 1 (`:1766-1776`). `priest` carries a flat x1.6
+  (`:1617`) which is CLASS and not volatile. Divide out whichever are set and
+  the result is a stat rather than a snapshot.
+- **THE DEFENCE TABLE, FROM THE ASSEMBLED `G.monsters` - and it CONFIRMS the
+  literal read, so ABSENCE IS GENUINELY ABSENT and not a load-time artefact.**
+  Measured by the browser session 2026-10-21: crabxx armor 320 / no resistance;
+  franky NEITHER; icegolem 800/800; dragold 240/320; mrgreen no armor /
+  resistance 900; mrpumpkin NEITHER; rgoo 300/300; bgoo 200/200; horseman
+  300/300; gargoyle armor 700 / resistance 200; grinch no armor /
+  resistance 150; phoenix no armor / resistance 160; snowman NEITHER.
+  This is the half worth keeping, because the caution recorded here - that
+  `new_monster` scaling might supply a missing armor - turned out not to apply.
+  **TWO CLASS ASYMMETRIES FALL OUT, AND NEITHER DEPENDS ON THE VOLATILE TERM**,
+  which is what makes them usable now rather than after a re-measurement.
+  mrgreen IS A PHYSICAL BOSS: resistance 900 and no armor, so the mage's
+  multiplier is 0.4258 where the ranger's is ~1.12, nearly 3x in favour of
+  physical. THE GARGOYLE IS THE EXACT REVERSE AND MORE SHARPLY THAN ARMOR
+  ALONE IMPLIES: MageofOz's rpiercing 238 against resistance 200 is NEGATIVE
+  38, which lands on the negative ladder at 1.038 - above 1.0 - against Dexon's
+  0.4784, so the mage's multiplier is 2.17x the ranger's. The piercing makes
+  it stronger than a 700-versus-200 comparison suggests, and the operator was
+  told the weaker version.
   **ONE CROSS-CHECK AGAINST THEIR LIVE SERIES, OFFERED AS A HYPOTHESIS AND NOT
   A FINDING.** icegolem US IV opened at `dps_since` 3272.7 and fell to 1498.2,
   and 1,333 is this table's figure for Dexon ALONE on that armor. So the
@@ -1387,6 +1428,12 @@ time on 2026-10-18.
   should manage, and the priest's and mage's per-boss terms are unmeasured. The
   test is the skip row's `contributors_at_decision` against the hp series, not
   this arithmetic.
+  **THE HYPOTHESIS SURVIVES THE RETRACTION ABOVE, AND THAT IS WORTH STATING
+  BECAUSE IT LOOKS AS THOUGH IT SHOULD NOT.** The browser session's point: both
+  the observed 1498.2 and the computed 1,333 move together under the 0.6485
+  correction, so the COINCIDENCE between them is preserved even though neither
+  value is right. A retraction that scales both sides of a comparison equally
+  leaves the comparison standing.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
