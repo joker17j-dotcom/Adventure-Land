@@ -21,6 +21,51 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v107
+
+`bossRank`: horseman inserted at 4, everything at or below shifted down one,
+`BOSS_RANK_DEFAULT` 6 -> 7. Operator's ruling, 2026-10-21. The table is now
+dragold 1 / franky 2 / crabxx, wabbit, goobrawl 3 / horseman 4 / mrgreen 5 /
+snowman, grinch, mrpumpkin 6, default 7.
+
+THE RULE IT EXPRESSES, so it is not re-derived wrong: perishable-but-FREQUENT
+sits BELOW rare-and-permanent and ABOVE always-available. Horseman ends with
+Halloween on 2 November, which argues for urgency - but it runs NIGHTLY across
+three regions and about six shards, so the season holds dozens of chances at
+it. wabbit is rare and does not expire, so when both are up wabbit (3) is the
+right grab; mrgreen is always available and will still be there in January, so
+it moved to 5. A DEADLINE IS NOT THE SAME THING AS SCARCITY, and ranking by
+"ends soonest" would have put horseman above wabbit on exactly that confusion.
+
+INSERTION RATHER THAN A TIE AT 4, which is the operator's reasoning and not a
+side effect. A tie falls through to `need` and then `kills_to_rung`, and
+neither of those knows a deadline exists - so a tie would have been decided by
+achievement distance, the very thing this table replaced. The insertion is
+order-preserving: every pairwise relationship that held before still holds.
+
+THE DEFAULT IS 7 FOR A REASON AND NOT AS A SPARE GAP. It must sit strictly
+above the largest assigned rank, which the shift moved from 5 to 6; at 6 the
+unranked set would TIE with snowman/grinch/mrpumpkin and sort against them by
+kills_to_rung. Asserted as `> max(assigned)` rather than as the literal 7, so
+the next insertion cannot leave it behind.
+
+SEASONAL ENTRIES STAY IN THE TABLE YEAR-ROUND - removing horseman in November
+is a no-op NOT to perform. Verified rather than assumed: `bossRank()` is a pure
+keyed lookup with a default, nothing iterates `BOSS_RANK`, and all three call
+sites pass a name that already came off a live candidate list. So an entry for
+a non-spawning boss is UNREACHABLE rather than merely harmless - which is what
+dragold at rank 1 has been demonstrating for as long as `lunarnewyear` has been
+false. `Tests/suite_bosshop.js` pins the no-enumeration property on the source
+text, because that is what makes the year-round entry safe.
+
+Three mutations measured: tying horseman with mrgreen fails 2, leaving the
+default at 6 fails 5, adding an `Object.keys(BOSS_RANK)` fails 1. The
+order-preserving loop does NOT catch the tie - a tie preserves every
+pre-insertion pair, since those pairs never include horseman - so the literal
+values and the loop are two assertions doing two jobs, and the suite says so.
+
+Single-file: `bossRank` is declared in `Party/Ranger.js` and nowhere else.
+
 ## v106
 
 Rules (a) and (b) from the operator's 2026-10-20 sell rulings reach this

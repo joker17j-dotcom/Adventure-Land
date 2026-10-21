@@ -866,9 +866,39 @@ in v97, and it had never EXECUTED at all, because Dexon was running
 `Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
 this ranking until a Ranger build is actually running on him.
 
-- **The table.** dragold 1; franky 2; crabxx, wabbit and goobrawl 3; mrgreen 4;
-  snowman, grinch and mrpumpkin 5; `BOSS_RANK_DEFAULT = 6` for everything else,
-  icegolem included.
+- **The table, as of the operator's 2026-10-21 insertion (Ranger v107).**
+  dragold 1; franky 2; crabxx, wabbit and goobrawl 3; **horseman 4**; mrgreen 5;
+  snowman, grinch and mrpumpkin 6; `BOSS_RANK_DEFAULT = 7` for everything else,
+  icegolem included. It read mrgreen 4 / snowman group 5 / default 6 until then,
+  so a note quoting those is reading the pre-horseman table.
+  **THE RULE THE INSERTION EXPRESSES, which is the part that stops it being
+  re-derived wrong: PERISHABLE-BUT-FREQUENT SITS BELOW RARE-AND-PERMANENT AND
+  ABOVE ALWAYS-AVAILABLE.** Horseman ends with Halloween, which argues for
+  urgency - but it runs NIGHTLY across three regions and about six shards, so
+  the season holds dozens of chances at it. wabbit is rare and does not expire,
+  so when both are up wabbit (3) is the right grab, and mrgreen is still going
+  to be there in January. **A DEADLINE IS NOT THE SAME THING AS SCARCITY**, and
+  ranking by "ends soonest" puts horseman above wabbit on exactly that
+  confusion.
+  **IT IS AN INSERTION RATHER THAN A TIE AT 4, and that was deliberate.** A tie
+  falls through to `need` and then `kills_to_rung` - achievement distance, the
+  very thing this table replaced - so a tie would have handed the decision back
+  to the mechanism the ranking exists to override. The insertion is
+  order-preserving: every pairwise relationship that held before still holds.
+  **AND THE DEFAULT MOVED FOR A REASON, NOT AS A SPARE GAP.** It must sit
+  strictly above the largest assigned rank, which the shift took from 5 to 6; at
+  6 the unranked set would TIE with snowman/grinch/mrpumpkin. Pinned as
+  `> max(assigned)` rather than as the literal 7, so the next insertion cannot
+  leave it behind.
+  **SEASONAL ENTRIES STAY IN THE TABLE YEAR-ROUND - removing horseman in
+  November is a no-op NOT to perform.** Verified rather than assumed:
+  `bossRank()` is a pure keyed lookup with a default, NOTHING iterates
+  `BOSS_RANK`, and all three call sites pass a name that already came off a live
+  candidate list. So an entry for a non-spawning boss is UNREACHABLE rather than
+  merely harmless, which is what dragold at rank 1 has been demonstrating for as
+  long as `lunarnewyear` has been false. The no-enumeration property is asserted
+  against the SOURCE TEXT, because that is what makes the year-round entry safe
+  and a lookup test cannot see it.
 - **THE RATIONALE IS THE PART THAT STOPS IT BEING RE-DERIVED WRONG.** franky
   drops the keys the operator wants and goobrawl drops funtokens; keys outrank
   funtokens for now. franky is WALKABLE, so it can be taken hop-sick, while
@@ -3391,7 +3421,42 @@ probes are listed at the end as still-open.
   would break again on the next one while saying nothing about the rule.
   Measured by mutation: reverting the derivation fails three assertions,
   dropping `horseman` fails one.
-- **STILL OPEN, AND ONLY THE BROWSER-DRIVEN SESSION CAN ANSWER ANY OF IT.**
+- **ANSWERED 2026-10-21 FROM THE DEPLOYED CLIENT, EU IV, AND EVERY
+  SOURCE-DERIVED CLAIM IN THIS SECTION HELD.** The browser session read
+  `S.schedule` live. Keys: `time_offset`, `dailies`, `nightlies`, `night`,
+  `realm`, `server_time`, `events`, `repeats` - so the published fields and the
+  INERT legacy ones sit side by side exactly as the `Object.assign` predicted.
+  `events` 45 entries carrying `{id, event, at, status, season, started,
+  ended}`, `at` spanning 2026-10-21T17:00Z to 2026-10-28T22:00Z (7.21 days) as
+  absolute UTC ms. `realm` "EUIV" IS the connected shard, so PER-SHARD is
+  confirmed from the client as well as from the source. `graveyard` absent from
+  `events` - the creator's own test assertion reproduces live - and `repeats`
+  holding exactly ONE entry, `every` 7,200,000, with `every` present on the
+  published entry as predicted. Counts: horseman 7, witchcipher 15, crabxx 5,
+  goobrawl 5, abtesting 5, franky 4, icegolem 4 - **horseman 7-in-7-days is the
+  nightly dedicated slot confirmed from data.** That closes (1), (2) and (3)
+  below; only `--boss-source` remains, and it is the operator's to say.
+  The mirror proposal is withdrawn by its own author on this read.
+- **GRAVEYARD'S TWELVE DAILY WINDOWS ARE GLOBALLY SIMULTANEOUS, SO THERE IS NO
+  REGIONAL STAGGER TO CHAIN.** The browser session's finding: every shard in
+  every region opens graveyard at the same even-UTC `:30`, twelve times a day,
+  all coincident - so hopping between regions for graveyard gains NOTHING, and
+  the twelve occurrences are twelve chances at one clock rather than thirty-six.
+  **THE MECHANISM IS A PARITY COINCIDENCE AND NOT A STRUCTURAL PROPERTY, which
+  is worth separating because only one of those is durable.** `UTC = realm -
+  offset`, graveyard runs at ODD realm hours, and all three regional offsets are
+  ODD - `TIMEO = {EU: 1, US: -5, ASIA: 7}` - so odd minus odd is even in every
+  region. Computed rather than eyeballed: all three produce exactly
+  `[0, 2, 4, ..., 22]`. **A fourth region with an EVEN offset would stagger
+  graveyard immediately**, and nothing in the schedule code would need to
+  change for that to happen - so record the simultaneity as contingent on the
+  offset table, and re-derive it if `TIMEO` ever grows.
+- **STILL OPEN - ONE ITEM, AND IT IS THE OPERATOR'S.** Which `--boss-source` the
+  bridge is running: `server_info` carries the schedule and `aldata` fetches
+  `monsters/<types>` with no schedule in it, so the bridge can collect this in
+  one mode and cannot in the other. Nothing should be built on collecting it
+  until that is settled. The three questions below were ANSWERED by the live
+  read above and are kept as the instance.
   (1) Does the DEPLOYED game carry this at all - `43b2c8fc` landed hours before
   this was written, and the live realm may lag the source. (2) Is `S` reachable
   from a CHARACTER's CODE context? This file documents `S` on /hub and nothing

@@ -180,13 +180,78 @@ module.exports = [
 	t.eq('franky 2', w.bossRank('franky'), 2);
 	t.eq('crabxx, wabbit and goobrawl all 3',
 		['crabxx', 'wabbit', 'goobrawl'].map(w.bossRank), [3, 3, 3]);
-	t.eq('mrgreen 4', w.bossRank('mrgreen'), 4);
-	t.eq('grinch and mrpumpkin 5', ['grinch', 'mrpumpkin'].map(w.bossRank), [5, 5]);
-	t.eq('anything unranked is 6, the operator\'s "all others"', w.bossRank('phoenix'), 6);
-	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 6);
+	t.eq('horseman 4, the operator\'s 2026-10-21 insertion', w.bossRank('horseman'), 4);
+	t.eq('mrgreen 5, shifted down by it', w.bossRank('mrgreen'), 5);
+	t.eq('grinch and mrpumpkin 6', ['grinch', 'mrpumpkin'].map(w.bossRank), [6, 6]);
+	t.eq('anything unranked is 7, the operator\'s "all others"', w.bossRank('phoenix'), 7);
+	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 7);
+
+	/* THE INSERTION IS ORDER-PRESERVING, WHICH IS THE OPERATOR'S ACTUAL
+	   REASONING AND NOT A SIDE EFFECT. Horseman went in at 4 rather than tying
+	   with mrgreen, and the property that buys is that EVERY pairwise
+	   relationship holding before the insertion still holds after it. Asserted
+	   against the pre-insertion table rather than against the new numbers,
+	   because re-listing the new numbers would pass for any renumbering at all
+	   - including one that quietly reordered two bosses. */
+	const BEFORE = { dragold: 1, franky: 2, crabxx: 3, wabbit: 3, goobrawl: 3,
+	                 mrgreen: 4, snowman: 5, grinch: 5, mrpumpkin: 5 };
+	const names = Object.keys(BEFORE);
+	const broken = [];
+	for (const a of names) for (const b of names) {
+		const was = Math.sign(BEFORE[a] - BEFORE[b]);
+		const now = Math.sign(w.bossRank(a) - w.bossRank(b));
+		if (was !== now) broken.push(a + ' vs ' + b);
+	}
+	t.eq('no pre-insertion pair changed order', broken.join(','), '');
+	/* AND THIS CHECK CANNOT TELL AN INSERTION FROM A TIE - state the scope or
+	   the next reader over-trusts it. A tie at 4 (horseman AND mrgreen both 4,
+	   the group below shifted to 5) preserves every pre-insertion pair too,
+	   because the pairs it compares never include horseman. Measured by
+	   mutation: that tie fails the explicit `mrgreen 5` and `grinch 6`
+	   assertions above and does NOT fail this loop. So the loop proves nothing
+	   was REORDERED, and the literal values are what prove horseman was
+	   INSERTED rather than tied - two assertions doing two jobs. */
+	/* AND THE CHECK MUST BE ABLE TO SEE A REORDER, or it passes on a broken
+	   comparator - the degenerate-setup trap this repo already records. Same
+	   loop, against a table that really did swap two. */
+	const SWAPPED = Object.assign({}, BEFORE, { mrgreen: 2, franky: 4 });
+	const seen = [];
+	for (const a of names) for (const b of names) {
+		if (Math.sign(BEFORE[a] - BEFORE[b]) !== Math.sign(SWAPPED[a] - SWAPPED[b])) seen.push(a);
+	}
+	t.ok('the comparison detects a reorder when there is one', seen.length > 0);
+
+	/* THE DEFAULT MUST NOT TIE WITH ANY ASSIGNED RANK. At 6 it would have tied
+	   with snowman/grinch/mrpumpkin after the shift, and a tie falls through to
+	   `need` and then `kills_to_rung` - ordering by achievement distance, which
+	   is the exact failure this table was built to replace. Derived from the
+	   table rather than asserted as the literal 7, so the next insertion cannot
+	   leave it behind. */
+	const assigned = Object.values(w.BOSS_RANK);
+	t.ok('the default sits strictly above every assigned rank',
+		w.BOSS_RANK_DEFAULT > Math.max.apply(null, assigned));
+	t.eq('so no assigned rank ties with it',
+		assigned.filter((r) => r === w.BOSS_RANK_DEFAULT).length, 0);
+
+	/* SEASONAL ENTRIES STAY YEAR-ROUND, and the claim that makes that safe is
+	   that NOTHING ITERATES the table - so an entry for a non-spawning boss is
+	   unreachable rather than merely harmless. That is a property of the source,
+	   not of the lookup, so it is checked there: a `for...in`, Object.keys /
+	   values / entries over BOSS_RANK would all make the table's CONTENTS
+	   observable and turn a stale seasonal entry into a live one. (This suite's
+	   own Object.values above runs on the LIFTED copy, not in the script.) */
+	const rs = require('fs').readFileSync(
+		require('path').join(require('./lift').ROOT, 'Party/Ranger.js'), 'utf8');
+	t.eq('nothing in Ranger.js enumerates BOSS_RANK',
+		/(for\s*\([^)]*\bin\s+BOSS_RANK\b)|Object\.(keys|values|entries)\s*\(\s*BOSS_RANK\s*\)/.test(rs),
+		false);
+	t.ok('and bossRank is a plain keyed lookup with a default',
+		/const r = BOSS_RANK\[name\];/.test(rs));
 	/* Keyed by the parent.S name, which is the EVENT name where one exists -
 	   bossLiveNames() yields goobrawl, never rgoo. */
-	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), 6);
+	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), 7);
+	t.eq('and horseman is its own name, event and monster alike',
+		w.bossRank('horseman'), w.BOSS_RANK.horseman);
 } },
 
 { name: 'localTarget ranks, and the ranking changes nothing today', fn(t) {

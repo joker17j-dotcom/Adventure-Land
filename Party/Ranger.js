@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v106
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v107
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1744,18 +1744,49 @@ const BOSS_JOIN_SPOTS = {
    bossPick compares. bossMonsterTypes() maps it the other way for the fight,
    one event to possibly SEVERAL monster types.
 
-   UNRANKED IS 6, the operator's "all others", so an unlisted boss sorts last
-   rather than being excluded. snowman is ranked but is NOT in allBosses, so
-   it can never reach these selectors today; the entry is harmless and costs
-   nothing if it is ever added. */
+   UNRANKED IS THE DEFAULT BELOW, the operator's "all others", so an unlisted
+   boss sorts last rather than being excluded. snowman is ranked but is NOT in
+   allBosses, so it can never reach these selectors today; the entry is
+   harmless and costs nothing if it is ever added.
+
+   HORSEMAN IS RANK 4, OPERATOR'S RULING 2026-10-21, AND EVERYTHING AT OR BELOW
+   SHIFTED DOWN ONE. The rule it expresses, so it is not re-derived wrong:
+   PERISHABLE-BUT-FREQUENT SITS BELOW RARE-AND-PERMANENT AND ABOVE
+   ALWAYS-AVAILABLE. Horseman ends with Halloween, which argues for urgency -
+   but it runs NIGHTLY across three regions and about six shards, so the season
+   holds dozens of chances at it. wabbit is rare and does not expire, so when
+   both are up wabbit (3) is the right grab. mrgreen is always available and
+   will still be there in January, so it moved to 5.
+   A DEADLINE IS NOT THE SAME THING AS SCARCITY, and ranking by "ends soonest"
+   would have put horseman above wabbit on exactly that confusion.
+
+   IT IS AN ORDER-PRESERVING INSERTION, which a TIE AT 4 WOULD NOT HAVE BEEN.
+   Every pairwise relationship that held before still holds; only horseman is
+   new in the order. A tie would have fallen through to `need` and then
+   `kills_to_rung`, and neither of those knows a deadline exists - so the tie
+   would have been decided by achievement distance, which is the very thing
+   this table replaced.
+
+   SEASONAL ENTRIES STAY IN THIS TABLE YEAR-ROUND, and removing horseman in
+   November is a no-op NOT to perform. Verified rather than assumed:
+   `bossRank()` below is a pure lookup with a default and NOTHING iterates
+   BOSS_RANK, while all three call sites pass a name that already came off a
+   live candidate list. So an entry for a non-spawning boss is UNREACHABLE
+   rather than merely harmless - which is what dragold at rank 1 has been
+   demonstrating for as long as `lunarnewyear` has been false. */
 const BOSS_RANK = {
 	dragold: 1,
 	franky: 2,
 	crabxx: 3, wabbit: 3, goobrawl: 3,
-	mrgreen: 4,
-	snowman: 5, grinch: 5, mrpumpkin: 5,
+	horseman: 4,
+	mrgreen: 5,
+	snowman: 6, grinch: 6, mrpumpkin: 6,
 };
-const BOSS_RANK_DEFAULT = 6;
+/* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, which the insertion moved from 5
+   to 6. It is 7 rather than 6 for that reason and not as a spare gap: at 6 the
+   unranked set would TIE with snowman/grinch/mrpumpkin and sort by
+   kills_to_rung against them, which is the failure the table exists to stop. */
+const BOSS_RANK_DEFAULT = 7;
 function bossRank(name) {
 	const r = BOSS_RANK[name];
 	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;
