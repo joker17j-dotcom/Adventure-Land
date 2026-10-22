@@ -11,8 +11,12 @@ const G_BASE = {
 		crabxx: { join: true, duration: 2400 }, franky: { join: true, duration: 2400 },
 		icegolem: { join: true, duration: 2400 }, goobrawl: { join: true, duration: 540 },
 		abtesting: { join: true, duration: 480 },
+		/* `join: true` read from design/events.js at upstream 16881a27. It is
+		   the premise of the inverted assertion below: without it, deleting
+		   the BOSS_JOIN_SPOTS row would prove nothing. */
+		horseman: { join: true, duration: 2400 },
 	},
-	maps: { main: { doors: [[1]] }, level2w: { doors: [[1], [2], [3]] }, winterland: { doors: [[1]] }, goobrawl: { doors: [] } },
+	maps: { main: { doors: [[1]] }, level2w: { doors: [[1], [2], [3]] }, winterland: { doors: [[1]] }, goobrawl: { doors: [] }, halloween: { doors: [[1], [2], [3], [4], [5]] } },
 	monsters: { crabxx: { hp: 960000 }, franky: { hp: 120000000 }, dragold: { hp: 25600000 } },
 	conditions: { hopsickness: { duration: 720000 } },
 };
@@ -561,6 +565,50 @@ module.exports = [
 	t.eq('isTaxiJoin(goobrawl)', w.bossHop.isTaxiJoin('goobrawl'), false);
 	t.eq('isTaxiJoin(dragold) - not a join event at all', w.bossHop.isTaxiJoin('dragold'), false);
 	t.eq('isJoinEvent(goobrawl) is still true - a different question', w.bossHop.isJoinEvent('goobrawl'), true);
+
+	/* --- horseman, added 2026-10-22 ---------------------------------------- */
+	/* The row was missing from BOSS_JOIN_SPOTS while horseman had a bossRank
+	   entry, an EVENT window and a bridge collector - so it was reached by the
+	   LOCAL path (bossEligible gates on none of this) and mistreated by every
+	   gate that asks whether the join is the only way in. */
+	w = ranger();
+	const hm = w.BOSS_JOIN_SPOTS.horseman;
+	t.ok('horseman has a join spot', !!hm);
+	t.eq('on halloween', hm && hm.map, 'halloween');
+	t.eq('at the server handler\'s own coordinates', hm && hm.x + ',' + hm.y, '-405,-1560');
+	t.eq('halloween has doors, so the refusal costs the lift and not the fight',
+		w.bossTaxiWalkable('horseman'), true);
+	t.eq('isTaxiJoin(horseman)', w.bossHop.isTaxiJoin('horseman'), true);
+
+	/* DERIVED, not listed - the same proof the crabxx case gets. */
+	const hmNoDoors = JSON.parse(JSON.stringify(G_BASE));
+	hmNoDoors.maps.halloween.doors = [];
+	t.eq('a halloween that lost its doors stops being a taxi join',
+		ranger({ parent: { G: hmNoDoors, S: {} } }).bossTaxiWalkable('horseman'), false);
+
+	/* INVERTED, AND IT IS THE LOAD-BEARING HALF: the predicate three gates
+	   share is `isJoinEvent && !isTaxiJoin`, which is the goobrawl treatment -
+	   refused outright while hop-sick, and charged the full sickness wait in
+	   the window test. The row is the only thing holding it off horseman. */
+	const only = (b, n) => b.isJoinEvent(n) && !b.isTaxiJoin(n);
+	t.eq('precondition: horseman carries join: true, so a gate DOES look at it',
+		w.bossHop.isJoinEvent('horseman'), true);
+	t.eq('with the row, horseman is not treated as join-only', only(w.bossHop, 'horseman'), false);
+	t.eq('goobrawl still is', only(w.bossHop, 'goobrawl'), true);
+	const gone = ranger();
+	delete gone.BOSS_JOIN_SPOTS.horseman;
+	t.eq('delete the row and horseman becomes join-only', only(gone.bossHop, 'horseman'), true);
+
+	/* And what that costs, measured through the gate itself rather than the
+	   predicate: a live horseman standing in front of a hop-sick character. */
+	const hcfg = CFG(); hcfg.bossHop.targets = [{ mtype: 'horseman', kills_to_rung: 9 }];
+	const sick = { s: { hopsickness: { ms: 600000 } } };
+	t.eq('HOP-SICK with horseman live HERE: taken, because halloween is walkable',
+		ranger({ CONFIG: hcfg, character: sick, live: ['horseman'] }).bossHop.localTarget(), 'horseman');
+	const sickGone = ranger({ CONFIG: hcfg, character: sick, live: ['horseman'] });
+	delete sickGone.BOSS_JOIN_SPOTS.horseman;
+	t.eq('without the row the party is walked away from it',
+		sickGone.bossHop.localTarget(), null);
 } },
 
 { name: 'hop sickness: what remains, not the full duration', fn(t) {

@@ -1368,6 +1368,36 @@ this ranking until a Ranger build is actually running on him.
   arrived with a crowd three quarters done, and `share > 0.0025` is a complete
   alternative to any attack-list problem. `max.monsters.horseman` is still
   "none": no character on the account has ever killed one.
+- **AND A THIRD EXPLANATION WAS SITTING IN A TABLE NOBODY REVISITED: horseman
+  HAD NO `BOSS_JOIN_SPOTS` ROW, SO THE SERVER'S FREE TELEPORT WAS NEVER USED.**
+  Read from upstream `16881a27` 2026-10-22: the join handler's horseman branch
+  is `transport_player_to(player, "halloween", [-405, -1560, 0, 40])` behind a
+  200-unit skip, the same SHAPE as crabxx, franky and icegolem - so it is a taxi
+  to an ordinary walkable map, and `halloween` carries five doors, which is what
+  `bossTaxiWalkable()` reads. `bossApproach` gates its ENTIRE join block on that
+  table, so horseman was walked to even when clean. **IT DOES NOT EXPLAIN THE
+  ZERO**, and must not be read as having closed the bullet above: the walk
+  arrived, Dexon was on `halloween` with the boss at 24.46%, and the share gate
+  is still the live answer.
+  **THE LATENT HALF IS WHY IT MATTERED, AND IT WAS ARMED BY AN EDIT NOBODY WOULD
+  CONNECT TO IT.** `isTaxiJoin()` is `isJoinEvent()` AND that table, and
+  horseman carries `join: true`, so without the row the three hop gates treated
+  it exactly like goobrawl - refused outright while hop-sick, given the larger
+  pre-spawn buffer, and charged the full sickness wait in the window test. All
+  three iterate `CONFIG.bossHop.targets`, so the mistreatment was UNREACHABLE
+  while that list omitted horseman - and the 05:00Z measurement above is exactly
+  the argument for adding it. **A DEFECT GATED BEHIND AN OPERATOR CONFIG EDIT
+  CANNOT BE FOUND BY WATCHING THE THING RUN**, which is the `GEAR_PROGRESSION`
+  repeal of dexbelt's sell guard from the other direction: a data edit elsewhere
+  decides whether a guard applies, and nothing at either site says so. Fixed in
+  Ranger v114 / Priest v62 / Mage v85; the inversion is pinned, and dropping the
+  row from the PRIEST alone fails the relay divergence check.
+  **HOW IT WAS MISSED IS THE REUSABLE PART: horseman ARRIVED AS A RANKING
+  ENTRY.** One `bossRank` row and one bridge window row, 2026-10-21, and nothing
+  about adding a boss to a PRIORITY table prompts the question "can we be
+  teleported to it". The join table's own comment derives walkability from `G`
+  so the game can change the answer - and derivation cannot help a name that
+  was never entered.
 - **THE GARGOYLE WAKE IS BIMODAL, AND THE 540 WAS ONE MODE MEASURED ONCE.** 25
   observations across two windows on 2026-10-22, roughly half at each end of
   the [360, 540] bracket: the 06:30Z window alone gave US V 372, US IV 375,
@@ -2649,6 +2679,34 @@ ask the other session to measure first.
   measure a plain `setInterval(fn, 100)` in that same tab. If it is not firing
   ~10x/second, the tab is throttled and every rate measured there is
   meaningless.
+- **AND `document.hidden` MAPPED TO A SINGLE LETTER PASSES THE RESULT FILTER,
+  WHICH IS WHY THAT HALF OF THE CHECK HAS NEVER ACTUALLY BEEN RUN.** The raw
+  property trips the filter reliably, so both sessions have measured the
+  interval and INFERRED the visibility - and this diagnosis has now been guessed
+  wrong twice in this repo on exactly that gap. Write
+  `parent.localStorage.setItem(k, document.hidden ? 'H' : 'V')`, which is the
+  derived form the "report DERIVED facts" bullet already prescribes. Measured
+  2026-10-22 on all three characters: it comes back clean.
+- **THE SECOND WRONG GUESS, AND THE REFUTATION WAS IN THE SAME PARAGRAPH AS THE
+  CONCLUSION.** 2026-10-22: MageofOz read 1.25 ticks/s and was reported
+  throttled with the operator asked to move his tab. Re-measured with each tab
+  reporting its OWN visibility: all three hidden, all three 9.97/s, 60 ticks in
+  ~6,015 ms, `setTimeout(...,0)` returning in 0 ms - **THE NO-THROTTLE FLAGS ARE
+  ACTIVE** and the proposed fix addressed nothing. The sentence "two unthrottled
+  tabs rules out the flags being missing at process level" was written one line
+  from the conclusion it falsifies: flags off means AT MOST ONE unthrottled tab,
+  flags on means ALL THREE, and two were in hand. Both branches were already
+  dead on the page. The operator saying "he is in the same window" is what made
+  it get read.
+  **SO: A SIGNATURE MATCH IS NOT A MEASUREMENT OF THE THING THE SIGNATURE
+  NAMES.** ~800ms was called "exactly the hidden-tab signature" against an
+  untested hypothesis - the same move as matching a blob hash to the wrong
+  target file. The real cause was main-thread occupancy for a bounded stretch:
+  two consecutive samples, clean eight minutes later.
+  **CONSEQUENCE FOR THE OPEN MEASUREMENTS: THEY ARE NOT BLOCKED.** The 90/30
+  scoring, the constant-velocity re-measure and the attack/loot rates are all
+  takeable - and a rate sample should carry its own visibility letter AND tick
+  count, so a transient busy period cannot be read as a behavioural finding.
 - **Fix: start Chrome with throttling disabled.**
   `--disable-background-timer-throttling --disable-backgrounding-occluded-windows
   --disable-renderer-backgrounding`. There is a desktop shortcut on the user's

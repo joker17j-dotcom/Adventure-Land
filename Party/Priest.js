@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v61
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v62
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1565,6 +1565,33 @@ const BOSS_JOIN_SPOTS = {
 	crabxx: { map: 'main', x: -1000, y: 1700 },
 	franky: { map: 'level2w', x: -300, y: 150 },
 	icegolem: { map: 'winterland', x: 820, y: 425 },
+	/* MISSING UNTIL 2026-10-22, AND THE GAP WAS LATENT RATHER THAN THE CAUSE
+	   OF ANYTHING MEASURED. The server's horseman branch has the same SHAPE as
+	   the three above - `transport_player_to(player, "halloween", [-405, -1560,
+	   0, 40])` past a 200-unit skip, read at upstream 16881a27 - so it is a
+	   taxi to an ordinary walkable map, and `halloween` carries five doors,
+	   which is where bossTaxiWalkable() gets its answer from.
+	   WHAT THE ABSENCE COST: bossApproach gates its ENTIRE join block on this
+	   table, so horseman was walked to even when clean, with a free teleport
+	   sitting there. WHAT IT DID NOT COST: the 2026-10-22 zero credit. Dexon
+	   was already on `halloween` at 05:17:52Z with the boss at 24.46%, so the
+	   walk arrived and `share > 0.0025` is the live explanation; adding this
+	   row does not touch that.
+	   THE LATENT HALF IS WHY IT IS WORTH A ROW NOW. isTaxiJoin() is
+	   isJoinEvent() AND this table, and horseman carries `join: true` in
+	   design/events.js - so without the row the hop gates treat it exactly
+	   like goobrawl: refused outright while hop-sick, and charged the full
+	   sickness wait in the window test. Those gates iterate
+	   CONFIG.bossHop.targets, so they reach horseman only once it is listed
+	   there, which is the operator's call; the 05:00Z measurement - five kills
+	   at 391, 620, 686, 710 and 1322s against a 2400s window - is the argument
+	   for making it, and this row means that edit cannot quietly arm the
+	   goobrawl treatment.
+	   The spot is inside halloween's fvampire/ghost boundary [-664, -1808,
+	   -147, -1477], one fvampire and nine growing ghosts, which is where the
+	   server drops you and not a choice of ours - this table's one invariant.
+	   No rage rectangle on the map, so containment never refuses it. */
+	horseman: { map: 'halloween', x: -405, y: -1560 },
 	/* THE SERVER'S OWN SPOT, not ours, which is what every row above is: these
 	   mirror node/server.js's join handler exactly. Its comment on this line
 	   reads "Below the graveyard's stairs, out of the Mummies' reach", and the

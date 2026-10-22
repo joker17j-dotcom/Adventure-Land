@@ -21,6 +21,48 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v85
+
+**horseman HAD NO `BOSS_JOIN_SPOTS` ROW, AND THE SERVER HAS JOINED IT ALL
+ALONG.** Read from upstream `16881a27`: the join handler's horseman branch is
+`transport_player_to(player, "halloween", [-405, -1560, 0, 40])` behind a
+200-unit skip - the same SHAPE as crabxx, franky and icegolem, which is what
+`bossTaxiWalkable()` derives "the refusal costs the lift, not the fight" from.
+`halloween` carries five doors, so the derivation answers TRUE the moment the
+row exists. It was missed because horseman arrived as a RANKING entry on
+2026-10-21 - one `bossRank` row, one `EVENT_WINDOW_SEC` row in the bridge - and
+nothing about adding a boss to a priority table asks whether the party can be
+teleported to it.
+
+**WHAT THE ABSENCE COST, AND WHAT IT DID NOT.** `bossApproach` gates its ENTIRE
+join block on this table, so horseman was walked to even when clean, with a
+free teleport available. It did NOT cause the 2026-10-22 zero credit: at
+05:17:52Z Dexon was already on `halloween` with the boss at 24.46%, so the walk
+arrived and `share > 0.0025` remains the live explanation. This row does not
+touch that and must not be read as having closed it.
+
+**THE LATENT HALF IS THE REASON IT IS WORTH A ROW NOW, AND IT IS ARMED BY AN
+EDIT NOBODY WOULD CONNECT TO IT.** `isTaxiJoin()` is `isJoinEvent()` AND this
+table, and horseman carries `join: true` - so without the row the three hop
+gates treat it exactly like goobrawl: refused outright while hop-sick
+(`bossHop` line "skip when the join is the ONLY way in"), given the larger
+pre-spawn buffer, and charged the full sickness wait in the window test. Those
+gates iterate `CONFIG.bossHop.targets`, which is the operator's list, so the
+mistreatment was UNREACHABLE and silent - and the 05:00Z measurement that
+settles horseman as worth hopping for (five kills at 391, 620, 686, 710 and
+1322s against a 2400s window) is precisely the argument for adding it to that
+list. The row means that edit cannot quietly arm the goobrawl treatment.
+**A DEFECT GATED BEHIND AN OPERATOR CONFIG EDIT IS NOT CAUGHT BY ANY AMOUNT OF
+WATCHING THE THING RUN**, which is the one thing this class has in common with
+the `GEAR_PROGRESSION` repeal that withdrew dexbelt's sell guard: a data edit
+elsewhere decides whether a guard applies, and nothing at either site says so.
+
+Pinned in `Tests/suite_bosshop.js` with the inversion kept beside it - delete
+the row and `isJoinEvent && !isTaxiJoin` flips on, and a hop-sick character
+with a live horseman in front of him is walked away from it. Measured by
+mutation: dropping the row fails 7 assertions, dropping it from the PRIEST
+alone fails the relay divergence check.
+
 ## v84
 
 **THE RAGE PULL READS THE BOSS CONTEXT NOW, AND WITHOUT THIS THE WORKING
