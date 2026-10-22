@@ -378,4 +378,115 @@ name: 'caveLeash reports every field it names - no duplicate object keys', fn(t)
 	const broken = ['mode', 'hold', 'trouble', 'hold'];
 	t.eq('the detector reports a duplicate when there is one',
 		broken.filter((k, n) => broken.indexOf(k) !== n).join(','), 'hold');
-} }];
+} }, {
+
+name: 'followers start on leader MOTION, without the recovering latch', fn(t) {
+	/* ITEM 3. The reaction delay is closeAt/leaderSpeed + tickMs/2 - 2.9s at the
+	   committed closeAt 180 - and the follower is not reacting late: waiting for
+	   closeAt IS his trigger. This gives an earlier one without moving closeAt,
+	   and without touching kiting, which is why the operator's ruling on item 2
+	   never applied to it. */
+	const s = src();
+	const moved = [];
+	function w(over) {
+		over = over || {};
+		const x = world({
+			character: { name: 'Dexon', map: 'cave', real_x: 0, real_y: 0 },
+			move: (mx, my) => moved.push([Math.round(mx), Math.round(my)]),
+			can_move_to: over.blocked ? () => false : () => true,
+			isFn: (f) => typeof f === 'function',
+			bump: () => {},
+			leash: () => ({ closeAt: 180, releaseAt: 120, mode: 'combat' }),
+			smart_move: () => { throw new Error('followStep must never call smart_move'); },
+		});
+		lift(x, 'CaveRun.js', ['MOVE', 'noteLeaderMotion', 'leaderMoving', 'followStep']);
+		x.leaderSeen = null;
+		x.leaderMovedAt = 0;
+		return x;
+	}
+
+	/* --- the inference ---------------------------------------------------- */
+	let x = w();
+	t.eq('precondition: nothing seen yet reads as not moving', x.leaderMoving(), false);
+	x.noteLeaderMotion({ x: 0, y: 0 });
+	t.eq('one reading alone is not motion - there is nothing to difference',
+		x.leaderMoving(), false);
+	x.noteLeaderMotion({ x: 0, y: 0 });
+	t.eq('and a leader standing still stays not-moving', x.leaderMoving(), false);
+	x.noteLeaderMotion({ x: 20, y: 0 });
+	t.eq('a real step reads as moving', x.leaderMoving(), true);
+
+	/* THE FAIL-SAFE IS THE POINT: a frozen party row or an expired beacon does
+	   not change, so it reads NOT moving and the old band behaves unchanged.
+	   This is why leaderPos()'s staleness handling is not duplicated here. */
+	x = w();
+	for (let i = 0; i < 10; i++) x.noteLeaderMotion({ x: 975, y: 975 });
+	t.eq('a stale source repeated ten times never reads as motion',
+		x.leaderMoving(), false);
+
+	/* Jitter below motionEps must not count, or the follow never stops. */
+	x = w();
+	x.noteLeaderMotion({ x: 0, y: 0 });
+	x.noteLeaderMotion({ x: x.MOVE.motionEps - 1, y: 0 });
+	t.eq('sub-epsilon jitter is not motion', x.leaderMoving(), false);
+	t.ok('and motionEps sits well under a tick of real travel (~15u at speed 62)',
+		x.MOVE.motionEps > 0 && x.MOVE.motionEps < 10);
+
+	/* The window spans more than one tick so a smart_move pause is not a stop. */
+	x = w();
+	x.noteLeaderMotion({ x: 0, y: 0 });
+	x.noteLeaderMotion({ x: 20, y: 0 });
+	t.eq('precondition: it is moving', x.leaderMoving(), true);
+	x.leaderMovedAt = Date.now() - (x.MOVE.motionMs + 50);
+	t.eq('and it decays once the window passes', x.leaderMoving(), false);
+	t.ok('the window spans at least two 250ms ticks', x.MOVE.motionMs >= 500);
+
+	/* --- the step --------------------------------------------------------- */
+	x = w(); moved.length = 0;
+	x.followStep({ x: 300, y: 0 }, 300);
+	t.eq('it steps toward the leader', moved.length, 1);
+	t.ok('along the bearing to him', moved[0][0] > 0 && moved[0][1] === 0);
+	t.eq('capped at closeStepMax', moved[0][0], x.MOVE.closeStepMax);
+
+	moved.length = 0;
+	x.followStep({ x: 130, y: 0 }, 130);
+	t.eq('inside the band it closes only the surplus over releaseAt',
+		moved[0][0], 10);
+
+	moved.length = 0;
+	x.followStep({ x: 100, y: 0 }, 100);
+	t.eq('and at or inside releaseAt it does nothing at all', moved.length, 0);
+
+	/* BLOCKED IS A NO-OP, NOT A smart_move. recoverStep paths around an
+	   obstacle; this must not, because an unsettled smart_move promise is the
+	   documented way these chains die and the recovering latch at closeAt is
+	   already the fallback. The world throws if smart_move is called. */
+	moved.length = 0;
+	const b = w({ blocked: true });
+	b.followStep({ x: 300, y: 0 }, 300);
+	t.eq('blocked, it moves nowhere', moved.length, 0);
+
+	/* --- placement, which is what keeps the ruling intact ------------------ */
+	/* Kiting must keep absolute priority. Asserted on the SOURCE because the
+	   ordering is the property, not the outcome of any one call. */
+	const tick = s.slice(s.indexOf('const k = kiteStep(lp);'));
+	const iKite = tick.indexOf("bump('kiteSteps')");
+	const iRej = tick.indexOf("bump('kiteRejected')");
+	const iFollow = tick.indexOf('followStep(lp, gap)');
+	t.ok('the kite step comes first', iKite >= 0 && iKite < iRej);
+	t.ok('the rejected-kite branch comes before the follow', iRej >= 0 && iRej < iFollow);
+	t.ok('so the follow only fills the branch that used to do nothing',
+		/else if \(leaderMoving\(\) && gap > L\.releaseAt\) await followStep/.test(s));
+
+	/* IT MUST NOT SET THE LATCH. `recovering` is uninterruptible and stops
+	   kiting AND looting - lootOutOfRange ~1030 against ~15 lootCalls on both
+	   followers - so a second route into it is the one thing this must not be. */
+	const body = s.slice(s.indexOf('async function followStep'),
+		s.indexOf('function leaderPos()'));
+	t.eq('followStep never assigns recovering', /recovering\s*=/.test(body), false);
+	t.eq('and never calls smart_move', /smart_move/.test(body), false);
+	t.eq('nor touches recoverStep’s cached aim', /\baim\b/.test(body), false);
+	t.ok('it aims at the live leader point instead', /lp\.y - character\.real_y/.test(body));
+}
+
+}];

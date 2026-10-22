@@ -1,4 +1,43 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v20 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v21 (TEST BUILD)
+// v21 2026-10-22 FOLLOWERS START ON LEADER MOTION - item 3 of the three
+//                proposed changes, and the only one the kiting ruling never
+//                touched. `closeAt / leaderSpeed + tickMs/2` IS the follower's
+//                reaction delay - measured 957ms and 926ms at closeAt 60,
+//                IDENTICAL across two characters of different resting speed
+//                because it is the LEADER's speed that sets it - so at the
+//                committed closeAt 180 a follower stands still for 2.9s. He is
+//                not reacting late: waiting for closeAt IS his trigger. This
+//                adds an earlier one and moves closeAt not at all.
+//                INFERRED, because leaderPos() returns {x,y} with no `moving`
+//                flag: noteLeaderMotion() differences successive readings and
+//                leaderMoving() is a 750ms recency window. THE DEGENERATE
+//                READING IS THE SAFE ONE - a frozen party row or an expired
+//                beacon does not change, so it reads NOT moving and the leash
+//                band behaves exactly as before. That is why leaderPos()'s own
+//                staleness handling is not duplicated here.
+//                followStep() IS LIGHTER THAN recoverStep IN EVERY WAY THAT
+//                MATTERS, each deliberate: no `recovering` latch, which is
+//                uninterruptible and stops kiting AND looting (the run measured
+//                lootOutOfRange ~1030 against ~15 lootCalls, so a second route
+//                into that state is the last thing to add); no smart_move, so
+//                it cannot leave an unsettled promise and blocked is simply a
+//                no-op with the latch at closeAt still the fallback; and it
+//                aims at the LIVE leader point rather than recoverStep's cached
+//                `aim`, which gets staleSlack's measured tightening here
+//                without moving staleSlack and changing recoverStep too.
+//                PLACED LAST, AFTER THE KITE BRANCHES, so kiting keeps absolute
+//                priority - the operator's ruling is that kite range is normal
+//                in combat and "it also protects the followers ability to kite
+//                while in combat". This fills only the branch where a follower
+//                previously did NOTHING: no kite wanted, no threat in range,
+//                and the gap opening because the leader walked off. The
+//                ordering is asserted on the source text, not on an outcome.
+//                NOT SCORED YET. motionEps 4 is derived (the leader covers ~15u
+//                per 250ms tick at a resting 62) and motionMs 750 spans three
+//                ticks so a smart_move pause is not a stop, but no run has
+//                measured either. followSteps / followBlocked are on the
+//                counters for that. Landed ALONE, with item 1 held back, so
+//                neither change can look proven by the other's work.
 // v20 2026-10-21 THE "A FOLLOWER CANNOT CONVERGE ON A FASTER LEADER" CLAIM IS
 //                SCOPED TO A LEADER WE NO LONGER USE, AND ALL THREE SITES NOW
 //                SAY SO. Comment-only. The claim is asserted three times and
@@ -287,6 +326,23 @@ const MOVE = {
 	speedEdge: 1.05,
 	closeStepMax: 110,
 	staleSlack: 60,
+
+	/* START-ON-LEADER-MOTION - v21, item 3 of the three proposed changes, and
+	   the one that never touched kiting so it was never blocked by the ruling.
+	   WHAT IT IS FOR: `closeAt / leaderSpeed + tickMs/2` is the follower's
+	   reaction delay, measured at 957ms and 926ms with closeAt 60 and IDENTICAL
+	   across two characters of different speed, because it is the LEADER's
+	   speed that sets it. At the committed closeAt 180 that is 2.9 SECONDS of
+	   standing still before a follower twitches, and the follower is not
+	   reacting late - waiting for closeAt IS his trigger. This gives him an
+	   earlier one that does not move closeAt.
+	   motionEps IS DERIVED, NOT PICKED: the leader covers ~15 units per 250ms
+	   tick at a resting 62, so 4 sits an order below real movement and above
+	   coordinate jitter. motionMs spans three ticks so a smart_move pause does
+	   not read as a stop. Both are provisional in the sense that no run has
+	   scored them, and both fail toward the OLD behaviour. */
+	motionEps: 4,
+	motionMs: 750,
 	smartMoveMaxMs: 8000,
 
 	/* TRAVEL LEASH - v14, HALVED IN v15. Tighter while the party is walking, the
@@ -623,6 +679,50 @@ function here(e) { return e && !e.rip && (!e.map || e.map === character.map); }
 function dist(a, b) { return Math.hypot((a.real_x !== undefined ? a.real_x : a.x) - (b.real_x !== undefined ? b.real_x : b.x), (a.real_y !== undefined ? a.real_y : a.y) - (b.real_y !== undefined ? b.real_y : b.y)); }
 
 function leaderEntity() { try { return parent.entities[leaderName()] || null; } catch (e) { return null; } }
+/* LEADER MOTION, INFERRED FROM SUCCESSIVE READINGS, because leaderPos()
+   returns {x,y} and the game offers no `moving` flag on it.
+   THE FAIL-SAFE IS STRUCTURAL RATHER THAN CHECKED: a stale source does not
+   change, so a frozen party row or an expired beacon yields "not moving", the
+   light follow never fires, and the leash band behaves exactly as it did
+   before this existed. That is why there is no staleness test here on top of
+   the ones leaderPos() already applies - the degenerate reading is the safe
+   answer, not a case to detect. */
+let leaderSeen = null;
+let leaderMovedAt = 0;
+
+function noteLeaderMotion(lp) {
+	if (!lp) { leaderSeen = null; return; }
+	if (leaderSeen && Math.hypot(lp.x - leaderSeen.x, lp.y - leaderSeen.y) > MOVE.motionEps) {
+		leaderMovedAt = Date.now();
+	}
+	leaderSeen = { x: lp.x, y: lp.y };
+}
+
+function leaderMoving() { return Date.now() - leaderMovedAt < MOVE.motionMs; }
+
+/* THE LIGHT STEP, AND EVERY WAY IT IS LIGHTER THAN recoverStep IS DELIBERATE.
+   No latch - `recovering` is UNINTERRUPTIBLE and stops kiting AND looting, and
+   the cave run measured lootOutOfRange ~1030 against ~15 successful lootCalls,
+   so a second path into that state is the last thing this should add. No
+   smart_move, so it cannot leave an unsettled promise and cannot hang a tick;
+   blocked, it simply does nothing and the recovering latch is still there at
+   closeAt as the fallback it always was.
+   AND IT AIMS AT THE LIVE LEADER POINT RATHER THAN recoverStep's CACHED `aim`.
+   That cache is refreshed only once the leader is MOVE.staleSlack (60) away
+   from it, which is the constant measured to set how loosely a follower tracks
+   - mean 44 at 60 against mean 18 at 15. Aiming live gets that tightening here
+   WITHOUT moving staleSlack, which would change recoverStep's behaviour too. */
+async function followStep(lp, gap) {
+	const step = Math.min(MOVE.closeStepMax, gap - leash().releaseAt);
+	if (step <= 0) return;
+	const a = Math.atan2(lp.y - character.real_y, lp.x - character.real_x);
+	const nx = character.real_x + Math.cos(a) * step, ny = character.real_y + Math.sin(a) * step;
+	try {
+		if (!isFn(can_move_to) || can_move_to(nx, ny)) { move(nx, ny); bump('followSteps'); }
+		else bump('followBlocked');
+	} catch (e) { bump('followBlocked'); }
+}
+
 function leaderPos() {
 	const e = leaderEntity();
 	if (here(e)) return { x: e.real_x !== undefined ? e.real_x : e.x, y: e.real_y !== undefined ? e.real_y : e.y };
@@ -1113,6 +1213,7 @@ async function moveTick() {
 
 	const lp = leaderPos();
 	if (!lp) { if (await followFloor()) return; return; }
+	noteLeaderMotion(lp);
 	const L = leash();
 	const gap = Math.hypot(lp.x - character.real_x, lp.y - character.real_y);
 	tel.maxDistLeader = Math.max(tel.maxDistLeader, Math.round(gap));
@@ -1129,6 +1230,12 @@ async function moveTick() {
 	const k = kiteStep(lp);
 	if (k) { try { move(k.x, k.y); bump('kiteSteps'); } catch (e) {} }
 	else if (threats().some((m) => dist(character, m) < MOVE.kiteRadius)) bump('kiteRejected');
+	/* LAST, so kiting keeps absolute priority - the operator's ruling is that
+	   kite range is normal in combat, and this must not become a second thing
+	   competing for the same tick. It fills the branch where the follower
+	   previously did NOTHING: no kite wanted, no threat in range, and the gap
+	   opening because the leader walked off. */
+	else if (leaderMoving() && gap > L.releaseAt) await followStep(lp, gap);
 }
 
 /* The driver is the only one who can fix an over-extension, and v6 surfaced it
@@ -1876,6 +1983,7 @@ const tel = {
 	counters: { ticks: 0, engagedTicks: 0, pausedTicks: 0, pausedMoveSkipped: 0,
 		pausedAttackSkipped: 0, attacks: 0, attackFail: 0, noTargetWhileEngaged: 0,
 		closeSteps: 0, closeSmart: 0, kiteSteps: 0, kiteRejected: 0, recoveries: 0,
+		followSteps: 0, followBlocked: 0,
 		outrunWarnTicks: 0, doorTry: 0, doorOk: 0, telArchiveFail: 0, cryptBlocked: 0,
 		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
