@@ -17,11 +17,17 @@ const FOLLOWERS = ['Party/Priest.js', 'Party/Mage.js'];
 function relay(file, over = {}) {
 	const w = world(Object.assign({
 		PL_CURSOR_KEY: 'pl_cursor', PL_ACTED_KEY: 'pl_acted', PL_ACTED_MAX: 20,
+		character: { name: 'Dexon' },
 		plCursor: 0,
 		plLog: function (m) { this.logs.push(String(m)); },
 	}, over));
 	w.plLog = (m) => w.logs.push(String(m));
-	lift(w, file, ['plSaveCursor', 'plActed', 'plMarkActed']);
+	/* The scoping helpers are lifted too. Without them `scopedGetLegacy`
+	   is undefined, plActed's catch answers "not acted" and every
+	   assertion here passes or fails for a reason that has nothing to do
+	   with the relay - which is what happened on the first run. */
+	lift(w, file, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
+		'plSaveCursor', 'plActed', 'plMarkActed']);
 	return w;
 }
 
@@ -40,7 +46,7 @@ module.exports = [
 		t.eq(`${f}: SURVIVES the reload a hop causes`, after.plActed('Dexon-1-1'), true);
 
 		for (let i = 0; i < 25; i++) w.plMarkActed('id-' + i);
-		const list = w.get('pl_acted');
+		const list = w.get('pl_acted_Dexon');
 		t.eq(`${f}: capped at PL_ACTED_MAX`, list.length, 20);
 		t.eq(`${f}: keeping the NEWEST`, list[list.length - 1], 'id-24');
 		t.eq(`${f}: and dropping the oldest`, list.includes('Dexon-1-1'), false);
@@ -294,6 +300,11 @@ module.exports = [
 	   acted-list refused every retry. */
 	const { lift, world } = require('./lift');
 	const GRACE = 15000;
+	/* THE PENDING RECORD IS PER-CHARACTER NOW. `set`/`get` share one
+	   localStorage across every character tab, so an unscoped
+	   'pl_hop_pending' let one follower resolve a hop the OTHER ordered.
+	   world()'s default character is Dexon, so the live key is this. */
+	const PEND = 'pl_hop_pending_Dexon';
 
 	function follower(store, here, over = {}) {
 		const w = world(Object.assign({
@@ -315,7 +326,8 @@ module.exports = [
 		}, over));
 		w.hops = [];
 		w.change_server = (r, n) => { w.hops.push(r + n); };
-		lift(w, 'Party/Priest.js', ['plActed', 'plMarkActed', 'plHopPendingRead',
+		lift(w, 'Party/Priest.js', ['scopeKey', 'scopedSet', 'scopedGet',
+			'scopedGetLegacy', 'plActed', 'plMarkActed', 'plHopPendingRead',
 			'plHopPendingWrite', 'plHopPendingClear', 'plHopPendingResolve']);
 		if (here) { w.parent.server_region = here.slice(0, 2); w.parent.server_identifier = here.slice(2); }
 		else { delete w.parent.server_region; delete w.parent.server_identifier; }
@@ -328,16 +340,16 @@ module.exports = [
 
 	/* ARRIVED. This is the only moment success is distinguishable, because the
 	   success case destroys the page before it could report anything. */
-	let store = { pl_hop_pending: pend() };
+	let store = { [PEND]: pend() };
 	let w = follower(store, 'EUIII');
 	w.plHopPendingResolve();
 	t.eq('landing on the ordered shard marks the order acted', w.plActed('Dexon-1-54'), true);
-	t.eq('and clears the pending record', store.pl_hop_pending, null);
+	t.eq('and clears the pending record', store[PEND], null);
 	t.eq('without hopping again', w.hops, []);
 
 	/* STILL IN FLIGHT. A navigation that has not landed yet must not be
 	   retried on top of itself. */
-	store = { pl_hop_pending: pend() };
+	store = { [PEND]: pend() };
 	w = follower(store, 'USII');
 	w.plHopPendingResolve();
 	t.eq('inside the grace window nothing happens', w.hops, []);
@@ -345,25 +357,25 @@ module.exports = [
 
 	/* THE DEFECT, FIXED. Past the grace window and still on the wrong shard:
 	   the hop did not take, and now it retries instead of being lost. */
-	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
+	store = { [PEND]: pend({ at: Date.now() - GRACE - 1 }) };
 	w = follower(store, 'USII');
 	w.plHopPendingResolve();
 	t.eq('a hop that never landed is retried', w.hops, ['EUIII']);
-	t.eq('the attempt is counted', store.pl_hop_pending.tries, 1);
+	t.eq('the attempt is counted', store[PEND].tries, 1);
 	t.eq('and it is STILL not acted, so it can retry again', w.plActed('Dexon-1-54'), false);
 	t.note('before the fix this plid was already in the acted-list, and the dedupe refused every retry forever');
 
 	/* BOUNDED. A shard that refuses us forever must not reload forever. */
-	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1, tries: 3 }) };
+	store = { [PEND]: pend({ at: Date.now() - GRACE - 1, tries: 3 }) };
 	w = follower(store, 'USII');
 	w.plHopPendingResolve();
 	t.eq('at the try cap it gives up rather than retrying', w.hops, []);
 	t.eq('marks the order acted so it cannot replay', w.plActed('Dexon-1-54'), true);
-	t.eq('and clears the pending record', store.pl_hop_pending, null);
+	t.eq('and clears the pending record', store[PEND], null);
 
 	/* NOWHERE IS NOT WRONG-SHARD. If the current shard cannot be read, retrying
 	   blind would hop a character that had already arrived. */
-	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
+	store = { [PEND]: pend({ at: Date.now() - GRACE - 1 }) };
 	w = follower(store, null);
 	w.plHopPendingResolve();
 	t.eq('an unreadable shard decides nothing', w.hops, []);
@@ -387,8 +399,8 @@ module.exports = [
 	/* A STORAGE WRITE THAT FAILS falls back to marking acted, because without a
 	   durable pending record the retry machinery cannot work and a replay loop
 	   is the worse failure. */
-	store = { pl_hop_pending: pend({ at: Date.now() - GRACE - 1 }) };
-	w = follower(store, 'USII', { set: (k, v) => { if (k === 'pl_hop_pending') throw new Error('nope'); store[k] = v; } });
+	store = { [PEND]: pend({ at: Date.now() - GRACE - 1 }) };
+	w = follower(store, 'USII', { set: (k, v) => { if (k === PEND) throw new Error('nope'); store[k] = v; } });
 	w.plHopPendingResolve();
 	t.eq('an unwritable pending record is abandoned, not looped',
 		w.plActed('Dexon-1-54'), true);

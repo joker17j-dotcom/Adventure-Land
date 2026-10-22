@@ -21,6 +21,69 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v91
+
+**v119 SCOPED ONE KEY AND FROZE IT IN A `const`, WHICH IS A SECOND WAY TO HAVE
+THE SAME BUG.** `runner_functions.js` builds `character` as a PROXY and fills
+it with `proxy_all()`, whose own comment reads "Not all properties are sadly
+available right away" - so `const BOSS_KEY = 'boss_trip_' + character.name`
+evaluated at module scope can capture an empty name and mint one shared
+`boss_trip_undefined` for all three characters. The collision, restored,
+invisible. **v119 ALSO INTRODUCED THE FILE'S FIRST BARE `character.name` AT
+MODULE TOP LEVEL**, in a file whose own style guards it at `:127` and `:195`,
+and that style was the tell. The scope is resolved at every use now, and an
+unreadable name yields null rather than a key: a lost read, never a write to
+the key all three share.
+
+**THE CONVENTION ALREADY EXISTED IN FOUR SUBSYSTEMS AND THE PARTY KEYS WERE THE
+OUTLIER** - the browser session's census of the live namespace found
+`<name>_newparty_info`, `luckyslot_<name>`, `pl_delivered_<name>_<pot>` and
+`pl_mlucked_<name>` already scoped. So this is not a property of the accessor
+nobody knew; it is a convention that was not applied uniformly, which is the
+`rageEntryBroadcast` shape again - one subsystem complete, its neighbour
+half-built, nothing connecting them.
+
+**TWO READERS, AND THE DIFFERENCE IS PROVENANCE RATHER THAN CAUTION.**
+`scopedGet` refuses the legacy value; `scopedGetLegacy` adopts it once. Falling
+back is correct exactly where the legacy value cannot be another character's -
+a key no other script ever wrote (`achv_queue`, `taxi_probe`,
+`crabxx_contrib`, `farm_spot_blacklist`, `fear_log`, `mh_state`), or one whose
+entries cannot be mistaken for a sibling's (`pl_acted`: `plSend` mints `_plid`
+per call, so no two characters ever see one id). It is wrong for `boss_trip`
+and `pl_hop_pending`, where reading the legacy value once IS the
+cross-character import being removed.
+**THE MIGRATION IS NOT A NICETY: `achv_queue` HOLDS A LIVE OPERATOR FEATURE.**
+They were told hours ago to use the achievement queue for a farm override that
+survives hops, precisely because it persists. Scoping that key without a
+fall-back would have wiped the thing they had just set up.
+
+**`pl_hop_pending` WAS NOT ON ANYONE'S LIST AND THE DERIVATION FOUND IT.** The
+new assertion derives every `const *_KEY`/`*_STORE` declaration from the source
+and requires each to appear in exactly one of two lists, so a key cannot
+default into the shared namespace. On its first run it failed, naming a
+pending-hop record shared by Priest and Mage - one follower able to resolve a
+hop the other ordered, the `boss_trip` defect with different nouns. A
+hand-written list would have shipped without it.
+
+**`pl_cursor` AND `loot_chest_ids` STAY SHARED, AND THAT IS ASSERTED TOO** so
+that scoping either has to confront the reason. `plPoll` ends every poll at
+`Math.max(plCursor, r.cursor)` where `r.cursor` is the bridge's GLOBAL head
+(`self.seq`, one counter for every recipient), so all four converge there each
+tick and adopting a sibling's value is adopting your own; `loot_chest_ids` is
+harmless to share.
+
+Five mutations, five named failures: the shared-key fall-back (3), the
+migration removed (1), a bare `get(ACHV_KEY)` (1), one of the two
+`set(FEAR_STORE)` sites (1), the priest's pending-hop unscoped (9). **THE FIRST
+ATTEMPT AT THE FOURTH SCORED ZERO BECAUSE ITS ANCHOR MATCHED TWICE AND NOTHING
+WAS MUTATED** - a mutation that moves nothing is a claim about the mutation
+first.
+**AND ONE TEST WAS DEGENERATE UNTIL ITS PRECONDITION CAUGHT IT.** The
+two-characters-one-store case handed both worlds the same `{}`; `world()`
+COPIES the store it is given, so they never shared anything and the assertion
+proved nothing. The precondition failed, which is the only reason it was
+visible - the harness-override lesson arriving by a third route.
+
 ## v90
 
 **THE BOSS TRIP WAS SHARED STATE BETWEEN THE THREE CHARACTERS, BECAUSE

@@ -3061,6 +3061,67 @@ Claude Code session stops after `browser_code_eval`.
   exist. Fixed in Ranger v119 / Priest v67 / Mage v90 by keying on
   `character.name`; deliberately NOT migrated from the legacy key, since
   reading it once is the foreign-trip import being removed.
+- **AND THE FIX FOR IT HAD A SECOND WAY TO HAVE THE SAME BUG, WHICH v119
+  SHIPPED.** `const BOSS_KEY = 'boss_trip_' + character.name` is evaluated at
+  MODULE SCOPE, and `runner_functions.js` builds `character` as a PROXY filled
+  by `proxy_all()`, whose own comment reads "Not all properties are sadly
+  available right away" - so the const can capture an empty name and mint one
+  shared `boss_trip_undefined` for all three characters. v119 also introduced
+  the first bare `character.name` at top level in a file that guards it at
+  `:127` and `:195`, and that existing style was the tell nobody read.
+  Fixed in Ranger v120 / Priest v68 / Mage v91: `scopeKey(base)` resolves at
+  EVERY use and returns null on an unreadable name, so a lost read is the worst
+  case and a write to the shared key is impossible. **A FIX THAT BAKES THE
+  CORRECTION INTO A CONSTANT INHERITS WHATEVER THAT CONSTANT WAS BUILT FROM**,
+  which here is a field the game fills asynchronously.
+- **THE SCOPING CONVENTION ALREADY EXISTED IN FOUR SUBSYSTEMS, SO THIS WAS
+  NEVER AN UNKNOWN PROPERTY - IT WAS ONE APPLIED UNEVENLY.** The browser
+  session censused the live namespace 2026-10-22: 55 `cstore_*` keys, and
+  `<name>_newparty_info`, `luckyslot_<name>`, `pl_delivered_<name>_<pot>` and
+  `pl_mlucked_<name>` were already per-character. `merch_trip` is its own key,
+  so Meltymerch was never in the boss-trip collision - it was the three party
+  scripts alone. Same shape as `rageEntryBroadcast` having the heartbeat
+  `bossBroadcast` lacked: one subsystem complete, its neighbour half-built,
+  nothing connecting them. **THE OPERATOR HAD ALSO SAID IT IN PLAIN WORDS** -
+  "we already know it is shared as it is used for cross shard messaging" - and
+  the browser session acknowledged it, wrote it up, then watched `trip.src`
+  change and reached for mutation instead. A current, correct fact, from the
+  person who knew, acknowledged in the same session, and not applied to the
+  first symptom of it that appeared.
+- **TWO READERS NOW, AND THE DIFFERENCE IS PROVENANCE RATHER THAN CAUTION.**
+  `scopedGet` is scoped only; `scopedGetLegacy` falls back to the bare key
+  once. The fall-back is correct exactly where the legacy value cannot be
+  another character's - a key no other script ever wrote (`achv_queue`,
+  `taxi_probe`, `crabxx_contrib`, `farm_spot_blacklist`, `fear_log`,
+  `mh_state`), or one whose entries cannot be mistaken for a sibling's
+  (`pl_acted`, because `plSend` mints `_plid` per call so no two characters
+  ever see one id). It is wrong for `boss_trip` and `pl_hop_pending`, where
+  reading the legacy value once IS the import being removed.
+  **AND THE MIGRATION IS LOAD-BEARING FOR A LIVE OPERATOR FEATURE:**
+  `achv_queue` is what they were told to use for a farm override that survives
+  hops, so scoping it without the fall-back would have wiped what they had just
+  set up. Scoping a key is not free the moment somebody is standing on it.
+- **`pl_hop_pending` WAS ON NOBODY'S LIST AND THE ASSERTION FOUND IT ON ITS
+  FIRST RUN.** `Tests/suite_bosshop.js` now DERIVES every `const *_KEY` /
+  `*_STORE` declaration from the source of each party script and requires each
+  to appear in exactly one of two lists - scoped, or deliberately shared - so a
+  new key has to be classified rather than defaulting into the shared
+  namespace. It immediately failed naming a pending-hop record shared by Priest
+  and Mage: one follower could resolve a hop the other ordered, which is the
+  `boss_trip` defect with different nouns. **A HAND-WRITTEN LIST WOULD HAVE
+  SHIPPED WITHOUT IT**, and that is the `BOSS_TERMINAL_EV` enumeration lesson
+  landing somewhere new - derive the set, then make membership a decision.
+- **THE TWO THAT STAY SHARED ARE ASSERTED AS SHARED**, so that scoping either
+  has to confront the argument rather than look like an oversight: `pl_cursor`
+  because `plPoll` ends every poll at `Math.max(plCursor, r.cursor)` and
+  `r.cursor` is the bridge's GLOBAL head (`self.seq`, one counter for all
+  recipients), so all four converge there each tick and adopting a sibling's
+  value is adopting your own; `loot_chest_ids` because sharing it is harmless.
+- **`__probe_rt` IS LITTER IN THAT NAMESPACE, OWNER UNKNOWN.** Four bytes,
+  sitting in `cstore_` where all four characters read. Recorded rather than
+  cleared, because this session has no tab - and because a forgotten
+  diagnostic key in a shared namespace is exactly the thing the census was
+  worth running to find.
 - **THE OTHER SHARED KEYS WERE LEFT AND THE REASONS DIFFER, WHICH IS THE PART
   WORTH KEEPING.** `pl_cursor` is shared with the merchant too and is a no-op:
   `plPoll` ends every poll at `Math.max(plCursor, r.cursor)` where `r.cursor`

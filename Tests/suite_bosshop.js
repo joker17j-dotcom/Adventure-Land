@@ -46,7 +46,8 @@ function ranger(over = {}) {
 	/* bossShard and bossCooldownKey joined the list when v103 keyed the
 	   cooldown by (type, shard); four tests threw ReferenceError the moment it
 	   landed, which is the same signal bossCooledDown gave in v99. */
-	lift(w, RANGER, ['bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey',
+	lift(w, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
+		'bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey',
 		'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'taxiProbeRead', 'taxiProbeWrite', 'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
 	w.bossHop.shardDps = () => 5000;
@@ -1881,38 +1882,126 @@ module.exports = [
   }
 } },
 
-{ name: 'boss_trip storage is scoped per character', fn: (t) => {
-  /* `set`/`get` ARE NOT CHARACTER-SCOPED, which is the whole of this. From the
-     client at upstream 16881a27, `set(name, value)` is
-     `window.localStorage.setItem("cstore_" + name, ...)` - one origin, one
-     namespace, every character tab sharing it. A bare 'boss_trip' therefore
-     made the trip, the shard-keyed cooldowns and the give-up counts ONE blob
-     shared by all three characters, last writer winning and every load reading
-     whoever that was. */
+{ name: 'CODE storage is scoped per character', fn: (t) => {
+  /* `set`/`get` ARE NOT CHARACTER-SCOPED - `window.localStorage.setItem(
+     "cstore_" + name, ...)` at upstream 16881a27, one origin, every character
+     tab sharing it. A bare 'boss_trip' made the trip, the shard-keyed
+     cooldowns and the give-up counts ONE blob for all three characters. */
   const fs = require('fs');
-  const SCOPED = "const BOSS_KEY = 'boss_trip_' + character.name;";
   for (const f of [RANGER, 'Party/Priest.js', 'Party/Mage.js']) {
     const body = fs.readFileSync(f, 'utf8');
-    t.eq(f + ': BOSS_KEY is scoped by character', body.indexOf(SCOPED) >= 0, true);
-    /* THE INVERTED HALF. The bare form is what shipped for weeks and it looks
-       completely ordinary, so the assertion has to forbid it by name rather
-       than merely require the scoped one - a file carrying both would pass a
-       presence-only check with the later declaration winning. */
-    t.eq(f + ': and the shared key is gone',
-      body.indexOf("const BOSS_KEY = 'boss_trip';"), -1);
-    t.eq(f + ': declared exactly once',
-      body.split('const BOSS_KEY =').length - 1, 1);
+    t.eq(f + ': BOSS_KEY is the bare base name', 
+      body.indexOf("const BOSS_KEY = 'boss_trip';") >= 0, true);
+    /* THE INVERTED HALF, AND IT FORBIDS v119's OWN SHAPE RATHER THAN THE
+       ORIGINAL BUG. Baking the name into a `const` at module scope looks like
+       the fix and is a second way to have it: `runner_functions.js` builds
+       `character` as a proxy filled by `proxy_all()`, whose own comment says
+       "Not all properties are sadly available right away", so the const can
+       capture an empty name and mint one shared `boss_trip_undefined` for all
+       three - the same collision, now invisible. */
+    t.eq(f + ': and is never frozen into a const at load',
+      body.indexOf("'boss_trip_' + character.name"), -1);
+    t.eq(f + ': every read goes through the scoped helper',
+      body.indexOf('scopedGet(BOSS_KEY)') >= 0, true);
+    t.eq(f + ': and no bare get(BOSS_KEY) survives',
+      body.indexOf('get(BOSS_KEY)'), -1);
+    t.eq(f + ': and no bare set(BOSS_KEY,', /[^d]set\(BOSS_KEY,/.test(body), false);
   }
 
-  /* THE INVARIANT THAT MADE THE DIAGNOSIS POSSIBLE, pinned so it stays an
-     invariant. `src: 'leader'` sits behind `!bossIsLeader()`, so the leader
-     CANNOT mint one; a leader holding a trip stamped 'leader' has loaded
-     another character's save. Dexon read src='own' at 22:58:18 and
-     src='leader' at 23:01:20 on 2026-10-22, same startedAt, across a redeploy.
-     Assert it on the leader with a fresh call in hand, which is the only state
-     in which a follower WOULD answer 'leader' - otherwise the test passes
-     because nothing was offered. */
-  const w = world({
+  /* EVERY STORAGE KEY IS CLASSIFIED, AND A NEW ONE CANNOT DEFAULT INTO
+     SHARING. Reverting a single call site to a bare `get(ACHV_KEY)` moved no
+     assertion until this existed - the block above pins boss_trip by name and
+     says nothing about its nine neighbours. So the declarations are DERIVED
+     from the source and each must appear in exactly one of the two lists;
+     adding a key without choosing fails here rather than quietly joining the
+     shared namespace, which is the enumeration the log's `ev` values already
+     get. The unscoped two are arguments, not oversights: `pl_cursor` ends
+     every poll at the bridge's GLOBAL head so all four converge there anyway,
+     and `loot_chest_ids` is harmless - and they are asserted so that scoping
+     either one has to confront the reason. */
+  const KEYS = {
+    'Party/Ranger.js': {
+      scoped: ['PL_ACTED_KEY', 'TAXI_PROBE_KEY', 'BOSS_KEY', 'CRABXX_KEY',
+        'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY'],
+      shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY'],
+    },
+    /* PL_HOP_PENDING_KEY was NOT on the first draft of this list and the
+       derivation is what found it - a pending-hop record shared by the two
+       followers, so one could resolve a hop the other ordered. Scoped with
+       NO migration, for boss_trip's reason: the legacy value is either
+       follower's and adopting it once IS the import being removed. */
+    'Party/Priest.js': { scoped: ['PL_ACTED_KEY', 'BOSS_KEY', 'PL_HOP_PENDING_KEY'],
+      shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY'] },
+    'Party/Mage.js': { scoped: ['PL_ACTED_KEY', 'BOSS_KEY', 'PL_HOP_PENDING_KEY'],
+      shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY'] },
+  };
+  for (const [f, spec] of Object.entries(KEYS)) {
+    const body = require('fs').readFileSync(f, 'utf8');
+    const declared = (body.match(/^const [A-Z_]+(?:KEY|STORE) = ['"]/gm) || [])
+      .map((d) => d.split(' ')[1]);
+    const classified = spec.scoped.concat(spec.shared).sort();
+    t.eq(f + ': every declared storage key is classified',
+      declared.sort().join(','), classified.join(','));
+    for (const k of spec.scoped) {
+      t.eq(f + ': ' + k + ' has no bare read', body.indexOf('get(' + k + ')'), -1);
+      t.eq(f + ': ' + k + ' has no bare write',
+        new RegExp('[^d]set\\(' + k + ',').test(body), false);
+    }
+    for (const k of spec.shared) {
+      t.eq(f + ': ' + k + ' is deliberately NOT scoped',
+        new RegExp('scoped(?:Set|Get|GetLegacy)\\(' + k).test(body), false);
+    }
+  }
+
+  const w = world({ character: { name: 'Dexon' } });
+  lift(w, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
+  t.eq('the key carries the character', w.scopeKey('k'), 'k_Dexon');
+  w.scopedSet('k', 1);
+  t.eq('a write lands on the scoped key', w.store['k_Dexon'], 1);
+  t.eq('and never on the shared one', 'k' in w.store, false);
+
+  /* THE PROVENANCE SPLIT, WHICH IS THE WHOLE REASON THERE ARE TWO READERS.
+     Falling back to the legacy key is right exactly where that value cannot
+     be another character's, and wrong where it can - boss_trip is the second
+     case, which is why reading it once IS the import being removed. */
+  const w2 = world({ character: { name: 'Dexon' }, store: { legacy: 'old' } });
+  lift(w2, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
+  t.eq('scopedGet refuses the legacy value', w2.scopedGet('legacy'), null);
+  t.eq('scopedGetLegacy adopts it once', w2.scopedGetLegacy('legacy'), 'old');
+
+  /* The point of the exercise: two characters, one store, no crossing. */
+  /* world() COPIES the store it is given rather than aliasing it, so two
+     worlds can never share one live object - the first draft of this handed
+     both the same `{}` and asserted on it, and the PRECONDITION is what caught
+     that the write had gone somewhere else. Seeding the sibling from the
+     written store is the faithful shape anyway: one namespace, read after. */
+  const dex = world({ character: { name: 'Dexon' } });
+  lift(dex, RANGER, ['scopeKey', 'scopedSet', 'scopedGet']);
+  dex.scopedSet('boss_trip', { name: 'mrgreen' });
+  const mage = world({ character: { name: 'MageofOz' }, store: dex.store });
+  lift(mage, RANGER, ['scopeKey', 'scopedSet', 'scopedGet']);
+  t.eq('PRECONDITION: my trip IS in the namespace the sibling reads',
+    (mage.store['boss_trip_Dexon'] || {}).name, 'mrgreen');
+  t.eq('and the sibling does not read it', mage.scopedGet('boss_trip'), null);
+  t.eq('it reads its own key', mage.scopeKey('boss_trip'), 'boss_trip_MageofOz');
+
+  /* AN UNREADABLE NAME WRITES NOTHING, which is the safe direction: a lost
+     save beats a write to the key all three read. */
+  const w3 = world({ character: { name: 'Dexon' } });
+  lift(w3, RANGER, ['scopeKey', 'scopedSet', 'scopedGet']);
+  delete w3.character.name;
+  t.eq('PRECONDITION: the name is unreadable', !!w3.character.name, false);
+  t.eq('no key can be built', w3.scopeKey('k'), null);
+  t.eq('the write is refused', w3.scopedSet('k', 1), false);
+  t.eq('and nothing reached the store', Object.keys(w3.store).length, 0);
+
+  /* THE INVARIANT THAT MADE THE DIAGNOSIS POSSIBLE. `src: 'leader'` sits
+     behind `!bossIsLeader()`, so a leader holding a trip stamped 'leader' has
+     loaded another character's save - which is what Dexon did at 23:01:20 on
+     2026-10-22 after reading src='own' at 22:58:18, same startedAt. Asserted
+     with a FRESH call in hand, the only state in which a follower WOULD
+     answer 'leader', so it cannot pass by being offered nothing. */
+  const wl = world({
     character: { name: 'Dexon' },
     CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 } },
     parent: { S: { mrgreen: { live: true, hp: 5, max_hp: 10 } } },
@@ -1920,11 +2009,10 @@ module.exports = [
     bossRank: () => 5,
     bossLog: () => {},
   });
-  lift(w, RANGER, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
+  lift(wl, RANGER, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
     'bossState', 'bossIsLeader', 'bossPick']);
-  w.bossState.fromLeader = { name: 'mrgreen', at: Date.now() };
-  t.eq('PRECONDITION: the call is fresh and live', w.bossIsLeader(), true);
-  t.eq('the leader never stamps a trip src=leader', w.bossPick().src, 'own');
+  wl.bossState.fromLeader = { name: 'mrgreen', at: Date.now() };
+  t.eq('PRECONDITION: the call is fresh and live', wl.bossIsLeader(), true);
+  t.eq('the leader never stamps a trip src=leader', wl.bossPick().src, 'own');
 } },
-
 ];

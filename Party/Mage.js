@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v90
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v91
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -337,6 +337,55 @@ async function plPoll() {
    to 10,563 mpot1 on one genuine request - and fixed it in v68. This is that
    fix ported, with one deliberate difference recorded at plPoll.
    CODE storage is the only state a hop cannot erase. */
+/* -- PER-CHARACTER CODE STORAGE -------------------------------------
+   `set`/`get` ARE NOT CHARACTER-SCOPED. From the client at upstream 16881a27,
+   `set(name, value)` is `window.localStorage.setItem("cstore_" + name, ...)`:
+   no character in the key, and every character tab is the same
+   `adventure.land` origin, so a bare key is ONE SLOT shared by Dexon,
+   FatherToken, MageofOz and Meltymerch. That the CODE contexts really do share
+   one localStorage is the game's own design - `local_cm_logic` reads
+   `cm_<my name>_*` entries another character's `send_local_cm` wrote, which is
+   how send_cm's local copy arrives at all.
+   The convention already existed in four subsystems before this one -
+   `<name>_newparty_info`, `luckyslot_<name>`, `pl_delivered_<name>_<pot>`,
+   `pl_mlucked_<name>` - so the party keys were the outlier, not the unsolved
+   case.
+
+   RESOLVED AT EVERY USE, NEVER FROZEN IN A `const`. `runner_functions.js`
+   builds `character` as a PROXY and fills it with `proxy_all()`, whose own
+   comment reads "Not all properties are sadly available right away". A key
+   baked at module scope can therefore capture an empty name and produce one
+   shared `..._undefined` key for all of us - the exact bug this removes,
+   silently, and v119 shipped that shape. A function cannot.
+   An unreadable name yields null and the caller does nothing: never a write to
+   the shared key, and a lost read is the safe direction. */
+function scopeKey(base) {
+	const who = (typeof character !== 'undefined' && character && character.name) || '';
+	return who ? base + '_' + who : null;
+}
+function scopedSet(base, value) {
+	const k = scopeKey(base);
+	if (!k) return false;
+	return set(k, value);
+}
+/* Scoped only. For state whose legacy value is AMBIGUOUS - any key more than
+   one script wrote - where reading it once is the cross-character import being
+   removed. */
+function scopedGet(base) {
+	const k = scopeKey(base);
+	return k ? get(k) : null;
+}
+/* Scoped, falling back to the legacy key once. Correct ONLY where the legacy
+   value is unambiguously this character's: a key no other script has ever
+   written, or one whose entries cannot be mistaken for another character's.
+   That is the whole difference from `scopedGet` - not caution, provenance. */
+function scopedGetLegacy(base) {
+	const k = scopeKey(base);
+	if (!k) return null;
+	const v = get(k);
+	return (v === null || v === undefined) ? get(base) : v;
+}
+
 const PL_CURSOR_KEY = 'pl_cursor';
 const PL_ACTED_KEY = 'pl_acted';
 const PL_ACTED_MAX = 20;
@@ -353,17 +402,17 @@ if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog rep
    Capped because it only has to outlive the MESSAGE_TTL window. */
 function plActed(id) {
 	if (!id) return false;
-	try { return (get(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
+	try { return (scopedGetLegacy(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
 	catch (e) { plLog('acted-list read failed: ' + e, 'orange'); return false; }
 }
 
 function plMarkActed(id) {
 	if (!id) return;
 	try {
-		const list = get(PL_ACTED_KEY) || [];
+		const list = scopedGetLegacy(PL_ACTED_KEY) || [];
 		if (list.indexOf(id) === -1) list.push(id);
 		while (list.length > PL_ACTED_MAX) list.shift();
-		set(PL_ACTED_KEY, list);
+		scopedSet(PL_ACTED_KEY, list);
 	} catch (e) { plLog('could not record ' + id + ' as acted - it may replay', 'red'); }
 }
 
@@ -2904,7 +2953,7 @@ async function safeSmartMove(dest) {
    converges to the bridge's global head on every poll so sharing it is a no-op,
    'loot_chest_ids' is harmless to share, and the Ranger-only keys are unshared
    only because no other script happens to use the name. */
-const BOSS_KEY = 'boss_trip_' + character.name;
+const BOSS_KEY = 'boss_trip';
 const bossState = {
 	trip: null,         // { name, startedAt, deaths, wasRip, src }
 	cooldown: {},       // name -> ms until we will consider it again
@@ -2916,14 +2965,14 @@ const bossState = {
    otherwise restart the clock and hand the party another full 20 minutes at a
    boss it had already given up on. */
 try {
-	const bossSaved = get(BOSS_KEY);
+	const bossSaved = scopedGet(BOSS_KEY);
 	if (bossSaved && typeof bossSaved === 'object') {
 		bossState.trip = bossSaved.trip || null;
 		bossState.cooldown = bossSaved.cooldown || {};
 	}
 } catch (e) { }
 function bossSave() {
-	try { set(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown }); }
+	try { scopedSet(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown }); }
 	catch (e) { bossLog('could not persist the trip - a reload will restart its clock', 'orange'); }
 }
 function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch (e) { } console.log('[boss] ' + m); }
@@ -4000,18 +4049,18 @@ const PL_HOP_GRACE_MS = 15000;
 const PL_HOP_TRIES_MAX = 3;
 
 function plHopPendingRead() {
-	try { return get(PL_HOP_PENDING_KEY) || null; }
+	try { return scopedGet(PL_HOP_PENDING_KEY) || null; }
 	catch (e) { plLog('pending-hop read failed: ' + e, 'orange'); return null; }
 }
 function plHopPendingWrite(p) {
-	try { set(PL_HOP_PENDING_KEY, p); return true; }
+	try { scopedSet(PL_HOP_PENDING_KEY, p); return true; }
 	catch (e) {
 		plLog('could not record the pending hop (' + e + ') - this hop will not retry', 'red');
 		return false;
 	}
 }
 function plHopPendingClear() {
-	try { set(PL_HOP_PENDING_KEY, null); }
+	try { scopedSet(PL_HOP_PENDING_KEY, null); }
 	catch (e) { plLog('could not clear the pending hop: ' + e, 'orange'); }
 }
 

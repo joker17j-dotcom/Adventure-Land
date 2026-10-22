@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v119
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v120
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -345,6 +345,55 @@ async function plPoll() {
    to 10,563 mpot1 on one genuine request - and fixed it in v68. This is that
    fix ported, with one deliberate difference recorded at plPoll.
    CODE storage is the only state a hop cannot erase. */
+/* -- PER-CHARACTER CODE STORAGE -------------------------------------
+   `set`/`get` ARE NOT CHARACTER-SCOPED. From the client at upstream 16881a27,
+   `set(name, value)` is `window.localStorage.setItem("cstore_" + name, ...)`:
+   no character in the key, and every character tab is the same
+   `adventure.land` origin, so a bare key is ONE SLOT shared by Dexon,
+   FatherToken, MageofOz and Meltymerch. That the CODE contexts really do share
+   one localStorage is the game's own design - `local_cm_logic` reads
+   `cm_<my name>_*` entries another character's `send_local_cm` wrote, which is
+   how send_cm's local copy arrives at all.
+   The convention already existed in four subsystems before this one -
+   `<name>_newparty_info`, `luckyslot_<name>`, `pl_delivered_<name>_<pot>`,
+   `pl_mlucked_<name>` - so the party keys were the outlier, not the unsolved
+   case.
+
+   RESOLVED AT EVERY USE, NEVER FROZEN IN A `const`. `runner_functions.js`
+   builds `character` as a PROXY and fills it with `proxy_all()`, whose own
+   comment reads "Not all properties are sadly available right away". A key
+   baked at module scope can therefore capture an empty name and produce one
+   shared `..._undefined` key for all of us - the exact bug this removes,
+   silently, and v119 shipped that shape. A function cannot.
+   An unreadable name yields null and the caller does nothing: never a write to
+   the shared key, and a lost read is the safe direction. */
+function scopeKey(base) {
+	const who = (typeof character !== 'undefined' && character && character.name) || '';
+	return who ? base + '_' + who : null;
+}
+function scopedSet(base, value) {
+	const k = scopeKey(base);
+	if (!k) return false;
+	return set(k, value);
+}
+/* Scoped only. For state whose legacy value is AMBIGUOUS - any key more than
+   one script wrote - where reading it once is the cross-character import being
+   removed. */
+function scopedGet(base) {
+	const k = scopeKey(base);
+	return k ? get(k) : null;
+}
+/* Scoped, falling back to the legacy key once. Correct ONLY where the legacy
+   value is unambiguously this character's: a key no other script has ever
+   written, or one whose entries cannot be mistaken for another character's.
+   That is the whole difference from `scopedGet` - not caution, provenance. */
+function scopedGetLegacy(base) {
+	const k = scopeKey(base);
+	if (!k) return null;
+	const v = get(k);
+	return (v === null || v === undefined) ? get(base) : v;
+}
+
 const PL_CURSOR_KEY = 'pl_cursor';
 const PL_ACTED_KEY = 'pl_acted';
 const PL_ACTED_MAX = 20;
@@ -371,17 +420,17 @@ if (plCursor) plLog('resuming the relay at seq ' + plCursor + ' - no backlog rep
    bossHopFollow does in Priest.js and Mage.js. */
 function plActed(id) {
 	if (!id) return false;
-	try { return (get(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
+	try { return (scopedGetLegacy(PL_ACTED_KEY) || []).indexOf(id) !== -1; }
 	catch (e) { plLog('acted-list read failed: ' + e, 'orange'); return false; }
 }
 
 function plMarkActed(id) {
 	if (!id) return;
 	try {
-		const list = get(PL_ACTED_KEY) || [];
+		const list = scopedGetLegacy(PL_ACTED_KEY) || [];
 		if (list.indexOf(id) === -1) list.push(id);
 		while (list.length > PL_ACTED_MAX) list.shift();
-		set(PL_ACTED_KEY, list);
+		scopedSet(PL_ACTED_KEY, list);
 	} catch (e) { plLog('could not record ' + id + ' as acted - it may replay', 'red'); }
 }
 
@@ -1709,14 +1758,14 @@ const TAXI_PROBE_KEY = 'taxi_probe';
 const TAXI_PROBE_MAX = 30;
 
 function taxiProbeRead() {
-	try { return get(TAXI_PROBE_KEY) || []; }
+	try { return scopedGetLegacy(TAXI_PROBE_KEY) || []; }
 	catch (e) { bossLog('taxi probe read failed: ' + e, 'orange'); return []; }
 }
 
 function taxiProbeWrite(list) {
 	try {
 		while (list.length > TAXI_PROBE_MAX) list.shift();
-		set(TAXI_PROBE_KEY, list);
+		scopedSet(TAXI_PROBE_KEY, list);
 	} catch (e) { bossLog('taxi probe write failed: ' + e, 'orange'); }
 }
 
@@ -2802,7 +2851,7 @@ async function safeSmartMove(dest) {
    converges to the bridge's global head on every poll so sharing it is a no-op,
    'loot_chest_ids' is harmless to share, and the Ranger-only keys are unshared
    only because no other script happens to use the name. */
-const BOSS_KEY = 'boss_trip_' + character.name;
+const BOSS_KEY = 'boss_trip';
 /* How many SHARD-level give-ups on one boss type before the type itself is
    cooled down. Without it, shard-keyed cooldowns let the party walk a boss it
    cannot kill across five shards in turn. 2 is a starting value and wants
@@ -2826,7 +2875,7 @@ const bossState = {
    otherwise restart the clock and hand the party another full 20 minutes at a
    boss it had already given up on. */
 try {
-	const bossSaved = get(BOSS_KEY);
+	const bossSaved = scopedGet(BOSS_KEY);
 	if (bossSaved && typeof bossSaved === 'object') {
 		bossState.trip = bossSaved.trip || null;
 		bossState.cooldown = bossSaved.cooldown || {};
@@ -2834,7 +2883,7 @@ try {
 	}
 } catch (e) { }
 function bossSave() {
-	try { set(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown,
+	try { scopedSet(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown,
 		giveUps: bossState.giveUps }); }
 	catch (e) { bossLog('could not persist the trip - a reload will restart its clock', 'orange'); }
 }
@@ -3505,11 +3554,11 @@ function handleEvents() {
 const CRABXX_KEY = 'crabxx_contrib';
 
 function crabxxLoad() {
-	try { const d = get(CRABXX_KEY); return (d && typeof d === 'object' && Array.isArray(d.runs)) ? d : { runs: [] }; }
+	try { const d = scopedGetLegacy(CRABXX_KEY); return (d && typeof d === 'object' && Array.isArray(d.runs)) ? d : { runs: [] }; }
 	catch (e) { return { runs: [] }; }
 }
 function crabxxSave(v) {
-	try { set(CRABXX_KEY, v); } catch (e) { console.error('crabxx log save failed:', e); }
+	try { scopedSet(CRABXX_KEY, v); } catch (e) { console.error('crabxx log save failed:', e); }
 }
 function crabxxShard() {
 	try { return String(parent.server_region || '?') + String(parent.server_identifier || '?'); }
@@ -6113,7 +6162,7 @@ function isPermanentlyBlacklisted(key) {
 }
 
 function getBlacklist() {
-	const stored = get(BLACKLIST_STORAGE_KEY) || {};
+	const stored = scopedGetLegacy(BLACKLIST_STORAGE_KEY) || {};
 	// Self-healing: a whitelisted spot blacklisted before this list existed is
 	// dropped here and the pruned map written back, so it stays gone.
 	let pruned = false;
@@ -6122,7 +6171,7 @@ function getBlacklist() {
 		delete stored[key];
 		pruned = true;
 	}
-	if (pruned) set(BLACKLIST_STORAGE_KEY, stored);
+	if (pruned) scopedSet(BLACKLIST_STORAGE_KEY, stored);
 	return stored;
 }
 
@@ -6138,7 +6187,7 @@ function addToBlacklist(home, mobMap, reason, reportedBy, details) {
 	const blacklist = getBlacklist();
 	blacklist[key] = { reason, reportedBy, blacklistedAt: Date.now() };
 	if (details) blacklist[key].details = details;
-	set(BLACKLIST_STORAGE_KEY, blacklist);
+	scopedSet(BLACKLIST_STORAGE_KEY, blacklist);
 	return key;
 }
 
@@ -6153,14 +6202,14 @@ function removeFromBlacklist(key) {
 		return false;
 	}
 	delete blacklist[key];
-	set(BLACKLIST_STORAGE_KEY, blacklist);
+	scopedSet(BLACKLIST_STORAGE_KEY, blacklist);
 	game_log(`Removed "${key}" from the farm spot blacklist`, '#00FF00');
 	return true;
 }
 
 function clearBlacklist() {
 	const count = Object.keys(getBlacklist()).length;
-	set(BLACKLIST_STORAGE_KEY, {});
+	scopedSet(BLACKLIST_STORAGE_KEY, {});
 	game_log(`Cleared ${count} stored blacklist entries (the coded lists are unaffected)`, '#00FF00');
 	return count;
 }
@@ -6447,14 +6496,14 @@ function flushFearWindow(key) {
 	if (fearWatch.recent.length > 6) fearWatch.recent.shift();
 
 	try {
-		const log = get(FEAR_STORE) || { since: Date.now(), bySpot: {} };
+		const log = scopedGetLegacy(FEAR_STORE) || { since: Date.now(), bySpot: {} };
 		const row = log.bySpot[key] || { observedMs: 0, fearedMs: 0, peak: 0, windows: 0, abandons: 0 };
 		row.observedMs += windowMs;
 		row.fearedMs += fearedMs;
 		row.windows += 1;
 		if (peak > row.peak) row.peak = peak;
 		log.bySpot[key] = row;
-		set(FEAR_STORE, log);
+		scopedSet(FEAR_STORE, log);
 	} catch (e) { /* storage is best effort; the live numbers still log */ }
 
 	return { pct, sec: Math.round(fearedMs / 1000), peak };
@@ -6462,11 +6511,11 @@ function flushFearWindow(key) {
 
 function noteFearAbandon(key) {
 	try {
-		const log = get(FEAR_STORE) || { since: Date.now(), bySpot: {} };
+		const log = scopedGetLegacy(FEAR_STORE) || { since: Date.now(), bySpot: {} };
 		const row = log.bySpot[key] || { observedMs: 0, fearedMs: 0, peak: 0, windows: 0, abandons: 0 };
 		row.abandons = (row.abandons || 0) + 1;
 		log.bySpot[key] = row;
-		set(FEAR_STORE, log);
+		scopedSet(FEAR_STORE, log);
 	} catch (e) { /* as above */ }
 }
 
@@ -6480,7 +6529,7 @@ function fearRecentSummary() {
 /* Console helper. The whole point of the exercise - read this after a few
    hours of farming and the fear-versus-spot question answers itself. */
 function farmFearReport() {
-	const log = get(FEAR_STORE);
+	const log = scopedGetLegacy(FEAR_STORE);
 	if (!log || !log.bySpot || !Object.keys(log.bySpot).length) {
 		game_log('fear report: nothing recorded yet', 'orange');
 		return null;
@@ -6497,7 +6546,7 @@ function farmFearReport() {
 	return show_json({ courage: character.courage, mcourage: character.mcourage, pcourage: character.pcourage, spots: rows });
 }
 
-function clearFearReport() { set(FEAR_STORE, { since: Date.now(), bySpot: {} }); game_log('fear report cleared', 'orange'); }
+function clearFearReport() { scopedSet(FEAR_STORE, { since: Date.now(), bySpot: {} }); game_log('fear report cleared', 'orange'); }
 
 setInterval(sampleFear, 1000);
 
@@ -6630,13 +6679,13 @@ function achvLog(m, c) { try { game_log('[achv] ' + m, c || '#9FD3FF'); } catch 
 
 function achvLoad() {
 	let s = null;
-	try { s = get(ACHV_KEY); } catch (e) { }
+	try { s = scopedGetLegacy(ACHV_KEY); } catch (e) { }
 	if (!s || typeof s !== 'object') s = { i: 0, done: [] };
 	if (typeof s.i !== 'number') s.i = 0;
 	if (!Array.isArray(s.done)) s.done = [];
 	return s;
 }
-function achvSave(s) { try { set(ACHV_KEY, s); } catch (e) { achvLog('could not persist the queue', 'red'); } }
+function achvSave(s) { try { scopedSet(ACHV_KEY, s); } catch (e) { achvLog('could not persist the queue', 'red'); } }
 
 function achvTarget() {
 	const q = achvCfg().queue || [];
@@ -7021,7 +7070,7 @@ let mhBusy = false;           // a Daisy trip owns movement; mainLoop stands dow
 let mhToggle = null;   // null = follow the source; true/false = stored choice
 
 function mhStored() {
-	try { const s = get(MH_KEY); return (s && typeof s === 'object') ? s : null; } catch (e) { return null; }
+	try { const s = scopedGetLegacy(MH_KEY); return (s && typeof s === 'object') ? s : null; } catch (e) { return null; }
 }
 
 function mhCfg() {
@@ -7032,7 +7081,7 @@ function mhCfg() {
 
 function mhSaveToggle(v) {
 	mhToggle = v;
-	try { set(MH_KEY, { enabled: v, at: new Date().toISOString() }); }
+	try { scopedSet(MH_KEY, { enabled: v, at: new Date().toISOString() }); }
 	catch (e) { mhLog('could not persist the toggle - it will not survive a hop', 'red'); }
 }
 
@@ -7594,7 +7643,7 @@ function mhOff() { mhSaveToggle(false); mhReset('turned off by hand', 'off'); mh
 /* Drop the stored choice and go back to obeying CONFIG.monsterHunt.enabled. */
 function mhForget() {
 	mhToggle = null;
-	try { set(MH_KEY, null); } catch (e) { }
+	try { scopedSet(MH_KEY, null); } catch (e) { }
 	mhLog('stored toggle cleared - following the source default ('
 		+ ((CONFIG.monsterHunt && CONFIG.monsterHunt.enabled) ? 'ON' : 'OFF') + ') again', '#FFD700');
 	return mhStatus();
