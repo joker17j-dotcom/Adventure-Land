@@ -357,6 +357,51 @@ chk("an unknown parameter is ignored, not refused", len(evs("?bogus=1")), 5)
 chk("which is exactly what an older bridge does with terminal=1",
     len(evs("?unknown_future_filter=1")), 5)
 
+# EVERY FILTER RUNS BEFORE THE CAP, WHICH IS WHAT DECIDES WHETHER THE 5,000-ROW
+# LIMIT IS A HISTORY PROBLEM. `hp` rows are the plurality of this log and
+# growing - 36.6% to 60.5% to 87.0% of a 5,000-row pull inside two days, the
+# other session's measurement - so an UNFILTERED pull's time span shrinks as
+# sampling gets chattier. A filtered one does not: `ev=death` is capped at
+# 5,000 DEATHS, not at 5,000 rows of which some are deaths, so the span a
+# planner sees depends on the query and not on how busy the fighting was.
+# `boss_events_load` reads the whole file and caps nothing, so none of this is
+# retention - the data is on disk either way.
+# THE CASE WHERE THE TWO ORDERS MUST DISAGREE, because `terminal=1&limit=1`
+# cannot tell them apart: the newest row overall is the `lost`, so a
+# limit-first handler would slice to that one row and then filter it away,
+# answering empty. Filter-first answers the newest SPAWN.
+chk("a filter precedes the cap, so a narrow query keeps its own history",
+    evs("?ev=spawn&limit=1"), [("spawn", "franky")])
+chk("and `total` counts the matches rather than the file",
+    [get("?ev=spawn&limit=1")[k] for k in ("total", "returned", "truncated")],
+    [2, 1, True])
+
+# THE `event=` FILTER, on its own log so the counts above are untouched. A skip
+# row about an event-level decline has a NULL `type`, so a `type=` filter
+# cannot reach it at all - shipping the field with no way to query it would be
+# the same silence as not shipping it.
+_tmpE = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+for _r3 in [b.skip_row_normalise({"type": "goobrawl", "server": "US III",
+                                  "declined_on": "dps"})[0],
+            b.skip_row_normalise({"type": "rgoo", "server": "US III",
+                                  "declined_on": "window"})[0],
+            b.skip_row_normalise({"type": "franky", "server": "US II",
+                                  "declined_on": "cost"})[0]]:
+    _tmpE.write(json.dumps(_r3) + "\n")
+_tmpE.close()
+b.Handler.bosses = b.BossWatch(["crabxx"], interval=45, enabled=False,
+                               events_path=_tmpE.name)
+chk("PRECONDITION: the event-level row really has no type to filter on",
+    [e.get("type") for e in get("")["events"]], [None, "rgoo", "franky"])
+chk("so a type= filter reaches only the variant row",
+    len(get("?type=rgoo")["events"]), 1)
+chk("event= reaches BOTH goobrawl rows, including the untyped one",
+    sorted(str(e.get("type")) for e in get("?event=goobrawl")["events"]),
+    ["None", "rgoo"])
+chk("and a coinciding name still answers through either field",
+    [len(get("?event=franky")["events"]), len(get("?type=franky")["events"])],
+    [1, 1])
+
 _srv.shutdown()
 os.unlink(_tmp.name)
 

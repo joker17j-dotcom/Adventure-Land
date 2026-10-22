@@ -95,6 +95,19 @@ through Chrome" would stop a session that *can* push from ever trying.
     web editor instead.
   Stated unqualified ("Claude pushes through Chrome"), this reads as a fact
   about the repo and would stop a session that *can* push from trying.
+- **`git push -u origin main` IS THE WRONG RECIPE IN THIS CONTAINER AND THE
+  ERROR IT GIVES NAMES THE WRONG CAUSE.** Measured 2026-10-22: the Claude Code
+  container's checkout is on a SESSION BRANCH, not on `main`, and local `main`
+  sits 168 commits stale at `5511eb9`. A `push origin main` resolves the
+  refspec against that LOCAL ref, so it tries to push the stale branch and is
+  refused `non-fast-forward`, "a pushed branch tip is behind its remote
+  counterpart" - which reads as "the other session committed, go and merge".
+  Nothing had moved: `git ls-remote origin main` and `git fetch` both showed
+  the remote exactly at this session's own last commit. **`git push origin
+  HEAD:main` is the form that works**, and it is what every earlier push in
+  this session used. Realign local `main` (`git branch -f main HEAD`) so the
+  trap does not recur, and when a push is refused read `ls-remote` BEFORE
+  believing the hint - the message describes the refspec, not the repository.
 - **`gh api` IS REFUSED FROM THE BROWSER-DRIVEN CONTAINER, AND THE FIX IT NAMES
   IS NOT AVAILABLE THERE - do not chase it.** Measured 2026-10-17 from that
   container: `gh api repos/joker17j-dotcom/Adventure-Land` returns HTTP 403,
@@ -1723,6 +1736,30 @@ time on 2026-10-18.
   membership. `hp` appears in neither `BOSS_TERMINAL_EV` nor
   `BOSS_TRANSITION_EV`. **A NEGATION IS NOT A MEMBERSHIP TEST, and it silently
   absorbs every class added after it was written.**
+- **AND THE CAP IS NOT THE URGENT ITEM, BECAUSE EVERY FILTER RUNS BEFORE IT.
+  MEASURED 2026-10-22 AGAINST THE LIVE HANDLER, not read: `ev=death` is capped
+  at 5,000 DEATHS, not at 5,000 rows of which some are deaths.** So the span a
+  consumer sees depends on ITS QUERY and not on how chatty hp sampling was -
+  the 87%-and-climbing hp share shortens the UNFILTERED pull and nothing else,
+  and at ~90 non-hp rows an hour a `terminal=1` pull still reaches back about
+  55 hours. `boss_events_load` reads the whole file and caps nothing, so none
+  of this is retention either: the rows are on disk whatever the endpoint
+  answers, and `since=` makes an incremental consumer lossless outright.
+  **THE EXISTING ASSERTIONS COULD NOT TELL THE TWO ORDERS APART, which is why
+  this was worth measuring rather than reading.** `terminal=1&limit=1` answers
+  `lost` either way, because the newest row overall is also the newest
+  terminal. The discriminating case is `ev=spawn&limit=1`: filter-first answers
+  the newest SPAWN, cap-first slices to the `lost` and then filters it away,
+  answering EMPTY. Pinned now, with `total`/`returned`/`truncated` beside it.
+  **SO THE ALARM MOVED AND THE MEASUREMENT DID NOT.** The browser session's
+  numbers are right and their conclusion - that the row-counted cap is now the
+  more urgent item - is true of the default pull only. A planner wanting
+  terminals asks for terminals; the schedule store will too. Nothing to build.
+  **AND ONE MUTATION OF MINE SCORED ZERO WITHOUT THE CODE BEING UNTESTED.** The
+  first attempt inserted a `rows[-5000:]` ahead of the filters, against a
+  five-row fixture, so it was a NO-OP rather than a mutation. Moving the real
+  `limit` slice fails four assertions. Same tell as the `rageCfg` omission -
+  a mutation that moves nothing is a claim about the mutation first.
 - **A SERVER-SIDE FILTER IS NOT A GUARANTEE, BECAUSE THE BRIDGE IGNORES QUERY
   PARAMETERS IT DOES NOT KNOW.** Measured 2026-10-20 against the live handler:
   `/boss_events?bogus=1` returns every row. The handler reads the parameters it
