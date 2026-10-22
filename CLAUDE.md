@@ -1252,6 +1252,69 @@ this ranking until a Ranger build is actually running on him.
   `BOSS_JOIN_SPOTS`: a graveyard row there would take precedence and the guard
   assertion would be testing nothing. `let ragePullShared = null` is the same
   shape and had to be supplied too.
+- **ENTERING THE RAGE BOX IS BUILT (Ranger v112 / Priest v60 / Mage v83) AND
+  SHIPS OFF.** Operator's ruling: "that still needs to happen if enough people
+  show up to share the mummy attacks." `CONFIG.bossEvents.rageEntry` is the
+  block; `minSoaked`, `holdMs`, `retreatAtAttackers` and `trustMs` are
+  PROVISIONAL, because nobody has measured a crowded graveyard and the rip edge
+  now records the two fields that would settle them.
+- **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
+  attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
+  MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
+  have no attackers to count, so it only exists once we are already inside -
+  which is the decision it was meant to inform. **A SIGNAL THAT ONLY APPEARS
+  AFTER THE ACTION CANNOT GATE THE ACTION**, and it reads as the obvious choice
+  precisely because it is the quantity that matters. What IS visible from
+  outside is OTHER players' aggro: `rageCrowdSoak()` counts monsters inside a
+  rage rectangle whose `target` is a name not in our party. So the gate reads
+  theirs and the retreat reads ours, and the headcount objection is answered
+  without a headcount - it observes the distribution rather than guessing it,
+  and notices thinning because it recomputes every tick.
+  Unverified and flagged as the browser session's: whether entities deep in the
+  mummy field are in range from the corridor at all, ~263 units to the nearest
+  spawn edge. If not, `soaked` reads 0 and the gate never opens - the safe
+  direction, and `boxed` tells that apart from a quiet field.
+- **ENTRY IS A PARTY-WIDE MOVEMENT MODE, WHICH NEITHER SESSION'S DESIGN
+  ACCOUNTED FOR.** `rageCfg().enabled` now consults `rageEntryActive`, so entry
+  IS containment coming off - `safeMove` falls through to `xmove`, `rageGuard`
+  stops shoving us out, `ragePullActive` stops pulling. A character that enters
+  while another does not accepts a destination the other still refuses: the
+  leader walks into the field, the followers hold at the corridor, and the party
+  splits with nothing logging a fault - the "movement ownership" section's
+  failure reached by a new route. So the leader alone evaluates and broadcasts a
+  `rageentry` relay message; three characters computing one predicate from three
+  entity views is "two state machines over one decision" with a third added.
+  A follower hearing nothing for `trustMs` falls OUT, so a leader that stops
+  ticking strands nobody inside - and the RETREAT runs before the leader check,
+  because bodies on me are a fact only I can see.
+- **AND THE BLUNT LEVER THE HANDOFF OFFERED AS THE WORKAROUND WOULD HAVE CAUSED
+  EXACTLY THAT SPLIT.** "`rageCfg().enabled` comes from
+  `CONFIG.achievements.pull.enabled`, and false opens all three gates at once -
+  that IS walk in" is true ON THE RANGER and nowhere else: **Priest and Mage
+  have no `CONFIG.achievements` block at all**, so `a` is `{}`, `enabled` is
+  hard-true, and flipping the Ranger's toggle disables containment on Dexon
+  alone. Found by porting rather than by reading, and it is the
+  `rageRequiredRange` correction's sibling - a mechanism read correctly in one
+  file and assumed to be the party's.
+- **`rageCfg` COULD NOT JOIN THE DIVERGENCE LOOP, AND LEAVING IT OUT IS WHAT THE
+  MUTATION CAUGHT.** Its three bodies differ by exactly one token - the
+  `-> <X>Comments.md#anchor` pointer, per-file BY DESIGN - so byte-identity
+  fails against correct code and the tempting repair is to omit it. Omitted, a
+  mutation dropping `!rageEntryActive` from PRIEST's copy alone passed every
+  assertion in the suite: the party-splitting change, invisible. The working
+  form NORMALISES the one thing allowed to differ and compares the rest, with an
+  inverted assertion proving the normaliser is doing work rather than hiding a
+  real difference. **WHEN A CHECK CANNOT BE APPLIED AS WRITTEN, THE ANSWER IS TO
+  NARROW WHAT IT IGNORES, NOT TO DROP THE SUBJECT** - and the tell that it was
+  dropped was a mutation scoring zero, not anything visible in the file.
+- **A DEATH IS A TRIGGER, NOT A VERDICT** - the operator's correction, and the
+  rip edge now carries `attackersAtDeath` and `soakAtDeath` so a single sample
+  stops being uninterpretable. Aggro assignment is stochastic, so one death
+  cannot show a gate was miscalibrated; the death COUNTER integrates over
+  samples and `maxDeaths` already reads it. Two layers, and the existing trip
+  record already encoded the distinction: the `!character.rip && wasRip` branch
+  handles variance (crowd still there, go back) by recomputing entry from
+  scratch, and the counter handles a bad gate.
 - **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
   `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
   pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,
@@ -3805,16 +3868,16 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-22, LATEST: 621 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-22, LATEST: 657 JS assertions across NINE suites, plus
   287 from the python bridge suite the runner shells out to and folds in, for
-  `all 908 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 944 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  It read 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
   668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
-  SEVENTEEN figures in three days, which is the point rather than an embarrassment:
+  EIGHTEEN figures in three days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.

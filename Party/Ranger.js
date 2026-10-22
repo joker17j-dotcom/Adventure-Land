@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v111
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v112
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -443,6 +443,7 @@ const TOGGLES = {
 	monsterHuntReAcceptAtDaisy:      true,   // CONFIG.monsterHunt.reAcceptAtDaisy
 	achievements:                    true,   // CONFIG.achievements.enabled
 	achievementsPull:                true,   // CONFIG.achievements.pull.enabled
+	rageEntry:                       false,  // CONFIG.bossEvents.rageEntry.enabled
 	achievementsPullRespectCourage:  true,   // CONFIG.achievements.pull.respectCourage
 	muling:                          true,   // CONFIG.muling.enabled
 };
@@ -784,6 +785,20 @@ const CONFIG = {
 	   fought from maximum range, never expecting the kill. -> bossTick */
 	bossEvents: {
 		enabled: TOGGLES.bossEvents,
+	/* ENTERING THE RAGE BOX. Operator's ruling: "an issue with the override is
+	   entering the rage box. That still needs to happen if enough people show
+	   up to share the mummy attacks." Inert while `enabled` is off, and the
+	   three numbers below are PROVISIONAL - nobody has measured a crowded
+	   graveyard yet, so they are a starting point to be set from the
+	   `attackersAtDeath` / `soakAtDeath` the trip record now carries, not
+	   values anything was fitted to. */
+	rageEntry: {
+		enabled: TOGGLES.rageEntry,
+		minSoaked: 6,            // monsters in the box held by non-party players
+		holdMs: 20000,           // sustained for this long before we go in
+		retreatAtAttackers: 3,   // on THIS character - meant to sit below courage
+		trustMs: 15000,          // a follower falls out after this much silence
+	},
 		// G.monsters[x].cooperative - the game's own "credit is shared by damage
 		// dealt" flag, and the only class of boss where chipping from range is a
 		// strategy rather than a waste. An unknown monster is NOT cooperative.
@@ -1887,11 +1902,23 @@ function bossNearestMonster(name) {
    the throttle would land exactly where it hurts. Broadcast with the farm spot;
    null everywhere it has not arrived, which leaves the local default alone. */
 let ragePullShared = null;
+/* THE ONE RUNTIME LEVER FOR ENTRY, sibling to ragePullShared above. Entry IS
+   containment coming off: safeMove falls through to xmove, rageGuard stops
+   shoving us out and ragePullActive stops pulling, which is what "walk in"
+   means. Expressed here rather than by writing CONFIG, because CONFIG is the
+   operator's and a script that edits it makes their setting unreadable.
+   MAP-WIDE while it is on, so spookytown's two booboo rectangles lose cover
+   too. The graveyard field (y -1550..-1312) is nowhere near booboo
+   (y -842..-562), so in practice nothing else is standing in one - but it is a
+   real widening and not a scoped one. */
+let rageEntryActive = false;
+let rageEntryOkSince = 0;
+let rageEntryHeard = null;
 
 function rageCfg() {
 	const a = (typeof CONFIG !== 'undefined' && CONFIG.achievements && CONFIG.achievements.pull) || {};
 	return {
-		enabled: a.enabled !== false,
+		enabled: a.enabled !== false && !rageEntryActive,
 		/* THE KNOB. How many of the target monsters may be in flight at once.
 		   1 is the proven-safe start. Raise it as the farm earns trust: the only
 		   other gate is courage, which stops a pull when this character already
@@ -2334,6 +2361,134 @@ function ragePuller(map, mon) {
 		if (!best || p.range > best.range || (p.range === best.range && p.name < best.name)) best = p;
 	}
 	return best;
+}
+
+/* HOW MANY MONSTERS INSIDE A RAGE BOX ON THIS MAP ARE BEING HELD BY SOMEONE
+   WHO IS NOT US. That is the operator's "enough people show up to share the
+   mummy attacks", expressed as the thing they actually said rather than as a
+   headcount: a headcount guesses at how aggro will distribute, this observes
+   it, and it notices a crowd thinning because it is recomputed every tick.
+
+   OBSERVABLE FROM OUTSIDE THE BOX, which is the property that makes an entry
+   gate possible at all. The obvious signal - attackers-per-character - cannot
+   gate entry, because parked in the corridor pulling one at a time we HAVE no
+   attackers to count: it only becomes available once we are already inside,
+   which is the decision it was supposed to inform. Other players' aggro is
+   visible from here and ours is not, so the gate reads theirs and the RETREAT
+   reads ours.
+   ONE PREMISE IS UNVERIFIED AND IS NOT MINE TO MEASURE: whether entities deep
+   in the mummy field are within range from the corridor at all. The nearest
+   spawn edge is ~263 units from the join spot. If they are not visible this
+   returns 0 and the gate simply never opens, which is the safe direction and
+   is distinguishable from a quiet field by `boxed`. */
+function rageCrowdSoak(map) {
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	const names = (typeof CONFIG !== 'undefined' && CONFIG.party && CONFIG.party.groupMembers) || [];
+	let soaked = 0, boxed = 0;
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (!rageHit(map, e.x, e.y, 0)) continue;
+		boxed++;
+		if (e.target && names.indexOf(e.target) < 0) soaked++;
+	}
+	return { soaked: soaked, boxed: boxed };
+}
+
+/* Ours alone, for the retreat side. Counts bodies on THIS character, which is
+   the quantity courage is measured in. */
+function rageAttackersOnMe() {
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	let n = 0;
+	for (const id in E) {
+		const e = E[id];
+		if (e && e.type === 'monster' && !e.dead && e.target === character.name) n++;
+	}
+	return n;
+}
+
+function rageEntrySet(on, why) {
+	if (!!rageEntryActive === !!on) return;
+	rageEntryActive = !!on;
+	rageLog((on ? 'ENTERING the rage box - ' : 'leaving the rage box - ') + why,
+		on ? '#FFD700' : '#7FD98A');
+}
+
+/* THE GATE. Inert unless the operator turns it on; `enabled` is theirs and no
+   comment here states which way it is set.
+
+   BIASED TOWARD STAYING OUT, deliberately. Missing a graveyard costs almost
+   nothing - another in two hours - while a wipe inside the rectangle with
+   containment off costs downtime and leaves three bodies somewhere the party
+   cannot easily walk back to. So entry needs the crowd SUSTAINED over
+   `holdMs`, and a single tick below the threshold ends it immediately.
+
+   THE RETREAT IS NOT courage. The file records courage failing as a
+   whole-party wipe twice - "firing AT courage pre-empts the ... and all three
+   characters died", and attackers going 3 to 9 at the band's own threshold -
+   so `retreatAtAttackers` is its own number, meant to sit below courage, and
+   escalation is fast enough that it has to. */
+function rageEntryTick(map) {
+	const cfg = (CONFIG.bossEvents && CONFIG.bossEvents.rageEntry) || {};
+	if (!cfg.enabled) { rageEntryOkSince = 0; rageEntrySet(false, 'entry is off'); return; }
+
+	/* THE RETREAT IS EVERY CHARACTER'S OWN AND IS NEVER DELEGATED. Bodies on
+	   ME are a fact only I can see, and waiting for the leader to notice them
+	   is how the thing this guards against happens. So it runs before the
+	   leader check and applies to all three. */
+	if (rageEntryActive && rageAttackersOnMe() >= (cfg.retreatAtAttackers || 3)) {
+		rageEntryOkSince = 0;
+		rageEntrySet(false, 'too many on me');
+		return;
+	}
+
+	/* ENTERING IS THE LEADER'S CALL ALONE, AND THAT IS NOT TIDINESS - IT IS THE
+	   ONLY THING THAT KEEPS THE PARTY TOGETHER. Entry is containment coming
+	   off, so a character that enters while another does not has its safeMove
+	   accepting a destination the other's still refuses: the leader walks into
+	   the field, the followers hold at the corridor, and the party splits with
+	   nothing logging a fault. Three characters evaluating the same predicate
+	   from three entity views WILL disagree at the margin - the file's own
+	   "two state machines over one decision" - so there is one evaluator and
+	   the rest obey.
+	   A FOLLOWER WITH NO RECENT WORD FALLS OUT, which is the safe direction: a
+	   leader that disconnects or stops ticking leaves everyone outside rather
+	   than leaving someone inside with nobody deciding. */
+	if (!bossIsLeader()) {
+		const fresh = rageEntryHeard && (Date.now() - rageEntryHeard.at) < (cfg.trustMs || 15000);
+		if (!fresh) { rageEntrySet(false, 'no recent word from the leader'); return; }
+		rageEntrySet(!!rageEntryHeard.on, 'the leader says ' + (rageEntryHeard.on ? 'in' : 'out'));
+		return;
+	}
+
+	const soak = rageCrowdSoak(map);
+	if (soak.soaked < (cfg.minSoaked || 6)) {
+		rageEntryOkSince = 0;
+		rageEntrySet(false, 'crowd is soaking only ' + soak.soaked + ' of ' + soak.boxed);
+	} else {
+		if (!rageEntryOkSince) rageEntryOkSince = Date.now();
+		if (Date.now() - rageEntryOkSince >= (cfg.holdMs || 20000)) {
+			rageEntrySet(true, soak.soaked + ' of ' + soak.boxed + ' held by others');
+		}
+	}
+	/* Re-sent every tick rather than on the edge, because the followers time
+	   out on silence and a dropped message would otherwise strand them. */
+	rageEntryBroadcast(rageEntryActive);
+}
+
+function rageEntryBroadcast(on) {
+	const members = (CONFIG.party && CONFIG.party.groupMembers) || [];
+	for (const m of members) {
+		if (m === character.name || m === 'Meltymerch') continue;
+		try { plSend(m, { message: 'rageentry', on: !!on }); } catch (e) { }
+	}
+}
+
+/* Heard from the leader. Only the leader's word counts, by the same rule
+   bossOnCall applies to an unforced pick. */
+function rageEntryOnCall(from, data) {
+	if (from !== CONFIG.bossEvents.leaderName) return;
+	rageEntryHeard = { on: !!data.on, at: Date.now() };
 }
 
 function rageEngagedCount(types) {
@@ -2946,14 +3101,36 @@ async function bossTick() {
 	// many ticks it lies there.
 	if (t0) {
 		if (character.rip && !t0.wasRip) {
-			t0.deaths++; t0.wasRip = true; bossSave();
-			bossLog('died at ' + t0.name + ' (' + t0.deaths + ' of ' + cfg.maxDeaths + ')', 'red');
+			t0.deaths++; t0.wasRip = true;
+			/* ATTACKERS AT THE MOMENT OF DEATH, because "died with 2 on me" and
+			   "died with 9 on me" are different stories and one death is
+			   otherwise an uninterpretable sample. Aggro assignment is
+			   stochastic, so a single death is never evidence that an entry
+			   gate was miscalibrated - the DEATH COUNTER integrates over
+			   samples and is what maxDeaths already reads. This field is what
+			   lets the threshold be set from data instead of guessed. */
+			t0.attackersAtDeath = rageAttackersOnMe();
+			t0.soakAtDeath = rageCrowdSoak(character.map).soaked;
+			bossSave();
+			bossLog('died at ' + t0.name + ' (' + t0.deaths + ' of ' + cfg.maxDeaths
+				+ ') with ' + t0.attackersAtDeath + ' on me, crowd soaking '
+				+ t0.soakAtDeath, 'red');
 		} else if (!character.rip && t0.wasRip) {
-			t0.wasRip = false; bossSave();
+			t0.wasRip = false;
+			/* THE RETURN RE-CHECK. The operator's shape: "upon the return check
+			   if there is enough characters to enter the rage box." Entry is
+			   recomputed from scratch here rather than resumed, so a crowd that
+			   thinned while we lay there keeps us out. */
+			rageEntrySet(false, 'respawned - re-checking the crowd');
+			bossSave();
 		}
 	}
 	const pick = bossPick();
-	if (!pick) { if (bossState.trip) bossEnd('nothing eligible is live'); return false; }
+	if (!pick) {
+		rageEntrySet(false, 'no boss trip');
+		if (bossState.trip) bossEnd('nothing eligible is live');
+		return false;
+	}
 	if (!bossState.trip || bossState.trip.name !== pick.name) {
 		if (bossState.trip) bossEnd('switching to ' + pick.name);
 		/* The shard is recorded at trip START so a give-up is attributed to where
@@ -2966,6 +3143,11 @@ async function bossTick() {
 		if (bossIsLeader()) bossBroadcast(pick.name);
 	}
 	const t = bossState.trip;
+	/* Evaluated every tick while a trip is live, which is what lets a crowd
+	   thinning put us back outside without waiting for a death. It reads the
+	   map we are STANDING on, so parked in the corridor it sees the mummy
+	   field and anywhere else it finds no boxes and stays off. */
+	try { rageEntryTick(character.map); } catch (e) { rageLog('entry tick: ' + e, 'orange'); }
 	if (t.deaths >= cfg.maxDeaths) { bossEnd(t.deaths + ' deaths'); return false; }
 	if (Date.now() - t.startedAt > cfg.maxTripMs) { bossEnd('trip cap of ' + Math.round(cfg.maxTripMs / 60000) + ' min'); return false; }
 	if (character.rip) return true;   // the respawn path owns us until we are up
@@ -7203,6 +7385,7 @@ function mhStatus() {
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (data.message === 'boss') { bossOnCall(name, data); return; }
+	if (data.message === 'rageentry') { rageEntryOnCall(name, data); return; }
 	if (data.message === 'mh_report' && (name === 'FatherToken' || name === 'MageofOz')) { mhOnReport(name, data); return; }
 	if (data.message === 'dps_report' && partyDpsReports[name]) {
 		partyDpsReports[name] = { type: data.damageType, dps: data.dps, maxHp: data.maxHp, level: data.level, receivedAt: Date.now() };

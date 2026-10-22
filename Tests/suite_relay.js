@@ -172,10 +172,44 @@ module.exports = [
 	   followers would simply walk somewhere the leader refuses. */
 	for (const name of ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossNearestMonster',
 		'bossWalkTarget',
+		/* The rage-entry set, added 2026-10-22. Entry is containment coming OFF,
+		   so a copy that drifts means one character accepting a destination
+		   another still refuses - the party splits and nothing logs a fault.
+		   This is the set where identity is load-bearing rather than tidy. */
+		'rageCrowdSoak', 'rageAttackersOnMe', 'rageEntrySet', 'rageEntryTick',
+		'rageEntryBroadcast', 'rageEntryOnCall',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,
 			texts.every((x) => x === texts[0]), true);
+	}
+
+	/* rageCfg CANNOT GO IN THE LOOP ABOVE, and that is the whole reason this
+	   second check exists rather than a fourth name. Its bodies differ by
+	   exactly one token - the `-> RangerComments.md#...` pointer, which is
+	   per-file BY DESIGN - so a byte-identity assertion on it would fail
+	   against correct code, and the tempting repair is to leave it out of the
+	   check entirely. That is what had happened: a mutation dropping
+	   `!rageEntryActive` from PRIEST's copy alone passed every assertion in
+	   this file. Entry is containment coming off, so that one missing term is
+	   the leader walking into the rectangle while a follower's safeMove still
+	   refuses it.
+	   NORMALISE THE ONE THING THAT MAY DIFFER, then compare the rest. */
+	const norm = (x) => x.replace(/(Ranger|Priest|Mage)Comments\.md/g, '<X>Comments.md');
+	const cfgs = FILES.map((f) => norm(extract(f, 'rageCfg')));
+	t.eq('rageCfg is identical once the per-file comment pointer is normalised',
+		cfgs.every((x) => x === cfgs[0]), true);
+	/* INVERTED, so the normaliser is proved to be doing work rather than
+	   hiding a real difference: un-normalised they genuinely differ. */
+	const raw = FILES.map((f) => extract(f, 'rageCfg'));
+	t.eq('and they are NOT byte-identical, which is why the loop cannot take it',
+		raw.every((x) => x === raw[0]), false);
+	/* The term itself, named, because it is the one that splits the party. */
+	const { ROOT: R2 } = require('./lift');
+	for (const f of FILES) {
+		const src = require('fs').readFileSync(require('path').join(R2, f), 'utf8');
+		t.eq(`${f}: rageCfg gates enabled on the entry lever`,
+			(src.match(/enabled: a\.enabled !== false && !rageEntryActive,/g) || []).length, 1);
 	}
 	/* THE FILE SET IS DERIVED, NOT LISTED, and that is this check's own lesson
 	   applied to itself. The loop above fixes "a check covers the NAMES it

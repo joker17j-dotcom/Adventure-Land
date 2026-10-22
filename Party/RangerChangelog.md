@@ -21,6 +21,60 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v112
+
+**ENTERING THE RAGE BOX, ON THE OPERATOR'S RULING** - "that still needs to
+happen if enough people show up to share the mummy attacks." Inert until
+`CONFIG.bossEvents.rageEntry.enabled` is turned on; the three thresholds are
+PROVISIONAL, since nobody has measured a crowded graveyard.
+
+**THE SIGNAL IS NOT A HEADCOUNT AND IT IS NOT attackers-per-character EITHER.**
+`rageCrowdSoak()` counts monsters INSIDE a rage rectangle whose `target` is a
+name not in our party - the operator's words expressed as the thing they
+describe, which also notices a crowd thinning because it is recomputed every
+tick. attackers-per-character was the recommendation and it CANNOT gate entry:
+parked in the corridor pulling one at a time we have no attackers to count, so
+that signal only exists once we are already inside - the decision it was meant
+to inform. Other players' aggro is visible from outside and ours is not, so the
+gate reads theirs and the RETREAT reads ours.
+One premise is unverified and is not this session's to measure: whether
+entities deep in the mummy field are in range from the corridor at all (~263
+units to the nearest spawn edge). If they are not, `soaked` reads 0, the gate
+never opens, and `boxed` distinguishes that from a quiet field.
+
+**ENTERING IS THE LEADER'S CALL AND IS BROADCAST, which is not tidiness.**
+Entry is containment coming OFF - `rageCfg().enabled` consults the new
+`rageEntryActive`, so `safeMove` falls through to `xmove`, `rageGuard` stops
+shoving us out and `ragePullActive` stops pulling. A character that enters
+while another does not accepts a destination the other still refuses: the
+leader walks into the field, the followers hold at the corridor, and the party
+splits with nothing logging a fault. Three characters evaluating one predicate
+from three entity views WILL disagree at the margin, so there is one evaluator
+and the rest obey a `rageentry` relay message. A follower hearing nothing for
+`trustMs` falls OUT, so a leader that stops ticking strands nobody inside.
+
+**THE RETREAT IS EVERY CHARACTER'S OWN AND RUNS BEFORE THE LEADER CHECK.**
+Bodies on ME are a fact only I can see. `retreatAtAttackers` is its own number
+rather than `courage`, because the file records courage failing as a
+whole-party wipe twice.
+
+**THE RETURN RE-CHECK IS THE OPERATOR'S SHAPE AND IT IS FREE HERE.** The rip
+edge in `bossTick` already carried `{deaths, wasRip}`; entry is now recomputed
+from scratch on the `!character.rip && wasRip` branch, so a crowd that thinned
+while we lay there keeps us out. A DEATH IS A TRIGGER, NOT A VERDICT - aggro is
+stochastic and one death cannot show a gate was miscalibrated, which is what
+`maxDeaths` integrating over samples is for.
+The rip edge now records `attackersAtDeath` and `soakAtDeath`, because "died
+with 2 on me" and "died with 9 on me" are different stories and these are the
+numbers the provisional thresholds should be set from.
+
+**AND THE PORT FOUND A PRE-EXISTING ASYMMETRY WORTH REPORTING.** `rageCfg()`
+reads `CONFIG.achievements.pull`, and the FOLLOWERS HAVE NO `CONFIG.achievements`
+BLOCK AT ALL - so `a` is `{}` and `enabled` is hard-true for them. The blunt
+lever described as "walk in" (`CONFIG.achievements.pull.enabled` false) exists
+only on the Ranger, and using it would have disabled containment on Dexon alone
+- the same party split, reached by the route that was offered as the workaround.
+
 ## v111
 
 **GRAVEYARD RISING IS HANDLED AS A BOSS EVENT.** Operator's ruling: handled

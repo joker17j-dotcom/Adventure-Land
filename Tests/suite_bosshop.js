@@ -201,6 +201,9 @@ module.exports = [
        Left undefined it throws a ReferenceError from inside rageCfg, which is
        how the first draft of the guard was caught failing open. */
     w.ragePullShared = null;
+    w.rageEntryActive = false;
+    w.rageEntryOkSince = 0;
+    w.rageEntryHeard = null;
     return w;
   };
   let w = gw();
@@ -295,6 +298,131 @@ module.exports = [
   t.eq('precondition: containment is off', w.rageCfg().enabled, false);
   const inside = w.bossWalkTarget('graveyard') || {};
   t.eq('the walk then aims at the gargoyle itself', inside.x + ',' + inside.y, '255,-1545');
+} },
+
+{ name: 'entering the rage box is the leader’s call, and off until the operator says', fn(t) {
+  /* Entry is containment coming OFF, which is a PARTY-WIDE movement mode: a
+     character that enters while another does not has its safeMove accepting a
+     destination the other's still refuses, so the leader walks into the field
+     and the followers hold at the corridor. That is the split this repo has a
+     section about, and it is why the decision is broadcast rather than
+     computed three times. */
+  const G = JSON.parse(JSON.stringify(G_BASE));
+  G.maps.spookytown = { doors: [[1]], monsters: [{ type: 'mummy', rage: MUMMY_RAGE }] };
+
+  const sent = [];
+  const mk = (over) => {
+    over = over || {};
+    const w = world({
+      character: { name: over.me || 'FatherToken', map: 'spookytown', rip: false },
+      CONFIG: {
+        party: { groupMembers: ['FatherToken', 'Dexon', 'MageofOz'] },
+        achievements: { pull: {} },
+        bossEvents: {
+          leaderName: 'FatherToken',
+          rageEntry: Object.assign({
+            enabled: true, minSoaked: 6, holdMs: 20000,
+            retreatAtAttackers: 3, trustMs: 15000,
+          }, over.cfg || {}),
+        },
+      },
+      parent: { G: G, entities: over.ents || {} },
+      plSend: (to, d) => sent.push([to, d]),
+      rageLog: () => {},
+      ragePullShared: null,
+      rageEntryActive: !!over.active,
+      rageEntryOkSince: over.okSince || 0,
+      rageEntryHeard: over.heard || null,
+    });
+    lift(w, RANGER, ['rageBoxes', 'rageHit', 'rageCfg', 'bossIsLeader', 'rageCrowdSoak',
+      'rageAttackersOnMe', 'rageEntrySet', 'rageEntryTick', 'rageEntryBroadcast',
+      'rageEntryOnCall']);
+    return w;
+  };
+  /* Monsters INSIDE the rectangle. `other` is held by a stranger, `mine` by us,
+     `free` by nobody - the three cases the signal has to tell apart. */
+  const IN = (n, target) => {
+    const o = {};
+    for (let i = 0; i < n; i++) o['m' + target + i] =
+      { type: 'monster', mtype: 'mummy', x: 255, y: -1400, target: target };
+    return o;
+  };
+  const OUTSIDE = { far: { type: 'monster', mtype: 'mummy', x: 255, y: -1030, target: 'Stranger' } };
+
+  /* --- the signal -------------------------------------------------------- */
+  let w = mk({ ents: Object.assign({}, IN(7, 'Stranger'), IN(2, 'Dexon'), OUTSIDE) });
+  t.eq('precondition: the sample point is inside the rectangle',
+    inBox(MUMMY_RAGE, 255, -1400), true);
+  t.eq('precondition: and the OUTSIDE one is not', inBox(MUMMY_RAGE, 255, -1030), false);
+  const soak = w.rageCrowdSoak('spookytown');
+  t.eq('counts only monsters in the box', soak.boxed, 9);
+  t.eq('and only those held by a non-party name', soak.soaked, 7);
+  t.eq('a monster on one of OURS is not crowd soak',
+    w.rageCrowdSoak('spookytown').soaked < soak.boxed, true);
+
+  /* --- off by default ---------------------------------------------------- */
+  const rs = require('fs').readFileSync(
+    require('path').join(require('./lift').ROOT, RANGER), 'utf8');
+  t.ok('the toggle ships false', /rageEntry:\s+false,/.test(rs));
+  w = mk({ cfg: { enabled: false }, ents: IN(20, 'Stranger') });
+  w.rageEntryTick('spookytown');
+  t.eq('a crowd of 20 does not open a disabled gate', w.rageEntryActive, false);
+  t.eq('and containment stays on', w.rageCfg().enabled, true);
+
+  /* --- the leader needs the crowd SUSTAINED ------------------------------ */
+  w = mk({ ents: IN(7, 'Stranger') });
+  w.rageEntryTick('spookytown');
+  t.eq('first tick starts the clock, it does not enter', w.rageEntryActive, false);
+  t.ok('and the clock is running', w.rageEntryOkSince > 0);
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000 });
+  w.rageEntryTick('spookytown');
+  t.eq('sustained past holdMs, the leader enters', w.rageEntryActive, true);
+  t.eq('and containment comes off, which IS entering', w.rageCfg().enabled, false);
+  t.eq('the decision is broadcast to the other two', sent.length >= 2, true);
+  t.eq('never to the merchant', sent.some(x => x[0] === 'Meltymerch'), false);
+
+  /* A single tick below the threshold ends it - biased toward staying out,
+     because missing a graveyard costs ~nothing and a wipe in the box does. */
+  w = mk({ ents: IN(5, 'Stranger'), active: true, okSince: Date.now() - 60000 });
+  w.rageEntryTick('spookytown');
+  t.eq('the crowd thinning puts us straight back out', w.rageEntryActive, false);
+
+  /* --- followers obey, and fall out on silence --------------------------- */
+  w = mk({ me: 'Dexon', ents: IN(20, 'Stranger') });
+  w.rageEntryTick('spookytown');
+  t.eq('precondition: a follower sees a crowd that would convince the leader',
+    w.rageCrowdSoak('spookytown').soaked, 20);
+  t.eq('but never decides for itself', w.rageEntryActive, false);
+  w = mk({ me: 'Dexon', heard: { on: true, at: Date.now() }, ents: {} });
+  w.rageEntryTick('spookytown');
+  t.eq('it enters on the leader’s word, with no crowd of its own', w.rageEntryActive, true);
+  w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() - 16000 }, ents: {} });
+  w.rageEntryTick('spookytown');
+  t.eq('and falls out when the word goes stale', w.rageEntryActive, false);
+  /* Only the leader's word counts, by the rule bossOnCall already applies. */
+  w = mk({ me: 'Dexon' });
+  w.rageEntryOnCall('MageofOz', { on: true });
+  t.eq('a non-leader is ignored', w.rageEntryHeard, null);
+  w.rageEntryOnCall('FatherToken', { on: true });
+  t.ok('the leader is heard', !!w.rageEntryHeard && w.rageEntryHeard.on);
+
+  /* --- the retreat isEVERY character's own ----------------------------------- */
+  const onMe = (n, me) => {
+    const o = {};
+    for (let i = 0; i < n; i++) o['a' + i] =
+      { type: 'monster', mtype: 'mummy', x: 255, y: -1400, target: me };
+    return o;
+  };
+  w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() }, ents: onMe(3, 'Dexon') });
+  t.eq('precondition: three are on this follower', w.rageAttackersOnMe(), 3);
+  w.rageEntryTick('spookytown');
+  t.eq('it retreats WITHOUT waiting for the leader to notice', w.rageEntryActive, false);
+  t.eq('and containment is back on for it', w.rageCfg().enabled, true);
+  /* INVERTED: below the threshold the leader's word still governs, so the
+     retreat is a threshold and not a blanket refusal. */
+  w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() }, ents: onMe(2, 'Dexon') });
+  w.rageEntryTick('spookytown');
+  t.eq('two on it is not a retreat', w.rageEntryActive, true);
 } },
 
 { name: 'taxi joins: which refusals actually put the fight out of reach', fn(t) {
