@@ -2241,6 +2241,49 @@ time on 2026-10-18.
   and we were not there - hence `hp_at_decision`/`hp_pct_at_decision`, asserted
   to carry neither of the other families' names so no consumer can read a skip
   row through an existing convention and get a plausible wrong answer.
+- **AND A SKIP ROW NEEDS TWO SUBJECT FIELDS, BECAUSE FOR FOUR OF THE SIX BOSSES
+  THEY LOOK LIKE ONE.** The browser session's finding, extending their own
+  spec, which named only the monster field: crabxx, franky, icegolem and
+  horseman publish under their own monster name, so `type` carries both
+  meanings there and nothing in a row hints that they are separable - while
+  goobrawl spawns `rgoo`/`bgoo` and graveyard spawns
+  `gargoyle`/`zombie`/`ghoul`, so a decision about THE EVENT has no single
+  monster type while the hp series it must join is keyed on the VARIANT. One
+  field forces a choice between a `type` that joins nothing and an event
+  identity that is lost. `event` ships beside `type` in the bridge.
+  **EMITTED UNCONDITIONALLY, NOT NULL-WHEN-COINCIDING, which is the one place
+  the implementation departs from the proposal.** A field present only when it
+  differs from another is indistinguishable from a field the consumer forgot to
+  read - the rule already asserted here for `window_end` and `last_target` two
+  commits earlier. The half an `in` test cannot reach is the eventless boss:
+  every entry of `BOSS_RESPAWN_SEC` carries an EXPLICIT null, or "this boss has
+  no event" and "a bridge too old to send this field" are one observation.
+  **AND IT IS DERIVED WHERE IT CAN BE, so the receiver validates AND
+  completes.** `SCHEDULE_EVENT_OF` already mapped monster to event, so a script
+  sending only `type: "rgoo"` gets `event: "goobrawl"` for free rather than a
+  null, and only an event the bridge has never heard of has to be sent
+  explicitly - which is trusted over the derivation, because that vocabulary
+  grows game-side and the bridge must not be the half that deploys first.
+  **`type` IS NULLED FOR THE TWO EVENT-ONLY NAMES, which is the honest value
+  rather than a gap**: `type: "goobrawl"` looks joinable to every other row
+  class and matches nothing, which is the `hp_pct`-off-a-despawn-row trap in
+  the exact field this suite was written to protect.
+  **"EVENT-ONLY" IS DERIVED FROM `SCHEDULE_SPAWNS` AND NOT LISTED** - an event
+  is event-only when it spawns monsters and is not one of them - so adding a
+  self-spawning row to that map cannot silently start nulling a real monster
+  type. A bare `name in SCHEDULE_SPAWNS` would, and that is the inverted
+  assertion.
+  **THE DEDUP KEY MOVED TO `(event or type, server, spawn_t)`, because the
+  decision identity is event-plus-shard-plus-window and not the variant.**
+  Declining `rgoo` and then `bgoo` inside one goobrawl window is ONE decision
+  restated; keying on `type` records it twice, which is how a decline count
+  silently becomes a variant count. The `or type` is what covers an eventless
+  boss - without it every `BOSS_RESPAWN_SEC` entry shares a null key and
+  collapses into its neighbours on one shard, and that is its own assertion
+  with the no-event precondition stated.
+  Eight mutations, eight named failures. **The uncovered line is the console
+  `say()` string**, which renders a null `type` as the word "None" - cosmetic,
+  fixed, and flagged as untested rather than claimed.
 - **THE SPEC, AS WRITTEN 2026-10-21 BY THE BROWSER SESSION. THE IMPLEMENTER IS
   THIS SESSION** - recorded by name because a fix
   nobody is named for is a fix nobody makes, and this one sat outside both

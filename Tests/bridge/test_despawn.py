@@ -1423,8 +1423,8 @@ chk("skip: excluded null is fine", _norm(excluded=None)[1], None)
 for _e in ("outranked", "shard_not_candidate"):
     chk("skip: excluded %s accepted" % _e, _norm(excluded=_e)[1], None)
 chk("skip: an unknown excluded is refused", _norm(excluded="busy")[0], None)
-chk("skip: the monster name is required", b.skip_row_normalise(
-    {"server": "US II", "declined_on": "dps"})[0], None)
+chk("skip: a subject is required - neither `type` nor `event` is refused",
+    b.skip_row_normalise({"server": "US II", "declined_on": "dps"})[0], None)
 # STORED AS `type`, WHICH DEVIATES FROM THE SPEC ON PURPOSE: every other row in
 # this log calls it `type` and boss_history groups on it, so `mtype` would make
 # a skip row silently unjoinable - the hp_pct-off-a-despawn-row trap again.
@@ -1438,6 +1438,85 @@ chk("skip: and `mtype` is NOT also stored, so there is one name in the log",
     "mtype" in _norm()[0], False)
 chk("skip: nor parked in extra, which would read as un-validated",
     "mtype" in (_norm()[0].get("extra") or {}), False)
+# ---- THE EVENT AND THE MONSTER ARE NOT ONE FIELD, and for four of the six
+# they look like one. The other session's finding; `event` is the extension to
+# their own spec, which named only the monster field.
+# THREE SHAPES, and the first is what makes the other two invisible to a
+# reader: crabxx/franky/icegolem/horseman ARE their own event name, goobrawl
+# and graveyard spawn OTHER monsters, and rgoo/bgoo/gargoyle/zombie/ghoul are
+# monsters whose event is derivable.
+chk("skip: where event and monster coincide, both fields carry the name",
+    [_norm()[0].get("type"), _norm()[0].get("event")], ["franky", "franky"])
+# EMITTED UNCONDITIONALLY, NOT NULL-WHEN-COINCIDING - the one departure from
+# the spec. A field present only when it differs is indistinguishable from a
+# field the consumer forgot to read, which is the rule already asserted in this
+# file for `window_end` and `last_target`.
+# UNCONDITIONAL MEANS THE KEY IS THERE EVEN WHEN THE VALUE IS NULL, which is
+# the half an `in` test on the coinciding case cannot reach: for a boss with no
+# event the row must carry an EXPLICIT null, or "this boss has no event" and "a
+# bridge too old to send this field" are the same observation.
+chk("skip: `event` is a key on every shape, null value included",
+    [("event" in _norm()[0]),
+     ("event" in b.skip_row_normalise(
+         {"type": "phoenix", "server": "US I", "declined_on": "cost"})[0])],
+    [True, True])
+_gb = b.skip_row_normalise(
+    {"type": "goobrawl", "server": "US III", "declined_on": "dps"})[0]
+chk("skip: an event that spawns other monsters nulls `type`",
+    [_gb.get("type"), _gb.get("event")], [None, "goobrawl"])
+_gy = b.skip_row_normalise(
+    {"type": "graveyard", "server": "EU I", "declined_on": "window"})[0]
+chk("skip: graveyard likewise", [_gy.get("type"), _gy.get("event")],
+    [None, "graveyard"])
+# A NULL IS THE HONEST VALUE THERE, not a gap: `type: "goobrawl"` would look
+# joinable to every other row class and match nothing, which is the
+# `hp_pct`-off-a-despawn-row trap in the field this suite already pins.
+for _v, _e in (("rgoo", "goobrawl"), ("bgoo", "goobrawl"),
+               ("gargoyle", "graveyard"), ("zombie", "graveyard"),
+               ("ghoul", "graveyard")):
+    _r2 = b.skip_row_normalise(
+        {"type": _v, "server": "US I", "declined_on": "dps"})[0]
+    chk("skip: %s derives event %s without the script sending it" % (_v, _e),
+        [_r2.get("type"), _r2.get("event")], [_v, _e])
+# A boss with no event at all - every entry of BOSS_RESPAWN_SEC - keeps its
+# type and gets a null event, so "no event" and "unknown event" are one answer
+# and neither is a guess.
+_ph = b.skip_row_normalise(
+    {"type": "phoenix", "server": "US I", "declined_on": "cost"})[0]
+chk("skip: a respawn boss has no event and keeps its type",
+    [_ph.get("type"), _ph.get("event")], ["phoenix", None])
+# THE RECEIVER VALIDATES AND HERE IT ALSO COMPLETES, so an older script sending
+# only a monster type is never refused and never gets a null event.
+chk("skip: `event` alone names the subject",
+    b.skip_row_normalise({"event": "goobrawl", "server": "US III",
+                          "declined_on": "dps"})[1], None)
+chk("skip: `type` alone still does",
+    b.skip_row_normalise({"type": "crabxx", "server": "US III",
+                          "declined_on": "dps"})[1], None)
+# AN EXPLICIT `event` IS TRUSTED OVER THE DERIVATION, because the event
+# vocabulary grows game-side and a bridge older than the script must not
+# overwrite a name it has never heard of with a null.
+_fut = b.skip_row_normalise({"type": "newmob", "event": "newevent",
+                             "server": "US I", "declined_on": "dps"})[0]
+chk("skip: an unknown event the bridge cannot derive survives",
+    [_fut.get("type"), _fut.get("event")], ["newmob", "newevent"])
+chk("skip: and `event` is not parked in extra, which would read un-validated",
+    "event" in (_norm()[0].get("extra") or {}), False)
+# "EVENT-ONLY" IS DERIVED FROM SCHEDULE_SPAWNS, NOT LISTED - an event is
+# event-only when it spawns monsters and is NOT one of them. INVERTED: adding a
+# self-spawning row to that map must not start nulling a real monster type,
+# which a bare `name in SCHEDULE_SPAWNS` test would do.
+_saved = dict(b.SCHEDULE_SPAWNS)
+try:
+    b.SCHEDULE_SPAWNS["crabxx"] = ("crabxx",)
+    chk("skip: a self-spawning map row does NOT null the monster type",
+        list(b.skip_subject("crabxx", None)), ["crabxx", "crabxx"])
+finally:
+    b.SCHEDULE_SPAWNS.clear()
+    b.SCHEDULE_SPAWNS.update(_saved)
+chk("skip: and the map is restored, so later assertions are not reading a stub",
+    b.SCHEDULE_SPAWNS.get("crabxx"), None)
+
 chk("skip: server is required", b.skip_row_normalise(
     {"mtype": "franky", "declined_on": "dps"})[0], None)
 chk("skip: a non-dict body is refused", b.skip_row_normalise([1, 2])[0], None)
@@ -1566,6 +1645,45 @@ chk("skip: a null spawn_t is never deduped", [
     _bwS.queue_skip(_SKIP_OK(spawn_t=None)).get("deduped")], [False, False])
 chk("skip: a refused row is reported, not written",
     _bwS.queue_skip(_SKIP_OK(declined_on="vibes")).get("ok"), False)
+
+# THE DEDUP IDENTITY IS THE EVENT, NOT THE VARIANT. Declining `rgoo` and then
+# `bgoo` inside one goobrawl window is ONE decision restated, and a type-keyed
+# dedup would record it twice - which is how a decline count silently becomes a
+# variant count.
+_lf7b = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf7b.close()
+_bwG = b.BossWatch(["rgoo"], enabled=False, events_path=_lf7b.name)
+_GOO = lambda t: {"type": t, "server": "US III", "declined_on": "dps",
+                  "reason": "eta beyond budget",
+                  "spawn_t": "2026-10-22T18:00:01Z"}
+# PRECONDITION: the two rows really do carry DIFFERENT `type` values, so a
+# dedup below is the event key doing the work and not the rows being equal.
+chk("skip: the two goo rows differ in `type`",
+    [b.skip_row_normalise(_GOO("rgoo"))[0].get("type"),
+     b.skip_row_normalise(_GOO("bgoo"))[0].get("type")], ["rgoo", "bgoo"])
+chk("skip: and agree on `event`, which is the decision identity",
+    [b.skip_row_normalise(_GOO("rgoo"))[0].get("event"),
+     b.skip_row_normalise(_GOO("bgoo"))[0].get("event")],
+    ["goobrawl", "goobrawl"])
+chk("skip: the first goo decline is accepted",
+    _bwG.queue_skip(_GOO("rgoo")).get("deduped"), False)
+chk("skip: the other variant in the same window is the SAME decision",
+    _bwG.queue_skip(_GOO("bgoo")).get("deduped"), True)
+chk("skip: an event-level row for that window is too",
+    _bwG.queue_skip(_GOO("goobrawl")).get("deduped"), True)
+chk("skip: so exactly one row reached the log",
+    len([r for r in _rows(_lf7b.name) if r.get("ev") == "skip"]), 1)
+# `or type` IS WHAT COVERS A BOSS WITH NO EVENT, which is every entry of
+# BOSS_RESPAWN_SEC. Keyed on `event` alone they would all share a null key and
+# collapse into each other on one shard.
+_NOEV = lambda t: {"type": t, "server": "US I", "declined_on": "cost",
+                   "reason": "not worth the trip",
+                   "spawn_t": "2026-10-22T18:00:01Z"}
+chk("skip: PRECONDITION - neither of these has an event at all",
+    [b.skip_row_normalise(_NOEV("phoenix"))[0].get("event"),
+     b.skip_row_normalise(_NOEV("mrgreen"))[0].get("event")], [None, None])
+chk("skip: yet two eventless bosses on one shard are separate decisions", [
+    _bwG.queue_skip(_NOEV("phoenix")).get("deduped"),
+    _bwG.queue_skip(_NOEV("mrgreen")).get("deduped")], [False, False])
 
 _srows = [r for r in _rows(_lf7.name) if r.get("ev") == "skip"]
 chk("skip: exactly the accepted rows reached the log", len(_srows), 7)

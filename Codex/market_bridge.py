@@ -566,11 +566,57 @@ SKIP_NUM_FIELDS = (
 # older script's `mtype` must not be refused - and exactly one is stored.
 SKIP_STR_FIELDS = ("type", "server", "spawn_t", "reason", "committed_to")
 
+# THE EVENT AND THE MONSTER ARE NOT ONE FIELD, AND FOR FOUR OF THE SIX THEY
+# LOOK LIKE ONE. crabxx, franky, icegolem and horseman publish under their own
+# monster name, so `type` carries both meanings there and nothing in a row
+# hints that they are separable - while goobrawl spawns `rgoo`/`bgoo` and
+# graveyard spawns `gargoyle`/`zombie`/`ghoul`, so a decision about THE EVENT
+# has no single monster type and the hp series it must join is keyed on the
+# VARIANT. One field forces a choice between a `type` that joins nothing and an
+# event identity that is lost. The other session's finding, extending their own
+# spec, which named only `type`.
+# `event` IS EMITTED UNCONDITIONALLY, NOT NULL-WHEN-COINCIDING - the one place
+# this departs from the proposal. A field present only when it differs from
+# another is indistinguishable from a field the consumer forgot to read, which
+# is the rule already asserted here for `window_end` and `last_target`.
+# AND IT IS DERIVED WHERE IT CAN BE, so an older script sending only a monster
+# type gets a correct `event` rather than a null: the receiver validates, and
+# where it has the map it can also complete.
+
 
 def _num_or_none(v):
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         return None
     return float(v)
+
+
+def skip_subject(name, event_in):
+    """(type, event) for a skip row's subject - the monster and the event.
+
+    THREE SHAPES AND ONLY THE FIRST LOOKS LIKE THE RULE:
+      crabxx, franky, icegolem, horseman  - the event name IS the monster type
+      goobrawl, graveyard                 - the event spawns OTHER monsters
+      rgoo, bgoo, gargoyle, zombie, ghoul - a monster whose event is derivable
+
+    `type` is nulled for the middle shape only, because there the name is not a
+    monster at all and a non-joining value in the field every other row class
+    groups on is worse than a null - null reads as "no single monster", while
+    `type: "goobrawl"` looks joinable and matches nothing.
+
+    "Event-only" is DERIVED from SCHEDULE_SPAWNS rather than listed: an event
+    is event-only when it spawns monsters and is not one of them, so adding a
+    self-spawning row to that map cannot silently null a real monster type.
+
+    An explicitly supplied `event` is TRUSTED over the derivation, because the
+    event vocabulary grows game-side and a bridge older than the script must
+    not refuse or overwrite a name it has never heard of.
+    """
+    spawns = SCHEDULE_SPAWNS.get(name) or ()
+    event_only = bool(spawns) and name not in spawns
+    event = event_in or SCHEDULE_EVENT_OF.get(name)
+    if event is None and (event_only or name in SCHEDULE_EVENT_SEC):
+        event = name
+    return (None if event_only else name), event
 
 
 def skip_row_normalise(body):
@@ -589,9 +635,17 @@ def skip_row_normalise(body):
     if not isinstance(body, dict):
         return None, "body must be an object"
     mtype = body.get("type") or body.get("mtype")
-    server = body.get("server")
+    event_in = body.get("event")
     if not isinstance(mtype, str) or not mtype:
-        return None, "type (or mtype) required"
+        mtype = None
+    if not isinstance(event_in, str) or not event_in:
+        event_in = None
+    # EITHER NAMES THE SUBJECT. An event-level decline may carry only `event`,
+    # and a script predating this field carries only `type`; refusing either
+    # shape would make the bridge the thing that has to deploy first.
+    if mtype is None and event_in is None:
+        return None, "type (or mtype) or event required"
+    server = body.get("server")
     if not isinstance(server, str) or not server:
         return None, "server required"
     declined = body.get("declined_on")
@@ -611,7 +665,7 @@ def skip_row_normalise(body):
     # kept beside it, so a disagreement is measurable rather than lost.
     if isinstance(body.get("t"), str):
         row["t_script"] = body["t"]
-    row["type"] = mtype
+    row["type"], row["event"] = skip_subject(mtype or event_in, event_in)
     for k in SKIP_STR_FIELDS:
         if k == "type":
             continue
@@ -621,7 +675,7 @@ def skip_row_normalise(body):
         row[k] = _num_or_none(body.get(k))
     # `mtype` is a known INPUT name even though it is never a stored one, or
     # a script sending the spec's spelling would see it land in `extra`.
-    known = ({"ev", "t", "declined_on", "excluded", "mtype"}
+    known = ({"ev", "t", "declined_on", "excluded", "mtype", "event"}
              | set(SKIP_STR_FIELDS) | set(SKIP_NUM_FIELDS))
     extra = {k: v for k, v in body.items() if k not in known}
     if extra:
@@ -636,8 +690,15 @@ def skip_row_key(row):
     series, so a null one cannot be deduped against anything - those rows are
     always kept rather than collapsed, since collapsing them would merge two
     different instances on one shard.
+
+    KEYED ON THE EVENT WHERE THERE IS ONE, because the decision identity is
+    event-plus-shard-plus-window and not the variant: declining `rgoo` and then
+    `bgoo` inside one goobrawl window is ONE decision restated, and keying on
+    `type` would record it twice. `or type` covers a boss with no event at all,
+    which is every entry of BOSS_RESPAWN_SEC.
     """
-    return (row.get("type"), row.get("server"), row.get("spawn_t"))
+    return (row.get("event") or row.get("type"),
+            row.get("server"), row.get("spawn_t"))
 
 
 def despawn_window_hit(mtype, elapsed_sec) -> bool:
@@ -2981,7 +3042,10 @@ class BossWatch:
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
             elif ev["ev"] == BOSS_SKIP_EV:
-                say(f"[bosses] skip {ev['type']} on {ev['server']}"
+                # `type` is None on an event-level decline, and an f-string
+                # renders that as the word "None" in the operator's console.
+                say(f"[bosses] skip {ev.get('event') or ev.get('type')}"
+                    f" on {ev['server']}"
                     f" - declined on {ev['declined_on']}"
                     + (f", {ev['excluded']}" if ev.get("excluded") else "")
                     + (f" ({ev['reason']})" if ev.get("reason") else ""))
@@ -3491,7 +3555,12 @@ class Handler(BaseHTTPRequestHandler):
             wt = (q.get("type") or [""])[0].strip().lower() or None
             ws = (q.get("server") or [""])[0].strip().lower() or None
             we = (q.get("ev") or [""])[0].strip().lower() or None
+            wv = (q.get("event") or [""])[0].strip().lower() or None
             if wt: rows = [r for r in rows if (r.get("type") or "").lower() == wt]
+            # A skip row about an event-level decline has a null `type`, so a
+            # `type=` filter cannot reach it at all - shipping the field with
+            # no way to query it would be the same silence as not shipping it.
+            if wv: rows = [r for r in rows if (r.get("event") or "").lower() == wv]
             if ws: rows = [r for r in rows if (r.get("server") or "").lower() == ws]
             if we: rows = [r for r in rows if (r.get("ev") or "").lower() == we]
             # `ev` stays single-value equality for compatibility; `terminal`
