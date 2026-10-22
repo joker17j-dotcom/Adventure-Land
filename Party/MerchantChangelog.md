@@ -1,3 +1,65 @@
+## v114
+
+**THE BANK SOURCES COMPOUND TRIPLES NOW, AND THE WHOLE CHANGE IS SOURCING -
+WHICH IS THE OPERATOR'S OWN CORRECTION TO A LARGER PLAN.** Measured 2026-10-22:
+the bank is **336/336 slots FULL** and holds **77x dexbelt@0**. Levelled items
+do not stack, so that is 77 slots, 22.9% of the entire bank, against 0 at @1,
+4 at @2 and 2 at @3.
+
+The compound mechanics already existed and already did the right thing.
+`autoCombineOneBaseDuplicateGroup()` merges any three identical copies at level
+0 or 1; `ensureUpgradeMaterials()` BUYS the scrolls, so the empty bank's lack of
+cscroll0 was never a blocker; `CONFIG.craftInputCaps.dexbelt` 2 already permits
+0->1 and 1->2 and refuses 2->3. **`findBaseDuplicateGroup()` READS
+`character.items` AND NOTHING ELSE**, which is the single reason a bank full of
+triples compounded nothing. So `retrieveCompoundTriples()` is a sourcing sweep
+and no mechanic changed.
+
+**IT RIDES A TRIP AND NEVER CAUSES ONE**, the same contract and the same
+operator rule as `bankExchangeables()`: it refuses to move, and `travelToBank`
+is the one choke point every bank visit in the script already goes through. It
+runs AFTER the deposit sweep deliberately - that one frees inventory slots and
+this one spends them - and it is caught at the hook, because `travelToBank` is
+awaited in boolean position at every call site, so a rejection escaping would
+not return false, it would blow up the caller. That is CLAUDE.md's Form A and
+it cost three rangers an afternoon.
+
+**THE ELIGIBILITY TEST IS THE COMPOUNDER'S OWN, NOT A COPY.** Retrieving
+something `findBaseDuplicateGroup()` will then refuse is WORSE than retrieving
+nothing: three inventory slots spent and the bank exactly as full. So this calls
+`isCompoundableItem()` and `compoundWouldOvershootCap()` rather than
+re-deriving them - and that is also what makes it cover the NEXT craft input for
+free. **NOTHING IN THE SWEEP NAMES dexbelt**, asserted.
+
+Complete triples only, because two of a kind cannot compound and retrieving
+them just moves slot pressure from the bank to the bag. **LEVEL 1 BEFORE LEVEL
+0**: both free the same two slots, and only the 1->2 produces the level the
+windbelt recipe actually consumes.
+
+`COMPOUND_RETRIEVE_HEADROOM` is 2, because the compounder BUYS its scrolls and a
+purchase needs a slot when none is held. Scrolls stack, so the real cost is one
+slot on the first buy and zero after; the reserve is 2 because an offering may
+want one too, and because being one slot short means a compound that cannot
+start AFTER the retrieval already spent the slots.
+
+**TWO GUARDS IN THE PLAN LOOP ARE INERT AND SAY SO.** Measured by mutation:
+removing BOTH `if (triples < 1) continue` and `if (take.length < 3) continue`
+changes no behaviour, because a group of two yields `triples` 0 and the slice
+takes nothing. `Math.min(g.triples * 3, ...)` is the line that enforces complete
+triples - removing THAT fails two assertions. Kept as cheap early-outs and
+honestly labelled, per "mutate each half separately, or neither is tested".
+
+**WORTH, ARITHMETICALLY: 77 slots -> 11, freeing ~66 of a full bank**, plus 8
+more windbelt inputs (each 1x dexbelt+2 + 40x stormfeather + 4x essenceofether
++ 300,000g; stormfeather is not the constraint at 2,808 held). **The real yield
+lands under that** - a compound destroys all three inputs on failure and
+`getCompoundChance` prices it. Per-visit and incremental by design, bounded by
+free slots.
+
+**ALSO RECORDED, CAUSE UNKNOWN:** Meltymerch was found in JAIL overnight. He is
+online and fine; his tab hops too fast to hold a reading. Nothing here
+addresses it.
+
 ## v113
 
 **Comment-only, and it removes a rotted claim the operator could have acted on.**

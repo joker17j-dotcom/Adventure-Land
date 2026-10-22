@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v113
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v114
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4707,6 +4707,125 @@ async function bankExchangeables() {
 	return stored;
 }
 
+/* SOURCING COMPOUND TRIPLES FROM THE BANK. Operator's requirement, 2026-10-22,
+   off a measured finding: the bank is 336/336 slots FULL and holds 77x
+   dexbelt@0 - levelled items do not stack, so that is 77 slots, 22.9% of the
+   entire bank - against 0 at @1, 4 at @2 and 2 at @3.
+
+   THE WHOLE CHANGE IS SOURCING, AND THAT IS THE OPERATOR'S OWN CORRECTION TO A
+   LARGER PLAN. The compound mechanics already exist and already do the right
+   thing: autoCombineOneBaseDuplicateGroup() merges any three identical copies
+   at level 0 or 1, ensureUpgradeMaterials() BUYS the scrolls (so the empty
+   bank's lack of cscroll0 is not a blocker), and craftInputCaps already permits
+   0->1 and 1->2 while refusing 2->3. findBaseDuplicateGroup() reads
+   `character.items` and nothing else - which is the single reason a bank full
+   of triples compounds nothing.
+
+   IT RIDES A TRIP AND NEVER CAUSES ONE, the same contract as bankExchangeables
+   above and for the same operator rule. It refuses to move, and travelToBank is
+   the one choke point where every bank visit in the script already lands.
+
+   THE ELIGIBILITY TEST IS THE COMPOUNDER'S OWN, NOT A COPY OF IT. Retrieving
+   something findBaseDuplicateGroup() will then refuse is worse than retrieving
+   nothing: it spends three inventory slots and leaves the bank exactly as full.
+   So this calls isCompoundableItem() and compoundWouldOvershootCap() rather
+   than re-deriving them, which is also what makes it cover the NEXT craft input
+   for free - nothing here names dexbelt.
+
+   COMPLETE TRIPLES ONLY. Two of a kind cannot compound, so retrieving them
+   moves slot pressure from the bank to the bag and buys nothing.
+
+   LEVEL 1 BEFORE LEVEL 0, because a 1->2 compound produces the level the
+   windbelt recipe actually consumes, while 0->1 only produces another input.
+   Both free the same two slots; only one of them finishes something.
+
+   HEADROOM, because the compounder BUYS its scrolls and a purchase needs a
+   slot when none is held. Scrolls stack (cscroll0 is s:9999), so the real cost
+   is one slot on the first buy and zero after - the reserve is 2 because an
+   offering may want one too, and because the failure mode of being one slot
+   short is a compound that cannot start after the retrieval already spent the
+   slots. */
+const COMPOUND_RETRIEVE_HEADROOM = 2;
+
+async function retrieveCompoundTriples() {
+	if (character.map !== CONFIG.bank.map) return 0;   // never travels, by design
+	if (!character.bank) return 0;                     // arrived, not open yet
+
+	/* esize is the game's own free-slot count and is what the unlist guard
+	   already reads; the null scan is the fallback for a context that does not
+	   carry it rather than a second opinion. */
+	const free = (typeof character.esize === 'number')
+		? character.esize
+		: character.items.filter((x) => x === null).length;
+	let budget = free - COMPOUND_RETRIEVE_HEADROOM;
+	if (budget < 3) return 0;
+
+	const held = arbHeldNames();
+	const groups = new Map();
+	for (const pack in character.bank) {
+		if (!/^items/.test(pack)) continue;
+		const arr = character.bank[pack] || [];
+		for (let i = 0; i < arr.length; i++) {
+			const it = arr[i];
+			if (!it || !it.name) continue;
+			const lvl = Number(it.level) || 0;
+			if (lvl !== 0 && lvl !== 1) continue;
+			if (!isCompoundableItem(it.name)) continue;
+			if (compoundWouldOvershootCap(it.name, lvl)) continue;
+			if (held[it.name]) continue;          // arbitrage owns this exit
+			const key = it.name + '|' + lvl;
+			if (!groups.has(key)) groups.set(key, []);
+			groups.get(key).push({ pack: pack, i: i });
+		}
+	}
+
+	/* `triples * 3` IN THE SLICE BELOW IS THE LINE THAT ENFORCES COMPLETE
+	   TRIPLES, measured by mutation rather than assumed: removing BOTH guards
+	   in this loop changes no behaviour at all, because a group of two yields
+	   triples 0 and the slice takes nothing. They are kept as cheap
+	   early-outs and are honestly labelled inert, which is this file's own
+	   "mutate each half separately, or neither is tested". */
+	const plan = [];
+	for (const [key, where] of groups) {
+		const triples = Math.floor(where.length / 3);
+		if (triples < 1) continue;                 // inert; the slice bound does the work
+		plan.push({ key: key, level: Number(key.split('|')[1]), slots: where, triples: triples });
+	}
+	if (!plan.length) return 0;
+	plan.sort((a, b) => b.level - a.level || a.key.localeCompare(b.key));
+
+	let got = 0;
+	for (const g of plan) {
+		/* Highest bank index first within a group. A retrieve nulls the bank
+		   slot in place rather than shifting, so this is belt-and-braces for
+		   the same reason bankExchangeables says it is. */
+		const take = g.slots.slice(0, Math.min(g.triples * 3, budget - (budget % 3)))
+			.sort((a, b) => b.i - a.i);
+		if (take.length < 3) continue;             // inert, as above
+		for (const w of take) {
+			if (budget < 1) break;
+			try {
+				await bank_retrieve(w.pack, w.i);
+				got++; budget--;
+				await sleep(250);
+			} catch (e) {
+				const why = (e && (e.reason || e.message)) ? (e.reason || e.message) : String(e);
+				game_log('[compound] bank_retrieve failed for ' + g.key + ' - ' + why, 'red');
+				/* A full bag means nothing later fits either, and the partial
+				   group we already pulled is still a complete triple or will be
+				   next visit - the compounder only ever acts on threes. */
+				if (/full/i.test(why)) return got;
+			}
+		}
+		if (budget < 3) break;
+	}
+	if (got) {
+		game_log('[compound] retrieved ' + got + ' item(s) from the bank for compounding - '
+			+ plan.map((g) => g.key + ' x' + (g.triples * 3)).join(', '), '#00FF00');
+	}
+	return got;
+}
+
 /* The arrival wrapper. Every bank visit in the script goes through
    travelToBank, which makes it the one choke point where "we are at the bank
    for some other reason" is true - the ponty and stand-buy runs, the
@@ -4718,6 +4837,14 @@ async function travelToBank() {
 	if (arrived) {
 		try { await bankExchangeables(); }
 		catch (e) { game_log('[exch] sweep threw and was swallowed - ' + (e && (e.reason || e.message) || e), 'red'); }
+		/* AFTER the deposit sweep, deliberately: that one frees inventory slots
+		   and this one spends them, so running it second gives it the larger
+		   budget. Caught for the same reason - travelToBank is awaited in
+		   boolean position at every call site, so a rejection escaping here
+		   would not return false, it would blow up the caller. CLAUDE.md's
+		   Form A, and it cost three rangers an afternoon. */
+		try { await retrieveCompoundTriples(); }
+		catch (e) { game_log('[compound] retrieve threw and was swallowed - ' + (e && (e.reason || e.message) || e), 'red'); }
 	}
 	return arrived;
 }

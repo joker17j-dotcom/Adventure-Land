@@ -3221,6 +3221,56 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   lands - could not have worked for this reason. It also explains why
   `api_call('load_bank')` returns all seven packs from anywhere and why
   `bank_store(idx, pack)` needs no positioning.
+- **THE BANK IS 336/336 FULL AND 22.9% OF IT IS ONE ITEM AT ONE LEVEL.**
+  Measured 2026-10-22: **77x dexbelt@0**, and levelled items do not stack, so
+  that is 77 slots. 0 at @1, 4 at @2, 2 at @3. The 93-free reading from
+  2026-10-21 is kept as the instance above; it was gone inside a day.
+- **AND THE FIX WAS SOURCING, NOT MECHANICS - THE OPERATOR'S OWN NARROWING OF
+  THEIR OWN REQUEST.** They asked for withdraw-and-compound, then clarified that
+  the compound mechanics ALREADY EXIST: `autoCombineOneBaseDuplicateGroup()`
+  merges any three identical copies at level 0 or 1,
+  `ensureUpgradeMaterials()` BUYS the scrolls (so the empty bank's lack of
+  cscroll0 was never a blocker), and `CONFIG.craftInputCaps.dexbelt` 2 already
+  permits 0->1 and 1->2 and refuses 2->3. **`findBaseDuplicateGroup()` READS
+  `character.items` AND NOTHING ELSE**, which is the entire reason a bank full
+  of triples compounded nothing. Shipped as `retrieveCompoundTriples()` in
+  Merchant v114; not one mechanic changed.
+  **A REQUEST THAT SOUNDS LIKE A FEATURE CAN BE A WIRING GAP, AND THE OPERATOR
+  FOUND THAT BEFORE EITHER SESSION DID** by knowing their own script better
+  than its reader.
+- **RETRIEVING SOMETHING THE COMPOUNDER WILL THEN REFUSE IS WORSE THAN
+  RETRIEVING NOTHING** - three inventory slots spent and the bank exactly as
+  full - so the sweep calls `isCompoundableItem()` and
+  `compoundWouldOvershootCap()` rather than re-deriving their rules. That is
+  also what makes it cover the NEXT craft input for free: nothing in the sweep
+  names dexbelt, asserted. Complete triples only, level 1 before level 0 (both
+  free two slots, only the 1->2 produces the level windbelt consumes), and a
+  2-slot reserve because the compounder BUYS its scrolls and being one slot
+  short means a compound that cannot start after the retrieval already spent
+  the slots.
+  Worth arithmetically: 77 slots -> 11, freeing ~66, plus 8 more windbelt
+  inputs. **THE REAL YIELD LANDS UNDER THAT**, because a compound destroys all
+  three inputs on failure and `getCompoundChance` prices it.
+- **`isCompoundableItem()` READS BARE `G`, NOT `parent.G`, AND THAT COST FOUR
+  TEST FAILURES.** Most of `Party/Merchant.js` reaches through `parent.G`; that
+  one guards on `typeof G !== 'undefined' && G.items`. A world supplying only
+  `parent.G` fails the typeof, falls through to the function's
+  `GEAR_PROGRESSION` scan, and returns its "unknown item, assume compoundable"
+  DEFAULT - so a deliberately non-compoundable fixture read as compoundable and
+  the assertion caught a fixture bug. **A FALL-THROUGH DEFAULT TURNS A MISSING
+  STUB INTO A PLAUSIBLE ANSWER**, which is the Form B lie wearing a test
+  harness; the tell was that the precondition failed, not the outcome.
+- **AND ONE GUARD PAIR SHIPPED INERT, LABELLED AS SUCH.** Removing BOTH
+  `if (triples < 1) continue` and `if (take.length < 3) continue` from the plan
+  loop changes no behaviour, because a group of two yields `triples` 0 and the
+  slice takes nothing; `Math.min(g.triples * 3, ...)` is what enforces complete
+  triples, and removing THAT fails two assertions. Kept as cheap early-outs and
+  commented as inert rather than left looking load-bearing - the
+  comment-strip/newline-guard lesson applied before anyone had to re-measure
+  it.
+- **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
+  afterwards; his tab hops too fast to hold a reading. Recorded because nothing
+  in the repo addresses it and the next session should not read it as new.
 - **`Party/Ranger.js` HAS NO BANK PLUMBING AT ALL - this is new capability, not
   config.** Measured: zero `bank_store`, zero `bank_retrieve`, no `CONFIG.bank`,
   no bank map. Every "bank" string in that file is monster-hunt token language
@@ -3944,13 +3994,13 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-22, LATEST: 731 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-22, LATEST: 757 JS assertions across NINE suites, plus
   287 from the python bridge suite the runner shells out to and folds in, for
-  `all 1018 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 1044 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 994, 992, 977, 967, 944, 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  It read 1018, 994, 992, 977, 967, 944, 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
   668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
   EIGHTEEN figures in three days, which is the point rather than an embarrassment:
