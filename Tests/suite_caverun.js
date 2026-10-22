@@ -131,17 +131,24 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 	   and became wrong at three. */
 	t.ok('the exemption is DERIVED from the band geometry, not from its name',
 		/gapNow > L\.releaseAt \|\| noRatchetAlways\(L\)/.test(s));
-	/* POSITION, NOT ABSENCE - this file's own keep-the-instance convention, and
-	   the first draft of this assertion failed against correct code for exactly
-	   the reason the v113 windbelt one did. The superseded form is QUOTED in
-	   the v22 comment inside an explicit retraction ("It used to be"), and a
-	   string search cannot tell quoted-as-superseded from asserted-as-current.
-	   So: it survives once, after the marker, and never as live code. */
-	const marker = s.indexOf('It used to be');
-	const stale = [...s.matchAll(/L\.mode === 'travel'/g)].map((m) => m.index);
-	t.ok('the retraction marker is present', marker > 0);
-	t.eq('the superseded form survives exactly once', stale.length, 1);
-	t.ok('and only after the marker, i.e. quoted rather than live', stale[0] > marker);
+	/* NOT ABSENCE, AND NOT POSITION EITHER - the property is "never as LIVE
+	   CODE", and it took two wrong drafts to get there. Draft one asserted the
+	   superseded form was GONE and failed against correct code, because the
+	   v22 comment quotes it inside a retraction and this repo keeps the
+	   instance rather than erasing it. Draft two asserted it appeared exactly
+	   once, after the marker - and the v22 HEADER entry quotes it too, so a
+	   second legitimate mention broke it. Counting mentions of a thing prose is
+	   free to discuss was never the right question; stripping the prose is. */
+	const codeOnly = (txt) => txt.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+	t.eq('no LIVE code gates the kite rule on the mode label',
+		/L\.mode === 'travel'/.test(codeOnly(s)), false);
+	t.ok('and the prose is free to quote it - it does, more than once',
+		(s.match(/L\.mode === 'travel'/g) || []).length >= 1);
+	/* THE STRIPPER IS CODE, so it is tested on fixtures rather than trusted -
+	   the lesson suite_merchantsell's apostrophe parser paid for. */
+	t.eq('stripper: a block comment goes', codeOnly('a /* L.mode === x */ b').trim(), 'a  b');
+	t.eq('stripper: a line comment goes', codeOnly('a\n   // L.mode === x\nb'), 'a\n\nb');
+	t.ok('stripper: live code survives', codeOnly('if (L.mode === 1) x();').includes('L.mode'));
 	/* THE EQUIVALENCE, which is what makes the rewrite legitimate: the derived
 	   predicate reproduces BOTH shipped answers exactly, so no behaviour moved
 	   with the expression. */
