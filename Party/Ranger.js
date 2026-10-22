@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v110
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v111
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1718,10 +1718,25 @@ const BOSS_JOIN_SPOTS = {
 	crabxx: { map: 'main', x: -1000, y: 1700 },
 	franky: { map: 'level2w', x: -300, y: 150 },
 	icegolem: { map: 'winterland', x: 820, y: 425 },
+	/* THE SERVER'S OWN SPOT, not ours, which is what every row above is: these
+	   mirror node/server.js's join handler exactly. Its comment on this line
+	   reads "Below the graveyard's stairs, out of the Mummies' reach", and the
+	   coordinates check out - y -1030 is 100 units clear of the mummy rage
+	   rectangle's -1130 edge, and outside both booboo boxes.
+	   NOT (290,-990), which is the FARM park point the achievement queue uses
+	   for the same corridor. Both are correct places to stand and only one is
+	   where `join` actually puts you; this table's single invariant is that it
+	   says where the teleport lands. The farm point keeps its measured
+	   13-waypoint approach chain, which this one does not have - so a walk here
+	   pays the route search that chain exists to save. */
+	graveyard: { map: 'spookytown', x: 255, y: -1030 },
 };
 
-/* goobrawl is the ONE joinable event whose parent.S key is an EVENT name and
-   not a monster name.
+/* goobrawl and graveyard are the joinable events whose parent.S key is an
+   EVENT name and not a monster name. This read "goobrawl is the ONE" until
+   2026-10-22; `parent.S.graveyard` is the second, confirmed live, and the
+   count was load-bearing nowhere - but a reader checking whether the
+   event-name case was still a single special case would have been told yes.
    -> RangerComments.md#goobrawl-is-the-one-joinable-event-whose */
 /* THE OPERATOR'S PRIORITY, 2026-10-18. Equal numbers mean equal priority.
 
@@ -1778,10 +1793,24 @@ const BOSS_RANK = {
 	dragold: 1,
 	franky: 2,
 	crabxx: 3, wabbit: 3, goobrawl: 3,
-	horseman: 4,
+	horseman: 4, graveyard: 4,
 	mrgreen: 5,
 	snowman: 6, grinch: 6, mrpumpkin: 6,
 };
+/* graveyard TIES horseman at 4 on the operator's ruling, and a tie is normally
+   the thing this table avoids - it falls through to `need` and then
+   kills_to_rung, the mechanism the ranking exists to override. It is safe here
+   because THE TWO CAN NEVER BE LIVE TOGETHER: horseman runs at realm hour 0,
+   which is UTC 23/05/17 - all ODD - while graveyard runs at odd realm hours
+   minus odd offsets, which lands on EVEN UTC at :30. Minimum separation 20
+   minutes, so the tie is unreachable rather than merely unlikely.
+   CONTINGENT ON TIMEO BEING ALL-ODD ({EU:1, US:-5, ASIA:7}). A fourth region
+   with an even offset would make graveyard collide with horseman and expose
+   this tie, and nothing in the schedule code would have to change for that to
+   happen - so re-derive it if TIMEO ever grows.
+   WHY 4 AND NOT 6: twelve graveyards a day and ~144 before the season ends is
+   an abundance argument, and abundance is the wrong axis when every window
+   banks share toward a 6,000,000 cooperative boss. */
 /* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, which the insertion moved from 5
    to 6. It is 7 rather than 6 for that reason and not as a spare gap: at 6 the
    unranked set would TIE with snowman/grinch/mrpumpkin and sort by
@@ -1815,7 +1844,19 @@ function bossRank(name) {
    there, it is a DISPLAY field read as a spawn-set claim - the same shape as
    the `never_observable` finding. Nobody knows that it did.
    -> RangerComments.md#bossFightTypes */
-const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'] };
+/* graveyard's waves, added 2026-10-22. THIS ENTRY IS WHAT MAKES THE EVENT
+   ELIGIBLE AT ALL, which is not obvious from the name: bossCooperative() reads
+   bossMonsterTypes(), so without it `graveyard` falls to the [name] default,
+   finds no G.monsters.graveyard, answers NOT cooperative, and bossEligible()
+   refuses the boss. The attack list and the eligibility gate are the same
+   table.
+   GARGOYLE IS DELIBERATELY ABSENT. It is 6,000,000 hp and cooperative, so
+   three characters cannot take it - and its spawn is inside the mummy rage
+   rectangle, which nothing can stand on while containment is on. The waves'
+   points carry over to it either way (graveyard_fallen banks them and the wake
+   copies them), so excluding it costs no share. Whether a crowd should flip
+   this to include it is the operator's open call, not a default. */
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 
 /* The nearest of ANY of the event's monster types. Distance rather than
@@ -2698,9 +2739,36 @@ function taxiProbeClose(name, dwellMs) {
 	}
 }
 
+/* THE PUBLISHED POINT IS THE MONSTER'S POSITION, AND FOR ONE EVENT THAT IS
+   SOMEWHERE NOTHING CAN STAND. `parent.S.graveyard` carries x/y 255,-1545 from
+   the FIRST WAVE - they are `rules.gargoyle`, the Gargoyle's fixed spawn - and
+   that point is inside spookytown's mummy rage rectangle. safeSmartMove
+   refuses it, so taking it would make the whole approach INERT rather than
+   wrong: the party never arrives, "boss approach blocked" logs once in orange,
+   and nothing says why. That is the failure mode this repo keeps paying for,
+   caught here before it shipped rather than after.
+   DERIVED, NOT A GRAVEYARD SPECIAL CASE: any event whose published coordinates
+   land in a rage rectangle gets the join spot instead, and rageHit is the same
+   predicate safeMove itself consults, so the two cannot disagree.
+   GATED ON CONTAINMENT BEING ON, which is what makes this one guard serve both
+   cases. With `CONFIG.achievements.pull.enabled` off, safeMove falls through to
+   xmove and the rectangle stops being a wall - so the walk should go to the
+   real Gargoyle position, which is exactly what entering the box means. Turn
+   containment off and this guard turns itself off with it. */
 function bossWalkTarget(name) {
 	const d = (parent.S || {})[name];
-	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
+	if (d && d.map && typeof d.x === 'number') {
+		/* CALLED BARE, no try/catch, and that is deliberate. Both are top-level
+		   declarations in THIS file - the `ms_to_next_skill is OURS` case, not
+		   the maybe-missing-game-helper one - so a catch here could only
+		   swallow a real fault and return the Form B lie, which in this
+		   function means silently failing OPEN and walking into the rectangle.
+		   The first draft had exactly that and the suite caught it: rageCfg()
+		   threw in the harness, the catch answered "not contained", and the
+		   guard reported the boxed point as fine. */
+		if (!(rageCfg().enabled && rageHit(d.map, d.x, d.y))) return { map: d.map, x: d.x, y: d.y };
+		bossNote(name + ' publishes a position inside a rage box - using the join spot');
+	}
 	for (const e of EVENT_LOCATIONS) if (e.name === name) return { map: e.map, x: e.x, y: e.y };
 	const spot = BOSS_JOIN_SPOTS[name];
 	if (spot && typeof spot.x === 'number') return { map: spot.map, x: spot.x, y: spot.y };

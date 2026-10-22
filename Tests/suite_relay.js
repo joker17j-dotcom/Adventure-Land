@@ -164,7 +164,14 @@ module.exports = [
 	   else, so three copies of BOSS_FIGHT_TYPE could have drifted silently.
 	   They did not, but nothing would have said so. This is the check. */
 	const { extract } = require('./lift');
+	/* bossWalkTarget JOINED THE LIST 2026-10-22, when it stopped being three
+	   identical one-liners and started carrying the rage-box guard. It was
+	   never asserted before and did not need to be; the moment a guard lives
+	   in it, an un-checked copy in two of three files is the exact drift this
+	   block exists for - and it would have been invisible, because the
+	   followers would simply walk somewhere the leader refuses. */
 	for (const name of ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossNearestMonster',
+		'bossWalkTarget',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,

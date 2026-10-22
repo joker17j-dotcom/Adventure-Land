@@ -60,6 +60,18 @@ const GRAVES_Y = [-1550, -1312];
 const GARGOYLE = [255, -1545];
 const inBox = (b, x, y) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3];
 
+/* Names out of the committed EVENT_LOCATIONS array. Comments are stripped
+   first, per the apostrophe-parser lesson in suite_merchantsell.js - a `//`
+   line mentioning a name would otherwise count as an entry. */
+const EVENT_LOC_NAMES = (() => {
+  const src = require('fs').readFileSync(
+    require('path').join(require('./lift').ROOT, 'Party/Ranger.js'), 'utf8');
+  const m = src.match(/const EVENT_LOCATIONS = \[([\s\S]*?)\n\];/);
+  if (!m) return [];
+  const body = m[1].split('\n').map(l => l.replace(/\/\/.*$/, '')).join('\n');
+  return (body.match(/name:\s*'([^']+)'/g) || []).map(x => x.replace(/.*'([^']+)'/, '$1'));
+})();
+
 module.exports = [
 
 { name: 'the spookytown corridor park point is outside the graveyard rage box', fn(t) {
@@ -118,7 +130,14 @@ module.exports = [
   /* BOTH REJECTED SHAPES PINNED ABSENT, so neither returns by accident. */
   t.eq('no gyTick exists', /function gyTick/.test(rs), false);
   t.eq('no interval polls the graveyard', /setInterval[\s\S]{0,160}?gyTick/.test(rs), false);
-  t.eq('no CONFIG.graveyard block', /^\tgraveyard: \{/m.test(rs), false);
+  /* TIGHTENED 2026-10-22: this matched any one-tab `graveyard: {`, and
+     BOSS_JOIN_SPOTS now legitimately has one. The assertion is about a CONFIG
+     TOGGLE BLOCK, so it has to say so - a pattern that cannot tell the thing
+     it forbids from the thing that replaced it is worse than no pattern. */
+  t.eq('no CONFIG.graveyard block',
+    /CONFIG\.graveyard|^\tgraveyard: \{\s*$|graveyard: \{\s*\n\s*enabled:/m.test(rs), false);
+  t.ok('precondition: the BOSS_JOIN_SPOTS row that broke the old pattern IS there',
+    /^\tgraveyard: \{ map: 'spookytown'/m.test(rs));
   t.eq('no TOGGLES entry', /graveyardFarm:/.test(rs), false);
   t.eq('no gyFarm command', /function gyFarm/.test(rs), false);
   t.eq('no gyOff command', /function gyOff/.test(rs), false);
@@ -137,6 +156,145 @@ module.exports = [
     /if \(!rageHit\(map, e\.x, e\.y, 0\)\) continue;/.test(rs));
   t.ok('and ragePullTypes is home plus rageAlso, which is what the snippet sets',
     /function ragePullTypes\(\)[\s\S]{0,200}?rageAlso/.test(rs));
+} },
+
+{ name: 'graveyard is handled as a boss event, not through the farm layer', fn(t) {
+  /* FOUR ENTRIES AND A GUARD. The operator's ruling is that graveyard is
+     handled automatically "similar to goo brawl and at the same rank as
+     horseman". Driving it through the BOSS-EVENT layer rather than the farm
+     layer is what makes that free: shouldHandleEvents()/handleEvents() already
+     own movement, so there is no queue exemption to carve - which is what
+     v108 had to do and what read, at the time, as evidence the automation was
+     wrong. It was evidence the LAYER was wrong. */
+  const G = JSON.parse(JSON.stringify(G_BASE));
+  G.maps.spookytown = {
+    doors: [[72, -80, 32, 40, 'halloween', 2, 1]],
+    monsters: [
+      { type: 'mummy', rage: MUMMY_RAGE, boundary: MUMMY_BOUNDARY },
+      { type: 'booboo', rage: [286, -842, 544, -562] },
+      { type: 'booboo', rage: [-820, -940, -570, -630] },
+    ],
+  };
+  G.monsters.zombie = { cooperative: true, hp: 9000 };
+  G.monsters.ghoul = { cooperative: true, hp: 32000 };
+  G.monsters.gargoyle = { cooperative: true, hp: 6000000 };
+
+  const notes = [];
+  const gw = (over) => {
+    over = over || {};
+    const w = world({
+      CONFIG: { achievements: { pull: { enabled: over.pull !== false } } },
+      parent: { G: G, S: over.S || {} },
+      bossNote: (m) => notes.push(m),
+    });
+    /* EVENT_LOCATIONS is `const X = [` - the ARRAY form of the non-liftable
+       initialiser this repo already records for `new Set([...])`. lift()
+       brace-matches from the first `{`, which here is the first ELEMENT, so
+       asking for it swallows the rest of the file and throws "Unexpected end
+       of input". Supplied here and pinned against the source below, per the
+       remedy that trap already has. */
+    lift(w, RANGER, ['BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_FIGHT_TYPES',
+      'bossMonsterTypes', 'bossCooperative', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
+      'rageCfg', 'rageBoxes', 'rageHit', 'bossWalkTarget']);
+    w.EVENT_LOCATIONS = EVENT_LOC_NAMES.map(n => ({ name: n, map: 'x', x: 0, y: 0 }));
+    /* `let ragePullShared = null` - same non-liftable shape, read by rageCfg.
+       Left undefined it throws a ReferenceError from inside rageCfg, which is
+       how the first draft of the guard was caught failing open. */
+    w.ragePullShared = null;
+    return w;
+  };
+  let w = gw();
+
+  /* THE PIN: bossWalkTarget consults EVENT_LOCATIONS BEFORE BOSS_JOIN_SPOTS,
+     so a graveyard row there would take precedence over the join spot and the
+     guard below would be testing nothing. Read from the committed file rather
+     than assumed. */
+  t.eq('precondition: EVENT_LOCATIONS carries no graveyard row',
+    EVENT_LOC_NAMES.indexOf('graveyard'), -1);
+  t.ok('and it parsed to real rows (' + EVENT_LOC_NAMES.length + ')', EVENT_LOC_NAMES.length >= 3);
+  t.eq('precondition: rageCfg is callable, so a false here means NOT contained '
+    + 'rather than a throw the guard swallowed', typeof w.rageCfg(), 'object');
+
+  /* --- rank ------------------------------------------------------------- */
+  t.eq('graveyard ranks 4', w.bossRank('graveyard'), 4);
+  t.eq('which TIES horseman', w.bossRank('graveyard'), w.bossRank('horseman'));
+  /* A tie is normally what this table avoids, so the thing to pin is not the
+     number but WHY the tie can never be exercised: horseman is realm hour 0,
+     graveyard odd realm hours, and every regional offset is odd. */
+  const TIMEO = { EU: 1, US: -5, ASIA: 7 };
+  const utc = (realm, off) => ((realm - off) % 24 + 24) % 24;
+  const horsemanUTC = Object.values(TIMEO).map(o => utc(0, o)).sort((a, b) => a - b);
+  const graveUTC = [];
+  for (const o of Object.values(TIMEO)) for (let h = 1; h < 24; h += 2) {
+    const u = utc(h, o); if (graveUTC.indexOf(u) < 0) graveUTC.push(u);
+  }
+  t.eq('every regional offset is odd', Object.values(TIMEO).every(o => Math.abs(o % 2) === 1), true);
+  t.eq('so horseman lands on ODD UTC hours only', horsemanUTC.every(h => h % 2 === 1), true);
+  t.eq('and graveyard on EVEN UTC hours only', graveUTC.sort((a, b) => a - b).every(h => h % 2 === 0), true);
+  t.eq('the two hour sets are disjoint',
+    horsemanUTC.filter(h => graveUTC.indexOf(h) >= 0).length, 0);
+  /* INVERTED: an even-offset region breaks it, which is the contingency the
+     comment names. Nothing in the schedule code would have to change. */
+  t.eq('a region at offset 2 WOULD collide', utc(0, 2) % 2, 0);
+
+  /* --- eligibility, which is the entry nobody would guess ---------------- */
+  t.eq('precondition: graveyard is not a monster in G',
+    G.monsters.graveyard === undefined, true);
+  t.eq('bossMonsterTypes resolves it to the waves',
+    w.bossMonsterTypes('graveyard').join(','), 'zombie,ghoul');
+  t.eq('so bossCooperative says yes, which is what bossEligible gates on',
+    w.bossCooperative('graveyard'), true);
+  /* INVERTED, AND THIS IS THE LOAD-BEARING ONE: drop the BOSS_FIGHT_TYPES row
+     and the event is refused as "not cooperative" - the attack list and the
+     eligibility gate are the same table, which the name does not say. */
+  const noRow = gw();
+  delete noRow.BOSS_FIGHT_TYPES.graveyard;
+  t.eq('without the row it falls to the [name] default',
+    noRow.bossMonsterTypes('graveyard').join(','), 'graveyard');
+  t.eq('and the event would be refused as not cooperative',
+    noRow.bossCooperative('graveyard'), false);
+  t.eq('the gargoyle is deliberately NOT in the fight list',
+    w.bossMonsterTypes('graveyard').indexOf('gargoyle'), -1);
+
+  /* --- the join spot mirrors the server -------------------------------- */
+  const spot = w.BOSS_JOIN_SPOTS.graveyard;
+  t.ok('graveyard has a join spot', !!spot);
+  t.eq('on spookytown', spot && spot.map, 'spookytown');
+  t.eq('at the server handler’s own coordinates', spot && spot.x + ',' + spot.y, '255,-1030');
+  t.eq('which is OUTSIDE the mummy rage rectangle',
+    inBox(MUMMY_RAGE, spot.x, spot.y), false);
+  t.eq('and outside both booboo boxes',
+    inBox([286, -842, 544, -562], spot.x, spot.y)
+    || inBox([-820, -940, -570, -630], spot.x, spot.y), false);
+  t.eq('spookytown has doors, so a hop-sick character walks rather than waiting',
+    w.bossTaxiWalkable('graveyard'), true);
+
+  /* --- THE DEFECT THE FOUR ENTRIES ALONE WOULD HAVE SHIPPED -------------- */
+  /* parent.S.graveyard carries the GARGOYLE's fixed spawn from the first wave,
+     and that point is inside the rectangle. bossWalkTarget reads parent.S
+     FIRST, so the hop-sick walk would have aimed at a coordinate safeSmartMove
+     refuses - inert, not wrong, with one orange line and no explanation. */
+  const LIVE = { graveyard: { live: true, map: 'spookytown', x: 255, y: -1545, wave: 3, waves: 3 } };
+  t.eq('precondition: the published point IS inside the rage rectangle',
+    inBox(MUMMY_RAGE, LIVE.graveyard.x, LIVE.graveyard.y), true);
+  w = gw({ S: LIVE });
+  const where = w.bossWalkTarget('graveyard') || {};
+  t.eq('so the walk target falls through to the join spot', where.x + ',' + where.y, '255,-1030');
+  t.ok('and it says why', notes.some(n => /inside a rage box/.test(n)));
+
+  /* The guard is DERIVED, not a graveyard special case: an ordinary boss whose
+     published point is clear keeps it. */
+  w = gw({ S: { franky: { live: true, map: 'spookytown', x: 255, y: -1030 } } });
+  const ok = w.bossWalkTarget('franky') || {};
+  t.eq('a published point outside the box is used as-is', ok.x + ',' + ok.y, '255,-1030');
+
+  /* AND IT TURNS ITSELF OFF WITH CONTAINMENT, which is what makes one guard
+     serve the entry case too: with pull disabled safeMove stops refusing the
+     rectangle, so the walk should aim at the real Gargoyle position. */
+  w = gw({ S: LIVE, pull: false });
+  t.eq('precondition: containment is off', w.rageCfg().enabled, false);
+  const inside = w.bossWalkTarget('graveyard') || {};
+  t.eq('the walk then aims at the gargoyle itself', inside.x + ',' + inside.y, '255,-1545');
 } },
 
 { name: 'taxi joins: which refusals actually put the fight out of reach', fn(t) {

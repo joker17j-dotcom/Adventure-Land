@@ -1152,6 +1152,106 @@ this ranking until a Ranger build is actually running on him.
   on any "will it die inside our budget" gate: the error is toward declining a
   fight that would in fact have finished, which is the expensive direction and
   the one a skip row records as `declined_on: "dps"`.
+- **GRAVEYARD IS AUTOMATIC AS OF Ranger v111 / Priest v59 / Mage v82, THROUGH
+  THE BOSS-EVENT LAYER - AND THE TWO INSTRUCTIONS THAT LOOKED CONTRADICTORY
+  NEVER WERE.** "I did not want the ranger script updated. I wanted an override
+  code I could paste and execute" was about THE TOOL FOR ONE NIGHT'S
+  OBSERVATION, a throwaway snippet. The standing instruction - "I do want it
+  automatically handled similar to goo brawl and at the same rank as horseman" -
+  was never cancelled. So v110's revert was right for what it reverted (a
+  COMMAND in the file is a file change wearing a command's clothes) and the
+  feature was still owed. **THE BROWSER SESSION CAUGHT THEIR OWN WIDENING
+  BEFORE SENDING A BLOCK TELLING THIS SESSION TO UNDO THE REVERT**, so it cost
+  a delay and not a second wrong shape. The tell they name is worth keeping:
+  **two instructions that cannot both be true usually means a reader widened
+  one** - which is the `never_observable` failure in another costume, and the
+  THIRD time this week a narrow statement was read as a sweeping one.
+- **THE LAYER WAS THE WHOLE DESIGN, AND THE EXEMPTION WAS THE TELL POINTING AT
+  IT.** v108 had to edit `achvTick()` to exempt its takeover from the queue's
+  hand-move check. This file already recorded that as "the automation was
+  carrying its own exception"; the sharper reading is that the exception was the
+  price of the FARM layer, not of automation. Boss events own movement through
+  `shouldHandleEvents()`/`handleEvents()`, so the same feature on that layer
+  needs no exemption at all - four table rows and a guard. **WHEN A NEW
+  SUBSYSTEM NEEDS AN EXCEPTION CARVED INTO AN OLD ONE, THE QUESTION IS WHICH
+  LAYER IT BELONGS ON** - the earlier phrasing asked only whether the exception
+  was the price of the shape, and stopped one step short of the answer.
+- **THE FOUR ENTRIES ALONE WOULD HAVE SHIPPED AN INERT APPROACH, AND THE
+  PUBLISHED COORDINATES ARE WHY.** `bossWalkTarget` reads `parent.S[name]`
+  FIRST, and `parent.S.graveyard` carries x/y **255,-1545 from the first wave** -
+  they are `rules.gargoyle`, the Gargoyle's fixed spawn, present long before the
+  Gargoyle is. That point is inside the mummy rage rectangle, `safeSmartMove`
+  refuses it, and the hop-sick walk would simply never arrive: one orange line,
+  no fault logged. The guard is DERIVED - any event whose published point lands
+  in a rage rectangle falls through to the join spot, via `rageHit`, the same
+  predicate `safeMove` consults - and it is GATED ON `rageCfg().enabled`, so
+  turning containment off to enter the box also turns the guard off and the walk
+  aims at the real Gargoyle. One guard, both cases.
+  **A PUBLISHED POSITION IS THE MONSTER'S, NOT A PLACE TO STAND**, and for every
+  other boss those coincide. That is the reusable half.
+- **THE JOIN SPOT IS THE SERVER'S OWN (255,-1030), NOT THE FARM PARK POINT.**
+  `node/server.js`'s join handler reads `transport_player_to(player,
+  "spookytown", [255, -1030, 0, 30])` with the comment "Below the graveyard's
+  stairs, out of the Mummies' reach" - and it checks out, clearing the rage
+  rectangle's -1130 edge by 100 units and both booboo boxes. The proposal in
+  hand was (290,-990), the achievement queue's park point in the same corridor.
+  Both are correct places to STAND; only one is where `join` actually puts you,
+  which is `BOSS_JOIN_SPOTS`' single invariant - every other row mirrors that
+  handler exactly. The farm point keeps its measured 13-waypoint approach chain,
+  which (255,-1030) does not have, so a walk there pays the route search.
+- **`BOSS_FIGHT_TYPES` IS THE ELIGIBILITY GATE AS WELL AS THE ATTACK LIST, AND
+  ITS NAME SAYS ONLY THE SECOND.** `bossCooperative()` reads
+  `bossMonsterTypes()`, so without a `graveyard` row the name falls to the
+  `[name]` default, finds no `G.monsters.graveyard`, answers NOT cooperative,
+  and `bossEligible()` refuses the event outright. Nothing about "fight types"
+  suggests that, and the row looks like a nicety until you delete it. Pinned by
+  the inverted assertion.
+- **`bossRank.graveyard` IS 4, TYING HORSEMAN, AND THE TIE IS UNREACHABLE RATHER
+  THAN MERELY UNLIKELY.** horseman is realm hour 0 - UTC 23/05/17, all ODD -
+  while graveyard is odd realm hours minus odd offsets, landing on EVEN UTC at
+  :30; minimum separation 20 minutes. So the fall-through to `need` and
+  `kills_to_rung` that the horseman INSERTION was shaped to avoid can never be
+  reached here, which is what makes a tie acceptable this time. **CONTINGENT ON
+  `TIMEO` BEING ALL-ODD** - the same parity the graveyard-simultaneity bullet
+  rests on - so it is asserted in the suite rather than described, and a fourth
+  region at an even offset exposes it with no code change.
+  Rank 4 over the 6 first argued: twelve a day and ~144 before season end is an
+  ABUNDANCE argument, and abundance is the wrong axis when every window banks
+  share toward a 6,000,000 cooperative boss.
+- **MY FIRST DRAFT OF THE GUARD FAILED OPEN, AND THE SUITE CAUGHT IT RATHER THAN
+  A READER.** It wrapped `rageCfg()` and `rageHit()` in try/catch; `rageCfg`
+  threw in the harness over a missing `ragePullShared`, the catch answered "not
+  contained", and the boxed point was reported as fine - the Form B lie, in the
+  one function where it means walking into the rectangle. Both are top-level
+  declarations in the SAME file, so they are called bare now. **A DEFENSIVE
+  CATCH AROUND YOUR OWN FILE'S FUNCTIONS CAN ONLY CONVERT A FAULT INTO A WRONG
+  ANSWER**, which is the `ms_to_next_skill is OURS` distinction arriving from a
+  new direction.
+- **AND THE DIVERGENCE CHECK EARNED ITS KEEP TWICE IN ONE COMMIT.** Changing
+  Ranger alone failed `BOSS_JOIN_SPOTS` and `BOSS_FIGHT_TYPES` identity
+  immediately. `bossWalkTarget` was NOT on the list and was three identical
+  one-liners until this commit - the moment it carried a guard, an unchecked
+  copy in two of three files became exactly the invisible drift the block exists
+  for, and the symptom would have been followers walking somewhere the leader
+  refuses. It is on the list now. **A FUNCTION JOINS THE DIVERGENCE LIST WHEN IT
+  STOPS BEING TRIVIAL, NOT WHEN IT IS WRITTEN**, and nothing prompts that review
+  except noticing it.
+- **ONE STALE TEST PATTERN, FIXED RATHER THAN DELETED.** `no CONFIG.graveyard
+  block` matched any one-tab `graveyard: {`, and `BOSS_JOIN_SPOTS` now
+  legitimately has one, so a correct change turned a guard assertion red. The
+  repair narrows it to the CONFIG toggle shape and adds a precondition asserting
+  the new row IS present - **a pattern that cannot tell the thing it forbids
+  from the thing that replaced it is worse than no pattern.**
+- **`const X = [` IS THE ARRAY FORM OF THE NON-LIFTABLE INITIALISER, AND IT
+  THROWS INSTEAD OF SILENTLY SWALLOWING.** `lift()` brace-matches from the first
+  `{`, which for `const EVENT_LOCATIONS = [` is the first ELEMENT, so the match
+  runs to end-of-file and reports "Unexpected end of input". Same family as
+  `const X = new Set([...])`, and louder - the Set case swallowed a neighbouring
+  declaration and failed a different test. Supplied in the world and PINNED from
+  the source text, because `bossWalkTarget` consults `EVENT_LOCATIONS` BEFORE
+  `BOSS_JOIN_SPOTS`: a graveyard row there would take precedence and the guard
+  assertion would be testing nothing. `let ragePullShared = null` is the same
+  shape and had to be supplied too.
 - **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
   `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
   pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,
@@ -3705,16 +3805,16 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-22, LATEST: 591 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-22, LATEST: 621 JS assertions across NINE suites, plus
   287 from the python bridge suite the runner shells out to and folds in, for
-  `all 878 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 908 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  It read 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
   668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
-  SIXTEEN figures in three days, which is the point rather than an embarrassment:
+  SEVENTEEN figures in three days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.

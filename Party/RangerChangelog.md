@@ -21,6 +21,83 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v111
+
+**GRAVEYARD RISING IS HANDLED AS A BOSS EVENT.** Operator's ruling: handled
+automatically "similar to goo brawl and at the same rank as horseman". Driving
+it through the BOSS-EVENT layer rather than the farm layer is what makes that
+free - `shouldHandleEvents()`/`handleEvents()` already own movement, so there
+is no queue exemption to carve. v108 had to carve one and that read, at the
+time, as evidence the automation was wrong; it was evidence the LAYER was
+wrong.
+
+Two table rows, identical in all three scripts because `suite_relay.js`
+asserts they are: `BOSS_JOIN_SPOTS.graveyard` at spookytown (255,-1030) and
+`BOSS_FIGHT_TYPES.graveyard = ['zombie','ghoul']`.
+
+**(255,-1030) IS THE SERVER'S OWN JOIN SPOT, NOT THE FARM PARK POINT.** Every
+row in that table mirrors `node/server.js`'s join handler exactly, and the
+handler's own comment on this line reads "Below the graveyard's stairs, out of
+the Mummies' reach". It checks out - y -1030 clears the mummy rage rectangle's
+-1130 edge by 100 units, and both booboo boxes. The proposal in hand was
+(290,-990), the achievement queue's park point in the same corridor; both are
+correct places to STAND and only one is where `join` actually puts you, which
+is this table's single invariant. The farm point keeps its measured
+13-waypoint approach chain, which (255,-1030) does not have.
+
+**THE FIGHT-TYPES ROW IS WHAT MAKES THE EVENT ELIGIBLE AT ALL, which the name
+does not say.** `bossCooperative()` reads `bossMonsterTypes()`, so without the
+row `graveyard` falls to the `[name]` default, finds no `G.monsters.graveyard`,
+answers NOT cooperative, and `bossEligible()` refuses it. The attack list and
+the eligibility gate are one table. Pinned by the inverted assertion rather
+than by a comment.
+
+**AND THE FOUR ENTRIES ALONE WOULD HAVE SHIPPED AN INERT APPROACH.**
+`bossWalkTarget` reads `parent.S[name]` FIRST, and `parent.S.graveyard` carries
+x/y 255,-1545 from the first wave - `rules.gargoyle`, the Gargoyle's fixed
+spawn - which is INSIDE the mummy rage rectangle. `safeSmartMove` refuses it,
+so the hop-sick walk would never arrive, one orange line would log, and nothing
+would say why. The guard is DERIVED rather than a graveyard special case: any
+event whose published point lands in a rage rectangle gets the join spot
+instead, using `rageHit`, the same predicate `safeMove` itself consults.
+
+**IT IS GATED ON CONTAINMENT BEING ON, which is what makes one guard serve the
+entry case too.** With `CONFIG.achievements.pull.enabled` off, `safeMove` falls
+through to `xmove` and the rectangle stops being a wall - so the walk should
+aim at the real Gargoyle position, which is exactly what entering the box
+means. Turn containment off and the guard turns itself off with it.
+
+**THE FIRST DRAFT OF THE GUARD FAILED OPEN AND THE SUITE CAUGHT IT.** It wrapped
+`rageCfg()` and `rageHit()` in try/catch; `rageCfg` threw in the harness (for a
+missing `ragePullShared`), the catch answered "not contained", and the boxed
+point was reported as fine. Both are top-level declarations in the same file -
+the `ms_to_next_skill is OURS` case - so they are called bare now, and a catch
+there could only have swallowed a real fault to return the Form B lie.
+
+**`bossRank.graveyard` IS 4, TYING HORSEMAN, AND THE TIE IS UNREACHABLE.** A tie
+is normally what this table avoids, because it falls through to `need` and then
+`kills_to_rung` - the mechanism the ranking exists to override. It is safe here
+because the two can never be live together: horseman runs at realm hour 0, which
+is UTC 23/05/17, all ODD, while graveyard runs at odd realm hours minus odd
+offsets and lands on EVEN UTC at :30. Minimum separation 20 minutes. CONTINGENT
+ON `TIMEO` BEING ALL-ODD - a fourth region at an even offset would expose the
+tie with nothing in the schedule code changing, so the parity is asserted rather
+than described.
+Rank 4 and not 6: twelve a day and ~144 before the season ends is an abundance
+argument, and abundance is the wrong axis when every window banks share toward a
+6,000,000 cooperative boss.
+
+**THE GARGOYLE IS DELIBERATELY ABSENT FROM THE FIGHT LIST.** 6,000,000 hp and
+cooperative, so three characters cannot take it, and its spawn is inside the
+rectangle. The waves' points carry over to it regardless - `graveyard_fallen()`
+banks them and the wake copies them - so excluding it costs no share. Whether a
+crowd should flip this is the operator's open call, not a default.
+
+**ONE COMMENT CORRECTED:** "goobrawl is the ONE joinable event whose parent.S key
+is an EVENT name" is now two. The count was load-bearing nowhere, but a reader
+checking whether the event-name case was still a single special case would have
+been told yes.
+
 ## v110
 
 **THE GRAVEYARD WORK IS REVERTED OUT OF THIS FILE ENTIRELY. v108 AND v109

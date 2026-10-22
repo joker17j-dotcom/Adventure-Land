@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v81
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v82
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1897,6 +1897,18 @@ const BOSS_JOIN_SPOTS = {
 	crabxx: { map: 'main', x: -1000, y: 1700 },
 	franky: { map: 'level2w', x: -300, y: 150 },
 	icegolem: { map: 'winterland', x: 820, y: 425 },
+	/* THE SERVER'S OWN SPOT, not ours, which is what every row above is: these
+	   mirror node/server.js's join handler exactly. Its comment on this line
+	   reads "Below the graveyard's stairs, out of the Mummies' reach", and the
+	   coordinates check out - y -1030 is 100 units clear of the mummy rage
+	   rectangle's -1130 edge, and outside both booboo boxes.
+	   NOT (290,-990), which is the FARM park point the achievement queue uses
+	   for the same corridor. Both are correct places to stand and only one is
+	   where `join` actually puts you; this table's single invariant is that it
+	   says where the teleport lands. The farm point keeps its measured
+	   13-waypoint approach chain, which this one does not have - so a walk here
+	   pays the route search that chain exists to save. */
+	graveyard: { map: 'spookytown', x: 255, y: -1030 },
 };
 
 /* goobrawl is the ONE joinable event whose parent.S key is an EVENT name and
@@ -1925,7 +1937,19 @@ const BOSS_JOIN_SPOTS = {
    there, it is a DISPLAY field read as a spawn-set claim - the same shape as
    the `never_observable` finding. Nobody knows that it did.
    -> RangerComments.md#bossFightTypes */
-const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'] };
+/* graveyard's waves, added 2026-10-22. THIS ENTRY IS WHAT MAKES THE EVENT
+   ELIGIBLE AT ALL, which is not obvious from the name: bossCooperative() reads
+   bossMonsterTypes(), so without it `graveyard` falls to the [name] default,
+   finds no G.monsters.graveyard, answers NOT cooperative, and bossEligible()
+   refuses the boss. The attack list and the eligibility gate are the same
+   table.
+   GARGOYLE IS DELIBERATELY ABSENT. It is 6,000,000 hp and cooperative, so
+   three characters cannot take it - and its spawn is inside the mummy rage
+   rectangle, which nothing can stand on while containment is on. The waves'
+   points carry over to it either way (graveyard_fallen banks them and the wake
+   copies them), so excluding it costs no share. Whether a crowd should flip
+   this to include it is the operator's open call, not a default. */
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 
 /* The nearest of ANY of the event's monster types. Distance rather than
@@ -2694,7 +2718,18 @@ function bossTaxiWalkable(name) {
 
 function bossWalkTarget(name) {
 	const d = (parent.S || {})[name];
-	if (d && d.map && typeof d.x === 'number') return { map: d.map, x: d.x, y: d.y };
+	if (d && d.map && typeof d.x === 'number') {
+		/* CALLED BARE, no try/catch, and that is deliberate. Both are top-level
+		   declarations in THIS file - the `ms_to_next_skill is OURS` case, not
+		   the maybe-missing-game-helper one - so a catch here could only
+		   swallow a real fault and return the Form B lie, which in this
+		   function means silently failing OPEN and walking into the rectangle.
+		   The first draft had exactly that and the suite caught it: rageCfg()
+		   threw in the harness, the catch answered "not contained", and the
+		   guard reported the boxed point as fine. */
+		if (!(rageCfg().enabled && rageHit(d.map, d.x, d.y))) return { map: d.map, x: d.x, y: d.y };
+		bossNote(name + ' publishes a position inside a rage box - using the join spot');
+	}
 	for (const e of EVENT_LOCATIONS) if (e.name === name) return { map: e.map, x: e.x, y: e.y };
 	const spot = BOSS_JOIN_SPOTS[name];
 	if (spot && typeof spot.x === 'number') return { map: spot.map, x: spot.x, y: spot.y };
