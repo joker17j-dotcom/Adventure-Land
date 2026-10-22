@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v88
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v89
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2908,6 +2908,35 @@ function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch 
    be the loudest thing in the log. */
 function bossNote(m) { if (bossState.lastNote !== m) { bossState.lastNote = m; bossLog(m, '#8b98ab'); } }
 function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName; }
+/* THE TRUST WINDOW NEEDS A HEARTBEAT, OR IT IS A TIMER THAT ALWAYS EXPIRES.
+   `bossBroadcast(pick.name)` fires only where the trip STARTS or CHANGES, and
+   a follower trusts `fromLeader` for `leaderTrustMs` (20s). A graveyard window
+   is 600s and a horseman window 2400s, so for all but the first twenty seconds
+   of every trip the followers were falling through to their OWN pick - and
+   that path is NOT the leader's: the ranger ranks first and the followers
+   order by lowest hp ratio alone, `bossRank` being declared in Ranger.js and
+   nowhere else. Same `S`, two rules, so the three characters can pick three
+   different bosses and walk to three different maps, which is what was
+   observed on 2026-10-22 during a graveyard trip - Dexon on spookytown,
+   FatherToken on main, MageofOz on halloween.
+   `rageEntryBroadcast` already had this right and is the model: it re-sends
+   every tick, so its own `trustMs` expires only when the leader really has
+   stopped. The expiry is CORRECT and stays - a leader that stops ticking must
+   release the followers. What was missing is the leader saying anything while
+   it is still deciding.
+   Throttled well inside the window so two lost messages do not drop a
+   follower, and no-op on a follower, which is what keeps this byte-identical
+   in all three files. */
+const BOSS_RECAST_MS = 8000;
+function bossRecast() {
+	if (!bossIsLeader()) return;
+	const t = bossState.trip;
+	if (!t || !t.name) return;
+	const now = Date.now();
+	if (now - (bossState.lastCast || 0) < BOSS_RECAST_MS) return;
+	bossState.lastCast = now;
+	bossBroadcast(t.name);
+}
 
 function bossCooperative(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
@@ -3231,7 +3260,9 @@ async function bossTick() {
 		bossLog('going to ' + pick.name + ' (' + pick.src + ', '
 			+ (BOSS_JOIN_SPOTS[pick.name] ? 'joinable' : 'on foot') + ')');
 		if (bossIsLeader()) bossBroadcast(pick.name);
+		bossState.lastCast = Date.now();
 	}
+	bossRecast();
 	const t = bossState.trip;
 	/* Evaluated every tick while a trip is live, which is what lets a crowd
 	   thinning put us back outside without waiting for a death. It reads the

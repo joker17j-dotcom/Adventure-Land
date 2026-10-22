@@ -21,6 +21,51 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v118
+
+**A TRUST WINDOW WITH NO HEARTBEAT IS A TIMER THAT ALWAYS EXPIRES, AND IT HAD
+THE PARTY ON THREE MAPS DURING ONE GRAVEYARD TRIP.** Observed live 2026-10-22
+by the browser session, reported as an observation rather than a claim: Dexon
+on spookytown, FatherToken on main, MageofOz on halloween, all on one trip.
+
+`bossBroadcast(pick.name)` fires only where the trip STARTS or CHANGES, and a
+follower trusts `bossState.fromLeader` for `leaderTrustMs`, 20 seconds. A
+graveyard window is 600s and a horseman window 2400s, so for all but the first
+twenty seconds of every trip the followers were falling through to their OWN
+pick - **and that path is a DIFFERENT RULE, not a copy of the leader's**: the
+ranger orders by `bossRank` first with an incumbent tie-break, while the
+followers order by lowest hp ratio alone, `bossRank` being declared in
+`Party/Ranger.js` and nowhere else. Same `parent.S`, two rules, three
+characters: three bosses and three maps, with nothing logging a fault.
+
+`bossRecast()` re-sends the live trip on a `BOSS_RECAST_MS` beat of 8s, which
+is two beats inside the window so a lost message does not drop a follower. It
+no-ops on a follower through the existing `bossIsLeader()` guard, which is what
+lets the three files carry the same bytes; it is on the relay divergence list.
+
+**THE EXPIRY IS CORRECT AND IS UNCHANGED.** A leader that has genuinely stopped
+ticking must release the followers to decide for themselves - that is the whole
+reason `leaderTrustMs` exists, and it is pinned here through `bossPick`'s `src`
+going from `leader` to `own` across the boundary. What was missing was the
+leader saying anything while it was still deciding.
+
+**`rageEntryBroadcast` ALREADY HAD THIS RIGHT, which is the part worth
+carrying.** It re-sends every tick, so its `trustMs` expires only when the
+leader really has gone quiet. The same mechanism was built complete in one
+subsystem and half-built in the other, three weeks apart, and nothing connected
+them - a trust window and its heartbeat are ONE mechanism, and shipping the
+window alone leaves a feature that works for twenty seconds.
+
+**ONE MUTATION SCORED ZERO AND ONE ASSERTION WAS WRONG AGAINST CORRECT CODE.**
+Deleting the `bossRecast();` CALL from `bossTick` moved nothing: every
+assertion was about the helper, and a perfect helper nobody invokes leaves the
+defect intact - "assert on the far side of a handoff", with the helper as the
+near side. `bossTick` is too large and too stateful to lift, so the repair is
+positional over the source text. The first draft of that check then failed in
+all three files, because `const t = bossState.trip` also appears in `bossEnd`
+ABOVE `bossTick` and a bare `indexOf` compared against the wrong occurrence;
+it anchors relative to the call now. Six mutations, all caught.
+
 ## v117
 
 **THE ATTACK GATE COULD NOT SEE AN EVENT'S OWN MONSTERS, which is one layer

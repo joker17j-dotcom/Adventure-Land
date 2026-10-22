@@ -204,6 +204,13 @@ module.exports = [
 		   rageEntry block already records, reached through targeting instead
 		   of through movement. */
 		'bossFightTypes',
+		/* bossRecast, added with the leader heartbeat. It is the one thing
+		   keeping three characters on ONE boss decision, so a copy that
+		   drifts puts a character back on its own rule with nothing logging
+		   it - the three-map split this was written for. It is a no-op on a
+		   follower by construction (`bossIsLeader` guard), which is what lets
+		   all three carry the same bytes. */
+		'bossRecast',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,

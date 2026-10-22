@@ -1588,12 +1588,28 @@ this ranking until a Ranger build is actually running on him.
   at 20:47:03Z, FIFTY-FIVE SECONDS PAST IT. Both endings predict exactly what
   was seen. **No path in the source deletes that key while the gargoyle lives
   on that shard**, so there is no publisher defect to design around.
-  **THE 48.4% IS THE WEAKER TERM AND IT WAS NOT CHECKED.** The character's `S`
-  is ONE shard; the bridge dashboard covers every shard. Two terms of different
-  provenance, silently combined - which this file already names as the fault
-  being PROVENANCE rather than population. The discriminating read is the
-  dashboard row's own `server` field against the character's shard, and it was
-  available at the time.
+  **AND MY OWN EXPLANATION OF WHY WAS WRONG, CORRECTED BY THE BROWSER SESSION
+  THE SAME DAY - IT WAS A TIME ERROR, NOT A PROVENANCE ONE.** This bullet said
+  the 48.4% came from a dashboard covering every shard against a character's
+  `S` covering one, and called that two terms of different provenance. The row
+  carried `US II` IN ITS OWN COLUMN, the same shard as Dexon, so the shards
+  matched and that explanation is retracted.
+  **NOR WAS IT THE TIMEOUT.** `gargoyle_end` at 20:46:08Z is right, but removal
+  ALSO needs `ssince(gargoyle.last.attacked) > 20`, and at 20:46 the boss was
+  taking 31,738 dps - the second clause was false. What fired was `defeated`:
+  the operator reported the fight over at 20:47 and the probe was at 20:47:03.
+  **The boss died inside the gap between the two readings.**
+  So the fault is TREATING TWO READINGS A MINUTE APART AS SIMULTANEOUS, across
+  the one minute that mattered. It is worth separating from provenance because
+  the REMEDY differs: for provenance you check which shard each side came
+  from, for this you ask whether anything happened in the gap. **A COMPARISON
+  NEEDS BOTH TERMS' TIMES AS WELL AS BOTH TERMS' SOURCES**, and the honest form
+  of the original claim was always "S lacked the key 55 seconds after a kill",
+  which asserts nothing at all.
+  **A WRONG DIAGNOSIS OF A WRONG DIAGNOSIS PROPAGATES FURTHER THAN THE
+  ORIGINAL**, because it arrives wearing a correction's authority - this one
+  was committed to this file and would have taught the next reader to reach
+  for a shard check on a timing bug.
 - **WHAT WAS REAL IS ONE LAYER FURTHER IN, AND IT IS FIXED IN Ranger v117 /
   Priest v65 / Mage v88: THE ATTACK GATE COULD NOT SEE AN EVENT'S OWN
   MONSTERS.** `allBosses` names no event spawn - not zombie, not ghoul, not
@@ -1610,7 +1626,17 @@ this ranking until a Ranger build is actually running on him.
   otherwise, so the widening exists only on the event. **NOT done by widening
   `alwaysAttack`, which is a SORT KEY in `updateCache` as well as a filter** -
   a zombie there would outrank the farm target on every map, the argument the
-  `rageAlso` check already records. The ranger OPENS (its clause excludes any
+  `rageAlso` check already records.
+  **THAT IS ITS OWN HAZARD CLASS AND THE BROWSER SESSION NAMED IT: A FIELD TWO
+  SUBSYSTEMS READ FOR DIFFERENT PURPOSES CANNOT BE WIDENED BY EITHER ALONE.**
+  `alwaysAttack` answers "may I shoot this" to the filter and "how important is
+  it" to the sort, and a name added for the first silently changes the second
+  everywhere, forever - no error, no log line, and the damage is on maps the
+  editor was not thinking about. It is adjacent to `pontyWanted()` doubling as
+  a sell guard and to `CONFIG.achievements.pull.enabled` gating three things at
+  once, which makes three recorded instances: **before adding to a list, find
+  every reader, because the one you know about is the one that prompted the
+  edit.** The ranger OPENS (its clause excludes any
   type those sets already name, so goobrawl keeps its `.target` rule) and the
   followers JOIN (their loop gains the types and keeps `.target`).
 - **TWO MUTATIONS SCORED ZERO IN A ROW ON THE SAME CHANGE, AND THE SECOND IS
@@ -3045,6 +3071,34 @@ Claude Code session stops after `browser_code_eval`.
   carries the slot token**, which is exactly what comes back `[BLOCKED]`.
   Report derived values instead: a length, a line count, a hash, per-block
   hashes. That is enough to identify a build exactly.
+- **A SLOT HASH AGAINST THE REPO IS THE STRONGEST DEPLOY CHECK THERE IS, AND
+  IT MUST NAME A COMMIT RATHER THAN A BRANCH.** The browser session's method,
+  2026-10-22: `get_code` reads the SLOT, so no character need be online - which
+  retires the hopping-merchant problem that had defeated six `browser_code_eval`
+  attempts in a day - and a hash says which commit a slot IS, or that it is
+  none of them. **That is what feature detection cannot do**: Dexon's five hand
+  edits on 2026-10-17 would have passed every `typeof` probe ever written.
+  Measured: all four slots matched their repo blobs exactly, slot bytes plus
+  the trailing newline a CODE slot drops.
+  **AND THE METHOD HAS ITS OWN TRAP, FOUND BY WALKING INTO IT.** They measured
+  the repo sizes at 17:00Z and the slots at 18:45Z, with v117 landing in
+  between - **comparing a fixed artefact against a MOVING ref manufactures
+  drift at the other session's commit cadence**, and would have reported three
+  hand edits where there were none. That is the line-numbers-are-clone-local
+  lesson in hash form: the left side is pinned and the right side is not, and
+  only one of them says so. The procedure is read the slot header's version,
+  resolve THAT version's commit, fetch at `?ref=<sha>`, compare.
+  **AND THE RULER MATTERS HERE TOO, differently from the em-dash cases above.**
+  Merchant is pure ASCII so all three counts agreed and the one-unit gap was
+  provably the newline; the three party scripts are not - Ranger measured
+  367,750 code points, 367,831 utf-8 bytes and 367,765 utf-16 units, 81 bytes
+  of multi-byte content and 15 surrogate pairs. **git blobs are utf-8, so utf-8
+  is the only correct ruler**, and code points would have been wrong by 81 on a
+  comparison whose entire output is match-or-not.
+  Checked at the same time and worth recording as RESOLVED: Dexon's four
+  operator edits - `'mole'` in `singleTargetMobs`, `monsterHunt` off, the
+  booboo entry commented out - are in the COMMITTED file, so the 2026-10-17
+  divergence was folded upstream rather than still being live.
 - **A LIVE SLOT CAN BE AHEAD OF THE REPO, AND NOTHING RECORDS IT.** The
   deployment markers in the version header only ever say the repo is ahead of
   the slot. There is no marker for the reverse, and the reverse is the one that
@@ -3401,6 +3455,36 @@ reading.
   one. Changing the key without the placement, or the placement without the key,
   reinstates a measured loss - the suite pins both halves and the inverted
   assertion is kept rather than deleted so the pairing is visible.
+- **A TRUST WINDOW WITH NO HEARTBEAT IS A TIMER THAT ALWAYS EXPIRES, AND IT IS
+  THE FOURTH FAILURE MODE FOR TWO STATE MACHINES: THE SECOND ONE IS NEVER
+  TOLD.** After "they disagree", "one cannot see the predicate" and "one is
+  never asked". Fixed in Ranger v118 / Priest v66 / Mage v89.
+  `bossBroadcast(pick.name)` fired only where the trip STARTS or CHANGES, and
+  a follower trusts `bossState.fromLeader` for `leaderTrustMs` = 20s. A
+  graveyard window is 600s and a horseman window 2400s, so for all but the
+  first twenty seconds of every trip the followers were on their OWN pick -
+  **and that is a DIFFERENT RULE rather than a copy**: the ranger orders by
+  `bossRank` first with an incumbent tie-break, the followers by lowest hp
+  ratio alone, since `bossRank` is declared in `Party/Ranger.js` and nowhere
+  else. Same `parent.S`, two rules, three characters.
+  **THE SYMPTOM WAS A THREE-MAP SPLIT AND THE BROWSER SESSION REPORTED IT AS AN
+  OBSERVATION RATHER THAN A CLAIM** - Dexon on spookytown, FatherToken on main,
+  MageofOz on halloween, during one graveyard trip, with "could be a regroup;
+  could be the movement-ownership class again; I have no second sample and am
+  not calling it either way". A single unexplained sample, handed over without
+  a theory attached, was enough to find a mechanism from the source in one
+  pass. **THAT IS THE HANDOFF WORKING**, and it is the opposite of the
+  signature-match failure this file records twice.
+  **`rageEntryBroadcast` ALREADY HAD IT RIGHT, AND THAT IS THE DURABLE HALF.**
+  It re-sends EVERY tick, so its `trustMs` expires only when the leader really
+  has gone quiet. The same mechanism was built complete in one subsystem and
+  half-built in the other, three weeks apart, and nothing connected them. **A
+  TRUST WINDOW AND ITS HEARTBEAT ARE ONE MECHANISM** - shipping the window
+  alone leaves a feature that works for twenty seconds and then silently stops,
+  which is indistinguishable from it never having been wired.
+  The EXPIRY is correct and unchanged: a leader that has stopped ticking must
+  release the followers, which is pinned through `bossPick`'s `src` crossing
+  from `leader` to `own` at the boundary.
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from

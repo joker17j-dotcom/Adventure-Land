@@ -1772,4 +1772,113 @@ module.exports = [
   }
 } },
 
+/* A TRUST WINDOW WITH NO HEARTBEAT IS A TIMER THAT ALWAYS EXPIRES.
+   The leader broadcast its pick only where the trip STARTS or CHANGES, and a
+   follower trusts `fromLeader` for `leaderTrustMs`. Every window outlives that
+   by one to two orders - graveyard 600s, horseman 2400s against 20s - so for
+   almost all of every trip the followers were on their OWN pick, which is a
+   DIFFERENT RULE: the ranger ranks first, the followers order by lowest hp
+   ratio, `bossRank` being declared in Ranger.js alone. Observed live
+   2026-10-22 as a three-map split during one graveyard trip.
+   `rageEntryBroadcast` re-sends every tick and is the model. The EXPIRY is
+   correct and is pinned below - a leader that stops ticking must release the
+   followers - so the fix adds the beat and changes no timeout. */
+{ name: 'the leader keeps saying what the trip is', fn(t) {
+  const rw = (over) => {
+    over = over || {};
+    const sent = [];
+    const w = world({
+      character: { name: over.me || 'Dexon' },
+      CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 },
+                party: { groupMembers: ['Dexon', 'FatherToken', 'MageofOz'] } },
+      plSend: (to, d) => sent.push(to + ':' + d.name),
+    });
+    /* `const BOSS_RECAST_MS = 8000` is the non-brace initialiser this repo
+       already records twice over - supplied here and PINNED from the source
+       text below, so a changed constant cannot leave these assertions
+       measuring a stale copy while still passing. */
+    lift(w, RANGER, ['bossState', 'bossIsLeader', 'bossBroadcast', 'bossRecast']);
+    w.BOSS_RECAST_MS = 8000;
+    w.bossState.trip = over.trip === undefined ? null : over.trip;
+    w.sent = sent;
+    return w;
+  };
+
+  /* THE INVARIANT THE WHOLE FIX RESTS ON, read from the two source texts
+     rather than from the fixture: the beat must be comfortably inside the
+     window it refreshes, or a follower drops out between beats and the defect
+     returns with nothing looking different. */
+  const rsrc = require('fs').readFileSync(RANGER, 'utf8');
+  const beat = Number((rsrc.match(/const BOSS_RECAST_MS = (\d+)/) || [])[1]);
+  const trust = Number((rsrc.match(/leaderTrustMs: (\d+)/) || [])[1]);
+  t.eq('both constants were found in the source', [beat > 0, trust > 0], [true, true]);
+  t.eq('and the fixture matches the shipped beat', beat, 8000);
+  t.eq('the beat survives a lost message - two of them fit inside the window',
+    beat * 2 < trust, true);
+
+  let w = rw({ trip: { name: 'graveyard' } });
+  t.eq('the leader casts to both followers', (w.bossRecast(), w.sent),
+    ['FatherToken:graveyard', 'MageofOz:graveyard']);
+  t.eq('and is throttled immediately after', (w.bossRecast(), w.sent.length), 2);
+  w.bossState.lastCast = Date.now() - (beat + 1);
+  t.eq('then casts again once the beat has elapsed',
+    (w.bossRecast(), w.sent.length), 4);
+
+  /* Scoped three ways, each its own assertion so a mutation cannot pass by
+     satisfying a neighbour. */
+  w = rw({ trip: null });
+  t.eq('no trip, nothing said', (w.bossRecast(), w.sent.length), 0);
+  w = rw({ me: 'MageofOz', trip: { name: 'graveyard' } });
+  t.eq('PRECONDITION: that character is not the leader', w.bossIsLeader(), false);
+  t.eq('so a follower never casts', (w.bossRecast(), w.sent.length), 0);
+
+  /* THE EXPIRY IS DELIBERATE AND STAYS. This is what the beat feeds, and it
+     must keep working: a leader that has genuinely stopped must release the
+     followers to decide for themselves. Asserted through bossPick's `src`,
+     which stays true however the own-path later chooses. */
+  const pw = (ageMs) => {
+    const w2 = world({
+      character: { name: 'MageofOz' },
+      CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 } },
+      parent: { S: { graveyard: { live: true } } },
+      bossEligible: () => ({ ok: true }),
+      bossLog: () => {},
+    });
+    lift(w2, 'Party/Mage.js', ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
+      'bossState', 'bossIsLeader', 'bossPick']);
+    w2.bossState.fromLeader = { name: 'graveyard', at: Date.now() - ageMs };
+    return w2;
+  };
+  t.eq('a fresh call is followed', pw(1000).bossPick().src, 'leader');
+  t.eq('and a stale one falls through to the follower\'s own rule',
+    pw(25000).bossPick().src, 'own');
+
+  /* AND THE CALL SITE, WHICH A MUTATION CAUGHT AS UNASSERTED. Deleting
+     `bossRecast();` from bossTick moved nothing above: every assertion so far
+     is about the helper, and a perfect helper nobody invokes leaves the defect
+     exactly where it was. That is this repo's own "assert on the far side of a
+     handoff" - the helper is the near side - and bossTick is too large and too
+     stateful to lift, so the check is positional over the source text in all
+     three files, which is the narrow form used when byte-identity cannot
+     apply. Position matters: called before `const t = bossState.trip` it beats
+     on the same tick the trip is read. */
+  for (const f of [RANGER, 'Party/Priest.js', 'Party/Mage.js']) {
+    const body = require('fs').readFileSync(f, 'utf8');
+    /* ANCHORED RELATIVE TO THE CALL, not to the first match in the file:
+       `const t = bossState.trip` also appears in bossEnd, ABOVE bossTick, so
+       a bare indexOf compares against the wrong occurrence and reports false
+       against correct code - which is what the first draft of this assertion
+       did in all three files. The pair that matters is the broadcast the
+       trip-start block ends with, then the beat, then the read. */
+    const cast = body.indexOf('if (bossIsLeader()) bossBroadcast(pick.name);');
+    const call = body.indexOf('\n\tbossRecast();\n');
+    const read = body.indexOf('\n\tconst t = bossState.trip;', call);
+    t.eq(f + ': bossTick calls bossRecast', call >= 0, true);
+    t.eq(f + ': exactly once', body.split('\n\tbossRecast();\n').length - 1, 1);
+    t.eq(f + ': after the trip-start broadcast', cast >= 0 && cast < call, true);
+    t.eq(f + ': and before the trip is read on that tick',
+      call >= 0 && read >= 0 && call < read, true);
+  }
+} },
+
 ];
