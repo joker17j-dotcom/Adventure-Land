@@ -1483,6 +1483,26 @@ this ranking until a Ranger build is actually running on him.
   operator's "I have even joined them but the script immediately goes to
   another boss and does not stay" fits a manual join plus a farm layer owning
   movement because `shouldHandleEvents()` was false.
+- **DEXON HAS HIS FIRST-EVER ZOMBIE CREDITS, 0 -> 11, AND THE GRAVEYARD
+  ASYMMETRY THIS FILE CALLED STRUCTURAL IS NOT.** Measured 18:45Z 2026-10-22
+  against the 11:30Z baseline: zombie Dexon 0 -> 11, FatherToken 12 -> 31,
+  MageofOz 17 -> 51; ghoul Dexon still 0, followers 1 -> 2; mummy 1620 -> 1628;
+  bgoo 70/0/0 UNCHANGED.
+  **THE EXPLANATION ON THE PAGE WAS ABOUT MUMMIES AND WAS LET TO COVER
+  ZOMBIES** - the browser session's own naming. "Dexon's 163 reach against the
+  mummy halo, so he holds the corridor and earns nothing" is sound for the
+  mummy field and says nothing about the graveyard's OWN spawns, which are a
+  different monster at different coordinates. He is crediting them now.
+  **WHAT IS NOT ESTABLISHED IS WHICH WINDOW DID IT.** The gap is 7h15m,
+  graveyard is a `repeat` slot so more than one window may have opened, and the
+  party was on spookytown fighting mrgreen in between - a wandering zombie near
+  that fight is a complete alternative to graveyard attendance. The honest
+  claim is first-ever ranger zombie credit inside the window in which v113 was
+  the only change, NOT that v113 did it. The 18:30Z window was not sampled.
+  **THE BASELINE IS THE ONLY REASON ANY OF THIS IS RECOVERABLE**, which is the
+  tracker-baseline rule earning its keep rather than a near miss - and bgoo
+  holding at 70/0/0 means the goobrawl baseline is still clean for the next
+  window, with the 2.6:1:1 spread-shot expectation unspent.
 - **`max.monsters[X]` ABSENT DOES NOT MEAN NOBODY HAS EVER CREDITED ONE.** The
   browser session's correction to this session, 2026-10-22: ghoul reads
   `own=1 diff=0.3` on BOTH followers while `max.monsters.ghoul` is "none", so
@@ -2026,6 +2046,45 @@ time on 2026-10-18.
   0.00082, 0.00070, 0.00060, 0.00050 and 0.00040 beyond 800, clamped to
   [0.05, 1.32], with a separate NEGATIVE ladder (0.00100 / 0.00075 / 0.00050 /
   0.00025) that is what makes armor piercing past zero keep paying.
+  **FULLY CHARACTERISED 2026-10-22, AND THE TWO SIDES ARE NOT MIRRORS: THE
+  POSITIVE SEGMENTS ARE 100 POINTS WIDE AND THE NEGATIVE ONES 50.** The browser
+  session scanned the LIVE function 0..3000 at step 1 and differenced for slope
+  changes; this session read the source body. They agree on every breakpoint,
+  and the negative side - which they measured only at three spot values and
+  flagged as unscanned - falls out of the source exactly, so it needed no scan:
+  `max(0,min(50,0-d))*0.00100 + max(0,min(50,-50-d))*0.00075 +
+  max(0,min(50,-100-d))*0.00050 + max(0,-150-d)*0.00025`. Reproduced: -38 ->
+  1.03800, -100 -> 1.08750, -200 -> 1.12500, their three readings to five
+  figures. **SO IT DOES NOT SATURATE AT -200** - past -150 it keeps paying
+  0.00025/point with no further segment, and the 1.32 CEILING binds at
+  **defense -980**.
+  **BOTH CLAMP BOUNDS NOW HAVE LOCATIONS, WHICH IS WHAT MAKES THEM CHECKABLE
+  RATHER THAN DECORATIVE.** The 0.05 FLOOR binds at **defense 1558** - the
+  positive sum reaches 0.647 at 800 and needs 757.5 more points at 0.00040 to
+  reach 0.950 - which is the browser session's measured floor point exactly,
+  derived and observed independently. Floor 0.05 is a 95% reduction cap and
+  never immunity, and no monster in the defence table is remotely near 1558
+  (icegolem's 800 is the highest), so the floor is unreachable in practice and
+  the taper is the whole story for every boss we fight.
+  **A HAND COMPUTATION THAT CLAMPS AT 1.0 IS WRONG WHERE PIERCING EXCEEDS
+  RESISTANCE, AND THAT IS THE LIVE CASE RATHER THAN A CORNER.** MageofOz's
+  rpiercing 238 against bgoo's resistance 200 is -38, so x1.03800 - a 3.8%
+  BONUS on every magical hit, and clamping to 1.0 is the natural thing to
+  write. The gargoyle figure already in this file rests on the same mechanism.
+  **AND THERE IS A THIRD NAME IN THIS FAMILY: `dps_multiplier`, SAME LADDER,
+  NO CLAMP.** `js/old_common_functions.js` declares it immediately after
+  `damage_multiplier` with a byte-identical coefficient ladder and no
+  `min(1.32, max(0.05, ...))` around it, so it returns 0.00020 at 1682 and goes
+  NEGATIVE above 1683. The double-declaration rule fires on the pair and
+  CLEARS it for a different reason than last time: these are two DIFFERENT
+  FUNCTIONS rather than two copies of one, so load order is irrelevant and
+  what matters is which name a reader lands on. Its single call site is
+  `node/server_functions.js`, inside an item-scoring expression that passes
+  `def.attack + apiercing/2 + rpiercing/2` - an ITEM's offence, not a target's
+  defence - so the missing clamp is deliberate there and the hazard is LATENT:
+  nothing in the game feeds it a defence value, and nothing of ours calls it.
+  Recorded because a grep for the coefficient ladder finds THREE bodies and
+  only two of them are the combat formula.
   **A `/2.0` ON THE DEFENCE TERM EXISTS AND IS THE HEAL PATH, NOT AN ATTACK** -
   `:4044`, inside `if (info.heal)`. Reading it as the attack formula would
   have halved every effective armor figure below.
