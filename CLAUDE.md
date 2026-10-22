@@ -108,6 +108,16 @@ through Chrome" would stop a session that *can* push from ever trying.
   this session used. Realign local `main` (`git branch -f main HEAD`) so the
   trap does not recur, and when a push is refused read `ls-remote` BEFORE
   believing the hint - the message describes the refspec, not the repository.
+  **AND THE SESSION BRANCH NOW HAS AN UPSTREAM, SO A BARE `git push` NO LONGER
+  REACHES `main`.** The container's stop-hook asks for the session branch to be
+  pushed, which is satisfied by pointing it at the same commits - both refs sat
+  at `57e293f` - but `-u` set the tracking branch, so an unqualified `git push`
+  from here lands on `claude/new-session-*` and leaves `main` behind while
+  reporting success. **That is the one failure mode worse than the refusal
+  above**, because a refusal is loud and this is not. Push `HEAD:main`
+  explicitly every time and verify blobs against `origin/main`, never against
+  the tracking branch - the blob loop this file already requires is what makes
+  the difference visible, since it names `origin/main` outright.
 - **`gh api` IS REFUSED FROM THE BROWSER-DRIVEN CONTAINER, AND THE FIX IT NAMES
   IS NOT AVAILABLE THERE - do not chase it.** Measured 2026-10-17 from that
   container: `gh api repos/joker17j-dotcom/Adventure-Land` returns HTTP 403,
