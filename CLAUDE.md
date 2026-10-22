@@ -1925,6 +1925,72 @@ time on 2026-10-18.
   is terminal with no hp while an `hp` row is non-terminal with one. Enumerated
   from the `_emit` payloads rather than from a sample, so a fifth class cannot
   hide behind a window that happened to contain no examples.
+- **TWO FIELDS THE SERVER PUBLISHES ON EVERY LIVE BOSS ENTRY WERE BEING
+  DISCARDED, AND THE CAUSE OF ONE IS A MEASURED SHAPE CONSULTED AS A
+  PROTOCOL.** Fixed 2026-10-22; row COUNT is unchanged, which matters because
+  the `/boss_events` cap is row-counted.
+  **`end` IS THE PER-INSTANCE WINDOW CLOSE AND IT WAS DROPPED AT THE DOOR.**
+  Read from upstream `16881a27`: the live branch of the four-boss `forEach` in
+  `node/server_functions.js:2554` is `{live, map, hp, max_hp, target, x, y,
+  end: timers[name]}`, and `timers[name] = future_s(G.events[name].duration)`
+  is stamped at spawn - so the server publishes the exact close for crabxx,
+  franky, icegolem and horseman. `future_s` returns a JS `Date`
+  (`js/old_common_functions.js:2128`), which serialises to the same ISO string
+  `estimatedRespawn` already arrives as, so `parse_ts` reads it and no new
+  parsing was needed. `server_info_entries` did not carry it; its own docstring
+  listed `{live, map, hp, max_hp, target, x, y}` as "shapes measured
+  2026-10-17" - accurate for its date, taken before horseman existed - and the
+  code was written to that list. **A MEASURED SHAPE IS A CLAIM WITH A DATE ON
+  IT, AND THIS ONE WAS RECORDED HONESTLY AND THEN READ AS THE WIRE FORMAT.**
+  The tell was available all along: `graveyard_entries`, written five days
+  later from source rather than from a sample, carried `end` in the same file.
+  **`target` REACHED `/bosses` AND DIED THERE.** It is in `meta` and in the
+  live snapshot and was on no event row, so the one field that separates a boss
+  being FOUGHT from one standing untouched never reached the log - leaving the
+  threshold-gated hp series, which this file already records as biased toward
+  the direction that REJECTS, as the only evidence. Now on `spawn` as `target`
+  and on `death`/`despawn` as `last_target`.
+  **THE NAMING IS THE FIX, NOT A STYLE CHOICE.** The four-class split above is
+  by what KIND of reading a row holds, and reading `hp_pct` off a despawn row
+  was published as a finding and retracted the same hour, then the warning
+  written to prevent it misdirected about which class differs. So a LIVE
+  reading is `target` and a LAST-KNOWN one is `last_target`, exactly as `hp`
+  and `last_hp` already are; a row carrying both names would reinstate the
+  trap. **`lost` DELIBERATELY STILL CARRIES NOTHING** - the same argument that
+  keeps `_hp_final` off an instance-change `lost` applies to a last-known
+  target there, since it is unclear WHICH instance the reading belongs to.
+  Adding one for symmetry is the tempting repair and it destroys the only
+  property that makes the classes tellable apart, so the invariant is now
+  ASSERTED rather than described, with a precondition proving a target was
+  observable at the time.
+  **`window_end` IS RECORDED AND NOT CONSULTED, AND THAT IS A DECISION RATHER
+  THAN AN OMISSION.** Every `BOSS_DESPAWN_*` constant was MEASURED against
+  `window_sec` (this file's `EVENT_WINDOW_SEC`) and an `elapsed_sec` taken off
+  a DERIVED `spawn_t` - both terms ours - which is precisely why the
+  despawn-clock retraction cost nothing. Feeding the server's published close
+  into `despawn_qualifies()` would invalidate that calibration rather than
+  sharpen it, so the band must not learn the field exists; it is in the row so
+  a reader can compare the two and say where each side came from. Pinned by a
+  source-text assertion over the classifier bodies, and the first form of that
+  assertion was OVER-TIGHT - bare membership would have failed against a future
+  reader documenting why the field is ignored, which is a pattern that cannot
+  tell what it forbids from what replaced it. Comments are stripped now, and
+  the stripper is fixture-tested because the live body contains no comment to
+  exercise it: mutated both ways, a real read fails and a comment does not.
+- **AND THE 20-SECOND GRACE IS GENERIC, NOT A GARGOYLE PROPERTY - WHICH
+  EXPLAINS EVERY LATE KILL WITH NO ARRIVAL-DEADLINE THEORY AT ALL.** This file
+  records "it leaves once nobody has hit it for 20 seconds" as a fact about the
+  Gargoyle. Read in the same pass, the four-boss removal condition is
+  `c > timers[name] && (!monster || !monster.last.attacked ||
+  ssince(monster.last.attacked) > 20)`, so crabxx, franky, icegolem and
+  horseman all get it: past its window a boss is removed only once twenty
+  seconds pass with nobody attacking. That is the mechanism behind franky at
+  2,628s, franky at 4,454s and horseman at 2,971s, and it is the same rule the
+  Gargoyle was credited with alone. It CONFIRMS the browser session's
+  `duration` retraction from the server side rather than resting on the despawn
+  cluster. **A MECHANISM FILED AS A PROPERTY OF ONE INSTANCE IS NOT FOUND WHEN
+  THE GENERAL CASE IS THE QUESTION** - the same indexing failure as the
+  `death_t` midpoint sitting under "why ttk_sec runs short".
 - **A NEGATIVE SIGNAL'S MEANING DEPENDS ON STATE THAT CAN CHANGE UNDER IT, AND
   ONE HERE INVERTED WITHIN HOURS OF BEING WRITTEN.** Before the bridge was
   restarted, "no `ev: hp` rows in this window" was sound evidence that the

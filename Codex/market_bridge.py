@@ -2198,11 +2198,25 @@ def server_info_entries(server: dict, payload, types) -> list:
     unchanged and keep being exercised by the same code paths.
 
     Shapes measured 2026-10-17 across all 13 servers:
-      live  {live, map, hp, max_hp, target, x, y}
+      live  {live, map, hp, max_hp, target, x, y, end}
       dead  {live, spawn}
     `target` stays sparse - a name, null, or the field absent on an
     untouched boss - so presence is preserved and has_target_field still
     means what it meant.
+
+    THE `end` IN THAT SHAPE WAS NOT IN THE 2026-10-17 MEASUREMENT AND THIS
+    DOCSTRING LISTED THE MEASURED SHAPE, so the field was dropped here for
+    five days while `graveyard_entries` below carried it. Read from upstream
+    `16881a27` on 2026-10-22: the live branch of the four-boss forEach in
+    `node/server_functions.js` is `{live, map, hp, max_hp, target, x, y,
+    end: timers[name]}`, and `timers[name] = future_s(G.events[name].duration)`
+    is stamped at spawn - so `end` IS the per-instance window close, published,
+    for every event boss the main loop polls. `future_s` returns a JS `Date`
+    (`js/old_common_functions.js:2128`), which serialises to the same ISO
+    string `estimatedRespawn` already arrives as, so `parse_ts` reads it and
+    no new parsing exists. A MEASURED SHAPE IS A CLAIM WITH A DATE ON IT, and
+    this one was written down accurately and then consulted as though it were
+    the protocol.
 
     lastSeen becomes OUR receive time, which is honest: the payload is
     pushed, so the moment it arrived IS the moment it was current. Each push
@@ -2227,6 +2241,12 @@ def server_info_entries(server: dict, payload, types) -> list:
             e["x"] = d.get("x")
             e["y"] = d.get("y")
             e["lastSeen"] = seen_at
+            # Unconditional, matching `graveyard_entries` below rather than
+            # target's presence-preserving form: a second convention in a
+            # sibling branch feeding the same `_record` is the drift this file
+            # pays for everywhere else, and `end` has no absent-versus-null
+            # case in the live shape above the way `target` measurably does.
+            e["end"] = d.get("end")
             if "target" in d:
                 e["target"] = d.get("target")
         else:
@@ -2547,6 +2567,11 @@ class BossWatch:
                 "entry": entry, "at": t, "hp": hp,
                 "target": entry.get("target") if has_target else None,
                 "has_target": has_target,
+                # The server's own published window close, carried raw. Not
+                # re-derived into a remaining-seconds figure: that is a single
+                # subtraction any consumer can do against the row's own `t`,
+                # and a stored one rots the moment it is read.
+                "end": entry.get("end"),
                 "seen_raw": seen_raw, "seen_ts": seen_ts,
                 "present": True,
             }
@@ -2796,6 +2821,16 @@ class BossWatch:
                 gap = gap_for(f)
                 new_instance = f is not None and f.get("alive") and f.get("id") != cur_id
                 if new_instance:
+                    # DELIBERATELY CARRIES NO READING FIELD, so `lost` stays
+                    # the one class with none - no hp, no pct, no target. The
+                    # four-class enumeration (`spawn`/`hp` live, `death`/
+                    # `despawn` last-known, `lost` neither) is a documented
+                    # invariant a consumer branches on, and the same argument
+                    # that keeps `_hp_final` off an instance-change `lost`
+                    # applies to a last-known target here: it is unclear WHICH
+                    # instance the reading belongs to. Adding one for symmetry
+                    # is the tempting repair and it breaks the one property
+                    # that makes the classes tellable apart.
                     self._emit({"ev": "lost", "t": iso(poll_t), "type": mtype,
                                 "server": server, "id": f.get("id"),
                                 "reason": "instance id changed without an observed death",
@@ -2809,6 +2844,7 @@ class BossWatch:
                     self._emit({"ev": "spawn", "t": iso(spawn_t), "type": mtype,
                                 "server": server, "id": cur_id, "hp": m["hp"],
                                 "max_hp": self.max_hp.get(mtype), "method": how,
+                                "window_end": m["end"], "target": m["target"],
                                 "poll_gap_sec": round(gap), "confidence": c})
                     mx = self.max_hp.get(mtype)
                     self.fights[key] = {
@@ -2858,6 +2894,21 @@ class BossWatch:
                             "last_pct": f.get("last_pct"),
                             "spawn_t": iso(spawn_t), "window_sec": win,
                             "elapsed_sec": round(elapsed),
+                            # RECORDED, NOT CONSULTED. `window_sec` is this
+                            # file's EVENT_WINDOW_SEC and `elapsed_sec` is
+                            # measured off a derived spawn_t, so both terms of
+                            # the despawn band are ours; `window_end` is the
+                            # server's. Every BOSS_DESPAWN_* constant was
+                            # MEASURED against the derived pair, which is why
+                            # the despawn-clock retraction cost nothing - so
+                            # feeding the published value into
+                            # despawn_qualifies() would invalidate the
+                            # calibration rather than sharpen it. It is here so
+                            # a reader can compare the two and say where each
+                            # side came from; rewiring the classifier is a
+                            # separate change that needs its own measurement.
+                            "window_end": m["end"],
+                            "last_target": m["target"],
                             "reason": "event window closed; absent from a "
                                       "responding server with no respawn estimate",
                             "poll_gap_sec": round(gap),
@@ -2884,6 +2935,16 @@ class BossWatch:
                             "method": how,
                             "death_lo": iso(f.get("last_alive_t") or (poll_t - gap)),
                             "death_hi": iso(poll_t), "estimated_respawn": er_raw,
+                            # Last-known, hence the prefix: at a terminal the
+                            # boss is absent, so `_record` did not run this
+                            # poll and meta still holds the final observation.
+                            # Named to the four-class convention the hp fields
+                            # already follow - a LIVE reading is `target`, a
+                            # LAST-KNOWN one is `last_target` - because reading
+                            # `target` off a death row returning undefined is
+                            # the exact false negative this log has produced
+                            # twice.
+                            "last_target": m["target"],
                             "poll_gap_sec": round(gap), "confidence": dconf})
                 self.fights[key] = {
                     "alive": False, "id": None, "spawn_t": None,

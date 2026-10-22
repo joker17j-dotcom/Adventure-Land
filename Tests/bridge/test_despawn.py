@@ -41,9 +41,14 @@ def drive(mtype, spawn_ago, present, er_offset_sec, server_answered=True,
     if er_offset_sec is not None:
         entry["estimatedRespawn"] = (datetime.datetime.now(datetime.timezone.utc)
             + datetime.timedelta(seconds=er_offset_sec)).isoformat()
+    # FULL meta shape, matching _record's single construction site. The
+    # transition pass subscripts these bare (m["hp"], m["target"], m["end"]),
+    # which is deliberate: a fixture missing a field fails LOUDLY here rather
+    # than being papered over with .get in the subject, where a future field
+    # would then default silently. Adding a meta field means updating this.
     w.meta[key] = {"entry": entry, "at": poll_t, "hp": None, "target": None,
                    "has_target": False, "seen_raw": None, "seen_ts": None,
-                   "present": present}
+                   "end": None, "present": present}
     w.fights[key] = {"alive": True, "id": "x1",
                      "spawn_t": (poll_t - spawn_ago) if spawn_known else None,
                      "last_alive_t": poll_t - 45, "last_obs_t": poll_t - 45,
@@ -367,7 +372,7 @@ _t = time.time()
 def _seed(key, spawn_t, er=None):
     _w.meta[key] = {"entry": {"id": "x", "estimatedRespawn": er}, "hp": 500,
                     "present": True, "seen_ts": _t, "seen_raw": "x",
-                    "target": None, "has_target": True, "at": _t}
+                    "target": None, "has_target": True, "end": None, "at": _t}
     _w.fights[key] = {"spawn_t": spawn_t}
 _seed(("crabxx", "US", "II"), _t - 600)
 _seed(("crabxx", "EU", "I"), None)
@@ -1121,6 +1126,167 @@ chk("gy: a 901s-old graveyard is longer than the nominal event",
     901 > _GY_DUR, True)
 chk("gy: but 901s after the GARGOYLE woke is past its band and reads as a kill",
     b.despawn_window_hit("gargoyle", 901), False)
+
+# ------------------------- `end` and `target`: what the main loop discarded
+#
+# Two fields the server publishes on every live boss entry and this bridge
+# dropped. `end` went because server_info_entries' docstring recorded the shape
+# MEASURED on 2026-10-17 and the field was not in that measurement - a true
+# claim with a date on it, then consulted as though it were the protocol -
+# while graveyard_entries, written five days later, carried it all along.
+# `target` reached /bosses and died there, so the one field separating a boss
+# being FOUGHT from one standing untouched never reached the log, leaving the
+# threshold-gated hp series as the only evidence.
+_LV_SRV = {"region": "US", "name": "II"}
+_END_ISO = "2026-10-22T05:40:00.000Z"
+
+def _lv(drop=(), **over):
+    d = {"live": True, "map": "halloween", "hp": 30000000, "max_hp": 30000000,
+         "target": None, "x": -405, "y": -1560, "end": _END_ISO}
+    d.update(over)
+    for k in drop:
+        d.pop(k, None)
+    out = [e for e in b.server_info_entries(_LV_SRV, {"horseman": d}, b.BOSS_TYPES)
+           if e.get("type") == "horseman"]
+    return out[0] if len(out) == 1 else {}
+
+chk("end: the translation layer carries the published window close",
+    _lv().get("end"), _END_ISO)
+# VERBATIM, because the value's whole worth is being the server's and not ours.
+# future_s returns a JS Date (js/old_common_functions.js:2128), so it arrives
+# as the same ISO string estimatedRespawn already does and the parser that
+# reads it is the one already here.
+chk("end: verbatim, not re-derived into a remaining-seconds figure",
+    isinstance(_lv().get("end"), str), True)
+chk("end: and the parser already in this file reads it",
+    b.parse_ts(_lv().get("end")) is not None, True)
+chk("end: a payload without it yields None rather than raising",
+    _lv(drop=("end",)).get("end", "MISSING"), None)
+# target keeps its presence-preserving form - absent and null are different
+# answers, measured 4-of-13 and 1-of-4 - and `end` deliberately does not,
+# matching graveyard_entries rather than inventing a second convention in a
+# sibling branch feeding the same _record.
+chk("end: target's absent-versus-null distinction is untouched",
+    ("target" in _lv(drop=("target",)), "target" in _lv()), (False, True))
+
+# ---- TIMELINE C: the fields reach the ROWS, not merely the entries.
+def _lent(hp, seen, eid="h-1", **over):
+    e = {"type": "horseman", "serverRegion": "US", "serverIdentifier": "II",
+         "hp": hp, "max_hp": 30000000, "lastSeen": seen, "id": eid,
+         "end": _END_ISO}
+    e.update(over)
+    return e
+
+# Guard 2's second entry, as _ICE is for the timelines above: a boss absent
+# from a server that did not ANSWER is never a terminal.
+_ICE2 = lambda seen: {"type": "icegolem", "serverRegion": "US",
+                      "serverIdentifier": "II", "hp": 16000000,
+                      "max_hp": 16000000, "lastSeen": seen, "id": "ice-1",
+                      "end": None}
+
+_lf3 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf3.close()
+_bwC = b.BossWatch(["horseman"], enabled=False, events_path=_lf3.name)
+_poll(_bwC, 9000, [_ICE2("c0")])
+_poll(_bwC, 9045, [_ICE2("c1"), _lent(30000000, "c1", target="Dexon")])
+_poll(_bwC, 9090, [_ICE2("c2"), _lent(27000000, "c2", target="Dexon")])
+for _i, _t in enumerate((9135, 9180, 9225)):
+    _poll(_bwC, _t, [_ICE2("c%d" % (_i + 3))])
+_rC = [r for r in _rows(_lf3.name) if r["type"] == "horseman"]
+
+# PRECONDITION: a terminal at ~135s elapsed is nowhere near horseman's 2400s
+# window, so this is a DEATH and the despawn band is not what is being read.
+chk("C: spawn, a threshold sample, the closing flush, then a death",
+    [r["ev"] for r in _rC], ["spawn", "hp", "hp", "death"])
+chk("C: and only the SECOND hp row is the closing flush",
+    [bool(r.get("final")) for r in _rC if r["ev"] == "hp"], [False, True])
+chk("C: the spawn row carries the published window close",
+    byev(_rC, "spawn").get("window_end"), _END_ISO)
+chk("C: and the target as a LIVE reading",
+    byev(_rC, "spawn").get("target"), "Dexon")
+chk("C: the death row carries it as a LAST-KNOWN reading",
+    byev(_rC, "death").get("last_target"), "Dexon")
+# THE NAMING IS THE ASSERTION. Reading `hp_pct` off a despawn row returned
+# undefined and was published as "the bridge records no hp at death", then
+# retracted the same hour; reading `hp` off a DEATH row repeats it. A live
+# reading is `target`, a last-known one is `last_target`, and a death row
+# carrying both names would reinstate exactly that trap.
+chk("C: and NOT under the live name", "target" in byev(_rC, "death"), False)
+chk("C: while the spawn row does not carry the last-known name",
+    "last_target" in byev(_rC, "spawn"), False)
+
+# UNCONDITIONAL, proven on timeline B, whose entries carry neither field: the
+# KEYS are still there, holding None. A field emitted only when set is
+# indistinguishable from a field the consumer forgot to read.
+chk("B: the despawn row carries window_end even with nothing to put in it",
+    ("window_end" in byev(_rB, "despawn"), byev(_rB, "despawn").get("window_end")),
+    (True, None))
+chk("B: and last_target the same way",
+    ("last_target" in byev(_rB, "despawn"), byev(_rB, "despawn").get("last_target")),
+    (True, None))
+
+# ---- `lost` STAYS THE CLASS WITH NO READING FIELD AT ALL.
+_lf4 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf4.close()
+_bwD = b.BossWatch(["horseman"], enabled=False, events_path=_lf4.name)
+_poll(_bwD, 9000, [_ICE2("d0")])
+_poll(_bwD, 9045, [_ICE2("d1"), _lent(30000000, "d1", eid="h-1")])
+_poll(_bwD, 9090, [_ICE2("d2"), _lent(30000000, "d2", eid="h-2", target="Dexon")])
+_rD = [r for r in _rows(_lf4.name) if r["type"] == "horseman"]
+_READINGS = ("hp", "max_hp", "pct", "last_hp", "last_pct", "target", "last_target")
+chk("lost: an instance change emits one", byev(_rD, "lost").get("ev"), "lost")
+# PRECONDITION: a target WAS observable on that poll, so an empty reading set
+# below is the omission being deliberate rather than there being nothing to put
+# there. Without this the assertion would pass on a quiet fixture.
+chk("lost: and a target was observable at the time",
+    byev(_rD, "spawn", 1).get("target"), "Dexon")
+chk("lost: yet the row carries no reading field of any kind",
+    sorted(k for k in byev(_rD, "lost") if k in _READINGS), [])
+
+# ---- RECORDED, NOT CONSULTED, asserted against the source text because that
+# is the only place the decision lives. Every BOSS_DESPAWN_* constant was
+# MEASURED against `window_sec` (ours) and an `elapsed_sec` taken off a derived
+# spawn_t (also ours), which is why the despawn-clock retraction cost nothing.
+# Feeding the server's published close into the classifier would invalidate
+# that calibration rather than sharpen it - a separate change, needing its own
+# measurement - so the band must not learn this field exists.
+_MBSRC = io.open(TARGET, encoding="utf-8").read()
+def _strip(text):
+    """Line comments removed, so a membership test reads CODE only.
+
+    Stripping is not tidiness. The first version of the assertions below tested
+    bare membership against the whole body, so a future reader DOCUMENTING why
+    the classifier ignores the published close would have failed them against
+    correct code - a pattern that cannot tell the thing it forbids from the
+    thing that replaced it. Tested on fixtures rather than on the live body,
+    because the live body contains no comment to exercise it and a stripper
+    that silently did nothing would look identical.
+    """
+    out = []
+    for line in text.split("\n"):
+        q = line.find("#")
+        out.append(line if q < 0 else line[:q])
+    return "\n".join(out)
+
+chk("strip: a comment naming the field is removed",
+    "window_end" in _strip("    win = EVENT_WINDOW_SEC.get(mtype)  # not window_end"),
+    False)
+chk("strip: a real read of it is NOT",
+    "window_end" in _strip("    if window_end: return False  # a genuine read"),
+    True)
+chk("strip: and code before a comment survives",
+    _strip("    return win  # trailing").strip(), "return win")
+
+def _body(name):
+    i = _MBSRC.index("\ndef %s(" % name)
+    j = _MBSRC.index("\ndef ", i + 1)
+    return _strip(_MBSRC[i:j])
+chk("window_end: the despawn ROW records it", '"window_end": m["end"]' in _MBSRC, True)
+chk("window_end: despawn_window_hit never reads it",
+    "window_end" in _body("despawn_window_hit"), False)
+chk("window_end: nor does despawn_qualifies",
+    "window_end" in _body("despawn_qualifies"), False)
+# And the band still answers off the derived pair alone, unchanged.
+chk("window_end: the band is unmoved - 2402s on a 2400s window still hits",
+    b.despawn_window_hit("franky", 2402), True)
 
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
