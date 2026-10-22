@@ -1288,6 +1288,111 @@ chk("window_end: nor does despawn_qualifies",
 chk("window_end: the band is unmoved - 2402s on a 2400s window still hits",
     b.despawn_window_hit("franky", 2402), True)
 
+# ------------- `end - window` AS AN AUDIT OF THE DERIVED SPAWN TIME
+#
+# The browser session's challenge, 2026-10-22, accepted: `end` is not a better
+# version of window_sec, it is an exact SPAWN time, and that makes it a
+# validation instrument for the quantity elapsed_sec is measured from. The band
+# stays blind to it (asserted below); what becomes measurable is the band's own
+# input.
+_W_FRANKY = b.EVENT_WINDOW_SEC["franky"]
+
+# THE NAMED SET IS THE WHOLE CARE HERE, AND goobrawl IS WHY IT IS NAMED.
+# start_event() sets timers.goobrawl = future_s(45) against a duration of 540,
+# so `end - window` there is wrong by 495s in a direction that looks plausible.
+# Deriving the set as "EVENT_WINDOW_SEC minus the goos" would be right today by
+# luck and would adopt the next event whose timer behaves like goobrawl's.
+chk("exact: franky is in the checked set",
+    b.spawn_exact_from_end("franky", b.iso(7400.0)), 7400.0 - _W_FRANKY)
+chk("exact: so is the gargoyle, whose gargoyle_end is stamped at wake",
+    b.spawn_exact_from_end("gargoyle", b.iso(9000.0)) is not None, True)
+chk("exact: rgoo is NOT, though it has an EVENT_WINDOW_SEC entry",
+    b.spawn_exact_from_end("rgoo", b.iso(7400.0)), None)
+chk("exact: nor bgoo", b.spawn_exact_from_end("bgoo", b.iso(7400.0)), None)
+chk("exact: and an unparseable end yields None, never a confident wrong bias",
+    b.spawn_exact_from_end("franky", "not-a-timestamp"), None)
+chk("exact: a missing end likewise", b.spawn_exact_from_end("franky", None), None)
+# The goos are the two EVENT_WINDOW_SEC names left out, and they are left out
+# because they are never E keys at all - the set is not the difference.
+chk("exact: the checked set is a strict subset of the windowed bosses",
+    sorted(b.EVENT_WINDOW_SEC) == sorted(set(b.EVENT_WINDOW_SEC)
+                                         | b.SPAWN_EXACT_FROM_END)
+    and b.SPAWN_EXACT_FROM_END < set(b.EVENT_WINDOW_SEC), True)
+
+# ---- TIMELINE D: a spawn detected 150s LATE, despawning on time.
+# This is the argument made concrete. Derived elapsed reads 55s EARLY and is
+# admitted by BOSS_DESPAWN_WINDOW_SLACK; the exact elapsed is 95s LATE, i.e. a
+# perfectly ordinary window expiry. An unengaged boss cannot despawn before its
+# timer - the removal condition waits on `c > timers[name]` alone once nothing
+# is attacking - so EVERY early row is detection error, and this measures it.
+_TRUE_SPAWN = 5000.0
+_END_D = b.iso(_TRUE_SPAWN + _W_FRANKY)          # the server's published close
+
+def _fent(hp, seen, eid="d-1", **over):
+    e = {"type": "franky", "serverRegion": "EU", "serverIdentifier": "IV",
+         "hp": hp, "max_hp": 120000000, "lastSeen": seen, "id": eid,
+         "end": _END_D}
+    e.update(over)
+    return e
+
+_lf5 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf5.close()
+_bwD2 = b.BossWatch(["franky"], enabled=False, events_path=_lf5.name)
+_poll(_bwD2, 4900, [_ICE("e0")])                               # seeds the shard
+_poll(_bwD2, 5150, [_ICE("e1"), _fent(120000000, "d1")])       # detected +150s
+for _i, _t in enumerate((7405, 7450, 7495)):                   # gone at window
+    _poll(_bwD2, _t, [_ICE("f%d" % _i)])
+_rD2 = [r for r in _rows(_lf5.name) if r["type"] == "franky"]
+
+chk("D: spawn, closing flush, despawn", [r["ev"] for r in _rD2],
+    ["spawn", "hp", "despawn"])
+chk("D: the spawn row reports the detection lateness as a signed bias",
+    byev(_rD2, "spawn").get("spawn_t_err_sec"), 150.0)
+chk("D: and the exact spawn, not the detected one",
+    byev(_rD2, "spawn").get("spawn_t_exact"), b.iso(_TRUE_SPAWN))
+
+_dsp = byev(_rD2, "despawn")
+# PRECONDITION: the derived elapsed really is EARLY and really is admitted by
+# SLACK. Without this the comparison below would be consistent with the band
+# never having been near its early edge.
+chk("D: derived elapsed lands EARLY, inside the window", _dsp.get("elapsed_sec"),
+    round(7495 - 5150))
+chk("D: and SLACK is what admitted it",
+    b.despawn_window_hit("franky", _dsp.get("elapsed_sec")), True)
+# NUMBER-SAFE, because the mutation that DROPS these fields is the one these
+# assertions exist to catch - and `None >= 2400` raises, which aborts before
+# the summary and presents a caught defect as broken tooling in the wrong file.
+# Measured: dropping elapsed_exact_sec from the despawn row produced a
+# traceback and no PASS line at all until this was fixed. Third instance in
+# this file after str.index and bare seq[i].
+def _num(d, k):
+    v = d.get(k)
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+chk("D: while the EXACT elapsed is at or past the window - an ordinary expiry",
+    (lambda v: v is not None and v >= _W_FRANKY)(_num(_dsp, "elapsed_exact_sec")),
+    True)
+chk("D: the whole early reading was the 150s of detection error",
+    (lambda a, c: round(a - c, 1) if (a is not None and c is not None) else None)(
+        _num(_dsp, "elapsed_exact_sec"), _num(_dsp, "elapsed_sec")), 150.0)
+chk("D: and the row carries the exact spawn for a reader to re-derive from",
+    _dsp.get("spawn_t_exact"), b.iso(_TRUE_SPAWN))
+
+# THE CLASSIFIER REMAINS BLIND, which is the shipped decision. The audit sits
+# BESIDE the band, never inside it: the constants were measured against the
+# derived pair, so consuming the published value would invalidate the
+# calibration rather than sharpen it.
+chk("D: it is still classified a despawn", _dsp.get("ev"), "despawn")
+for _fn in ("despawn_window_hit", "despawn_qualifies", "despawn_confidence"):
+    chk("exact: %s reads no exact field" % _fn,
+        any(k in _body(_fn) for k in
+            ("spawn_t_exact", "elapsed_exact_sec", "spawn_exact")), False)
+
+# A boss with no published close keeps working and says so with nulls rather
+# than with a derived guess - icegolem is in the checked set but _ICE carries
+# no `end`, so the None path is exercised by every timeline above.
+chk("exact: a checked name with no published end yields None",
+    b.spawn_exact_from_end("icegolem", None), None)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

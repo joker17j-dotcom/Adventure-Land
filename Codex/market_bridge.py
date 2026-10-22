@@ -446,6 +446,58 @@ EVENT_WINDOW_SEC = {
 }
 
 
+# `end` is stamped AT SPAWN and never reassigned for these five, so
+# `end - window` recovers the EXACT spawn time - which makes it an AUDIT of the
+# derived spawn_t rather than a replacement for it. The browser session's point,
+# 2026-10-22, and it is the half that was left on the table: the despawn band's
+# constants were measured against OUR window and OUR derived spawn, so
+# substituting a published close would invalidate the calibration - but
+# measuring the calibration's own INPUT costs nothing and the band never has to
+# know.
+#
+# WHY IT IS WORTH AUDITING AT ALL: an unengaged boss CANNOT despawn before its
+# timer. The removal condition is `c > timers[name] && (!monster ||
+# !monster.last.attacked || ssince(monster.last.attacked) > 20)`, and for an
+# untouched boss the second clause is already true, so removal waits on the
+# timer alone. BOSS_DESPAWN_WINDOW_SLACK admits rows up to 180s EARLY, and
+# there is no mechanism that produces one - so every early row is
+# spawn-detection error, which is exactly what this measures. The file's own
+# record agrees: the early side's only contribution to date was one row.
+#
+# A NAMED SET, NOT A DERIVED ONE, AND goobrawl IS WHY. `start_event()` sets
+# `timers.goobrawl = future_s(45)` - a pre-announcement timer - against a
+# duration of 540, so the same arithmetic there is wrong by 495 seconds in a
+# direction that looks entirely plausible. The stamp-once property is PER NAME
+# and was checked per name (assigned once under `if (!timers[name])` at
+# server_functions.js:2561, deleted at :2574 and :2585, never reassigned; the
+# gargoyle's `gargoyle_end` likewise assigned once in halloween_events.js).
+# Deriving this set as "EVENT_WINDOW_SEC minus the goos" would be right today
+# by luck and would silently adopt the next event whose timer behaves like
+# goobrawl's.
+SPAWN_EXACT_FROM_END = frozenset({
+    "crabxx", "franky", "icegolem", "horseman",   # the one four-boss forEach
+    "gargoyle",                                   # gargoyle_end, set at wake
+})
+
+
+def spawn_exact_from_end(mtype, end_raw):
+    """True spawn epoch from the server's published window close, or None.
+
+    None for every name outside the checked set, and for an `end` that does not
+    parse - a wrong spawn time here would propagate into the audit as a
+    confident bias figure, which is worse than having none.
+    """
+    if str(mtype or "") not in SPAWN_EXACT_FROM_END:
+        return None
+    win = EVENT_WINDOW_SEC.get(mtype)
+    if not win:
+        return None
+    end_t = parse_ts(end_raw)
+    if end_t is None:
+        return None
+    return end_t - win
+
+
 def despawn_window_hit(mtype, elapsed_sec) -> bool:
     """Is `elapsed_sec` inside the band around this type's window close?
 
@@ -2841,14 +2893,25 @@ class BossWatch:
                         spawn_t, how, c = pending, "respawn_estimate", "high"
                     else:
                         spawn_t, how, c = poll_t, "observed_poll", conf_for(gap)
+                    sx = spawn_exact_from_end(mtype, m["end"])
                     self._emit({"ev": "spawn", "t": iso(spawn_t), "type": mtype,
                                 "server": server, "id": cur_id, "hp": m["hp"],
                                 "max_hp": self.max_hp.get(mtype), "method": how,
                                 "window_end": m["end"], "target": m["target"],
+                                # The audit pair. `spawn_t_err_sec` is POSITIVE
+                                # when we detected late, which is the only
+                                # direction the early side of the despawn band
+                                # can be populated from - see
+                                # SPAWN_EXACT_FROM_END. Both None off the
+                                # checked set rather than guessed.
+                                "spawn_t_exact": iso(sx) if sx else None,
+                                "spawn_t_err_sec": (round(spawn_t - sx, 1)
+                                                    if sx else None),
                                 "poll_gap_sec": round(gap), "confidence": c})
                     mx = self.max_hp.get(mtype)
                     self.fights[key] = {
                         "alive": True, "id": cur_id, "spawn_t": spawn_t,
+                        "spawn_exact": sx,
                         "last_alive_t": poll_t, "last_obs_t": poll_t, "absent": 0,
                         "respawn_at": None, "last_hp": m["hp"],
                         "last_pct": round(m["hp"] / mx * 100.0, 2) if (mx and m["hp"]) else None,
@@ -2909,6 +2972,21 @@ class BossWatch:
                             # separate change that needs its own measurement.
                             "window_end": m["end"],
                             "last_target": m["target"],
+                            # THE VETO BECOMES A MEASUREMENT where these are
+                            # not None. crabxx EU III sat at last_pct 63.19 and
+                            # elapsed 2226 - window minus 174, admitted by
+                            # SLACK with six seconds to spare - and
+                            # despawn_qualifies() had to adjudicate
+                            # damaged-and-early as a conjunction because the
+                            # true elapsed was unknown. With the published
+                            # close it is computable, so the row carries the
+                            # evidence the decision was taken without. The
+                            # classifier still does not read it.
+                            "spawn_t_exact": (iso(f.get("spawn_exact"))
+                                              if f.get("spawn_exact") else None),
+                            "elapsed_exact_sec": (
+                                round(poll_t - f["spawn_exact"], 1)
+                                if f.get("spawn_exact") else None),
                             "reason": "event window closed; absent from a "
                                       "responding server with no respawn estimate",
                             "poll_gap_sec": round(gap),
@@ -2945,6 +3023,16 @@ class BossWatch:
                             # the exact false negative this log has produced
                             # twice.
                             "last_target": m["target"],
+                            # `ttk_sec` runs short by half the poll bracket and
+                            # nothing on the row bounds that; `death_hi` fixes
+                            # the END exactly and this fixes the START, so for
+                            # these five the fight length stops being an
+                            # estimate at either end.
+                            "spawn_t_exact": (iso(f.get("spawn_exact"))
+                                              if f.get("spawn_exact") else None),
+                            "ttk_exact_upper_sec": (
+                                round(poll_t - f["spawn_exact"], 1)
+                                if f.get("spawn_exact") else None),
                             "poll_gap_sec": round(gap), "confidence": dconf})
                 self.fights[key] = {
                     "alive": False, "id": None, "spawn_t": None,

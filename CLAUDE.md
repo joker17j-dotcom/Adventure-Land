@@ -1663,7 +1663,33 @@ time on 2026-10-18.
   2026-10-20 census of death 1,116 / despawn 15 / lost 120 / spawn 1,248, where
   hp did not exist. That is about six and a half hours of history and exactly
   ONE horseman spawn group, which is why the nightly cadence is not derivable
-  from a 5,000-row pull. **A planner reading "the last N events" is reading a
+  from a 5,000-row pull.
+  **THE SIX AND A HALF HOURS IS RETRACTED BY ITS OWN AUTHOR AND WAS WRONG BY
+  8.5x. MEASURED 2026-10-22: 5,000 rows span 2026-10-20T12:36:09Z to
+  2026-10-22T19:41:16Z = 55.09 HOURS, 90.8 rows/hour.** The span was never
+  measured - it was INFERRED from the set containing only one horseman spawn
+  group, and that was SPARSE SAMPLING rather than a boundary: 8 horseman spawn
+  rows exist in 55 hours where six shards across two nights would predict
+  dozens. **A THIN OBSERVATION READ AS AN EDGE**, which is the unchanging-hp-
+  percentage mistake in a new costume, and the second time in this file's own
+  idiom. The horseman clause above is wrong for the same reason and is wrong
+  about its own cause.
+  **THE MECHANISM SURVIVES AND IS NOW BETTER EVIDENCED THAN THE STATIC FIGURE
+  WAS.** The cap is row-counted, so the span still floats with how chatty
+  sampling is - and the float is measured rather than asserted: hp was 1,828 of
+  5,000 (36.6%) at 11:29Z and **3,024 of 5,000 (60.5%) at 19:41Z**, nearly
+  doubling in eight hours of heavy fighting. So the time span genuinely moves by
+  about 2x inside one day. What changes is URGENCY: ~200 schedule change rows a
+  day against ~2,180 boss rows a day is about 9% of the span, not a
+  catastrophe. **THE CONCLUSION HELD AND THE ALARM ATTACHED TO IT DID NOT**,
+  which is worth separating because the alarm is what a planner acts on.
+  **AND `lost` IS ZERO ACROSS ALL 55 HOURS**, against the 2026-10-20 census of
+  120 lost rows in 2,499. Either the condition has stopped arising or retention
+  differs; flagged rather than theorised. It matters because `lost` is inside
+  `BOSS_TERMINAL_EV` and a terminal class that no longer occurs changes what
+  that enumeration is protecting - and the open "nobody has had a real `lost`
+  row to `Object.keys`" question is now open over a much larger window than
+  anyone thought they were looking at. **A planner reading "the last N events" is reading a
   window whose TIME span now depends on how chatty hp sampling is**, and it
   shortens silently with no error.
   **AND `ev !== 'spawn'` IS NOT "TERMINAL" ANY MORE - the browser session wrote
@@ -1977,6 +2003,69 @@ time on 2026-10-18.
   tell what it forbids from what replaced it. Comments are stripped now, and
   the stripper is fixture-tested because the live body contains no comment to
   exercise it: mutated both ways, a real read fails and a comment does not.
+- **`end - window` IS AN EXACT SPAWN TIME, SO IT AUDITS THE DERIVED `spawn_t`
+  RATHER THAN REPLACING `window_sec` - THE BROWSER SESSION'S CHALLENGE,
+  ACCEPTED.** The calibration argument above is correct as a reason not to SWAP
+  the terms and was too broad as a reason to ignore the field. `timers[name]`
+  is assigned ONCE under `if (!timers[name])` and only ever deleted, so `end`
+  is constant for an instance's life and `end - duration` recovers the spawn
+  tick. That is a VALIDATION INSTRUMENT for the quantity `elapsed_sec` is
+  measured from, and the band never has to know it exists.
+  **WHY IT IS WORTH AUDITING: AN UNENGAGED BOSS CANNOT DESPAWN BEFORE ITS
+  TIMER.** Removal needs `c > timers[name] && (!monster ||
+  !monster.last.attacked || ssince(...) > 20)`, and for an untouched boss the
+  second clause is already true, so removal waits on the timer alone. There is
+  no mechanism that produces an early despawn - so `BOSS_DESPAWN_WINDOW_SLACK`,
+  which admits rows up to 180s EARLY, can only ever be populated by
+  spawn-detection error. The file's own record already agreed without anyone
+  noticing: "the early side's only contribution to date was one row."
+  **SO THE VETO BECOMES A MEASUREMENT.** crabxx EU III at `last_pct` 63.19 and
+  elapsed 2226 - window minus 174, admitted by SLACK with six seconds to spare
+  - forced `despawn_qualifies()` to adjudicate damaged-and-early as a
+  conjunction precisely because the true elapsed was unknown. For the five
+  publishing bosses it is now computable, so the conjunction stops having to
+  decide under uncertainty. Misclassifying a kill as a despawn DEFLATES the
+  kill record, which is why that was a veto rather than a confidence
+  downgrade; this is the route to not having to choose.
+  **THE SET IS NAMED, NOT DERIVED, AND goobrawl IS WHY.** `start_event()` sets
+  `timers.goobrawl = future_s(45)` - a pre-announcement timer - against a
+  duration of 540, so the same arithmetic there is wrong by 495 SECONDS in a
+  direction that looks entirely plausible. The stamp-once property is PER NAME
+  and was checked per name: `server_functions.js:2561` assigned once, deleted
+  at `:2574` and `:2585`; `gargoyle_end` likewise assigned exactly once in
+  `halloween_events.js:174`. `SPAWN_EXACT_FROM_END` is therefore crabxx,
+  franky, icegolem, horseman and gargoyle. Deriving it as "EVENT_WINDOW_SEC
+  minus the goos" would be right TODAY BY LUCK - the goos are excluded because
+  they are never `E` keys at all, a different reason - and would silently adopt
+  the next event whose timer behaves like goobrawl's. **A SET OF NAMES IS ONLY
+  AS GOOD AS THE PROPERTY BEING CHECKED PER NAME**, which is the `BOSS_TYPES`
+  lesson from a second direction.
+  Shipped on the rows: `spawn_t_exact` and a signed `spawn_t_err_sec` on the
+  spawn row, `elapsed_exact_sec` on the despawn row, `ttk_exact_upper_sec` on
+  the death row - so for these five the fight length stops being an estimate at
+  either end, `death_hi` having already fixed the end. Pinned by a timeline
+  where a spawn detected 150s LATE is admitted by SLACK while the exact elapsed
+  is an ordinary on-time expiry, with the lateness and the admission both
+  asserted as PRECONDITIONS so the comparison cannot pass on a case that never
+  touched the band's early edge. The classifier's blindness is asserted over
+  three function bodies.
+- **CONTRIBUTOR COUNT IS NOT OBTAINABLE FROM THE BRIDGE'S INPUTS AT ALL, so the
+  dps-direction hypothesis is not waiting on a field.** The browser session's
+  finding, 2026-10-22, closing out the proposal to put `target` on the hp rows:
+  `B.drop_table_multiplier`'s `total_characters` counts contributors with
+  `share > 0.0008`, computed server-side at award time and never published -
+  `parent.S` does not carry it and neither does any payload we poll. So the
+  skip row's `contributors_at_decision` has to come from the SCRIPT's own view
+  and can never be reconstructed bridge-side. Worth recording so nobody goes
+  hunting for the right field later; a question that is unanswerable from a
+  source looks exactly like a question whose field has not been found yet.
+  **`target` ON THE hp ROWS IS DEFERRED, NOT REFUSED, AND THE USE CASE IS A
+  MISTAKE ALREADY MADE.** It is a single name, so it answers "is anyone on it"
+  and never "how many" - no value for the dps question. But ASIA I's mrgreen
+  sat at exactly 28,088,505 hp for over five hours and was called "actively
+  being fought" from the percentage alone, and `target` sampled over time
+  answers that in one field. So: no value for the hypothesis, real value for
+  stalled-boss detection, and it lands the moment that becomes a planner input.
 - **AND THE 20-SECOND GRACE IS GENERIC, NOT A GARGOYLE PROPERTY - WHICH
   EXPLAINS EVERY LATE KILL WITH NO ARRIVAL-DEADLINE THEORY AT ALL.** This file
   records "it leaves once nobody has hit it for 20 seconds" as a fact about the
@@ -4433,6 +4522,18 @@ probes are listed at the end as still-open.
   than `index` raising, a `row(seq, i)` helper returning `{}` rather than bare
   subscripting. The hardened versions turn the same two mutations into 5 and 10
   named failures.
+  **THIRD INSTANCE, 2026-10-22, AND IT WAS WRITTEN BY THE SESSION THAT HAD JUST
+  QUOTED THIS RULE.** The spawn-audit assertions compared
+  `_dsp.get("elapsed_exact_sec") >= _W_FRANKY` and subtracted
+  `_dsp["elapsed_exact_sec"]`, so the mutation that DROPS that field - the one
+  those assertions exist to catch - produced `None >= 2400`, a TypeError, and
+  NO PASS LINE AT ALL. Caught only because the mutation's grep came back empty
+  rather than showing a failure, which is the one tell available. Both are
+  number-safe now and the same mutation reports two named failures. **Knowing
+  the rule is not applying it**, which this file already says about
+  `localStorage` under time pressure; the cheap mechanical guard is that any
+  comparison or arithmetic on a field under test goes through a
+  `None`-tolerating accessor, never a bare subscript or operator.
 - **A TEST HELPER IS CODE, AND THE ONE WRITTEN TO AVOID A KNOWN TRAP FELL INTO
   A NEIGHBOURING ONE.** 2026-10-21: `const X = new Set([...])` is not liftable,
   so `suite_merchantsell.js` parses those literals out of the source text
