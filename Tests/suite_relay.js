@@ -195,6 +195,15 @@ module.exports = [
 		   movement while he joins. Same class as the rageEntry split, reached
 		   through the picker rather than through containment. */
 		'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
+		/* bossFightTypes, added with the attack-gate fix. It is read by the
+		   ranger's shouldAttackMob and by the followers' findBestTargetInner,
+		   and those two call sites are NOT the same code - so the one thing
+		   that can keep them in step is the predicate they share being the
+		   same predicate. A ranger-only copy means Dexon opens on a zombie the
+		   followers have no rule for, which is the party-split shape the
+		   rageEntry block already records, reached through targeting instead
+		   of through movement. */
+		'bossFightTypes',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,

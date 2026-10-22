@@ -1549,6 +1549,88 @@ this ranking until a Ranger build is actually running on him.
   tracker-baseline rule earning its keep rather than a near miss - and bgoo
   holding at 70/0/0 means the goobrawl baseline is still clean for the next
   window, with the 2.6:1:1 spread-shot expectation unspent.
+- **THE GARGOYLE "DEFECT" WAS ONE RECORDED DECISION PLUS ONE TIMING ARTEFACT,
+  AND THE SUITE REFUSED THE FIX BEFORE A READER DID - THE SECOND TIME AN
+  ASSERTION HAS OBJECTED ON THE OPERATOR'S BEHALF.** The browser session
+  measured four causes live on 2026-10-22 during a graveyard the operator had
+  to force the party into by hand: `bossMonsterTypes('graveyard')` lacking
+  gargoyle, the combat lists lacking it, `bossRank('gargoyle')` at the default
+  7, and `parent.S.graveyard` ABSENT at 20:47:03 while a dashboard showed a
+  gargoyle at 48.4%. Three of the four dissolve on reading.
+  **THE EXCLUSION IS DELIBERATE AND ITS OWN WORDS SAY SO.** Adding `gargoyle`
+  to `BOSS_FIGHT_TYPES` was written, and three assertions went red, one of them
+  "the gargoyle is deliberately NOT in the fight list". The flattened
+  all-tracked-files search found the rationale in `Party/RangerChangelog.md`:
+  6,000,000 hp and cooperative so three characters cannot take it, its spawn
+  inside the mummy rectangle, and **the waves' points carry over to it anyway -
+  `graveyard_fallen()` banks them and the wake copies them - so excluding it
+  costs no share**, closing with "whether a crowd should flip this is the
+  operator's open call, not a default". Reverted unbuilt, exactly as CaveRun
+  item 2 was. **A GREEN SUITE MEANS NOTHING I KNOW OF OBJECTS, and this is the
+  second red that was a policy conflict rather than a defect.**
+  **AND THAT SAME CLAUSE EXPLAINS THE CREDIT WITHOUT THE FORCING.** MageofOz
+  gargoyle 6 -> 7 was offered with the honest caveat that no counterfactual
+  exists; the carried-over wave points mean credit lands from farming the waves
+  and being present at the death, with no gargoyle damage required at all. So
+  the observation is evidence FOR the recorded design rather than against it.
+  **`bossRank('gargoyle')` IS UNREACHABLE AND MEASURING IT MEASURES NOTHING.**
+  The gargoyle is published INSIDE the `graveyard` entry, so `bossLiveNames()`
+  yields `graveyard`, which is ranked 4. There is no path that asks the
+  ranking for a gargoyle - the same state as `bossRank.goobrawl` before v115,
+  except this one is correct rather than a latent bug.
+- **THE VANISHING `S.graveyard` IS THE EVENT HAVING ENDED, AND THE ARITHMETIC
+  IS ON THE PAGE ALREADY.** Read from upstream `16881a27`: `delete E.graveyard`
+  exists at EXACTLY ONE site, inside `graveyard_finish`, and the gargoyle
+  branch of `graveyard_tick` reaches it two ways - `graveyard.defeated`, or
+  `now > graveyard.gargoyle_end && ssince(gargoyle.last.attacked) > 20`.
+  `gargoyle_end` is stamped AT WAKE as `now + duration * 1000`, so for a wake
+  observed at 20:36:08Z it is **20:46:08Z** - and the "gone" reading was taken
+  at 20:47:03Z, FIFTY-FIVE SECONDS PAST IT. Both endings predict exactly what
+  was seen. **No path in the source deletes that key while the gargoyle lives
+  on that shard**, so there is no publisher defect to design around.
+  **THE 48.4% IS THE WEAKER TERM AND IT WAS NOT CHECKED.** The character's `S`
+  is ONE shard; the bridge dashboard covers every shard. Two terms of different
+  provenance, silently combined - which this file already names as the fault
+  being PROVENANCE rather than population. The discriminating read is the
+  dashboard row's own `server` field against the character's shard, and it was
+  available at the time.
+- **WHAT WAS REAL IS ONE LAYER FURTHER IN, AND IT IS FIXED IN Ranger v117 /
+  Priest v65 / Mage v88: THE ATTACK GATE COULD NOT SEE AN EVENT'S OWN
+  MONSTERS.** `allBosses` names no event spawn - not zombie, not ghoul, not
+  horseman, not gargoyle - and the ranger's `attackIfTargeted` and the
+  followers' `BOSS_SET` are both built from it. So on a graveyard trip Dexon
+  shot a zombie only when that zombie was on FatherToken, the one name in
+  `targetPriority`: aggro luck rather than a rule, and it fits the ranger's
+  0 -> 11 zombie credits against the followers' 12 -> 31 and 17 -> 51.
+  **THE PULL AND THE GATE ARE DIFFERENT LAYERS AND v113 FIXED THE OTHER ONE** -
+  the pull brings the monster to us, the gate decides whether we shoot it, and
+  a correct pull with a blind gate produces a party standing in range doing
+  nothing.
+  `bossFightTypes()` returns the live trip's `bossMonsterTypes()` and `[]`
+  otherwise, so the widening exists only on the event. **NOT done by widening
+  `alwaysAttack`, which is a SORT KEY in `updateCache` as well as a filter** -
+  a zombie there would outrank the farm target on every map, the argument the
+  `rageAlso` check already records. The ranger OPENS (its clause excludes any
+  type those sets already name, so goobrawl keeps its `.target` rule) and the
+  followers JOIN (their loop gains the types and keeps `.target`).
+- **TWO MUTATIONS SCORED ZERO IN A ROW ON THE SAME CHANGE, AND THE SECOND IS
+  THE ONE WORTH KEEPING.** Reverting the MAGE's loop moved no assertion,
+  because the ranger assertions cover a different function in a different
+  file - the `assert on the far side of a handoff` lesson, with the handoff
+  being a shared predicate read by two unlike call sites. Fixed, and then
+  reverting the PRIEST's moved nothing either, because the behavioural test
+  lifts from the Mage alone. Their `findBestTargetInner` bodies legitimately
+  differ, so byte-identity cannot take them and the tempting repair is to drop
+  the subject; the working form narrows the check to the ONE LINE both files
+  must carry, with the `.target` half asserted beside it. **A SHARED PREDICATE
+  ON THE DIVERGENCE LIST DOES NOT COVER THE CALL SITES THAT READ IT.**
+- **A THIRD NON-LIFTABLE SHAPE: A DEFAULT PARAMETER.**
+  `function get_nearest_monster_v2(args = {})` cannot be lifted - `lift()`
+  brace-matches from the first `{`, which here is the DEFAULT PARAMETER VALUE,
+  so the match runs to end-of-file and throws "Unexpected end of input". Same
+  family as `const X = new Set([` and `const X = [`, reached through a
+  parameter list rather than an initialiser, and it fails LOUD like the array
+  form rather than silently swallowing a neighbour.
 - **`max.monsters[X]` ABSENT DOES NOT MEAN NOBODY HAS EVER CREDITED ONE.** The
   browser session's correction to this session, 2026-10-22: ghoul reads
   `own=1 diff=0.3` on BOTH followers while `max.monsters.ghoul` is "none", so

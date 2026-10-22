@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v64
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v65
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1024,7 +1024,7 @@ function findBestTargetInner() {
 	   Credit on a cooperative boss is shared by damage dealt, so joining a
 	   fight in progress pays and opening one alone does not.
 	   -> PriestComments.md#engage-a-cooperative-boss-only-once-somebody */
-	for (const bossType of BOSS_SET) {
+	for (const bossType of new Set([...BOSS_SET, ...bossFightTypes()])) {
 		const boss = get_nearest_monster_v2({
 			type: bossType,
 			max_distance: character.range
@@ -1646,6 +1646,25 @@ const BOSS_JOIN_SPOTS = {
    this to include it is the operator's open call, not a default. */
 const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
+/* THE EVENT'S OWN MONSTERS, AND ONLY WHILE A TRIP IS LIVE. The attack
+   selectors ask `allBosses` (via COMBAT_SETS on the ranger, BOSS_SET on the
+   followers), and that list names NONE of the event spawns - not gargoyle,
+   not horseman, not zombie, not ghoul. So a character standing in front of
+   the Gargoyle had no rule that said to shoot it and engaged only when the
+   boss happened to target the one name in `targetPriority`. That is aggro
+   luck, and it is how the 2026-10-22 kill landed after the operator forced
+   the party into the box by hand.
+   NOT FIXED BY WIDENING THOSE SETS. On the ranger `alwaysAttack` is a SORT
+   KEY in updateCache as well as a filter, so a zombie there would outrank the
+   farm target on every map forever - the same argument the `rageAlso` check
+   records two lines above its own call site. Gating on `bossState.trip` makes
+   the widening exist only while we are actually on the event, which is the
+   one window in which these monsters are what we travelled for. */
+function bossFightTypes() {
+	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
+	if (!trip || !trip.name) return [];
+	return bossMonsterTypes(trip.name);
+}
 
 /* The nearest of ANY of the event's monster types. Distance rather than
    first-found: on a goobrawl both may be up, and posturing against the far one

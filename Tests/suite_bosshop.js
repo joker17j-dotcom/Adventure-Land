@@ -5,6 +5,7 @@
 
 const { lift, world } = require('./lift');
 const RANGER = 'Party/Ranger.js';
+const MAGE_PATH = 'Party/Mage.js';
 
 const G_BASE = {
 	events: {
@@ -1576,6 +1577,199 @@ module.exports = [
 	t.eq('and when G carries neither', w.bossCooperative('goobrawl'), false);
 	w = w1({}, {});
 	t.eq('a G with no monsters table does not throw', w.bossCooperative('goobrawl'), false);
+} },
+
+/* THE ATTACK GATE COULD NOT SEE AN EVENT'S OWN MONSTERS, which is a different
+   hole from the pull v113 fixed and sits one layer further in: the pull gets
+   the monster to us, and this decides whether we shoot it.
+   `shouldAttackMob` asks `home`, `rageAlso`, `alwaysAttack`, `attackIfTargeted`
+   and finally "is it hitting the name in targetPriority". `allBosses` - which
+   is what the last two are built from - names NO event spawn: not zombie, not
+   ghoul, not horseman, not gargoyle. So on a graveyard trip the ranger shot a
+   zombie only when that zombie happened to be on FatherToken, which is aggro
+   luck rather than a rule, and it fits the measured 0 -> 11 ranger zombie
+   credits against the followers' 12 -> 31 and 17 -> 51.
+   THE GARGOYLE IS NOT PART OF THIS FIX and the last assertions prove it: it is
+   deliberately absent from BOSS_FIGHT_TYPES, a recorded decision whose own
+   words are "the operator's open call, not a default", and a change that
+   quietly enacted it through a new code path would be the worst possible
+   version of making it. */
+{ name: 'the event we travelled for is attackable while the trip is live', fn(t) {
+  const aw = (over) => {
+    over = over || {};
+    const w = world({
+      CONFIG: { combat: { ignoreAddsDuringCrabxx: true } },
+      parent: { G: { monsters: {} }, S: {} },
+      home: over.home || 'crabx',
+      rageAlso: over.rageAlso || [],
+      rageHoldFire: () => false,
+      COMBAT_SETS: {
+        neverAttack: new Set(['nerfedmummy']),
+        /* The real sets, built from allBosses as the script builds them, so
+           the goobrawl assertions below are about the shipped membership and
+           not about a fixture that happens to agree. */
+        attackIfTargeted: new Set(['rgoo', 'bgoo', 'crabxx', 'franky', 'icegolem']),
+        alwaysAttack: new Set([]),
+        targetPriority: new Set(['FatherToken']),
+      },
+    });
+    lift(w, RANGER, ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossFightTypes',
+      'bossState', 'shouldAttackMob']);
+    w.bossState.trip = over.trip === undefined ? null : over.trip;
+    return w;
+  };
+  const mob = (mtype, target) => ({ mtype: mtype, target: target === undefined ? null : target });
+
+  /* PRECONDITION, and it is the whole defect: with no trip the ranger has no
+     rule for a zombie, so a stationary one is not shot. If this ever reads
+     true the assertions below stop discriminating. */
+  let w = aw();
+  t.eq('bossFightTypes is empty with no trip', w.bossFightTypes().length, 0);
+  t.eq('so an untargeted zombie is NOT attacked', w.shouldAttackMob(mob('zombie')), false);
+
+  w = aw({ trip: { name: 'graveyard' } });
+  t.eq('a graveyard trip yields the wave types',
+    w.bossFightTypes().join(','), 'zombie,ghoul');
+  t.eq('and the untargeted zombie IS attacked', w.shouldAttackMob(mob('zombie')), true);
+  t.eq('the ghoul too', w.shouldAttackMob(mob('ghoul')), true);
+  /* The farm target and the unrelated mob are untouched either way, so the
+     widening is scoped to the event rather than switching the filter off. */
+  t.eq('the farm home is still attacked', w.shouldAttackMob(mob('crabx')), true);
+  t.eq('an unrelated mob is still refused', w.shouldAttackMob(mob('goo')), false);
+  t.eq('and neverAttack still wins', w.shouldAttackMob(mob('nerfedmummy')), false);
+
+  /* HORSEMAN FALLS OUT OF THE [name] DEFAULT with no table row, which is why
+     the fix is keyed on bossMonsterTypes rather than on a second list. */
+  w = aw({ trip: { name: 'horseman' } });
+  t.eq('a horseman trip yields itself', w.bossFightTypes().join(','), 'horseman');
+  t.eq('and the horseman is attacked untargeted', w.shouldAttackMob(mob('horseman')), true);
+
+  /* INVERTED, AND THIS IS THE ONE THAT KEEPS A DELIBERATE RULE INTACT.
+     rgoo and bgoo ARE in allBosses and therefore in attackIfTargeted, so the
+     new clause excludes them by construction and goobrawl keeps "engage a
+     cooperative boss only once somebody else is on it". Removing either
+     exclusion from the clause turns that rule off silently. */
+  w = aw({ trip: { name: 'goobrawl' } });
+  t.eq('a goobrawl trip yields the goos', w.bossFightTypes().join(','), 'rgoo,bgoo');
+  t.eq('PRECONDITION: the goos are in attackIfTargeted',
+    w.COMBAT_SETS.attackIfTargeted.has('rgoo'), true);
+  t.eq('an UNtargeted rgoo is still refused, trip or no trip',
+    w.shouldAttackMob(mob('rgoo')), false);
+  t.eq('and a targeted one is still taken',
+    w.shouldAttackMob(mob('rgoo', 'someone')), true);
+
+  /* THE RECORDED DECISION, PINNED THROUGH THE NEW PATH. The gargoyle is absent
+     from BOSS_FIGHT_TYPES on purpose - 6,000,000 hp, cooperative, spawn inside
+     the mummy rectangle, and the waves' points carry over to it anyway so
+     excluding it costs no share. This asserts that the attack-gate fix did not
+     enact that open call as a side effect. */
+  w = aw({ trip: { name: 'graveyard' } });
+  t.eq('PRECONDITION: the gargoyle is still out of the fight list',
+    w.bossMonsterTypes('graveyard').indexOf('gargoyle'), -1);
+  t.eq('so an untargeted gargoyle is STILL not attacked',
+    w.shouldAttackMob(mob('gargoyle')), false);
+  t.eq('and it is reached only the way it always was, by aggro on the priest',
+    w.shouldAttackMob(mob('gargoyle', 'FatherToken')), true);
+} },
+
+/* THE FOLLOWER HALF, WHICH A MUTATION CAUGHT AS UNTESTED. Reverting the Mage's
+   loop to a bare `BOSS_SET` moved NO assertion on the first run - the ranger
+   assertions above cover a DIFFERENT function in a different file, and
+   "shared predicate" was doing the work the loop body has to do itself.
+   The division of labour is deliberate and is what this pins: the ranger OPENS
+   (no `.target` needed, above) and the followers JOIN (`.target` still
+   required, here), so nothing in the follower change relaxes the recorded
+   "engage a cooperative boss only once somebody else is on it" rule. */
+{ name: 'a follower joins the event we travelled for, once someone is on it', fn(t) {
+  const MAGE = 'Party/Mage.js';
+  const fw = (over) => {
+    over = over || {};
+    const ents = {};
+    (over.mobs || []).forEach((m, i) => {
+      ents['m' + i] = { type: 'monster', visible: true, dead: false,
+        mtype: m.mtype, target: m.target === undefined ? null : m.target, x: m.x || 0, y: 0 };
+    });
+    const w = world({
+      CONFIG: { combat: { targetPriority: [] } },
+      character: { range: 300, x: 0, y: 0 },
+      parent: { entities: ents },
+      /* STUBBED, AND THE REASON IS A NEW VARIANT OF A TRAP THIS REPO ALREADY
+         CARRIES. `function get_nearest_monster_v2(args = {})` cannot be
+         lifted: lift() brace-matches from the first `{`, which here is the
+         DEFAULT PARAMETER VALUE, so the match runs to end-of-file and throws
+         "Unexpected end of input" - the same failure as `const X = new Set([`
+         and `const X = [`, reached through a parameter list instead of an
+         initialiser. The subject here is findBestTargetInner's loop, not this
+         helper, so a faithful stub of the two argument shapes it is called
+         with is the right scope. */
+      get_nearest_monster_v2: (args) => {
+        args = args || {};
+        let best = null, bd = Infinity;
+        for (const id in ents) {
+          const e = ents[id];
+          if (args.type && e.mtype !== args.type) continue;
+          if (args.target && !args.target.includes(e.target)) continue;
+          const d = Math.abs(e.x || 0);
+          if (args.max_distance !== undefined && d > args.max_distance) continue;
+          if (d < bd) { bd = d; best = e; }
+        }
+        return best;
+      },
+      focusFireTarget: () => null,
+      /* BOSS_SET is `new Set([...allBosses, ...])` - the non-liftable shape -
+         so it is supplied, and the precondition below proves the fixture is
+         faithful on the one membership the test turns on. */
+      BOSS_SET: new Set(['rgoo', 'bgoo', 'crabxx', 'franky', 'icegolem']),
+      home: null,
+    });
+    lift(w, MAGE, ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossFightTypes',
+      'bossState', 'findBestTargetInner']);
+    w.bossState.trip = over.trip === undefined ? null : over.trip;
+    return w;
+  };
+  const src = require('fs').readFileSync(MAGE_PATH, 'utf8');
+  t.eq('PRECONDITION: zombie really is absent from the shipped allBosses',
+    /const allBosses = \[[^\]]*'zombie'/.test(src), false);
+
+  /* PRECONDITION: a targeted zombie in range, which BOSS_SET alone cannot
+     reach - so a hit below is the widening and not the fixture. */
+  let w = fw({ mobs: [{ mtype: 'zombie', target: 'Dexon' }] });
+  t.eq('with no trip the follower finds nothing', w.findBestTargetInner(), null);
+
+  w = fw({ trip: { name: 'graveyard' }, mobs: [{ mtype: 'zombie', target: 'Dexon' }] });
+  const got = w.findBestTargetInner();
+  t.eq('on a graveyard trip it joins the targeted zombie', got && got.mtype, 'zombie');
+
+  /* THE RULE THAT DID NOT CHANGE: no `.target`, no join. The follower waits
+     for the ranger to open, which is the existing design and not a new one. */
+  w = fw({ trip: { name: 'graveyard' }, mobs: [{ mtype: 'zombie', target: null }] });
+  t.eq('an UNtargeted zombie is still refused on the same trip',
+    w.findBestTargetInner(), null);
+
+  /* And the gargoyle stays out on the follower side too, for the same
+     recorded reason - the open call is not enacted here either. */
+  w = fw({ trip: { name: 'graveyard' }, mobs: [{ mtype: 'gargoyle', target: 'Dexon' }] });
+  t.eq('a targeted gargoyle is NOT joined, the fight list still excludes it',
+    w.findBestTargetInner(), null);
+
+  /* AND THE PRIEST IS COVERED BY POSITION RATHER THAN BY BEHAVIOUR, because a
+     priest-only revert of this loop was ALSO invisible - measured by mutation,
+     on the second attempt, after the mage-only revert had already been caught.
+     The two findBestTargetInner bodies legitimately differ (the priest carries
+     an extra `if (!home) return null` and wraps its argument object), so they
+     cannot join the byte-identity loop in suite_relay and the subject must not
+     be dropped for that - the answer is to narrow what the check ignores down
+     to the one line both files have to carry. The `.target` half is asserted
+     beside it so a revert cannot half-land either. */
+  for (const f of ['Party/Priest.js', 'Party/Mage.js']) {
+    const body = require('fs').readFileSync(f, 'utf8');
+    t.eq(f + ': the boss loop iterates BOSS_SET plus the event types',
+      body.indexOf('for (const bossType of new Set([...BOSS_SET, ...bossFightTypes()])) {') >= 0,
+      true);
+    t.eq(f + ': and still requires .target, so the follower joins rather than opens',
+      /new Set\(\[\.\.\.BOSS_SET, \.\.\.bossFightTypes\(\)\]\)\)[\s\S]{0,240}?if \(boss && boss\.target\) return boss;/.test(body),
+      true);
+  }
 } },
 
 ];

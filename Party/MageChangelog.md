@@ -21,6 +21,56 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v88
+
+**THE ATTACK GATE COULD NOT SEE AN EVENT'S OWN MONSTERS, which is one layer
+further in than the pull v113 fixed: the pull brings the monster to us, this
+decides whether we shoot it.** `allBosses` names NO event spawn - not zombie,
+not ghoul, not horseman, not gargoyle - and it is what the ranger's
+`attackIfTargeted` and the followers' `BOSS_SET` are built from. So on a
+graveyard trip Dexon shot a zombie only when that zombie happened to be on
+FatherToken, the one name in `targetPriority`. That is aggro luck rather than
+a rule, and it fits the measured ranger zombie credits of 0 -> 11 against the
+followers' 12 -> 31 and 17 -> 51 over the same window.
+
+`bossFightTypes()` returns the current trip's `bossMonsterTypes()` and `[]`
+with no trip, so the widening exists only while we are actually on the event.
+It is byte-identical in all three files and is on the relay divergence list.
+
+**NOT DONE BY WIDENING `allBosses`, `BOSS_SET` OR `alwaysAttack`.** On the
+ranger `alwaysAttack` is a SORT KEY in `updateCache` as well as a filter, so a
+zombie there would outrank the farm target on every map forever - the same
+argument the `rageAlso` check already records at its own call site.
+
+**THE RANGER OPENS AND THE FOLLOWERS JOIN, which is the existing division and
+not a new one.** The ranger's clause excludes any type `alwaysAttack` or
+`attackIfTargeted` already names, so it changes exactly the monsters that had
+NO rule: rgoo and bgoo are in `allBosses` and therefore keep goobrawl's
+deliberate "engage a cooperative boss only once somebody else is on it". The
+followers' loop gains the event types but keeps its `.target` requirement, so
+they still wait for someone to be on it.
+
+**THE GARGOYLE IS NOT IN THIS CHANGE, AND THE SUITE IS WHAT STOPPED IT BEING.**
+Adding it to `BOSS_FIGHT_TYPES` was written first and reverted: three
+assertions went red, one of them "the gargoyle is deliberately NOT in the
+fight list", and the recorded decision behind it says in its own words "the
+operator's open call, not a default" - 6,000,000 hp and cooperative so three
+characters cannot take it, its spawn inside the mummy rectangle, and the
+waves' points carrying over to it anyway so excluding it costs no share. That
+last clause also explains the gargoyle credit observed on 2026-10-22 without
+any forcing having caused it. A change that enacted an open call as a side
+effect of a different fix is the worst possible way to make it, so the new
+path is asserted NOT to reach the gargoyle, on both the ranger and the
+followers.
+
+**TWO MUTATIONS SCORED ZERO BEFORE THE ASSERTIONS WERE RIGHT**, which is the
+only reason the follower half is covered at all: reverting the Mage's loop
+moved nothing (the ranger assertions are a different function in a different
+file), and then reverting the PRIEST's moved nothing either (the behavioural
+test lifts from the Mage). The two bodies legitimately differ, so they cannot
+join the byte-identity loop; the check was narrowed to the one line both must
+carry rather than dropped. Eight single-file mutations, all caught.
+
 ## v87
 
 **A COMMENT-ONLY CORRECTION, AND IT IS THIS REPO'S OWN LESSON LANDING ON A

@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v116
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v117
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1106,6 +1106,18 @@ const shouldAttackMob = (mob) => {
 	   rank every snake above the osnakes the achievement is counting, and would
 	   do it on every map rather than only at the spot. */
 	if (rageAlso.length && rageAlso.indexOf(mob.mtype) >= 0) return true;
+	/* THE EVENT WE ARE ON, for the types no existing selector names. Scoped
+	   by those two exclusions rather than placed after them, so it changes
+	   exactly the monsters that had NO rule and leaves every monster that had
+	   one alone: rgoo and bgoo are in allBosses and therefore in
+	   attackIfTargeted, so a goobrawl keeps its deliberate "engage a
+	   cooperative boss only once somebody else is on it" rule, while gargoyle,
+	   zombie, ghoul and horseman become ours to OPEN on. The ranger opens and
+	   the followers join through their own BOSS_SET loop, which still requires
+	   `.target` - that division is the existing design, not a new one. */
+	if (bossFightTypes().indexOf(mob.mtype) >= 0
+		&& !COMBAT_SETS.alwaysAttack.has(mob.mtype)
+		&& !COMBAT_SETS.attackIfTargeted.has(mob.mtype)) return true;
 	if (COMBAT_SETS.alwaysAttack.has(mob.mtype)) return true;
 	if (COMBAT_SETS.attackIfTargeted.has(mob.mtype)) {
 		return mob.target !== null && mob.target !== undefined;
@@ -1909,6 +1921,25 @@ function bossRank(name) {
    this to include it is the operator's open call, not a default. */
 const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
+/* THE EVENT'S OWN MONSTERS, AND ONLY WHILE A TRIP IS LIVE. The attack
+   selectors ask `allBosses` (via COMBAT_SETS on the ranger, BOSS_SET on the
+   followers), and that list names NONE of the event spawns - not gargoyle,
+   not horseman, not zombie, not ghoul. So a character standing in front of
+   the Gargoyle had no rule that said to shoot it and engaged only when the
+   boss happened to target the one name in `targetPriority`. That is aggro
+   luck, and it is how the 2026-10-22 kill landed after the operator forced
+   the party into the box by hand.
+   NOT FIXED BY WIDENING THOSE SETS. On the ranger `alwaysAttack` is a SORT
+   KEY in updateCache as well as a filter, so a zombie there would outrank the
+   farm target on every map forever - the same argument the `rageAlso` check
+   records two lines above its own call site. Gating on `bossState.trip` makes
+   the widening exist only while we are actually on the event, which is the
+   one window in which these monsters are what we travelled for. */
+function bossFightTypes() {
+	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
+	if (!trip || !trip.name) return [];
+	return bossMonsterTypes(trip.name);
+}
 
 /* The nearest of ANY of the event's monster types. Distance rather than
    first-found: on a goobrawl both may be up, and posturing against the far one
