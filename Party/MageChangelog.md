@@ -21,6 +21,58 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v84
+
+**THE RAGE PULL READS THE BOSS CONTEXT NOW, AND WITHOUT THIS THE WORKING
+GRAVEYARD ROUTE KILLED NOTHING.** Measured 2026-10-22, the first live window.
+Routing was perfect - `bossPick()` became graveyard and two seconds after the
+open Dexon was standing on `BOSS_JOIN_SPOTS` at (255,-1030) - and the party
+produced zombie +0, ghoul +0, gargoyle +0 while the gargoyle on their own shard
+lived seven minutes and died at 0.01%. Present on shard, zero credit.
+
+**THE CAUSE WAS MEASURED, NOT INFERRED**, read off the priest mid-window:
+`destination` was the FARM target (crabx on `main`), `rageAlso` was `[]`, so
+`ragePullTypes()` answered `["crabx"]` and `ragePullActive()` early-returned on
+`destination.map !== character.map`. Every target sat inside the mummy
+rectangle, `safeMove` refuses every coordinate in it, and the ONLY engagement
+route from the join spot is the pull - which was idle. The party stood at the
+join spot with every target behind a wall it would not cross and no mechanism
+to bring one out.
+
+**IT IS THIS FILE'S OWN WARNING ABOUT THE MANUAL OVERRIDE, APPLIED TO THE
+AUTOMATIC PATH.** "mummy has to be in `rageAlso` ... `home: 'zombie'` alone
+leaves the pull machinery idle" - the operator's snippet worked because it set
+`manualOverride` AND `rageAlso` AND ran `runFarmSearch()`. The boss path sets
+none of the three, and should not: the farm layer owns those, and writing boss
+state into them is v108's mistake from the other end. So the pull READS the
+boss context, the way movement already does.
+
+`ragePullCtx()` answers which park point and which types the pull is serving -
+the boss trip's when one is live and its park point is on this map, the farm's
+otherwise. **`bossWalkTarget` IS THE PARK POINT FOR FREE**, because v111's
+guard already falls it through to the join spot when the published coordinates
+land inside a rectangle; the two compose with nothing to keep in step.
+
+**THE ACTIVATION TEST GAINED A SECOND DISJUNCT, AND IT IS A WIDENING RATHER
+THAN A REPLACEMENT.** The box-TYPE test cannot see the graveyard - zombie,
+ghoul and the gargoyle are EVENT spawns with no rectangle of their own, so
+spookytown's only box type is `mummy` and a graveyard trip matched nothing. The
+new half asks POSITION: is any wanted type currently standing inside a
+rectangle, which is the question the candidate scan has always asked.
+**REPLACING THE TYPE TEST WOULD HAVE BEEN A REGRESSION.** `rageHoldFire()`
+consults this, and its first job is to stop the party fighting on the way IN -
+so on an approach with nothing yet visible inside a rectangle a purely
+positional test answers "inactive", hold-fire switches off, and the party stops
+to fight exactly where the old comment says it must not. Both disjuncts, and the
+regression case is an assertion.
+
+`rageHoldFire()` and `ragePullTick()` take their park point from the context
+too. The old code measured distance to the farm target two maps away, which is
+always past `parkWithin`, so hold-fire was unconditionally true for any wanted
+type. Memoised for 250ms because the positional half walks `parent.entities`
+and `rageHoldFire()` asks per MOB; keyed on context and map, so a change of
+either is seen at once, which is asserted.
+
 ## v83
 
 **ENTERING THE RAGE BOX, ON THE OPERATOR'S RULING** - "that still needs to

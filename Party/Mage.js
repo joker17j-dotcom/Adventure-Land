@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v83
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v84
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2342,9 +2342,14 @@ function rageHoldFire(mob) {
 	if (!mob || !mob.mtype) return false;
 	const cfg = rageCfg();
 	if (!cfg.enabled || !ragePullActive()) return false;
-	if (ragePullTypes().indexOf(mob.mtype) < 0) return false;
-	if (!destination || typeof destination.x !== 'number') return false;
-	if (Math.hypot(character.x - destination.x, character.y - destination.y) > cfg.parkWithin) return true;
+	const ctx = ragePullCtx();
+	if (ctx.types.indexOf(mob.mtype) < 0) return false;
+	/* THE PARK POINT COMES FROM THE CONTEXT, so on a boss trip this is the join
+	   spot rather than the farm target two maps away - without which the
+	   distance test below reads a destination that has nothing to do with where
+	   the party is standing. */
+	if (typeof ctx.x !== 'number') return false;
+	if (Math.hypot(character.x - ctx.x, character.y - ctx.y) > cfg.parkWithin) return true;
 	return !!rageHit(character.map, mob.x, mob.y, 0);
 }
 
@@ -2398,24 +2403,111 @@ async function rageGuard() {
 let rageAlso = [];
 const ragePull = { openedAt: {}, lastPull: 0, busy: false };
 
-function ragePullTypes() {
+/* WHICH PARK POINT AND WHICH TYPES THE PULL IS WORKING FOR, AND IT IS NOT
+   ALWAYS THE FARM'S - measured 2026-10-22, the graveyard's first live window.
+   THE SYMPTOM: routing worked perfectly. bossPick() became graveyard, and two
+   seconds after the window opened Dexon was standing on BOSS_JOIN_SPOTS at
+   (255,-1030). The party then produced NOTHING - zombie +0, ghoul +0,
+   gargoyle +0 - while the gargoyle on their own shard lived seven minutes and
+   died at 0.01%. Present on shard, zero credit.
+   THE CAUSE, read off the priest mid-window: `destination` was the FARM target
+   (crabx on `main`), `rageAlso` was [], so ragePullTypes() answered ["crabx"]
+   and ragePullActive() early-returned on `destination.map !== character.map`.
+   Every target was inside the mummy rectangle, safeMove refuses every
+   coordinate in it, and the ONLY engagement route from the join spot is the
+   pull - which was idle.
+   THE BOSS-EVENT PATH SETS NEITHER `destination` NOR `rageAlso`, and it should
+   not: the farm layer owns those, and writing boss state into them is the
+   mistake v108 made from the other end. So the pull READS the boss context
+   instead, the same way movement already does - boss events own movement
+   through shouldHandleEvents()/handleEvents(), and this makes the pull agree
+   with that rather than with the farm it is not serving.
+   `bossWalkTarget` IS THE PARK POINT FOR FREE, because v111's guard already
+   falls it through to the join spot when the published coordinates land inside
+   a rage rectangle. The two changes compose with nothing to keep in step. */
+function ragePullCtx() {
+	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
+	if (trip && trip.name && typeof bossWalkTarget === 'function') {
+		const spot = bossWalkTarget(trip.name);
+		if (spot && spot.map === character.map) {
+			return { src: 'boss', map: spot.map, x: spot.x, y: spot.y,
+				types: bossMonsterTypes(trip.name) };
+		}
+	}
 	const out = [];
 	if (typeof home === 'string' && home) out.push(home);
 	for (const t of rageAlso) if (out.indexOf(t) < 0) out.push(t);
-	return out;
+	return { src: 'farm', map: destination ? destination.map : null,
+		x: destination ? destination.x : null, y: destination ? destination.y : null,
+		types: out };
 }
 
-/* Active only where it is needed: the spot we are farming has to be one with a
-   rage box on this map. Everywhere else the ordinary farm loop is untouched. */
+function ragePullTypes() { return ragePullCtx().types; }
+
+/* IS ANY TYPE WE WANT CURRENTLY STANDING INSIDE A RECTANGLE. Position, not box
+   type - which is the question the CANDIDATE scan has always asked, and the
+   one the activation test did not. */
+function rageBoxedTarget(map, types) {
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'monster' || e.dead) continue;
+		if (types.indexOf(e.mtype) < 0) continue;
+		if (rageHit(map, e.x, e.y, 0)) return true;
+	}
+	return false;
+}
+let rageActiveMemo = { at: 0, key: '', val: false };
+
+/* Active only where it is needed: the spot we are working has to be one with a
+   rage box on this map. Everywhere else the ordinary farm loop is untouched.
+   TWO DISJUNCTS, AND THE SECOND IS A WIDENING RATHER THAN A REPLACEMENT. The
+   box-TYPE test is what the mummy and booboo farms have always used, and it
+   cannot see the graveyard: zombie, ghoul and the gargoyle are EVENT spawns
+   with no rectangle of their own, so on spookytown the only box type is
+   `mummy` and a graveyard trip matched nothing.
+   REPLACING IT WITH THE POSITIONAL TEST WOULD HAVE BEEN A REGRESSION, which is
+   why both are here. rageHoldFire() consults this, and its first job is to
+   stop the party fighting on the way IN - so on an approach with no monster
+   yet visible inside a rectangle, a purely positional test answers "inactive",
+   hold-fire switches off, and the party stops to fight exactly where the old
+   comment says it must not. Every case that was active stays active.
+   MEMOISED for 250ms because the positional half walks parent.entities and
+   rageHoldFire() asks per MOB, which would otherwise be quadratic. Keyed on
+   the context and the map, so a change of either is seen at once. */
+
+/* Active only where it is needed: the spot we are working has to be one with a
+   rage box on this map. Everywhere else the ordinary farm loop is untouched.
+   TWO DISJUNCTS, AND THE SECOND IS A WIDENING RATHER THAN A REPLACEMENT. The
+   box-TYPE test is what the mummy and booboo farms have always used, and it
+   cannot see the graveyard: zombie, ghoul and the gargoyle are EVENT spawns
+   with no rectangle of their own, so on spookytown the only box type is
+   `mummy` and a graveyard trip matched nothing.
+   REPLACING IT WITH THE POSITIONAL TEST WOULD HAVE BEEN A REGRESSION, which is
+   why both are here. rageHoldFire() consults this, and its first job is to
+   stop the party fighting on the way IN - so on an approach with no monster
+   yet visible inside a rectangle, a purely positional test answers "inactive",
+   hold-fire switches off, and the party stops to fight exactly where the old
+   comment says it must not. Every case that was active stays active.
+   MEMOISED for 250ms because the positional half walks parent.entities and
+   rageHoldFire() asks per MOB, which would otherwise be quadratic. Keyed on
+   the context and the map, so a change of either is seen at once. */
 function ragePullActive() {
 	const cfg = rageCfg();
 	if (!cfg.enabled) return false;
-	if (!destination || destination.map !== character.map) return false;
-	const types = ragePullTypes();
+	const ctx = ragePullCtx();
+	if (!ctx.map || ctx.map !== character.map) return false;
+	const types = ctx.types;
 	if (!types.length) return false;
 	const boxes = rageBoxes(character.map);
+	if (!boxes.length) return false;
 	for (const b of boxes) if (types.indexOf(b.type) >= 0) return true;
-	return false;
+	const key = character.map + '|' + ctx.src + '|' + types.join(',');
+	const now = Date.now();
+	if (rageActiveMemo.key === key && now - rageActiveMemo.at < 250) return rageActiveMemo.val;
+	const val = rageBoxedTarget(character.map, types);
+	rageActiveMemo = { at: now, key: key, val: val };
+	return val;
 }
 
 function rageParty() {
@@ -2669,7 +2761,9 @@ async function ragePullTick() {
 	const spot = edges[0];
 	if (Math.hypot(spot.x - pick.x, spot.y - pick.y) > reach) return false;
 
-	const park = destination ? { x: destination.x, y: destination.y } : { x: character.x, y: character.y };
+	const pctx = ragePullCtx();
+	const park = (typeof pctx.x === 'number') ? { x: pctx.x, y: pctx.y }
+		: { x: character.x, y: character.y };
 	ragePull.busy = true;
 	try {
 		rageLog('pulling ' + pick.mtype + ' (need ' + Math.round(need) + ', reach ' + Math.round(reach) + ')', '#FFD700');
@@ -2689,7 +2783,10 @@ function rageStatus() {
 	const map = character.map;
 	const boxes = rageBoxes(map);
 	rageLog(map + ': ' + (boxes.length ? boxes.map(b => b.type + ' [' + b.r.join(',') + ']').join('  ') : 'no rage boxes'), '#8b98ab');
-	rageLog('pull ' + (ragePullActive() ? 'ACTIVE' : 'idle') + ' | types ' + ragePullTypes().join(',')
+	const sctx = ragePullCtx();
+	rageLog('pull ' + (ragePullActive() ? 'ACTIVE' : 'idle') + ' | for ' + sctx.src
+		+ ' @ ' + sctx.map + ' (' + Math.round(sctx.x) + ',' + Math.round(sctx.y) + ')'
+		+ ' | types ' + ragePullTypes().join(',')
 		+ ' | concurrent ' + rageCfg().concurrent + ' | margin ' + rageCfg().margin
 		+ ' | engaged ' + rageEngagedCount(ragePullTypes()), '#8b98ab');
 	return { boxes: boxes, types: ragePullTypes(), cfg: rageCfg() };

@@ -178,6 +178,13 @@ module.exports = [
 		   This is the set where identity is load-bearing rather than tidy. */
 		'rageCrowdSoak', 'rageAttackersOnMe', 'rageEntrySet', 'rageEntryTick',
 		'rageEntryBroadcast', 'rageEntryOnCall',
+		/* The pull context set, added 2026-10-22. ragePullCtx decides which park
+		   point and which monster types the pull serves, and a copy that drifts
+		   means one character pulling for the farm while another pulls for the
+		   boss - and the measured failure these replaced was the pull being idle
+		   with every target behind a wall, which logged nothing at all. */
+		'ragePullCtx', 'ragePullTypes', 'rageBoxedTarget', 'ragePullActive',
+		'rageHoldFire', 'ragePullTick',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,

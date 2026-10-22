@@ -1315,6 +1315,82 @@ this ranking until a Ranger build is actually running on him.
   record already encoded the distinction: the `!character.rip && wasRip` branch
   handles variance (crowd still there, go back) by recomputing entry from
   scratch, and the counter handles a bad gate.
+- **THE GRAVEYARD ROUTE WORKED ON ITS FIRST LIVE WINDOW AND KILLED NOTHING, AND
+  THE CAUSE IS THIS FILE'S OWN WARNING APPLIED TO THE OTHER PATH.** Measured
+  2026-10-22, 06:30Z: `bossPick()` became graveyard and TWO SECONDS after the
+  open Dexon was standing on `BOSS_JOIN_SPOTS` at (255,-1030) - the first clean
+  demonstration that rank 4 moves the party by itself, and that `c80a346`
+  including the `bossWalkTarget` guard works end to end. Then zombie +0,
+  ghoul +0, gargoyle +0, while the gargoyle on their own shard lived seven
+  minutes and died at 0.01%. **PRESENT ON SHARD, ZERO CREDIT.**
+  Read off the priest mid-window: `destination` was the FARM target (crabx on
+  `main`), `rageAlso` was `[]`, `ragePullTypes()` answered `["crabx"]`, and
+  `ragePullActive()` early-returned on `destination.map !== character.map`.
+  Every target was inside the mummy rectangle, `safeMove` refuses every
+  coordinate in it, so the ONLY engagement route from the join spot is the
+  PULL - and it was idle.
+  **THIS FILE ALREADY CARRIED THE WARNING, ABOUT THE MANUAL OVERRIDE: "mummy
+  has to be in `rageAlso` ... `home: 'zombie'` alone leaves the pull machinery
+  idle."** The snippet worked because it set `manualOverride` AND `rageAlso` AND
+  ran `runFarmSearch()`. The automatic path sets none of the three. So a hazard
+  written up for one route was live on the other the whole time, and nobody
+  checked - the `CaveRun.js:227` shape again: a correct claim nobody carried
+  across to the neighbouring caller.
+  Fixed in Ranger v113 / Priest v61 / Mage v84 by having the pull READ the boss
+  context (`ragePullCtx()`) rather than having the boss path write into farm
+  state, which is v108's mistake from the other end. `bossWalkTarget` supplies
+  the park point for free, since v111's guard already falls it through to the
+  join spot.
+  **AND AN EARLIER EXPLANATION IS RETRACTED BY ITS OWN AUTHOR**: that
+  horseman/gargoyle being absent from `CONFIG.combat.alwaysAttack` and
+  `attackIfTargeted` was the cause. The pull is the binding constraint for the
+  graveyard and it is measured; the lists may still matter for horseman, which
+  sits in no rage box and had no pull dependency at all.
+- **A WIDENING AND A REPLACEMENT LOOK IDENTICAL UNTIL YOU ASK WHO ELSE READS
+  THE PREDICATE.** The obvious fix was to swap `ragePullActive()`'s box-TYPE
+  test for a POSITIONAL one, since position is what the candidate scan has
+  always asked and the type test is what cannot see an event spawn. That would
+  have regressed the mummy and booboo farms: `rageHoldFire()` consults the same
+  predicate, and its FIRST job is to stop the party fighting on the way in - so
+  on an approach with nothing yet inside a rectangle, a positional test answers
+  "inactive", hold-fire switches off, and the party stops to fight exactly where
+  its own comment says it must not. Both disjuncts ship, and the regression case
+  is an assertion rather than a memory.
+- **HORSEMAN IS KILLABLE AND THE POLL CHANGE IS PROVEN, 05:00Z 2026-10-22.**
+  267 rows, SIX spawns at 05:00:02Z one per US shard, hp 30,000,000. Five kills
+  at 391s, 620s, 686s, 710s and 1322s against a 2400s window - so comfortably
+  inside it, which settles "worth hopping for" with data rather than ranking.
+  All five graded `low` via `absent_on_responding_server`, which is CORRECT by
+  construction and is exactly the population `ttk_upper_*` exists for.
+  **ROUTING ALSO WORKED THERE AND ALSO PAID NOTHING, AND THE TWO EXPLANATIONS
+  CANNOT BE SEPARATED.** At 05:17:52Z `bossPick` was horseman, the trip was
+  horseman, Dexon was on `halloween`, and the boss was at 24.46% - so the party
+  arrived with a crowd three quarters done, and `share > 0.0025` is a complete
+  alternative to any attack-list problem. `max.monsters.horseman` is still
+  "none": no character on the account has ever killed one.
+- **THE GARGOYLE WAKE IS BIMODAL, AND THE 540 WAS ONE MODE MEASURED ONCE.** 25
+  observations across two windows on 2026-10-22, roughly half at each end of
+  the [360, 540] bracket: the 06:30Z window alone gave US V 372, US IV 375,
+  EU IV 378, EU I 382, US I 383, ASIA II 499, then seven shards at 540-541, and
+  04:30Z gave seven early at 368-441 against five at 541. **NEITHER BOUND IS
+  "THE" CONSTANT**, which is the strongest possible vindication of keying the
+  bridge branch on the `gargoyle` field and writing both bounds down as
+  constants used by nothing. The browser session's own framing: "540, exact, to
+  the second" was one mode of a bimodal distribution, measured in the
+  degenerate case. Nine gargoyle deaths that window at 0.01-0.9%, all real
+  kills.
+- **A ZERO MEASURED IN THE EMPTIEST POSSIBLE MOMENT IS NOT EVIDENCE.**
+  `rageCrowdSoak()` returned `{soaked: 0, boxed: 0}` - three samples, all
+  between 06:30:02 and 06:30:08, six seconds into a window with 12 zombies up
+  and nobody else arrived yet. So whether the entry gate can ever open is STILL
+  OPEN, the four `rageEntry` numbers still have nothing under them, and the
+  operator has deferred them on exactly that basis. The browser session's own
+  two errors behind it, both recorded: the first sampler was stored on `window`,
+  which a hop wipes - this file says so and they had used `localStorage`
+  correctly an hour earlier - and the second recorded only when a graveyard
+  existed OR the party was south, so it wrote nothing at all while running.
+  **A SAMPLER WITH A CONDITION ON WHEN IT RECORDS CAN RUN PERFECTLY AND PRODUCE
+  AN EMPTY LOG**, which reads exactly like the thing being absent.
 - **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
   `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
   pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,
@@ -3868,13 +3944,13 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-22, LATEST: 657 JS assertions across NINE suites, plus
+  **COUNT AS OF 2026-10-22, LATEST: 731 JS assertions across NINE suites, plus
   287 from the python bridge suite the runner shells out to and folds in, for
-  `all 944 pass`.** The ninth is `suite_merchantbuy`, split from
+  `all 1018 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  It read 994, 992, 977, 967, 944, 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
   668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
   EIGHTEEN figures in three days, which is the point rather than an embarrassment:

@@ -154,8 +154,21 @@ module.exports = [
     /for \(const b of boxes\) if \(types\.indexOf\(b\.type\) >= 0\) return true;/.test(rs));
   t.ok('while the pull candidate scan gates on POSITION',
     /if \(!rageHit\(map, e\.x, e\.y, 0\)\) continue;/.test(rs));
-  t.ok('and ragePullTypes is home plus rageAlso, which is what the snippet sets',
-    /function ragePullTypes\(\)[\s\S]{0,200}?rageAlso/.test(rs));
+  /* THE FARM PATH'S TYPES ARE STILL home + rageAlso - the snippet's guarantee
+     is intact - but they moved into ragePullCtx() when the pull learned to read
+     a boss trip, so this points at where they live rather than at a body that
+     no longer holds them. The claim did not rot; the address did. */
+  t.ok('the FARM branch of ragePullCtx is still home plus rageAlso',
+    /src: 'farm'[\s\S]{0,200}?types: out/.test(rs)
+    && /function ragePullCtx\(\)[\s\S]{0,1600}?out\.push\(home\)[\s\S]{0,200}?of rageAlso/.test(rs));
+  t.ok('and ragePullTypes still answers from that context',
+    /function ragePullTypes\(\) \{ return ragePullCtx\(\)\.types; \}/.test(rs));
+  /* THE TYPE TEST ABOVE IS NOW THE FIRST OF TWO DISJUNCTS, not the whole
+     story - a positional half was added so a graveyard trip, whose types own
+     no rectangle, can activate the pull at all. Asserted here so the sibling
+     assertion is not read as "type matching is all there is". */
+  t.ok('ragePullActive also has a POSITIONAL disjunct',
+    /rageBoxedTarget\(character\.map, types\)/.test(rs));
 } },
 
 { name: 'graveyard is handled as a boss event, not through the farm layer', fn(t) {
@@ -423,6 +436,109 @@ module.exports = [
   w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() }, ents: onMe(2, 'Dexon') });
   w.rageEntryTick('spookytown');
   t.eq('two on it is not a retreat', w.rageEntryActive, true);
+} },
+
+{ name: 'the rage pull reads the BOSS context, not the farm it is not serving', fn(t) {
+  /* MEASURED 2026-10-22, the graveyard's first live window. Routing worked -
+     bossPick() became graveyard and two seconds after the open Dexon was on
+     BOSS_JOIN_SPOTS at (255,-1030) - and the party produced zombie +0,
+     ghoul +0, gargoyle +0 while the gargoyle on their own shard lived seven
+     minutes and died at 0.01%. Present on shard, zero credit.
+     Read off the priest mid-window: destination was the FARM target (crabx on
+     `main`), rageAlso was [], so ragePullTypes() answered ["crabx"] and
+     ragePullActive() early-returned on destination.map !== character.map.
+     Every target sat inside the mummy rectangle, safeMove refuses every
+     coordinate in it, and the only engagement route from the join spot is the
+     pull - which was idle. */
+  const G = JSON.parse(JSON.stringify(G_BASE));
+  G.maps.spookytown = {
+    doors: [[1]],
+    monsters: [{ type: 'mummy', rage: MUMMY_RAGE, boundary: MUMMY_BOUNDARY }],
+  };
+  G.maps.main.monsters = [{ type: 'booboo', rage: [0, 0, 100, 100] }];
+  G.monsters.zombie = { cooperative: true };
+  G.monsters.ghoul = { cooperative: true };
+
+  const mk = (over) => {
+    over = over || {};
+    const w = world({
+      character: { name: 'Dexon', map: over.map || 'spookytown', x: 255, y: -1030,
+        real_x: 255, real_y: -1030, s: {} },
+      CONFIG: { achievements: { pull: {} }, party: { groupMembers: ['Dexon'] },
+        bossEvents: { leaderName: 'Dexon', rageEntry: {} } },
+      parent: { G: G, S: over.S || {}, entities: over.ents || {} },
+      rageLog: () => {},
+      bossNote: () => {},
+      ragePullShared: null,
+      rageEntryActive: false,
+      rageActiveMemo: { at: 0, key: '', val: false },
+      home: over.home === undefined ? 'crabx' : over.home,
+      rageAlso: over.also || [],
+      destination: over.dest === undefined ? { map: 'main', x: -984, y: 1762 } : over.dest,
+      bossState: { trip: over.trip || null },
+    });
+    lift(w, RANGER, ['rageCfg', 'rageBoxes', 'rageHit', 'BOSS_FIGHT_TYPES',
+      'bossMonsterTypes', 'BOSS_JOIN_SPOTS', 'bossWalkTarget', 'ragePullCtx',
+      'ragePullTypes', 'rageBoxedTarget', 'ragePullActive', 'rageHoldFire']);
+    w.EVENT_LOCATIONS = [];
+    return w;
+  };
+  const IN_BOX = { z1: { type: 'monster', mtype: 'zombie', x: 255, y: -1400, dead: false } };
+
+  /* --- the measured state, reproduced ----------------------------------- */
+  let w = mk({});
+  t.eq('precondition: with no trip the context is the FARM', w.ragePullCtx().src, 'farm');
+  t.eq('and its types are the farm home, exactly as measured',
+    w.ragePullTypes().join(','), 'crabx');
+  t.eq('so on spookytown the pull is idle - the measured failure',
+    w.ragePullActive(), false);
+
+  /* --- with the trip, the context is the boss's -------------------------- */
+  w = mk({ trip: { name: 'graveyard' }, ents: IN_BOX });
+  const ctx = w.ragePullCtx();
+  t.eq('a live graveyard trip switches the context', ctx.src, 'boss');
+  t.eq('its park point is the join spot, not the farm target',
+    ctx.x + ',' + ctx.y, '255,-1030');
+  t.eq('and its types are the waves', w.ragePullTypes().join(','), 'zombie,ghoul');
+  t.eq('so the pull is ACTIVE - which is the fix', w.ragePullActive(), true);
+
+  /* THE TYPE TEST ALONE COULD NEVER HAVE DONE IT: spookytown's only box is the
+     mummy's, and zombie/ghoul are event spawns with no rectangle of their own.
+     Asserted so nobody "simplifies" the positional half away. */
+  t.eq('precondition: no box on the map has a type we want',
+    w.rageBoxes('spookytown').some((b) => w.ragePullTypes().indexOf(b.type) >= 0), false);
+  t.eq('it is the POSITIONAL half that activates it',
+    w.rageBoxedTarget('spookytown', ['zombie', 'ghoul']), true);
+  /* And with the field empty it goes quiet again rather than spinning. */
+  t.eq('no wanted type inside a box: idle', mk({ trip: { name: 'graveyard' } }).ragePullActive(), false);
+
+  /* --- THE REGRESSION THE WIDENING EXISTS TO AVOID ----------------------- */
+  /* rageHoldFire()'s first job is to stop the party fighting on the way IN. A
+     purely positional test answers "inactive" on an approach with nothing yet
+     inside a rectangle, hold-fire switches off, and the party stops to fight
+     exactly where the old comment says it must not. So the box-TYPE test stays
+     as the first disjunct and every case that was active stays active. */
+  const farm = mk({ map: 'main', home: 'booboo', dest: { map: 'main', x: 50, y: 50 } });
+  t.eq('precondition: nothing is inside the booboo box',
+    farm.rageBoxedTarget('main', ['booboo']), false);
+  t.eq('the farm case is STILL active on the box type alone',
+    farm.ragePullActive(), true);
+
+  /* --- hold fire reads the context's park point -------------------------- */
+  w = mk({ trip: { name: 'graveyard' }, ents: IN_BOX });
+  t.eq('a boxed wanted type is held',
+    w.rageHoldFire({ mtype: 'zombie', x: 255, y: -1400 }), true);
+  /* The old code measured distance to the FARM target - two maps away, so
+     always past parkWithin, so hold-fire was unconditionally true for any
+     wanted type. Now it measures to the join spot we are standing on. */
+  t.eq('and one already OUT of the box is not',
+    w.rageHoldFire({ mtype: 'zombie', x: 255, y: -1000 }), false);
+
+  /* --- the memo must not mask a context change --------------------------- */
+  const m = mk({ trip: { name: 'graveyard' }, ents: IN_BOX });
+  t.eq('precondition: active', m.ragePullActive(), true);
+  m.bossState.trip = null;
+  t.eq('dropping the trip is seen at once, memo or not', m.ragePullActive(), false);
 } },
 
 { name: 'taxi joins: which refusals actually put the fight out of reach', fn(t) {
