@@ -378,6 +378,62 @@ BOSS_DESPAWN_INTACT_PCT = 95.0
 # in the log, US III, 565s elapsed against a 540s window. The character scripts
 # already carry this mapping as BOSS_FIGHT_TYPE = { goobrawl: 'rgoo' }; the
 # bridge lacked it. Key by what the poller actually has.
+# GRAVEYARD RISING'S GARGOYLE. Read from upstream node/logic/halloween_events.js
+# at 16881a27 (graveyard_tick, graveyard_public) with design/events.js beside it,
+# after the other session measured the wake live on EU IV at 1 Hz for 901s.
+#
+# THE WAKE IS A BRACKET, NOT A CONSTANT, AND IT IS NOT A WAVE INTERVAL. The
+# condition is `wave >= waves.length && (!ids.length || now - start >=
+# (duration - 60) * 1000)` - every wave SPAWNED, and then EITHER the field is
+# CLEARED or the late bound arrives. So with waves at 0/180/360 and duration
+# 600 the gargoyle wakes somewhere in [360, 540]: at 540 if the waves are left
+# standing, earlier - potentially three minutes earlier - if the party kills
+# them.
+# THE 540 MEASURED LIVE IS THE LATE BOUND, OBSERVED BECAUSE NOBODY CLEARED THE
+# FIELD ("Expected result as other players did not show up"), and it is
+# `duration - 60`. It coincides exactly with "one wave interval after the last
+# wave" (360 + 180) and that agreement is a COINCIDENCE OF THIS WAVE TABLE: a
+# fourth wave at 540 would move the interval form to 720 while the real wake
+# stayed 540, and a duration change moves the real wake while the interval form
+# does not. The derivation proposed as the durable one is the fragile one here.
+# NEITHER FORM IS USED. The branch keys on the `gargoyle` field appearing,
+# which is exact in both directions and needs no wave table at all.
+GRAVEYARD_WAKE_LEAD_SEC = 60          # rules.duration - 60: the LATE bound only
+GRAVEYARD_WAKE_EARLIEST_SEC = 360     # the last wave's own offset
+# The gargoyle's own deadline is set AT WAKE - `gargoyle_end = now + duration *
+# 1000` - so measured from the gargoyle's spawn, which is what this bridge
+# observes, the window is a flat `duration` however early or late it woke. That
+# is why the entry below can take a constant where the wake cannot.
+# IT IS ALSO PUBLISHED PER-INSTANCE as `end` on the row once awake, and the
+# translation carries it: an exact deadline beats a derived one, and the two
+# disagreeing would be a finding rather than a nuisance.
+# THE EVENT THEREFORE OUTLIVES ITS NOMINAL 600s BY DESIGN, not as an overrun:
+# up to (duration - 60) + duration plus a 20-second no-attack grace, ~1160s,
+# which is what a 901s live:true reading is. Do not let a 600s window close a
+# graveyard row.
+GARGOYLE_SPAWN = (255, -1545)
+# A FACT ABOUT THE MAP, PUBLISHED AS A FIELD BECAUSE A CONSUMER CANNOT DERIVE
+# IT AND A COMMENT HERE WOULD NEVER REACH ONE. design/maps.js at 16881a27 gives
+# spookytown's mummy spawn `rage [-124,-1631,614,-1130]`, and the gargoyle's
+# fixed spawn above is inside it - confirmed against live rageBoxes('spookytown')
+# on 2026-10-21, which returns that rectangle and two booboo ones. Every party
+# script's safeMove refuses a coordinate in a rage rectangle, so NOTHING CAN
+# STAND ON THIS SPAWN: the router parks at y -1124, six units outside the edge,
+# and logs no refusal. A chain queue reading a gargoyle row as an ordinary
+# 6,000,000 hp cooperative boss would route three characters at a destination
+# they can never occupy, and the symptom would look exactly like a broken
+# router rather than a refused destination.
+GARGOYLE_SPAWN_IN_RAGE_BOX = True
+# Names that are in BOSS_TYPES to DECLARE INTEREST and must never be read as a
+# top-level payload key. Today `E.gargoyle` does not exist, so this skip is
+# unreachable and the loop would do no harm - which is exactly why it is worth
+# writing down: if the creator ever publishes one, the main loop would match it
+# and emit a SECOND entry for the same monster, in the ordinary boss shape,
+# without `end` or `spawnInRageBox`. A duplicate in a different shape is worse
+# than a miss, and nothing about it would look wrong. Found by the assertion
+# rather than by reading.
+BRANCH_ONLY_TYPES = frozenset({"gargoyle"})
+
 EVENT_WINDOW_SEC = {
     "crabxx": SCHEDULE_EVENT_SEC["crabxx"],
     "franky": SCHEDULE_EVENT_SEC["franky"],
@@ -385,6 +441,8 @@ EVENT_WINDOW_SEC = {
     "horseman": SCHEDULE_EVENT_SEC["horseman"],
     "rgoo": SCHEDULE_EVENT_SEC["goobrawl"],
     "bgoo": SCHEDULE_EVENT_SEC["goobrawl"],
+    # Measured from the GARGOYLE's spawn, not the graveyard's - see above.
+    "gargoyle": SCHEDULE_EVENT_SEC["graveyard"],
 }
 
 
@@ -657,6 +715,13 @@ BOSS_TYPES = [
     # and the season ends 2026-11-03, so every night without this name is
     # observation that cannot be recovered afterwards.
     "horseman",
+    # `gargoyle` joins on 2026-10-22, once graveyard_entries() existed to find
+    # it. It is NOT polled as a key - there is no E.gargoyle and there never
+    # will be - so this name is a DECLARATION OF INTEREST that the branch
+    # honours and the main loop silently never matches. Listing it is what
+    # makes SCHEDULE_OBSERVABLE count graveyard as observable, which is now
+    # true and was correctly false before the branch landed.
+    "gargoyle",
 ]
 # VERIFIED PUBLISHED, not assumed: `horseman` is the fourth name in the event
 # boss loop at server_functions.js's `["crabxx", "franky", "icegolem",
@@ -664,19 +729,22 @@ BOSS_TYPES = [
 # max_hp, target, x, y, end}` - the exact shape `server_info_entries` below
 # already translates. So the one name is the whole change for it.
 #
-# `gargoyle` IS NOT ADDED, AND THAT IS THE FINDING RATHER THAN AN OMISSION.
-# Graveyard Rising publishes under the EVENT's key - `E.graveyard =
-# graveyard_public()` in node/logic/halloween_events.js - and there is no
-# `E.gargoyle` for any name here to match, so adding it would poll a key that
-# never exists. Worse, adding "graveyard" instead would be actively harmful:
-# `graveyard_public()` returns `{live: true, map, x, y, start, wave, waves,
-# left}` from the first wave onward and only `Object.assign`s `{gargoyle: true,
-# hp, max_hp, target, end}` once the Gargoyle wakes, so `server_info_entries`
-# would pass the `d.get("live")` test and record `hp: None` for the first ~6
-# minutes of every graveyard - a null from a field that is genuinely absent,
-# which this project has already published once as a finding and retracted.
-# Collecting it needs a translation branch keyed on `gargoyle: True`, not a
-# name in this list.
+# `gargoyle` IS IN THE LIST BUT IS NOT A POLLED KEY, AND THAT DISTINCTION IS
+# THE WHOLE DESIGN. Graveyard Rising publishes under the EVENT's key -
+# `E.graveyard = graveyard_public()` in node/logic/halloween_events.js - and
+# there is no `E.gargoyle` for the main loop to match, so the name alone would
+# have polled a key that never exists. Adding "graveyard" instead would have
+# been actively harmful: that payload reads `{live, map, x, y, start, wave,
+# waves, left}` from the first wave onward and only `Object.assign`s
+# `{gargoyle, hp, max_hp, target, end}` once the Gargoyle wakes, so the
+# `d.get("live")` test would pass and record `hp: None` across the pre-wake
+# stretch - a null from a field that is genuinely absent, which this project
+# has already published once as a finding and retracted within the hour.
+# THAT STRETCH IS 540 OF 714 LIVE SAMPLES, measured 1 Hz on EU IV 2026-10-21,
+# nine minutes of a ten-minute event. This comment estimated "the first ~6
+# minutes" and was wrong by half; the gating it argued for was right.
+# graveyard_entries() below is the branch, keyed on the `gargoyle` field
+# appearing rather than on any clock.
 
 
 # AN EVENT IS OBSERVABLE WHEN SOMETHING IT SPAWNS IS POLLED, OR WHEN ITS OWN
@@ -2148,6 +2216,8 @@ def server_info_entries(server: dict, payload, types) -> list:
     for mtype, d in payload.items():
         if mtype not in wanted or not isinstance(d, dict):
             continue
+        if mtype in BRANCH_ONLY_TYPES:
+            continue
         e = {"type": mtype, "serverRegion": server["region"],
              "serverIdentifier": server["name"]}
         if d.get("live"):
@@ -2168,6 +2238,60 @@ def server_info_entries(server: dict, payload, types) -> list:
             if d.get("spawn"):
                 e["estimatedRespawn"] = d.get("spawn")
         out.append(e)
+    out.extend(graveyard_entries(server, payload, wanted, seen_at))
+    return out
+
+
+def graveyard_entries(server: dict, payload, wanted, seen_at) -> list:
+    """Graveyard Rising's Gargoyle, which publishes under the EVENT's key.
+
+    THE ONE REASON THIS IS A BRANCH AND NOT A NAME IN BOSS_TYPES: there is no
+    `E.gargoyle`. `graveyard_tick` writes `E.graveyard = graveyard_public()`,
+    and that payload reads `{live, map, x, y, start, wave, waves, left}` from
+    the first wave onward, only Object.assign-ing `{gargoyle, hp, max_hp,
+    target, end}` once the Gargoyle wakes. So "graveyard" in BOSS_TYPES would
+    pass the `live` test above and record hp None for the whole pre-wake
+    stretch.
+    THAT STRETCH IS NINE MINUTES OF A TEN-MINUTE EVENT, MEASURED, not the "~6
+    minutes" this file estimated before: 540 of 714 live samples carried no hp
+    at all, 1 Hz on EU IV, 2026-10-21. Twelve graveyards a day across every
+    shard, so the gating is the difference between a usable series and a flood
+    of nulls from a field that is genuinely absent - which this project has
+    already published once as a finding and retracted within the hour.
+
+    KEYED ON THE FIELD APPEARING, NOT ON A CLOCK. All four assigned fields
+    arrive in one tick, so any of them would do; `gargoyle` is the one whose
+    name says what it means. A time-based gate would have to pick a point in
+    the [360, 540] wake bracket and would be wrong in one direction or the
+    other every time the waves are cleared early.
+
+    `x`/`y` are `rules.gargoyle` and are present from the first wave, so they
+    are NOT evidence the Gargoyle is up - another reason the hp fields alone
+    could not be trusted as the signal.
+    """
+    out = []
+    if "gargoyle" not in wanted:
+        return out
+    d = payload.get("graveyard")
+    if not isinstance(d, dict) or not d.get("live") or not d.get("gargoyle"):
+        return out
+    e = {"type": "gargoyle", "serverRegion": server["region"],
+         "serverIdentifier": server["name"],
+         "hp": d.get("hp"), "max_hp": d.get("max_hp"),
+         "map": d.get("map"), "x": d.get("x"), "y": d.get("y"),
+         "lastSeen": seen_at,
+         # Published per-instance, exact, and the only deadline that survives
+         # the waves being cleared early. EVENT_WINDOW_SEC["gargoyle"] is the
+         # derived fallback for a consumer that has only elapsed.
+         "end": d.get("end"),
+         # Not a judgement about our party - a property of where the game puts
+         # this monster. See GARGOYLE_SPAWN_IN_RAGE_BOX.
+         "spawnInRageBox": GARGOYLE_SPAWN_IN_RAGE_BOX}
+    # Sparse exactly as the boss loop's is, so has_target_field keeps meaning
+    # what it means everywhere else.
+    if "target" in d:
+        e["target"] = d.get("target")
+    out.append(e)
     return out
 
 

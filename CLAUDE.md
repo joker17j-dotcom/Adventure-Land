@@ -1068,6 +1068,90 @@ this ranking until a Ranger build is actually running on him.
   like an event question. Same shape as "a patch note naming a monster is not a
   statement about the field you care about": the answer was complete about the
   thing asked and silent about the thing that mattered.
+- **THE GARGOYLE WAKE IS A BRACKET, NOT A CONSTANT, AND THE DERIVATION OFFERED
+  AS THE DURABLE ONE IS THE FRAGILE ONE.** Measured live by the browser session
+  on EU IV, 1 Hz for 901s: `live` at 22:30:00.956, `gargoyle` at 22:39:00.977,
+  gap 540.021s. They decomposed it as "exactly ONE WAVE INTERVAL after the last
+  wave" (360 + 180) and recommended that over a 540 literal because it "survives
+  a wave-table change". Read from `graveyard_tick` at upstream `16881a27`, the
+  real condition is `wave >= waves.length && (!ids.length || now - start >=
+  (duration - 60) * 1000)` - every wave SPAWNED, then EITHER the field CLEARED
+  or the late bound. With `duration` 600 that late bound is **540 = duration -
+  60**, which is the measurement exactly, and the agreement with 360+180 is a
+  COINCIDENCE OF THIS WAVE TABLE. A fourth wave at 540 moves the interval form
+  to 720 and leaves the real wake at 540; a duration change moves the real wake
+  and leaves the interval form alone. **So the recommended form survives exactly
+  the change it was recommended for and nothing else**, and it was derived from
+  a single observation of the one case that makes the two agree.
+  **AND 540 IS THE LATE END: THE GARGOYLE WAKES AS SOON AS THE WAVES ARE DEAD.**
+  `!graveyard.ids.length` fires the moment the field is cleared, so the bracket
+  is **[360, 540]** - up to three minutes early for a party that kills what it
+  spawned. The 540 was observed BECAUSE nobody cleared the field, which the
+  operator's own "expected result as other players did not show up" says
+  outright. **A CONSTANT MEASURED IN THE DEGENERATE CASE LOOKS EXACTLY LIKE A
+  CONSTANT.** Neither form is used: the bridge branch keys on the `gargoyle`
+  field appearing, which is exact in both directions and needs no wave table.
+- **THE EVENT OUTLIVING ITS 600s WINDOW IS THE DESIGN, NOT THE ARRIVAL-DEADLINE
+  PATTERN SHOWING UP AGAIN.** `graveyard.gargoyle_end = now + duration * 1000`
+  is set AT WAKE, so the Gargoyle gets a full 600s of its own starting whenever
+  it woke; past that it leaves once nobody has hit it for 20 seconds. Total
+  ceiling `(duration - 60) + duration + ~20s`, about 1,160s, and a `live: true`
+  at 901s is comfortably inside it rather than an overrun. The two look
+  identical from outside and the consequence differs: an arrival-deadline
+  overrun is a boss being kept alive by damage, this is a clock that had not
+  started yet.
+  **MEASURED FROM THE GARGOYLE'S OWN SPAWN THE WINDOW IS FLAT 600**, which is
+  what lets `EVENT_WINDOW_SEC["gargoyle"]` be a constant where the wake cannot
+  be. `end` is also published per-instance on the row once awake and the bridge
+  carries it, so a consumer has the exact deadline and the derived one, and a
+  disagreement between them is a finding rather than a nuisance.
+- **WAVE POINTS CARRY OVER TO THE GARGOYLE, WHICH IS THE ANSWER TO THE SHARE
+  PROBLEM AND NOBODY WAS LOOKING FOR IT.** `graveyard_fallen()` adds each fallen
+  wave monster's `points` into `graveyard.points`, `gargoyle.points =
+  Object.assign({}, graveyard.points)` at wake, and the file's own comment says
+  "the points everyone earned on them carry over to the Gargoyle, so the whole
+  fight counts toward its reward". Credit on the Gargoyle is share-gated -
+  cooperative, confirmed at exactly 1.300/kill from the tracker - and three
+  characters against 6,000,000 hp is a share problem as much as a time one.
+  **So the nine minutes of zombies and ghouls are not a warm-up to sit out: they
+  are how the share is banked**, and the corridor farm the pasted override sets
+  up is accumulating toward the Gargoyle the whole time, whether or not the
+  party can ever stand on its spawn. A design that waited at the corridor doing
+  nothing until the Gargoyle woke would arrive with zero points.
+- **THE +446s FRANKY KILL DOES NOT THREATEN `BOSS_DESPAWN_WINDOW_CEILING`, AND
+  CHECKING WHY IS WORTH MORE THAN THE ANSWER.** Window closed 22:40:01, the boss
+  died by 22:47:29 with the party on it throughout - 446s past window against a
+  ceiling of 300, nearly double the previous 228s record. The ceiling admits
+  `[win - 180, win + 300]`, so +446 falls OUTSIDE the band and
+  `despawn_window_hit` returns false: the row is recorded as a kill, which is
+  what it was. The ceiling fails in the direction of calling a despawn a kill,
+  never the reverse, and a widening to cover +446 would start admitting real
+  late kills as despawns - deflating the kill record, the mirror of the
+  inflation the classifier was built to fix. **A MEASUREMENT THAT BLOWS PAST A
+  THRESHOLD IS NOT AUTOMATICALLY AN ARGUMENT TO MOVE IT**; which side of the
+  threshold the error lands on is the question, and here the overshoot is the
+  safe side.
+- **A COUNTER WITH NO BASELINE IS NOT A MEASUREMENT** - the browser session's
+  own filing, after the party left level2w, crossed main, reached spookytown and
+  returned without leaving EU IV, and franky then died with them present. That
+  was a free natural experiment on whether the award loop's `if (current)` guard
+  is shard-scoped or map-scoped, and the post-kill franky 10 / 12.85 is equally
+  consistent with credit landing and with it having read 10 an hour earlier. The
+  question is still open and was answerable right up until nobody read the
+  counter. Same shape as the despawn-row nulls. Rule: **tracker baseline BEFORE
+  any credit experiment**, not after.
+  Incidental and useful: `max.monsters.franky` is `[15.0, "Dexon"]`, so the
+  account max is held by our own ranger and pushing franky on anyone else adds
+  nothing until they pass 15.
+- **A SHORT-WINDOW DPS SAMPLE IS A LOWER BOUND ON A CROWD, NOT AN ESTIMATE, AND
+  IT WAS OFF BY 20% IN THE DIRECTION THAT LOSES FIGHTS.** An 18s window gave
+  42,124 hp/s against a true 25-minute average of 50,890; the projected death at
+  22:52:24 happened by 22:47:29, five minutes early. The crowd's rate is NOT
+  stationary - contributors keep arriving - so an extrapolation from a short
+  window systematically under-promises. That bears directly on `ttk_upper_*` and
+  on any "will it die inside our budget" gate: the error is toward declining a
+  fight that would in fact have finished, which is the expensive direction and
+  the one a skip row records as `declined_on: "dps"`.
 - **`G.events` NOW HOLDS FIVE NAMES THE BRIDGE DOES NOT KNOW**: `witchcipher`,
   `horseman`, `graveyard`, `trickortreat` and `halloween`, alongside `dreams` and the
   pre-existing anniversary, abtesting, goobrawl, crabxx, franky, icegolem,
@@ -3519,11 +3603,33 @@ probes are listed at the end as still-open.
   you never confirmed exists", which this file already carries as a finding
   published and retracted within the hour. Collecting it needs a translation
   branch keyed on `gargoyle: true`, not a name in a list.
+  **"THE FIRST SEVERAL MINUTES" WAS NINE MINUTES OF TEN - 540 of 714 live
+  samples carried no hp at all**, measured 1 Hz on EU IV 2026-10-21. The
+  estimate was wrong by half and the gating it argued for was right, which is
+  the better half of being wrong.
+  **BUILT 2026-10-22 as `graveyard_entries()`.** `gargoyle` IS in `BOSS_TYPES`
+  now, but as a DECLARATION OF INTEREST rather than a polled key: the branch
+  honours the name and the main loop is made to skip it by `BRANCH_ONLY_TYPES`.
+  That skip is unreachable today and exists because the test asked for it -
+  `"gargoyle"` in `wanted` meant the main loop matched a literal top-level
+  `gargoyle` key, so the day the creator publishes one it would emit a SECOND
+  entry for the same monster in the ordinary boss shape, without `end` or
+  `spawnInRageBox`. **A DUPLICATE IN A DIFFERENT SHAPE IS WORSE THAN A MISS AND
+  NOTHING ABOUT IT WOULD LOOK WRONG**; it was found by writing the assertion,
+  not by reading the loop.
+  **THE ROW CARRIES `spawnInRageBox: true`, WHICH IS A FIELD BECAUSE A COMMENT
+  COULD NOT REACH THE READER WHO NEEDS IT.** The browser session asked for "a
+  field or a note, or the chain queue will one day route three characters at a
+  6,000,000 hp cooperative gargoyle sitting inside a rage rectangle" - and a
+  consumer reads JSON, not this file. It publishes the FACT (the fixed spawn
+  (255,-1545) is inside spookytown's mummy rage rectangle) rather than the
+  judgement (unreachable), because the rectangle is game data and the
+  reachability verdict belongs to whatever script is doing the routing.
   **THE HALF-FINDING IS THE REUSABLE PART: A SET OF NAMES TO POLL IS ONLY AS
   GOOD AS EACH NAME BEING A KEY THE PUBLISHER ACTUALLY WRITES**, and nothing in
   a monster's existence, its hp, its cooperativeness or its event membership
   implies that. Two names from one event, both real monsters, and only one is
-  addressable.
+  addressable - by a branch, once one was written.
 - **`SCHEDULE_OBSERVABLE` IS NOW DERIVED FROM WHAT IS POLLED, AND THE OLD FORM
   WOULD HAVE GOT `graveyard` WRONG.** It was
   `{"crabxx", "icegolem", "franky"} | set(SCHEDULE_SPAWNS)`, which took an
@@ -3538,6 +3644,13 @@ probes are listed at the end as still-open.
   would break again on the next one while saying nothing about the rule.
   Measured by mutation: reverting the derivation fails three assertions,
   dropping `horseman` fails one.
+  **AND IT PAID OFF ON 2026-10-22 WITHOUT BEING TOUCHED.** `graveyard` flipped
+  to observable the moment `gargoyle` joined `BOSS_TYPES`, because the rule
+  re-ran on a changed input - no edit to the derivation, and the two assertions
+  that recorded the old answer were rewritten rather than deleted, since what
+  they pinned was the mechanism and only one input moved. A hand-maintained set
+  would have needed an edit nobody would have remembered to make, and would
+  have gone on reporting `false` beside a working collector.
 - **ANSWERED 2026-10-21 FROM THE DEPLOYED CLIENT, EU IV, AND EVERY
   SOURCE-DERIVED CLAIM IN THIS SECTION HELD.** The browser session read
   `S.schedule` live. Keys: `time_offset`, `dailies`, `nightlies`, `night`,
@@ -3593,14 +3706,15 @@ probes are listed at the end as still-open.
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
   **COUNT AS OF 2026-10-22, LATEST: 591 JS assertions across NINE suites, plus
-  254 from the python bridge suite the runner shells out to and folds in, for
-  `all 845 pass`.** The ninth is `suite_merchantbuy`, split from
+  287 from the python bridge suite the runner shells out to and folds in, for
+  `all 878 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 789, 782, 770, 753, 730, 702, 690, 673, 668 and 646 on 2026-10-21, 586
+  It read 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
-  FIFTEEN figures in three days, which is the point rather than an embarrassment:
+  SIXTEEN figures in three days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.

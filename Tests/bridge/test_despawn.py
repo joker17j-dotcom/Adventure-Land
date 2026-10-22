@@ -422,17 +422,31 @@ chk("nothing is called observable without a polled monster behind it",
     [])
 chk("horseman is observable by its OWN name, being polled directly",
     ("horseman" in b.BOSS_TYPES, "horseman" in b.SCHEDULE_OBSERVABLE), (True, True))
-# graveyard is exactly the case the superseded form got wrong, kept as an
-# inverted assertion so the pairing cannot be half-reverted: it has THREE
-# spawns and not one of them is polled, because there is no `E.gargoyle` for a
-# BOSS_TYPES entry to match - Graveyard Rising publishes under the EVENT's key.
-chk("graveyard has spawns and is still NOT observable, because none is polled",
+# GRAVEYARD FLIPPED TO OBSERVABLE ON 2026-10-22 and the two assertions that
+# said otherwise are REWRITTEN RATHER THAN DELETED, because what they pinned
+# was a mechanism and only one input to it moved. They read "graveyard has
+# spawns and is still NOT observable, because none is polled" and "gargoyle is
+# deliberately not polled, so adding it is not an oversight" - both true for as
+# long as nothing could find a Gargoyle. graveyard_entries() can, so `gargoyle`
+# joined BOSS_TYPES and the derivation reports observable WITHOUT the
+# derivation changing. That is the property worth having: the rule did the work
+# both times and neither answer was written down.
+chk("graveyard is observable now that something it spawns is polled",
     ("graveyard" in b.SCHEDULE_SPAWNS, "graveyard" in b.SCHEDULE_OBSERVABLE),
-    (True, False))
-chk("the superseded form WOULD have called it observable",
+    (True, True))
+chk("and it is the gargoyle in BOSS_TYPES that does it",
+    "gargoyle" in b.BOSS_TYPES, True)
+# Still inverted, and still the case that proves the derivation is a derivation:
+# drop the one polled spawn and graveyard must go back to unobservable, which a
+# hand-maintained set could not do.
+chk("remove it and graveyard stops being observable",
+    "graveyard" in {e for e in b.SCHEDULE_EVENT_SEC
+                    if e in {t for t in b.BOSS_TYPES if t != "gargoyle"}
+                    or any(m in {t for t in b.BOSS_TYPES if t != "gargoyle"}
+                           for m in b.SCHEDULE_SPAWNS.get(e, ()))}, False)
+chk("the superseded hand-maintained form called it observable for the WRONG "
+    "reason, and would have done so a day early",
     "graveyard" in ({"crabxx", "icegolem", "franky"} | set(b.SCHEDULE_SPAWNS)), True)
-chk("and gargoyle is deliberately not polled, so adding it is not an oversight",
-    "gargoyle" in b.BOSS_TYPES, False)
 chk("every spawn product maps back to its event", b.SCHEDULE_EVENT_OF,
     {"rgoo": "goobrawl", "bgoo": "goobrawl",
      "gargoyle": "graveyard", "zombie": "graveyard", "ghoul": "graveyard"})
@@ -990,6 +1004,123 @@ chk("B: the carrier boss wrote no rows, being alive when its shard was seeded",
 chk("B: so it has no history bucket either",
     ("icegolem", "EU IV") in _byB, False)
 os.unlink(_lf2.name)
+
+# ------------------------------------------------- graveyard: the Gargoyle
+# Graveyard Rising publishes under the EVENT's key and only grows the Gargoyle's
+# fields once it wakes, so the whole question is WHEN an entry may be emitted.
+# Shapes taken from graveyard_public() at upstream 16881a27, not from a sample.
+_GY_SRV = {"region": "EU", "name": "IV"}
+def _gy(**over):
+    d = {"live": True, "map": "spookytown", "x": 255, "y": -1545,
+         "start": 1_000_000, "wave": 3, "waves": 3, "left": 42}
+    d.update(over)
+    return d
+
+def _gy_entries(d, types=None):
+    """Always a list, so a branch that emits nothing FAILS BY NAME rather than
+    raising on a subscript three lines later - the rule two raises in this file
+    on 2026-10-21 bought the hard way."""
+    out = b.server_info_entries(_GY_SRV, {"graveyard": d}, types or b.BOSS_TYPES)
+    return [e for e in out if e.get("type") == "gargoyle"]
+
+def _gy_one(d, types=None):
+    got = _gy_entries(d, types)
+    return got[0] if len(got) == 1 else {}
+
+# THE PRECONDITION IS THE POINT: the pre-wake payload is LIVE and already
+# carries map/x/y, so an entry suppressed here is suppressed by the `gargoyle`
+# gate and by nothing else. Without this, "no entry" would be consistent with
+# the branch simply never firing.
+chk("gy: the pre-wake payload really is live", _gy().get("live"), True)
+chk("gy: and already carries the gargoyle's coordinates",
+    (_gy().get("x"), _gy().get("y")), b.GARGOYLE_SPAWN)
+chk("gy: so x/y are NOT evidence the Gargoyle is up", "gargoyle" in _gy(), False)
+chk("gy: no entry before the wake", _gy_entries(_gy()), [])
+chk("gy: and none for a payload that is not live",
+    _gy_entries(_gy(gargoyle=True, hp=6_000_000, max_hp=6_000_000, live=False)), [])
+
+# AT WAKE four fields arrive in one tick. Keyed on `gargoyle` because its name
+# says what it means; the assertion below proves the gate is that field and not
+# the hp that arrives with it.
+_awake = _gy(gargoyle=True, hp=6_000_000, max_hp=6_000_000, target=None, end=9_999)
+chk("gy: exactly one entry once awake", len(_gy_entries(_awake)), 1)
+chk("gy: typed as the monster, not the event", _gy_one(_awake).get("type"), "gargoyle")
+chk("gy: carries hp", _gy_one(_awake).get("hp"), 6_000_000)
+chk("gy: carries max_hp", _gy_one(_awake).get("max_hp"), 6_000_000)
+chk("gy: carries the per-instance deadline", _gy_one(_awake).get("end"), 9_999)
+chk("gy: and the map it cannot be stood on", _gy_one(_awake).get("map"), "spookytown")
+chk("gy: hp alone does not open the gate",
+    _gy_entries(_gy(hp=6_000_000, max_hp=6_000_000)), [])
+
+# `target` stays sparse exactly as the boss loop's does, so has_target_field
+# keeps meaning what it means for every other type.
+chk("gy: target present when the payload has it", "target" in _gy_one(_awake), True)
+chk("gy: and absent when it does not",
+    "target" in _gy_one(_gy(gargoyle=True, hp=1, max_hp=6_000_000)), False)
+
+# THE REACHABILITY FIELD. A comment in this file cannot reach a consumer; the
+# chain queue reads JSON. The gargoyle's spawn is inside spookytown's mummy rage
+# rectangle, which every party script's safeMove refuses, so the destination can
+# never be occupied and nothing logs a refusal when it is tried.
+chk("gy: the row says the spawn is inside a rage box",
+    _gy_one(_awake).get("spawnInRageBox"), True)
+_MUMMY_RAGE = (-124, -1631, 614, -1130)
+chk("gy: and the claim is arithmetic on the two coordinates, not an opinion",
+    (_MUMMY_RAGE[0] <= b.GARGOYLE_SPAWN[0] <= _MUMMY_RAGE[2]
+     and _MUMMY_RAGE[1] <= b.GARGOYLE_SPAWN[1] <= _MUMMY_RAGE[3]), True)
+
+# A NAME IN BOSS_TYPES THAT IS NEVER A POLLED KEY. The main loop must not match
+# it - there is no E.gargoyle - while the branch must honour it, and dropping it
+# from the list must turn the branch off.
+# FOUND BY THIS ASSERTION, NOT BY READING. "gargoyle" in BOSS_TYPES put it in
+# `wanted`, so the main loop matched a literal top-level key and emitted a
+# SECOND entry for the same monster in the ordinary boss shape - no `end`, no
+# `spawnInRageBox`. Unreachable today, because `E.gargoyle` does not exist; a
+# duplicate in a different shape the day it does, and nothing about it would
+# look wrong. BRANCH_ONLY_TYPES is the skip.
+chk("gy: the main loop never matches a 'gargoyle' key",
+    b.server_info_entries(_GY_SRV, {"gargoyle": _awake}, b.BOSS_TYPES), [])
+chk("gy: and the branch is still the one route to a gargoyle row",
+    _gy_one(_awake).get("spawnInRageBox"), True)
+chk("gy: BRANCH_ONLY_TYPES is what does it", "gargoyle" in b.BRANCH_ONLY_TYPES, True)
+chk("gy: the name is what the branch honours",
+    _gy_entries(_awake, [t for t in b.BOSS_TYPES if t != "gargoyle"]), [])
+chk("gy: and listing it is what makes graveyard observable",
+    "graveyard" in b.SCHEDULE_OBSERVABLE, True)
+
+# THE WAKE IS A BRACKET AND THE 540 IS ITS LATE END. duration - 60, from
+# graveyard_tick's own condition; the early end is the last wave's offset,
+# reached whenever the field is cleared.
+_GY_DUR = b.SCHEDULE_EVENT_SEC["graveyard"]
+chk("gy: the late bound is duration - 60, which is the 540 measured live",
+    _GY_DUR - b.GRAVEYARD_WAKE_LEAD_SEC, 540)
+chk("gy: the early bound is the last wave's offset", b.GRAVEYARD_WAKE_EARLIEST_SEC, 360)
+chk("gy: so the wake is a 180-second bracket, not a constant",
+    (_GY_DUR - b.GRAVEYARD_WAKE_LEAD_SEC) - b.GRAVEYARD_WAKE_EARLIEST_SEC, 180)
+# INVERTED, AND KEPT: "one wave interval after the last wave" (360 + 180) gives
+# 540 TOO, which is why it looked like the durable derivation. It is a
+# coincidence of THIS wave table - a fourth wave would move it and leave the
+# real wake where it is. Pinned so the agreement is visible rather than assumed,
+# and so a wave-table change surfaces here instead of silently in a consumer.
+_WAVES = ((0, 12), (180, 19), (360, 26))
+_interval_form = _WAVES[-1][0] + (_WAVES[-1][0] - _WAVES[-2][0])
+chk("gy: the wave-interval form agrees on THIS table", _interval_form, 540)
+chk("gy: and neither form is what the branch uses - it keys on the field",
+    _gy_entries(_gy(start=0)), [])
+
+# The gargoyle's own window is flat because gargoyle_end is set AT WAKE
+# (now + duration), so measured from the spawn this bridge observes it is
+# duration however early or late the wake was.
+chk("gy: the window is measured from the gargoyle's own spawn",
+    b.EVENT_WINDOW_SEC.get("gargoyle"), _GY_DUR)
+chk("gy: a vanish at its window close is inside the despawn band",
+    b.despawn_window_hit("gargoyle", _GY_DUR + 2), True)
+# AND THE EVENT OUTLIVES ITS NOMINAL 600s BY DESIGN: the wake alone can eat 540
+# of it. A 901s live reading is not an overrun to be clamped.
+chk("gy: a 901s-old graveyard is longer than the nominal event",
+    901 > _GY_DUR, True)
+chk("gy: but 901s after the GARGOYLE woke is past its band and reads as a kill",
+    b.despawn_window_hit("gargoyle", 901), False)
 
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
