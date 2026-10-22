@@ -464,16 +464,27 @@ EVENT_WINDOW_SEC = {
 # spawn-detection error, which is exactly what this measures. The file's own
 # record agrees: the early side's only contribution to date was one row.
 #
-# A NAMED SET, NOT A DERIVED ONE, AND goobrawl IS WHY. `start_event()` sets
-# `timers.goobrawl = future_s(45)` - a pre-announcement timer - against a
-# duration of 540, so the same arithmetic there is wrong by 495 seconds in a
-# direction that looks entirely plausible. The stamp-once property is PER NAME
-# and was checked per name (assigned once under `if (!timers[name])` at
-# server_functions.js:2561, deleted at :2574 and :2585, never reassigned; the
-# gargoyle's `gargoyle_end` likewise assigned once in halloween_events.js).
-# Deriving this set as "EVENT_WINDOW_SEC minus the goos" would be right today
-# by luck and would silently adopt the next event whose timer behaves like
-# goobrawl's.
+# A NAMED SET, NOT A DERIVED ONE, AND goobrawl IS WHY - BUT NOT FOR THE REASON
+# FIRST COMMITTED. `start_event("goobrawl")` sets `timers.goobrawl =
+# future_s(45)` - a pre-announcement timer - against a duration of 540, which
+# makes the arithmetic wrong by 495 seconds there. The SCHEDULED path does not
+# go through it: `event_schedule_tick` does `events[occurrence.event] = true`
+# directly, leaving the timer unset, so the tick's own `!timers.goobrawl`
+# branch stamps `future_s(540)` and the arithmetic WOULD be right. So the real
+# disqualifier is sharper and more durable than a reassignment: THE PROPERTY IS
+# PATH-DEPENDENT AND THE PAYLOAD DOES NOT SAY WHICH PATH RAN. A field whose
+# meaning depends on unobservable upstream state cannot be audited against.
+# The stamp-once property is PER NAME and was checked per name: assigned once
+# under `if (!timers[name])` at server_functions.js:2561, deleted only at :2574
+# (window expiry, gated on `c > timers[name]`) and :2585 (defeated); the
+# gargoyle's `gargoyle_end` likewise assigned exactly once in
+# halloween_events.js:174. THE SET THAT NEGATIVE RESULT WAS TAKEN OVER: all
+# eight `delete E[...]` sites in server_functions.js, of which the only two
+# touching these names are those two, the other six covering the season flags
+# and the respawn bosses - both disjoint name sets. Deriving this set as
+# "EVENT_WINDOW_SEC minus the goos" would be right today by luck - the goos are
+# excluded because they are never `E` keys at all, a third unrelated reason -
+# and would silently adopt the next event whose timer is path-dependent.
 SPAWN_EXACT_FROM_END = frozenset({
     "crabxx", "franky", "icegolem", "horseman",   # the one four-boss forEach
     "gargoyle",                                   # gargoyle_end, set at wake

@@ -2027,10 +2027,25 @@ time on 2026-10-18.
   decide under uncertainty. Misclassifying a kill as a despawn DEFLATES the
   kill record, which is why that was a veto rather than a confidence
   downgrade; this is the route to not having to choose.
-  **THE SET IS NAMED, NOT DERIVED, AND goobrawl IS WHY.** `start_event()` sets
-  `timers.goobrawl = future_s(45)` - a pre-announcement timer - against a
-  duration of 540, so the same arithmetic there is wrong by 495 SECONDS in a
-  direction that looks entirely plausible. The stamp-once property is PER NAME
+  **THE SET IS NAMED, NOT DERIVED, AND goobrawl IS WHY - BUT NOT FOR THE REASON
+  FIRST COMMITTED, AND THE CORRECTION IS THE BETTER FINDING.**
+  `start_event("goobrawl")` sets `timers.goobrawl = future_s(45)` - a
+  pre-announcement timer - against a duration of 540, so the arithmetic is
+  wrong by 495 SECONDS on that path. **THE SCHEDULED PATH DOES NOT GO THROUGH
+  IT**: `event_schedule_tick` does `events[occurrence.event] = true` directly,
+  leaving the timer unset, so the tick's own `!timers.goobrawl` branch stamps
+  `future_s(540)` and the arithmetic WOULD be right. So the real disqualifier
+  is not a reassignment at all - **THE PROPERTY IS PATH-DEPENDENT AND THE
+  PAYLOAD DOES NOT SAY WHICH PATH RAN.** A field whose meaning depends on
+  unobservable upstream state cannot be audited against, which is a stronger
+  and more durable reason than the one the first commit gave.
+  **AND THE SAME READ CLEARS v115's PRESENCE RULE FOR A SCHEDULED goobrawl**,
+  which matters because the browser session's next measurement rests on it: on
+  the scheduled path the `!timers.goobrawl` branch publishes
+  `E.goobrawl = { end }`, so the presence signal `bossEntryLive` keys on does
+  arrive. Only the `start_event` path would publish nothing - and on that path
+  the event also ends 45 seconds in, which looks like a game-side oddity rather
+  than anything of ours. The stamp-once property is PER NAME
   and was checked per name: `server_functions.js:2561` assigned once, deleted
   at `:2574` and `:2585`; `gargoyle_end` likewise assigned exactly once in
   `halloween_events.js:174`. `SPAWN_EXACT_FROM_END` is therefore crabxx,
