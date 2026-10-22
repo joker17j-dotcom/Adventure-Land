@@ -509,6 +509,137 @@ def spawn_exact_from_end(mtype, end_raw):
     return end_t - win
 
 
+# ---------------------------------------------------------------- skip rows
+#
+# `ev: "skip"` is written by the SCRIPT at decision time and POSTed here,
+# because the bridge cannot see our state and both of the operator's
+# exclusions depend on it. It is NEITHER terminal NOR a transition - a skip is
+# a record of us not going, and the boss carried on existing - so it is in
+# neither `BOSS_TERMINAL_EV` nor `BOSS_TRANSITION_EV`.
+#
+# WHAT KEEPS IT OUT OF THE KILL RECORD IS `boss_history`'s TRANSITION
+# ALLOWLIST, not branch placement. The first version of this comment said the
+# function "dispatches on spawn/despawn/death only, so a skip row cannot reach
+# the kill count ... a property of WHERE the branches sit" - wrong, and found
+# by mutation: changing that `elif` to admit "skip" moved nothing, because
+# `if not boss_ev_is_transition(d.get("ev")): continue` had already dropped
+# the row. That gate is an allowlist on purpose and its own comment says so.
+# There are in fact TWO layers - the gate, and matching no inner branch - and
+# the suite asserts the OUTCOME across both rather than claiming either.
+#
+# A THIRD READING-NAME FAMILY, AND THE SUFFIX IS WHAT KEEPS IT APART. The log
+# already has LIVE readings (`hp`, `target`) and LAST-KNOWN ones (`last_hp`,
+# `last_target`); a skip carries DECISION-TIME readings, which are neither -
+# the boss was alive and we were not there. Hence `hp_at_decision` and
+# `hp_pct_at_decision`, so no consumer can read a skip row through either
+# existing convention and get a plausible wrong answer.
+BOSS_SKIP_EV = "skip"
+
+# `window` and `cost` are the ARRIVAL-DEADLINE question and only `dps` bears
+# on H0; merging them is how a miss count silently becomes a FOMO counter.
+SKIP_DECLINED_ON = ("dps", "window", "cost")
+# RECORDED, NOT FILTERED: neither value is reconstructable later. `outranked`
+# needs what we took INSTEAD at that moment, and `shard_not_candidate` is a
+# judgement about reachability under the fatigue and queue state then in
+# force. A read-time filter can only approximate both.
+SKIP_EXCLUDED = ("outranked", "shard_not_candidate")
+
+# Numbers the script measured at the decision. Normalised to float-or-None
+# here so a consumer never has to tell a missing field from a string.
+SKIP_NUM_FIELDS = (
+    "rank", "eta_sec_at_decision", "contributors_at_decision",
+    "dps_assumed_at_decision", "hp_at_decision", "hp_pct_at_decision",
+    "required_dwell_sec", "remaining_window_sec",
+)
+# `type`, NOT `mtype`, AND THAT IS A DELIBERATE DEVIATION FROM THE SPEC.
+# The spec names the monster field `mtype`; every other row in this log calls
+# it `type`, and `boss_history` groups on `d.get("type")`. Storing `mtype`
+# would make a skip row silently unjoinable to the log's own grouping - which
+# is EXACTLY the `hp_pct`-off-a-despawn-row trap, a different key name for one
+# concept across row classes, already published as a finding and retracted
+# once and then misdescribed by the warning written to prevent it.
+# FOUND BY MUTATION, NOT BY READING: a mutation making boss_history count a
+# skip row as a death changed NO assertion, because the row never reached the
+# grouping at all. The protection was the field name while the test claimed it
+# was the branch placement.
+# Both names are ACCEPTED on the wire - the script may send either and an
+# older script's `mtype` must not be refused - and exactly one is stored.
+SKIP_STR_FIELDS = ("type", "server", "spawn_t", "reason", "committed_to")
+
+
+def _num_or_none(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    return float(v)
+
+
+def skip_row_normalise(body):
+    """Validate a POSTed skip row. Returns (row, error).
+
+    THE RECEIVER VALIDATES. The script and the bridge deploy independently and
+    neither can see the other's version, which this file already records for
+    the query-parameter direction - so nothing here trusts the sender's shape.
+
+    UNKNOWN FIELDS SURVIVE UNDER `extra` RATHER THAN BEING DROPPED, because
+    both failure modes are silent and only one is recoverable: a newer script's
+    new field dropped by an older bridge looks exactly like a field that was
+    never sent, while a typo parked in `extra` is visibly un-validated and
+    costs a reader nothing.
+    """
+    if not isinstance(body, dict):
+        return None, "body must be an object"
+    mtype = body.get("type") or body.get("mtype")
+    server = body.get("server")
+    if not isinstance(mtype, str) or not mtype:
+        return None, "type (or mtype) required"
+    if not isinstance(server, str) or not server:
+        return None, "server required"
+    declined = body.get("declined_on")
+    if declined not in SKIP_DECLINED_ON:
+        return None, f"declined_on must be one of {list(SKIP_DECLINED_ON)}"
+    excluded = body.get("excluded")
+    if excluded is not None and excluded not in SKIP_EXCLUDED:
+        return None, f"excluded must be null or one of {list(SKIP_EXCLUDED)}"
+
+    row = {"ev": BOSS_SKIP_EV, "t": iso(now()), "declined_on": declined,
+           "excluded": excluded}
+    # OUR CLOCK IS THE ONE THAT ORDERS THE LOG. Every other row's `t` comes
+    # from `now()` in this process; a skip row's would come from a browser, so
+    # trusting it would put a DIFFERENT CLOCK in the ordering key - strictly
+    # worse than the estimate-versus-observation hazard already recorded,
+    # because a skew is unbounded and invisible. The script's own stamp is
+    # kept beside it, so a disagreement is measurable rather than lost.
+    if isinstance(body.get("t"), str):
+        row["t_script"] = body["t"]
+    row["type"] = mtype
+    for k in SKIP_STR_FIELDS:
+        if k == "type":
+            continue
+        v = body.get(k)
+        row[k] = v if isinstance(v, str) and v else None
+    for k in SKIP_NUM_FIELDS:
+        row[k] = _num_or_none(body.get(k))
+    # `mtype` is a known INPUT name even though it is never a stored one, or
+    # a script sending the spec's spelling would see it land in `extra`.
+    known = ({"ev", "t", "declined_on", "excluded", "mtype"}
+             | set(SKIP_STR_FIELDS) | set(SKIP_NUM_FIELDS))
+    extra = {k: v for k, v in body.items() if k not in known}
+    if extra:
+        row["extra"] = extra
+    return row, None
+
+
+def skip_row_key(row):
+    """The dedup identity: one row per boss instance per decision.
+
+    `spawn_t` is the instance discriminator AND the join key onto the hp
+    series, so a null one cannot be deduped against anything - those rows are
+    always kept rather than collapsed, since collapsing them would merge two
+    different instances on one shard.
+    """
+    return (row.get("type"), row.get("server"), row.get("spawn_t"))
+
+
 def despawn_window_hit(mtype, elapsed_sec) -> bool:
     """Is `elapsed_sec` inside the band around this type's window close?
 
@@ -2405,6 +2536,11 @@ class BossWatch:
         # "we could not scale the threshold" stay distinguishable.
         self.hp_samples_no_max = 0
         self._pending: list[dict] = []
+        # Last ACCEPTED skip row per (mtype, server, spawn_t). Memory only, as
+        # `tracked` is - a restart re-admits one row per instance, which is the
+        # cheap direction: a duplicate is visible in an append-only log and a
+        # dropped decline is not.
+        self._skip_last: dict = {}
         self.source = source
         self.clients: list = []
         self.servers: list = []
@@ -2776,6 +2912,43 @@ class BossWatch:
         """Queue one event. Written to disk by the caller, outside the lock."""
         self._pending.append(ev)
 
+    def queue_skip(self, body) -> dict:
+        """Accept one POSTed skip row into the boss log. The only public writer.
+
+        THE FORK WAS A SEPARATE STORE (A) OR THE BOSS LOG (B), AND B COSTS
+        NOTHING because the handler already holds this poller and already takes
+        this lock. `_emit` appends to `_pending` and `_flush_events` owns the
+        file, so this needed one method and no new writer and no boundary
+        crossed - the separation the design was shaped around had already been
+        dissolved by the `/boss_events` GET.
+
+        THE DEDUP SPLIT IS DELIBERATE AND IS NOT THE SPEC'S "materially".
+        The SCRIPT owns when a decline is worth re-stating, because only it can
+        see whether an input moved materially; a 40-minute decline would
+        otherwise emit hundreds. What the bridge owns is IDEMPOTENCE: an
+        identical re-post - same instance, same `declined_on`, same `reason` -
+        is dropped, which covers a retry loop or a double POST without the
+        bridge second-guessing a judgement it cannot make. Anything the script
+        considers a change gets through.
+        """
+        row, err = skip_row_normalise(body)
+        if err:
+            return {"ok": False, "error": err}
+        key = skip_row_key(row)
+        sig = (row.get("declined_on"), row.get("reason"))
+        with self.lock:
+            # A null spawn_t cannot discriminate instances, so it is never
+            # deduped - see skip_row_key.
+            if row.get("spawn_t") and self._skip_last.get(key) == sig:
+                return {"ok": True, "deduped": True}
+            if row.get("spawn_t"):
+                self._skip_last[key] = sig
+            if not self.events_path:
+                return {"ok": False, "error": "boss event log is disabled"}
+            self._emit(row)
+        self._flush_events()
+        return {"ok": True, "deduped": False}
+
     def _flush_events(self) -> None:
         if not self._pending:
             return
@@ -2807,6 +2980,11 @@ class BossWatch:
             elif ev["ev"] == "lost":
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
+            elif ev["ev"] == BOSS_SKIP_EV:
+                say(f"[bosses] skip {ev['type']} on {ev['server']}"
+                    f" - declined on {ev['declined_on']}"
+                    + (f", {ev['excluded']}" if ev.get("excluded") else "")
+                    + (f" ({ev['reason']})" if ev.get("reason") else ""))
 
     def _transitions(self, poll_t: float, n_entries: int, servers_seen: set,
                      only_server: tuple | None = None, complete: bool = False) -> None:
@@ -3409,7 +3587,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path not in ("/scan", "/msg", "/trade"):
+        if path not in ("/scan", "/msg", "/trade", "/skip"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
             return
         try:
@@ -3426,6 +3604,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(self.store.post_message(body))
             elif path == "/trade":
                 self._send(self.ledger.append(body))
+            elif path == "/skip":
+                # UNREACHABLE AS SHIPPED and kept as a cheap guard rather
+                # than left looking load-bearing: `Handler.bosses` is assigned
+                # unconditionally in main(), with `--no-bosses` becoming the
+                # `enabled` flag rather than a null. Only the class default is
+                # None. The REACHABLE refusal is a disabled event log, which
+                # queue_skip reports itself.
+                if self.bosses is None:
+                    self._send({"ok": False, "error": "boss watch disabled"}, 503)
+                else:
+                    self._send(self.bosses.queue_skip(body))
             else:
                 self._send(self.store.ingest(body))
         except Exception as e:

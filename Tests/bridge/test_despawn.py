@@ -1393,6 +1393,196 @@ for _fn in ("despawn_window_hit", "despawn_qualifies", "despawn_confidence"):
 chk("exact: a checked name with no published end yields None",
     b.spawn_exact_from_end("icegolem", None), None)
 
+# ------------------------------- `ev: "skip"` - the receiving half
+#
+# Written by the SCRIPT at decision time and POSTed; this is the bridge side,
+# which is the half that can be tested before a deploy. The spec is the browser
+# session's, 2026-10-21.
+_SKIP_OK = lambda **o: dict({
+    "mtype": "franky", "server": "US II", "spawn_t": "2026-10-22T04:00:01Z",
+    "declined_on": "dps", "reason": "eta beyond budget", "excluded": None,
+    "rank": 2, "eta_sec_at_decision": 5000, "contributors_at_decision": 4,
+    "dps_assumed_at_decision": 1200, "hp_at_decision": 90000000,
+    "hp_pct_at_decision": 75.0, "required_dwell_sec": 30,
+    "remaining_window_sec": 1800, "committed_to": "crabxx",
+}, **o)
+
+def _norm(**o):
+    row, err = b.skip_row_normalise(_SKIP_OK(**o))
+    return row, err
+
+# ---- the enumerations are the point: only `dps` bears on H0.
+chk("skip: declined_on dps accepted", _norm()[1], None)
+for _d in ("window", "cost"):
+    chk("skip: declined_on %s accepted" % _d, _norm(declined_on=_d)[1], None)
+chk("skip: an unknown declined_on is refused",
+    _norm(declined_on="vibes")[0], None)
+chk("skip: a MISSING declined_on is refused, not defaulted",
+    b.skip_row_normalise({"mtype": "franky", "server": "US II"})[0], None)
+chk("skip: excluded null is fine", _norm(excluded=None)[1], None)
+for _e in ("outranked", "shard_not_candidate"):
+    chk("skip: excluded %s accepted" % _e, _norm(excluded=_e)[1], None)
+chk("skip: an unknown excluded is refused", _norm(excluded="busy")[0], None)
+chk("skip: the monster name is required", b.skip_row_normalise(
+    {"server": "US II", "declined_on": "dps"})[0], None)
+# STORED AS `type`, WHICH DEVIATES FROM THE SPEC ON PURPOSE: every other row in
+# this log calls it `type` and boss_history groups on it, so `mtype` would make
+# a skip row silently unjoinable - the hp_pct-off-a-despawn-row trap again.
+# BOTH names are accepted on the wire so an older script is never refused.
+chk("skip: the spec's `mtype` is accepted on input",
+    _norm()[0].get("type"), "franky")
+chk("skip: `type` is accepted too", b.skip_row_normalise(
+    {"type": "crabxx", "server": "US II", "declined_on": "dps"})[0].get("type"),
+    "crabxx")
+chk("skip: and `mtype` is NOT also stored, so there is one name in the log",
+    "mtype" in _norm()[0], False)
+chk("skip: nor parked in extra, which would read as un-validated",
+    "mtype" in (_norm()[0].get("extra") or {}), False)
+chk("skip: server is required", b.skip_row_normalise(
+    {"mtype": "franky", "declined_on": "dps"})[0], None)
+chk("skip: a non-dict body is refused", b.skip_row_normalise([1, 2])[0], None)
+
+# ---- OUR CLOCK ORDERS THE LOG. A skip row's `t` comes from a BROWSER, so
+# trusting it would put a second, unbounded-skew clock into the ordering key -
+# strictly worse than the estimate-versus-observation hazard already recorded.
+# Both are kept so a disagreement is measurable.
+_r, _ = _norm(t="1999-01-01T00:00:00Z")
+chk("skip: the script's own stamp is kept", _r.get("t_script"),
+    "1999-01-01T00:00:00Z")
+chk("skip: but `t` is NOT the script's", _r.get("t") == "1999-01-01T00:00:00Z",
+    False)
+chk("skip: `t` parses as a real stamp from this process's clock",
+    b.parse_ts(_r.get("t")) is not None, True)
+
+# ---- numbers are normalised so a consumer never tells missing from stringy.
+chk("skip: a stringy number becomes None, not a string",
+    _norm(hp_at_decision="lots")[0].get("hp_at_decision"), None)
+chk("skip: a bool is not a number", _norm(rank=True)[0].get("rank"), None)
+chk("skip: a real number survives as float",
+    _norm(rank=2)[0].get("rank"), 2.0)
+# An ABSENT numeric field is present-and-null rather than missing, the same
+# unconditional-emission rule the window_end fields follow.
+chk("skip: every numeric field is present even when unsupplied",
+    sorted(k for k in b.SKIP_NUM_FIELDS
+           if k not in b.skip_row_normalise(
+               {"mtype": "f", "server": "s", "declined_on": "dps"})[0]), [])
+
+# ---- UNKNOWN FIELDS SURVIVE under `extra`. Both failure modes are silent and
+# only one is recoverable: a newer script's field dropped by an older bridge
+# looks exactly like a field never sent.
+_r2, _ = _norm(some_future_field=7)
+chk("skip: an unknown field is kept", (_r2.get("extra") or {}).get("some_future_field"), 7)
+chk("skip: and NOT at the top level, where it would read as validated",
+    "some_future_field" in _r2, False)
+chk("skip: a clean row carries no empty extra", "extra" in _norm()[0], False)
+
+# ---- A SKIP IS NEITHER TERMINAL NOR A TRANSITION. A skip records us NOT
+# going; the boss carried on existing.
+chk("skip: not terminal", b.BOSS_SKIP_EV in b.BOSS_TERMINAL_EV, False)
+chk("skip: not a transition", b.BOSS_SKIP_EV in b.BOSS_TRANSITION_EV, False)
+chk("skip: nor an observation - it reports OUR decision, not the boss's state",
+    b.BOSS_SKIP_EV in b.BOSS_OBSERVATION_EV, False)
+# ALL THREE predicates, because each is the one a consumer might reach for and
+# all three are MEMBERSHIP tests rather than negations - which is what stops a
+# class added later being silently absorbed, the `ev !== 'spawn'` lesson.
+chk("skip: and all three predicates agree",
+    (b.boss_ev_is_terminal(b.BOSS_SKIP_EV),
+     b.boss_ev_is_transition(b.BOSS_SKIP_EV),
+     b.boss_ev_is_observation(b.BOSS_SKIP_EV)), (False, False, False))
+
+# ---- IT CANNOT REACH THE KILL COUNT. This is an OUTCOME assertion over TWO
+# independent layers and deliberately does not claim to pin either: the
+# transition ALLOWLIST (`if not boss_ev_is_transition(...): continue`) drops
+# the row, and it would match no inner branch even if it got past. Mutation
+# established the split - admitting "skip" to that `elif` moves nothing, and
+# removing the gate is caught by the pre-existing hp-row assertions above, not
+# by these. The enum half is pinned separately by the terminal/transition
+# assertions. A FIRST DRAFT OF THIS BLOCK CLAIMED THE PROTECTION WAS
+# POSITIONAL, which is the mechanism-versus-outcome error this file records
+# twice already, made while writing a test for it.
+_lf6 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf6.close()
+def _write(path, rows):
+    with io.open(path, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+# Deliberately OUTSIDE the despawn band: elapsed is death_hi - spawn_t =
+# 6,228s against franky's 2,400s window and a +300 ceiling, so this is an
+# unambiguous kill. The first draft used the real 2,628s figure from the
+# 2026-10-19 US II franky and the classifier CORRECTLY reclassified it as a
+# despawn, which the precondition caught - without that assertion the
+# comparison below would have passed on 0 == 0 and proved nothing.
+_KILL = {"ev": "death", "t": "2026-10-22T04:43:49Z", "type": "franky",
+         "server": "US II", "spawn_t": "2026-10-22T03:00:01Z",
+         "death_hi": "2026-10-22T04:43:49Z", "ttk_sec": 6228,
+         "method": "absent_on_responding_server", "confidence": "low",
+         "last_pct": 0.0}
+_SKIPROW = b.skip_row_normalise(_SKIP_OK())[0]
+
+_write(_lf6.name, [_KILL])
+_only = b.boss_history(_lf6.name, want_type="franky")
+_write(_lf6.name, [_KILL, _SKIPROW, _SKIPROW])
+_both = b.boss_history(_lf6.name, want_type="franky")
+def _kills(h):
+    for r in ((h or {}).get("history") or []):
+        if r.get("type") == "franky":
+            return r.get("kills_logged")
+    return None
+# PRECONDITION: the one death really is counted, so a stable number below is
+# the skip rows being ignored rather than the whole view being empty.
+chk("skip: the death alone counts one kill", _kills(_only), 1)
+chk("skip: two skip rows beside it change nothing", _kills(_both), _kills(_only))
+# THE SUMMARY COUNTERS TOO, since that is what a planner reads first. All four
+# are membership tests on `ev`, so a skip row contributes to none - and the
+# `events` total DOES move, which is the precondition proving the rows were in
+# the file the summary was computed over.
+chk("skip: the rows really are in the log the summary read",
+    (_both.get("events"), _only.get("events")), (3, 1))
+chk("skip: yet deaths/spawns/lost/despawns are untouched",
+    [_both.get(k) for k in ("deaths", "spawns", "lost", "despawns")],
+    [_only.get(k) for k in ("deaths", "spawns", "lost", "despawns")])
+
+# ---- THE DEDUP SPLIT: the SCRIPT owns "materially", the bridge owns
+# IDEMPOTENCE. An identical re-post is dropped; anything the script calls a
+# change gets through.
+_lf7 = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lf7.close()
+_bwS = b.BossWatch(["franky"], enabled=False, events_path=_lf7.name)
+chk("skip: the first post is accepted",
+    _bwS.queue_skip(_SKIP_OK()).get("deduped"), False)
+chk("skip: an identical re-post is deduped",
+    _bwS.queue_skip(_SKIP_OK()).get("deduped"), True)
+chk("skip: a changed reason gets through",
+    _bwS.queue_skip(_SKIP_OK(reason="window closing")).get("deduped"), False)
+chk("skip: a changed declined_on gets through",
+    _bwS.queue_skip(_SKIP_OK(declined_on="window")).get("deduped"), False)
+chk("skip: a different instance is its own row",
+    _bwS.queue_skip(_SKIP_OK(spawn_t="2026-10-22T05:00:01Z")).get("deduped"), False)
+chk("skip: and a different shard too",
+    _bwS.queue_skip(_SKIP_OK(server="US IV")).get("deduped"), False)
+# A null spawn_t cannot discriminate instances, so collapsing on it would merge
+# two different bosses on one shard. Never deduped.
+chk("skip: a null spawn_t is never deduped", [
+    _bwS.queue_skip(_SKIP_OK(spawn_t=None)).get("deduped"),
+    _bwS.queue_skip(_SKIP_OK(spawn_t=None)).get("deduped")], [False, False])
+chk("skip: a refused row is reported, not written",
+    _bwS.queue_skip(_SKIP_OK(declined_on="vibes")).get("ok"), False)
+
+_srows = [r for r in _rows(_lf7.name) if r.get("ev") == "skip"]
+chk("skip: exactly the accepted rows reached the log", len(_srows), 7)
+chk("skip: a logged row names the monster the way every other row does",
+    row(_srows, 0).get("type"), "franky")
+chk("skip: and they carry the decision-time reading names",
+    sorted(k for k in ("hp_at_decision", "hp_pct_at_decision")
+           if k in row(_srows, 0)),
+    ["hp_at_decision", "hp_pct_at_decision"])
+# THE THIRD NAMING FAMILY. A skip row must not be readable through either
+# existing convention, or a consumer gets a plausible wrong answer.
+chk("skip: no LIVE reading names", sorted(k for k in ("hp", "pct", "target")
+    if k in row(_srows, 0)), [])
+chk("skip: no LAST-KNOWN reading names",
+    sorted(k for k in ("last_hp", "last_pct", "last_target")
+           if k in row(_srows, 0)), [])
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

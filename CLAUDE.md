@@ -452,6 +452,29 @@ emptied, which is the single most expensive mistake this file can cause.
   discarded and the reads were used instead.** A judgement about whether prose
   suffices is not a character count, and a broken instrument that returns
   plausible small numbers is worse than one that errors.
+- **A SILENTLY TRUNCATED SOURCE MANUFACTURES A CONFIDENT NEGATIVE, AND QUOTING
+  THE RANGES YOU READ IS NOT COVERAGE.** The browser session, 2026-10-22: they
+  told the operator FOUR TIMES that `market_bridge.py` contains no argparse
+  block, having read it across four offset ranges. The file is 178,235
+  characters and WebFetch was delivering 104,036 of them; the block is at line
+  3,436 of 3,508, inside the 74K that never arrived. Fetching the raw file into
+  a page and running a real regex found it in one call. **The lesson is
+  narrower than "do not trust the fetcher": they quoted the ranges they had
+  read and never checked those against the file's LENGTH**, which was available
+  and which they had already printed for four other files that morning. Same
+  family as stating the SET a negative was taken over - here the set was the
+  bytes that actually arrived.
+- **MUTATION TESTING EDITS THE SUBJECT FILE, SO A REVERT AIMED AT THE MUTATION
+  DISCARDS EVERY UNCOMMITTED CHANGE WITH IT.** This session, 2026-10-22:
+  `git checkout Codex/market_bridge.py` was reached for to undo one mutation
+  and threw away the whole uncommitted skip-row implementation, because the
+  work had not been committed yet and `checkout` reverts to HEAD rather than to
+  the pre-mutation state. Recovered from the scratchpad copy taken before the
+  first mutation, which is the only reason it cost minutes rather than the
+  work. **Restore from the BACKUP COPY, never from git, while mutating** - the
+  backup is the pre-mutation state and HEAD is not, and the two are
+  indistinguishable in the moment because both "undo" something. The copy is
+  already part of the recorded workflow; using git instead is what is new.
 - **So re-verify rather than re-read.** `git hash-object <file>` against
   `git rev-parse origin/main:<file>` settles a file claim in one call; a
   `typeof` check settles a helper claim; an AST pass settles a "nothing reads
@@ -2064,6 +2087,20 @@ time on 2026-10-18.
   asserted as PRECONDITIONS so the comparison cannot pass on a case that never
   touched the band's early edge. The classifier's blindness is asserted over
   three function bodies.
+- **`boss_hp_sampled`'s OWN COMMENT NAMES A FOLLOW-UP WHOSE CONDITION IS NOW
+  MET, AND IT IS DELIBERATELY NOT TAKEN IN THE SAME COMMIT.** It scopes hp
+  sampling to `EVENT_WINDOW_SEC` and says the scope is "a CHOICE, not a
+  property of the data: the browser session asked for sampling scoped to bosses
+  with an open skip row, and skip rows are written by the script, which the
+  bridge cannot see. Widen it here when they exist." They exist bridge-side as
+  of 2026-10-22. **The widening is what the attribution split actually needs** -
+  joining a skip row to an hp series requires the series to exist for a boss we
+  DECLINED, and a declined respawn boss has none. It is held because hp is
+  already 60.5% of a row-counted log and widening the sampler raises that
+  further, so it wants a volume measurement or the operator's call first - and
+  because two changes landing together is how each looks proven by the other's
+  work. Named here so it does not fall out of all three queues the way the
+  oscillation fix did.
 - **CONTRIBUTOR COUNT IS NOT OBTAINABLE FROM THE BRIDGE'S INPUTS AT ALL, so the
   dps-direction hypothesis is not waiting on a field.** The browser session's
   finding, 2026-10-22, closing out the proposal to put `target` on the hp rows:
@@ -2154,8 +2191,58 @@ time on 2026-10-18.
   boundary crossed. The fork was premised on a separation that the `/boss_events`
   GET had already dissolved - **read the coupling that exists before designing
   around the one you expect.**
-- **THE SKIP-ROW SHAPE, SPECIFIED 2026-10-21 BY THE BROWSER SESSION AND NOT YET
-  BUILT. THE IMPLEMENTER IS THIS SESSION** - recorded by name because a fix
+- **THE RECEIVING HALF IS BUILT, 2026-10-22: `/skip` POSTs into
+  `BossWatch.queue_skip()`, the only public writer.** Fork B as recorded below,
+  and it did cost nothing - one method taking the lock the handler already
+  takes, `_emit` into `_pending`, `_flush_events` outside it, no new writer.
+  The SCRIPT half still needs a deploy; the bridge half is testable now and is.
+  **THE MONSTER FIELD IS STORED AS `type`, NOT THE SPEC'S `mtype`, AND THE
+  DEVIATION WAS FOUND BY MUTATION RATHER THAN BY READING.** Every other row in
+  the log calls it `type` and `boss_history` groups on `d.get("type")`, so a
+  stored `mtype` makes a skip row silently unjoinable to the log's own
+  grouping - the `hp_pct`-off-a-despawn-row trap exactly, one concept under two
+  key names across row classes. Both spellings are ACCEPTED on the wire so an
+  older script is never refused, and exactly one is stored.
+  **AND THE ASSERTION THAT WAS SUPPOSED TO COVER THIS PROVED NOTHING, WHICH IS
+  HOW THE DEVIATION SURFACED.** A mutation admitting `"skip"` to
+  `boss_history`'s `elif ev == "death"` moved NO assertion - because the row
+  carried `mtype` and never reached the grouping at all. The comment beside it
+  claimed the protection was "a property of WHERE the branches sit"; the real
+  protection is the TRANSITION ALLOWLIST (`if not boss_ev_is_transition(...):
+  continue`), whose own comment already said it is an allowlist so a sixth `ev`
+  cannot join the aggregation. **THIRD TIME IN ONE SESSION THAT A COMMENT OF
+  MINE NAMED THE WRONG MECHANISM FOR A RIGHT CONCLUSION**, after `window_end`'s
+  over-tight assertion and the `goobrawl` timer. Both comments are corrected and
+  the suite now asserts the OUTCOME across the two layers rather than claiming
+  either, with the mutation that catches each one named.
+  **OUR CLOCK ORDERS THE LOG, SO `t` IS THE BRIDGE'S AND `t_script` SITS BESIDE
+  IT.** Every other row's `t` comes from `now()` in that process; a skip row's
+  would come from a BROWSER, so trusting it puts a second clock with unbounded
+  invisible skew into the ordering key - strictly worse than the
+  estimate-versus-observation hazard this file already carries, because that
+  one at least shares a clock. Keeping both makes a disagreement measurable.
+  **UNKNOWN FIELDS SURVIVE UNDER `extra` RATHER THAN BEING DROPPED.** Both
+  failure modes are silent and only one is recoverable: a newer script's field
+  dropped by an older bridge looks exactly like a field that was never sent,
+  while a typo parked in `extra` is visibly un-validated. `mtype` is a known
+  INPUT name even though it is never a stored one, or the spec's own spelling
+  would land there.
+  **THE DEDUP SPLIT IS NOT THE SPEC'S "materially", AND THE SPLIT IS THE
+  POINT.** The SCRIPT owns when a decline is worth re-stating, because only it
+  can see whether an input moved materially. The BRIDGE owns IDEMPOTENCE: an
+  identical re-post - same instance, same `declined_on`, same `reason` - is
+  dropped, which covers a retry loop or a double POST without second-guessing a
+  judgement it cannot make. A NULL `spawn_t` IS NEVER DEDUPED, because it cannot
+  discriminate instances and collapsing on it would merge two different bosses
+  on one shard.
+  **A SKIP CARRIES A THIRD READING-NAME FAMILY AND THE SUFFIX IS WHAT KEEPS IT
+  APART.** The log has LIVE readings (`hp`, `target`) and LAST-KNOWN ones
+  (`last_hp`, `last_target`); a skip's are DECISION-TIME - the boss was alive
+  and we were not there - hence `hp_at_decision`/`hp_pct_at_decision`, asserted
+  to carry neither of the other families' names so no consumer can read a skip
+  row through an existing convention and get a plausible wrong answer.
+- **THE SPEC, AS WRITTEN 2026-10-21 BY THE BROWSER SESSION. THE IMPLEMENTER IS
+  THIS SESSION** - recorded by name because a fix
   nobody is named for is a fix nobody makes, and this one sat outside both
   sessions' stated queues.
   Written by the SCRIPT at decision time, never derived at read time, because
@@ -2663,6 +2750,22 @@ Claude Code session stops after `browser_code_eval`.
   blocked KEY then never appears in the result. `Tests/suite_features.js`
   asserts no `PARTY_BUILD` feature key lands on the list; the character-name
   key cannot be fixed that way and does not need to be.
+- **TWO CHROME INSTANCES CAN BE CONNECTED AT ONCE AND `browser_code_eval`
+  SUCCEEDS AGAINST THE WRONG ONE, WHICH MAKES EVERY DEPLOY VERIFICATION
+  SUSPECT.** The browser session's finding, 2026-10-22, after a restart left
+  the pre-restart browser still showing as connected and their session
+  auto-selected it. The call reaches the character through the /hub relay,
+  which is BROWSER-AGNOSTIC, so the snippet runs and writes to
+  `parent.localStorage` in the REAL browser while the read comes back null from
+  the other one. **The failure returns `queued: true` and then "absent", which
+  is INDISTINGUISHABLE FROM A BUILD NOT BEING DEPLOYED OR A FUNCTION NOT
+  EXISTING** - the one answer a deploy check must never give, arriving by a
+  second mechanism after `parent.*` markers outliving their script.
+  **THE GUARD IS TWO CALLS AND RUNS FIRST after any restart, reconnect or
+  tab-group loss**: write a marker via `browser_code_eval`, read it back from
+  the tab. Theirs came back ABSENT on the wrong browser and PRESENT at 6s after
+  switching. Same class as the `None`-tolerating accessor rule - distinguish
+  "absent" from "could not see" mechanically rather than by remembering.
 - **The VALUE side is still unpredictable, so keep it out of the payload.**
   Measured 2026-10-12: a 24-character instance id came back
   `[BLOCKED: Base64 encoded data]`. His attack and frequency are still
@@ -4415,8 +4518,23 @@ probes are listed at the end as still-open.
   gargoyle wake gated at `duration - 60`, and `gargoyle_end` stamped FRESH at
   wake, so legitimate content runs to ~1,160s against a 600s window and a row
   from the gargoyle phase sits inside a window that already expired once.
-- **STILL OPEN - ONE ITEM, AND IT IS THE OPERATOR'S.** Which `--boss-source` the
-  bridge is running: `server_info` carries the schedule and `aldata` fetches
+- **ANSWERED 2026-10-22: THE BRIDGE IS IN `server_info` AND ALWAYS HAS BEEN, SO
+  THE SCHEDULE STORE IS UNBLOCKED.** `BOSS_SOURCE = "server_info"` is the
+  argparse default and the operator runs `python market_bridge.py --state
+  scouts.json` with no `--boss-source`, so the default applies. The dependency
+  was satisfied before either session asked about it, and nothing needs
+  changing.
+  **AND ALDATA'S PROVENANCE IS WHY IT IS NOT A PEER SOURCE.** The operator's
+  own context: it is a community service written by someone on Discord so
+  humans could parse game data and the market, and THIS BRIDGE EXISTS BECAUSE
+  THEY WANTED MORE SPECIFIC DATA THAN IT OFFERS. So `aldata` is the generic
+  tool the bridge was built to exceed - 45s polling, max_hp inferred from the
+  largest value seen, no schedule, and it has already returned a 429. Using it
+  to look up prices is a different risk class from putting it in the loop that
+  decides where three characters travel, and `Crowns3bc/` is already the
+  recorded precedent for a community repo going away.
+- **STILL OPEN - NOTHING, AND THE ITEM BELOW IS KEPT AS THE INSTANCE.** Which
+  `--boss-source` the bridge is running: `server_info` carries the schedule and `aldata` fetches
   `monsters/<types>` with no schedule in it, so the bridge can collect this in
   one mode and cannot in the other. Nothing should be built on collecting it
   until that is settled. The three questions below were ANSWERED by the live
