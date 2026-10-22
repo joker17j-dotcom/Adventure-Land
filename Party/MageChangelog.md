@@ -21,6 +21,72 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v90
+
+**THE BOSS TRIP WAS SHARED STATE BETWEEN THE THREE CHARACTERS, BECAUSE
+`set`/`get` ARE NOT CHARACTER-SCOPED AND NOTHING SAYS SO.** Read from the
+client at upstream `16881a27`: `set(name, value)` is
+`window.localStorage.setItem("cstore_" + name, JSON.stringify(value))`. The key
+carries no character anywhere, every character tab is the same
+`adventure.land` origin, and `const BOSS_KEY = 'boss_trip'` was byte-identical
+in Ranger, Priest and Mage - so the trip, the shard-keyed cooldowns and the
+give-up counts were ONE blob, each `bossSave()` clobbering the other two and
+each load reading whichever character had written last.
+
+**THAT THE CODE CONTEXTS SHARE A `localStorage` IS NOT AN INFERENCE FROM THE
+SOURCE.** `local_cm_logic` walks `Object.keys(localStorage)` for
+`cm_<my name>_*` entries that ANOTHER character's `send_local_cm` wrote - it
+is how `send_cm`'s local copy reaches us at all, which this party relies on
+every time `plFirstTime` drops the relay duplicate. The game ships a
+cross-character transport built on exactly this sharing.
+
+**FOUND FROM ONE RETRACTED OBSERVATION.** The browser session measured Dexon's
+mrgreen trip reading `src='own'` at 22:58:18 and `src='leader'` at 23:01:20,
+same `startedAt`, across the v118 redeploy, and withdrew their earlier claim
+that `trip.src` is stamped once and never moves. It is stamped once: the only
+write is at trip creation and there is no mutation anywhere. What moved was
+WHOSE trip Dexon was holding. `src: 'leader'` sits behind `!bossIsLeader()`,
+so the leader cannot mint one - he loaded a follower's save. **A FIELD THAT
+CANNOT CHANGE, OBSERVED CHANGING, IS A STATEMENT ABOUT THE CONTAINER AND NOT
+ABOUT THE FIELD**, and reading it as mutation sends you looking for a writer
+that does not exist.
+
+**NOT MIGRATED FROM THE LEGACY KEY, ON PURPOSE.** Reading `boss_trip` once at
+load is precisely the foreign-trip import this removes. The cost is one trip
+clock restarting at the deploy, which is the same cost the persistence exists
+to avoid and is worth paying once.
+
+**THE OTHER THREE SHARED KEYS ARE LEFT, AND THE REASONS DIFFER RATHER THAN
+BEING ONE JUDGEMENT.** `pl_cursor` is shared with Meltymerch as well, and is a
+no-op: `plPoll` ends every poll at `Math.max(plCursor, r.cursor)` and
+`r.cursor` is the bridge's GLOBAL head, so all four cursors converge there
+each tick and adopting a sibling's is adopting your own. `pl_acted` cannot
+cross-suppress, because `plSend` mints `_plid` per call and `bossBroadcast`
+calls it once per member, so two followers never share an id - the only cost
+is its cap of 20 being split three ways. `loot_chest_ids` is harmless to
+share, arguably useful. The Ranger-only keys (`taxi_probe`, `crabxx_contrib`,
+`farm_spot_blacklist`, `fear_log`, `achv_queue`, `mh_state`) are unshared ONLY
+because no other script happens to use the name, which is this repo's own "a
+guard that works as a side effect of something else's data is a coincidence
+with good timing" - they are safe today and nothing protects them.
+
+**AND THE SECOND HALF OF THE REPORT STANDS AND IS NOT FIXED BY THIS: TRIP AGE
+IS NOT EVIDENCE OF CONTINUOUS EXECUTION.** The trip survives a reload by
+design, so a `startedAt` of 22:58:13 read at 23:01 says nothing about whether
+the script ran in between - which bears directly on reading the 22:42
+graveyard pick as a live trip. A trip whose event has since ENDED does
+self-correct: `bossPick()` returns null on the first `bossTick` and
+`bossEnd('nothing eligible is live')` fires. What does not self-correct is the
+inference.
+
+Pinned in `Tests/suite_bosshop.js`: the scoped form present in all three
+files, the bare form forbidden by name (a file carrying both would pass a
+presence-only check, the later declaration winning), one declaration each, and
+the leader-cannot-stamp-`leader` invariant asserted with a FRESH call in hand -
+the only state in which a follower would answer `leader`, so the assertion
+cannot pass by being offered nothing. Mutations: the bare key back in Priest
+alone fails 2, dropping `!bossIsLeader()` from `bossPick` fails 1.
+
 ## v89
 
 **A TRUST WINDOW WITH NO HEARTBEAT IS A TIMER THAT ALWAYS EXPIRES, AND IT HAD

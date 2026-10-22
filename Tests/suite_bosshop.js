@@ -1881,4 +1881,50 @@ module.exports = [
   }
 } },
 
+{ name: 'boss_trip storage is scoped per character', fn: (t) => {
+  /* `set`/`get` ARE NOT CHARACTER-SCOPED, which is the whole of this. From the
+     client at upstream 16881a27, `set(name, value)` is
+     `window.localStorage.setItem("cstore_" + name, ...)` - one origin, one
+     namespace, every character tab sharing it. A bare 'boss_trip' therefore
+     made the trip, the shard-keyed cooldowns and the give-up counts ONE blob
+     shared by all three characters, last writer winning and every load reading
+     whoever that was. */
+  const fs = require('fs');
+  const SCOPED = "const BOSS_KEY = 'boss_trip_' + character.name;";
+  for (const f of [RANGER, 'Party/Priest.js', 'Party/Mage.js']) {
+    const body = fs.readFileSync(f, 'utf8');
+    t.eq(f + ': BOSS_KEY is scoped by character', body.indexOf(SCOPED) >= 0, true);
+    /* THE INVERTED HALF. The bare form is what shipped for weeks and it looks
+       completely ordinary, so the assertion has to forbid it by name rather
+       than merely require the scoped one - a file carrying both would pass a
+       presence-only check with the later declaration winning. */
+    t.eq(f + ': and the shared key is gone',
+      body.indexOf("const BOSS_KEY = 'boss_trip';"), -1);
+    t.eq(f + ': declared exactly once',
+      body.split('const BOSS_KEY =').length - 1, 1);
+  }
+
+  /* THE INVARIANT THAT MADE THE DIAGNOSIS POSSIBLE, pinned so it stays an
+     invariant. `src: 'leader'` sits behind `!bossIsLeader()`, so the leader
+     CANNOT mint one; a leader holding a trip stamped 'leader' has loaded
+     another character's save. Dexon read src='own' at 22:58:18 and
+     src='leader' at 23:01:20 on 2026-10-22, same startedAt, across a redeploy.
+     Assert it on the leader with a fresh call in hand, which is the only state
+     in which a follower WOULD answer 'leader' - otherwise the test passes
+     because nothing was offered. */
+  const w = world({
+    character: { name: 'Dexon' },
+    CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 } },
+    parent: { S: { mrgreen: { live: true, hp: 5, max_hp: 10 } } },
+    bossEligible: () => ({ ok: true }),
+    bossRank: () => 5,
+    bossLog: () => {},
+  });
+  lift(w, RANGER, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
+    'bossState', 'bossIsLeader', 'bossPick']);
+  w.bossState.fromLeader = { name: 'mrgreen', at: Date.now() };
+  t.eq('PRECONDITION: the call is fresh and live', w.bossIsLeader(), true);
+  t.eq('the leader never stamps a trip src=leader', w.bossPick().src, 'own');
+} },
+
 ];

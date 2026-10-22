@@ -3027,6 +3027,63 @@ Claude Code session stops after `browser_code_eval`.
   and `gearProbeTripwire` were every one undefined. The value was a leftover
   from the last time `Party/Merchant.js` ran. The same durability that makes
   the fix work makes its own key worthless as evidence of it.
+- **AND CODE STORAGE IS NOT CHARACTER-SCOPED, SO IT IS SHARED STATE BETWEEN
+  EVERY CHARACTER IN THE BROWSER. NOTHING AT A CALL SITE SAYS SO AND THE
+  BULLET ABOVE ASSUMES OTHERWISE.** Read from the client at upstream
+  `16881a27`: `set(name, value)` is
+  `window.localStorage.setItem("cstore_" + name, JSON.stringify(value))` and
+  `get` the mirror of it. The key carries no character anywhere, every
+  character tab is the same `adventure.land` origin, so `cstore_<key>` is ONE
+  SLOT for Dexon, FatherToken, MageofOz and Meltymerch together. `pset`/`pget`
+  are a different pair (string values, through `parent.storage_*`) and are not
+  what the party scripts use. **So the 210 above is a leftover from whichever
+  character wrote last, not necessarily from `Party/Merchant.js`** - the
+  conclusion that bullet draws is strengthened and its attribution is a guess.
+- **THAT THE CONTEXTS REALLY DO SHARE ONE `localStorage` IS MEASURED BY THE
+  GAME ITSELF, NOT INFERRED FROM THE SOURCE.** `local_cm_logic` walks
+  `Object.keys(localStorage)` for `cm_<my name>_*` entries that ANOTHER
+  character's `send_local_cm` wrote, and that is how `send_cm`'s LOCAL copy
+  arrives at all - which this party depends on every time `plFirstTime` drops
+  the relay duplicate of a message that also came in-game. A cross-character
+  transport built on the sharing is a stronger warrant than reading the
+  accessor, and it was already running here.
+- **IT COST A SHARED BOSS TRIP, AND THE SYMPTOM WAS A FIELD THAT CANNOT CHANGE
+  OBSERVED CHANGING.** `const BOSS_KEY = 'boss_trip'` was byte-identical in
+  all three party scripts, so the trip, the shard-keyed cooldowns and the
+  give-up counts were one blob - each `bossSave()` clobbering the other two,
+  each load reading the last writer. Measured 2026-10-22: Dexon's mrgreen trip
+  read `src='own'` at 22:58:18 and `src='leader'` at 23:01:20 across a
+  redeploy, same `startedAt`. `src: 'leader'` sits behind `!bossIsLeader()` and
+  there is exactly one write to `trip.src` in the file, so the leader cannot
+  mint one - he had loaded a FOLLOWER's save. **A FIELD WITH ONE WRITER,
+  SEEN TO CHANGE, IS A STATEMENT ABOUT THE CONTAINER RATHER THAN ABOUT THE
+  FIELD**, and reading it as mutation sends you hunting a writer that does not
+  exist. Fixed in Ranger v119 / Priest v67 / Mage v90 by keying on
+  `character.name`; deliberately NOT migrated from the legacy key, since
+  reading it once is the foreign-trip import being removed.
+- **THE OTHER SHARED KEYS WERE LEFT AND THE REASONS DIFFER, WHICH IS THE PART
+  WORTH KEEPING.** `pl_cursor` is shared with the merchant too and is a no-op:
+  `plPoll` ends every poll at `Math.max(plCursor, r.cursor)` where `r.cursor`
+  is the bridge's GLOBAL head (`self.seq`, one counter for all recipients), so
+  all four converge there each tick and adopting a sibling's value is adopting
+  your own. `pl_acted` cannot cross-suppress, because `plSend` mints `_plid`
+  per call and `bossBroadcast` calls it once per member, so no two followers
+  ever see one id - the only cost is its cap of 20 split three ways.
+  `loot_chest_ids` is harmless to share. The Ranger-only keys - `taxi_probe`,
+  `crabxx_contrib`, `farm_spot_blacklist`, `fear_log`, `achv_queue`,
+  `mh_state` - are unshared ONLY because no other script happens to use the
+  name, which is "a guard that works as a side effect of something else's data
+  is a coincidence with good timing" in a new place: adding any of those names
+  to Priest or Mage silently crosses two characters' state with nothing
+  failing.
+- **A TRIP'S AGE IS NOT EVIDENCE THAT THE SCRIPT WAS RUNNING FOR IT.** The
+  browser session's own second finding, and scoping the key does not touch it:
+  `bossState.trip` is restored at load by design, so a `startedAt` of 22:58:13
+  read at 23:01 says nothing about whether anything executed in between -
+  which is exactly how one would misread the 22:42 graveyard pick. A trip
+  whose event has ENDED does self-correct, on the first `bossTick`:
+  `bossPick()` returns null and `bossEnd('nothing eligible is live')` fires.
+  The stale trip is not the hazard; the inference from its age is.
 - **A SLOT'S NAME IS NOT ITS CONTENTS, and this entry's own example was
   misdescribed because of it.** Measured 2026-10-19: there are twelve numbered
   slots plus one character slot each, and scripts are SELECTED rather than

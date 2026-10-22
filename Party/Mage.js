@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v89
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v90
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2881,7 +2881,30 @@ async function safeSmartMove(dest) {
 	return true;
 }
 
-const BOSS_KEY = 'boss_trip';
+/* SCOPED BY CHARACTER, BECAUSE `set`/`get` ARE NOT. Read from the client at
+   upstream 16881a27: `set(name, value)` is
+   `window.localStorage.setItem("cstore_" + name, ...)`. The key carries no
+   character anywhere and every character tab is the same `adventure.land`
+   origin, so a bare 'boss_trip' was ONE SLOT shared by Dexon, FatherToken and
+   MageofOz - each bossSave() clobbering the other two, each load reading
+   whichever had written last. The trip, the shard-keyed cooldowns and the
+   give-up counts all ride in that one blob.
+   That the CODE contexts really do share a localStorage is not an inference
+   from the source: `local_cm_logic` picks up `cm_<my name>_*` keys that ANOTHER
+   character's `send_local_cm` wrote, which is how send_cm's local copy reaches
+   us at all.
+   MEASURED 2026-10-22: Dexon's mrgreen trip read src='own' at 22:58:18 and
+   src='leader' at 23:01:20 across a redeploy, same startedAt. `src: 'leader'`
+   is reachable only under `!bossIsLeader()`, so the leader cannot produce one -
+   he loaded a FOLLOWER's saved trip.
+   DELIBERATELY NOT MIGRATED from the legacy key: reading it once is exactly the
+   foreign-trip import this removes. The cost is one trip clock restarting at
+   the deploy.
+   The other shared keys are left alone and the reasons differ - 'pl_cursor'
+   converges to the bridge's global head on every poll so sharing it is a no-op,
+   'loot_chest_ids' is harmless to share, and the Ranger-only keys are unshared
+   only because no other script happens to use the name. */
+const BOSS_KEY = 'boss_trip_' + character.name;
 const bossState = {
 	trip: null,         // { name, startedAt, deaths, wasRip, src }
 	cooldown: {},       // name -> ms until we will consider it again
