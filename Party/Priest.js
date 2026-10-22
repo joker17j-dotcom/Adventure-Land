@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v62
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v63
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2557,12 +2557,43 @@ function bossCooperative(name) {
 	return false;
 }
 
+/* LIVENESS IS NOT ONE FIELD, AND goobrawl IS THE EVENT THAT PROVES IT.
+   Read from upstream 16881a27 2026-10-22. Three shapes reach parent.S:
+     - crabxx, franky, icegolem and horseman come out of one forEach in
+       server_functions.js assigned {live, map, hp, max_hp, target, x, y, end}
+     - graveyard_public() returns {live: true, ...}
+     - goobrawl is assigned `E.goobrawl = { end: timers.goobrawl }` and
+       `delete E.goobrawl` when the window closes - NO live field, no map, no
+       hp. Its PRESENCE is the signal, because the server removes the key.
+   So a bare `d.live` test could never see a goobrawl, which is why
+   bossRank.goobrawl has been unreachable for as long as it has existed - the
+   same state dragold is in under lunarnewyear, reached by a different route
+   and with nothing recording it. The comment on BOSS_RANK says the table is
+   keyed by the parent.S name "because that is what bossLiveNames() yields":
+   true of every other entry and false of this one.
+   WHAT THAT COST: bossPick() returned null for goobrawl on EVERY character, so
+   shouldHandleEvents() stayed false, handleEvents() never ran, and the join was
+   never emitted - by the leader or by a follower. The 70-to-0 bgoo credit split
+   measured 2026-10-22 is therefore NOT a follower asymmetry; bossApproach is
+   byte-identical in all three files and the relay suite pins it.
+   WHY A NAMED SET AND NOT A RULE: this function iterates EVERY key of S, which
+   also carries schedule, time_offset, night, dailies and nightlies. A general
+   "key present means live" reads those as live bosses. Presence is sound for
+   the names below and for nothing else, so the set is declared rather than
+   derived - there is nothing client-side to derive it from. */
+const BOSS_PRESENCE_LIVE = { goobrawl: true };
+
+function bossEntryLive(name, d) {
+	if (!d || typeof d !== 'object') return false;
+	if (d.live) return true;
+	return !!BOSS_PRESENCE_LIVE[name];
+}
+
 function bossLiveNames() {
 	const S = (typeof parent !== 'undefined' && parent.S) || {};
 	const out = [];
 	for (const k in S) {
-		const v = S[k];
-		if (v && typeof v === 'object' && v.live) out.push(k);
+		if (bossEntryLive(k, S[k])) out.push(k);
 	}
 	return out;
 }
@@ -2589,7 +2620,7 @@ function bossPick() {
 	if (bossState.forced && bossState.forced.name) {
 		const f = bossState.forced.name;
 		const d = (parent.S || {})[f];
-		if (d && d.live) return { name: f, src: 'command' };
+		if (bossEntryLive(f, d)) return { name: f, src: 'command' };
 		bossLog('dropping the forced pick ' + f + ' - it is not live', 'orange');
 		bossState.forced = null;
 	}
@@ -2597,7 +2628,7 @@ function bossPick() {
 		&& (Date.now() - bossState.fromLeader.at) < cfg.leaderTrustMs) {
 		const n = bossState.fromLeader.name;
 		const d = (parent.S || {})[n];
-		if (d && d.live) return { name: n, src: 'leader' };
+		if (bossEntryLive(n, d)) return { name: n, src: 'leader' };
 	}
 	let best = null;
 	for (const n of bossLiveNames()) {

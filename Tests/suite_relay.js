@@ -185,6 +185,16 @@ module.exports = [
 		   with every target behind a wall, which logged nothing at all. */
 		'ragePullCtx', 'ragePullTypes', 'rageBoxedTarget', 'ragePullActive',
 		'rageHoldFire', 'ragePullTick',
+		/* The liveness pair, added 2026-10-22 with v115/v63/v86. bossLiveNames
+		   was three trivial identical copies and bossEntryLive is what made it
+		   stop being trivial - it decides whether an event with no `live` field
+		   counts as live at all, and bossPick's other two gates read the same
+		   helper. A BOSS_PRESENCE_LIVE row on the ranger alone means the leader
+		   takes a trip the followers cannot see: they never pick the event, so
+		   shouldHandleEvents() stays false for them and holdCohesion owns their
+		   movement while he joins. Same class as the rageEntry split, reached
+		   through the picker rather than through containment. */
+		'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
 			'bossCooperative']) {
 		const texts = FILES.map((f) => extract(f, name));
 		t.eq(`${name} is identical in Ranger, Priest and Mage`,

@@ -1367,7 +1367,13 @@ this ranking until a Ranger build is actually running on him.
   horseman, Dexon was on `halloween`, and the boss was at 24.46% - so the party
   arrived with a crowd three quarters done, and `share > 0.0025` is a complete
   alternative to any attack-list problem. `max.monsters.horseman` is still
-  "none": no character on the account has ever killed one.
+  "none" - but see the `max`-versus-`own` correction below before reading that
+  as "no character has ever killed one"; the baseline that actually settles it
+  is `own=0` on all three, measured 2026-10-22T11:30Z.
+  **HORSEMAN SPAWNS REGION-WIDE IN ONE SECOND, NOT PER-SHARD:** 2026-10-22T05:00:02Z
+  on all six US shards at once - I, II, III, IV, V and PVP - so a single window
+  offers six chances rather than one. US III was still being fought at elapsed
+  2,971s and died 05:49:32Z, the arrival-deadline rule holding again.
 - **AND A THIRD EXPLANATION WAS SITTING IN A TABLE NOBODY REVISITED: horseman
   HAD NO `BOSS_JOIN_SPOTS` ROW, SO THE SERVER'S FREE TELEPORT WAS NEVER USED.**
   Read from upstream `16881a27` 2026-10-22: the join handler's horseman branch
@@ -1398,6 +1404,77 @@ this ranking until a Ranger build is actually running on him.
   teleported to it". The join table's own comment derives walkability from `G`
   so the game can change the answer - and derivation cannot help a name that
   was never entered.
+- **goobrawl PUBLISHES NO `live` FIELD, SO THE BOSS-EVENT LAYER COULD NEVER
+  HANDLE IT ON ANY CHARACTER - AND THE 70-TO-0 bgoo SPLIT IS NOT A FOLLOWER
+  ASYMMETRY.** Read from upstream `16881a27` 2026-10-22, after the browser
+  session measured bgoo own: Dexon 70, FatherToken 0, MageofOz 0. THREE shapes
+  reach `parent.S`: crabxx, franky, icegolem and horseman come out of one
+  `forEach` carrying `{live, map, hp, max_hp, target, x, y, end}`;
+  `graveyard_public()` returns `live: true`; and goobrawl is
+  `E.goobrawl = { end: timers.goobrawl }` with `delete E.goobrawl` at the
+  close - no `live`, no map, no hp, so its PRESENCE is the only signal it has.
+  `bossPick()` gated all three of its paths on that field (forced and leader on
+  `d && d.live`, the own reading through `bossLiveNames()` filtering `v.live`),
+  so it returned null for goobrawl on every character, `shouldHandleEvents()`
+  stayed false, `handleEvents()` never ran and the join was never emitted by
+  anybody. **`bossApproach` IS BYTE-IDENTICAL IN ALL THREE FILES and the relay
+  suite pins it, so there was never a leader-only join path to find** - the
+  question "can a follower enter goobrawl" had a leader-shaped answer and the
+  defect was upstream of both.
+  Fixed in Ranger v115 / Priest v63 / Mage v86 with ONE predicate,
+  `bossEntryLive(name, d)`, read from all three gates - the give-up cooldown
+  lesson applied before it could bite: a shared predicate read from only one
+  call site is not yet shared, and what it produces is inaction with no log
+  line. **PRESENCE IS A NAMED SET, NOT A RULE**: `bossLiveNames()` iterates
+  EVERY key of `S`, which also carries `schedule`, `time_offset`, `night`,
+  `dailies` and `nightlies`, so a general "key present means live" reads all
+  five as live bosses. That widening is an inverted assertion, and so is the
+  dropped row (9 failures), one gate reverted to a bare `d.live` (3) and a
+  PRIEST-only drift (the divergence check).
+  **AND THE RANKING TABLE CITED goobrawl AS ITS OWN EXAMPLE, WHICH IS HOW THIS
+  HID FOR AS LONG AS IT DID.** `BOSS_RANK`'s comment explains the event-name
+  keying "because that is what `bossLiveNames()` yields - goobrawl, not rgoo":
+  true of every other entry and false of the one it names, so
+  `bossRank.goobrawl = 3` was UNREACHABLE from the day it was written. Same
+  state as dragold under `lunarnewyear`, except that one is recorded in the
+  file and this one was not. **A COMMENT'S EXAMPLE IS A CLAIM TOO, and an
+  example chosen to illustrate a convention is the least likely part of it to
+  be checked.**
+  **TWO HYPOTHESES DIED ON THE MECHANISM, AND ONE HAD BEEN REFUTED BY THE WRONG
+  ROUTE.** The followers' empty `CONFIG.combat.alwaysAttack` and
+  `attackIfTargeted` - genuinely absent from both files, not operator config -
+  were ruled out from the crabxx/franky/icegolem credit row. Right verdict,
+  wrong mechanism: those lists are not what engages a follower on a boss.
+  `findBestTargetInner()` asks `BOSS_SET` membership AND `boss.target` AND
+  `max_distance: character.range`, and `BOSS_SET` spreads `allBosses`, which
+  names `bgoo` and `rgoo` - so the followers could always engage a targeted goo
+  in range. **A REFUTATION THAT REACHES THE RIGHT VERDICT BY THE WRONG ROUTE
+  LEAVES THE NEXT READER BELIEVING THE WRONG MECHANISM**, and here it pointed
+  at the combat lists.
+  **WHAT IT DOES NOT ESTABLISH: that the followers will now earn credit.** It
+  removes the reason nobody could be ROUTED there; presence at the kills, and
+  range, are a live question for the next window. Dexon's 70 were earned
+  without this path at all, so something else put him on that map - the
+  operator's "I have even joined them but the script immediately goes to
+  another boss and does not stay" fits a manual join plus a farm layer owning
+  movement because `shouldHandleEvents()` was false.
+- **`max.monsters[X]` ABSENT DOES NOT MEAN NOBODY HAS EVER CREDITED ONE.** The
+  browser session's correction to this session, 2026-10-22: ghoul reads
+  `own=1 diff=0.3` on BOTH followers while `max.monsters.ghoul` is "none", so
+  absence coexists with a credited kill. Whether `max` populates only when
+  ANOTHER character holds it, or only above a floor, is NOT established and was
+  deliberately not theorised. **So pair `max` with `own` whenever the question
+  is "has this ever happened"** - `max` alone cannot answer it. The horseman
+  reading survives because `own=0` on all three, which is the direct measure;
+  it was the inference that was too strong, which is the `never_observable`
+  shape in a tracker field.
+  **TRACKER BASELINE, 2026-10-22T11:30Z, BEFORE ANY HORSEMAN WINDOW:** horseman
+  `own=0` on Dexon, FatherToken and MageofOz, `max` none. rgoo `0/0/0`, max
+  none - the account has never credited an rgoo. bgoo `70/0/0`. zombie
+  `0/12/17` and ghoul `0/1/1` - **the graveyard is the MIRROR of goobrawl**, the
+  ranger earning nothing where the followers earn, which already has its own
+  explanation in Dexon's 163 reach against the mummy halo. crabxx `13/11`,
+  franky `13/12`, icegolem `9/11` across the followers.
 - **THE GARGOYLE WAKE IS BIMODAL, AND THE 540 WAS ONE MODE MEASURED ONCE.** 25
   observations across two windows on 2026-10-22, roughly half at each end of
   the [360, 540] bracket: the 06:30Z window alone gave US V 372, US IV 375,
@@ -1534,6 +1611,24 @@ time on 2026-10-18.
   means two unrelated things - an instance id that changed, and a shard that
   went unlistable - and neither is worth a 30-minute Realm Fatigue trip, so the
   reason string never has to be parsed to classify it.
+- **`/boss_events` CAPS AT 5,000 ROWS, AND `hp` IS NOW THE PLURALITY OF THE
+  LOG - SO A ROW-COUNTED LIMIT BUYS FAR LESS HISTORY THAN IT USED TO.**
+  Measured 2026-10-22: a `limit=40000` request returned 5,000 rows, of which
+  hp 1,828 (36%), spawn 1,587, death 1,519, despawn 66, lost 0 - against the
+  2026-10-20 census of death 1,116 / despawn 15 / lost 120 / spawn 1,248, where
+  hp did not exist. That is about six and a half hours of history and exactly
+  ONE horseman spawn group, which is why the nightly cadence is not derivable
+  from a 5,000-row pull. **A planner reading "the last N events" is reading a
+  window whose TIME span now depends on how chatty hp sampling is**, and it
+  shortens silently with no error.
+  **AND `ev !== 'spawn'` IS NOT "TERMINAL" ANY MORE - the browser session wrote
+  exactly that filter and got 1,828 hp rows in a terminals list, one day after
+  this file recorded the cause-versus-outcome lesson.** `BOSS_TERMINAL_EV` is
+  enumerated precisely so a new `ev` value has to be classified rather than
+  defaulting, and negating `spawn` bypasses the enumeration instead of testing
+  membership. `hp` appears in neither `BOSS_TERMINAL_EV` nor
+  `BOSS_TRANSITION_EV`. **A NEGATION IS NOT A MEMBERSHIP TEST, and it silently
+  absorbs every class added after it was written.**
 - **A SERVER-SIDE FILTER IS NOT A GUARANTEE, BECAUSE THE BRIDGE IGNORES QUERY
   PARAMETERS IT DOES NOT KNOW.** Measured 2026-10-20 against the live handler:
   `/boss_events?bogus=1` returns every row. The handler reads the parameters it

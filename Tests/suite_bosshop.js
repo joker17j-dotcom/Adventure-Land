@@ -786,10 +786,99 @@ module.exports = [
 	t.ok('and bossRank is a plain keyed lookup with a default',
 		/const r = BOSS_RANK\[name\];/.test(rs));
 	/* Keyed by the parent.S name, which is the EVENT name where one exists -
-	   bossLiveNames() yields goobrawl, never rgoo. */
+	   bossLiveNames() yields goobrawl, never rgoo. That was ASPIRATIONAL until
+	   v115: goobrawl publishes no `live` field, so the rank 3 entry was
+	   unreachable from the day it was written. See the block below. */
 	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), 7);
 	t.eq('and horseman is its own name, event and monster alike',
 		w.bossRank('horseman'), w.BOSS_RANK.horseman);
+} },
+
+{ name: 'liveness is not one field: goobrawl publishes only `end`', fn(t) {
+	/* THE REAL SHAPES, read from upstream 16881a27. crabxx/franky/icegolem/
+	   horseman come out of one forEach carrying `live`; graveyard_public()
+	   returns live: true; goobrawl is `E.goobrawl = { end: timers.goobrawl }`
+	   and the key is DELETED when the window closes, so presence is the only
+	   signal it has. The non-boss keys are the ones a general presence rule
+	   would swallow - S is the whole server_info payload, not a boss table. */
+	const S_LIVE = () => ({
+		goobrawl: { end: 1761130000 },
+		schedule: { realm: 'USI', server_time: 1761120000, events: [], repeats: [] },
+		time_offset: 0,
+		night: false,
+		dailies: [13, 20],
+		nightlies: [23],
+	});
+
+	function pick(S, over = {}) {
+		const w = ranger();
+		w.bossState = Object.assign({ trip: null, forced: null, fromLeader: null }, over.bossState || {});
+		w.bossIsLeader = () => over.leader !== false;
+		w.bossEligible = () => ({ ok: true });
+		w.parent.S = S;
+		w.CONFIG.bossEvents = { leaderTrustMs: 60000 };
+		lift(w, RANGER, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames', 'bossRank',
+			'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossPick']);
+		if (over.drop) delete w.BOSS_PRESENCE_LIVE[over.drop];
+		return w;
+	}
+
+	let w = pick(S_LIVE());
+	/* PRECONDITION: the fixture really is the no-live shape, or the assertions
+	   below would hold against a `live: true` entry and prove nothing. */
+	t.eq('precondition: the goobrawl entry carries no live field',
+		'live' in w.parent.S.goobrawl, false);
+	t.eq('precondition: nor any hp', 'hp' in w.parent.S.goobrawl, false);
+
+	t.eq('bossEntryLive says live on presence alone', w.bossEntryLive('goobrawl', w.parent.S.goobrawl), true);
+	t.eq('and NOT for an unlisted name with the same shape',
+		w.bossEntryLive('crabxx', { end: 1 }), false);
+	t.eq('a live field still wins for anyone', w.bossEntryLive('crabxx', { live: true }), true);
+	t.eq('and a missing entry is not live', w.bossEntryLive('goobrawl', undefined), false);
+
+	t.eq('bossLiveNames yields goobrawl', w.bossLiveNames(), ['goobrawl']);
+	t.note('schedule, dailies and nightlies are objects with no live - a general presence rule reads all three as live bosses, which is why the set is named');
+
+	/* THE WHOLE CHAIN, from the one fact: bossPick feeds shouldHandleEvents(),
+	   which is what authorises handleEvents() to move and to emit the join. */
+	t.eq('so bossPick takes it', (w.bossPick() || {}).name, 'goobrawl');
+	t.eq('by its own reading, not a relay', (w.bossPick() || {}).src, 'own');
+
+	/* INVERTED, AND THIS IS THE MEASURED LOSS: with a bare d.live test the
+	   event is invisible, bossPick returns null, shouldHandleEvents() stays
+	   false and NOBODY emits the join - leader or follower. */
+	const gone = pick(S_LIVE(), { drop: 'goobrawl' });
+	t.eq('drop the row and bossLiveNames is empty', gone.bossLiveNames(), []);
+	t.eq('and bossPick returns null, which is the state measured to 2026-10-22',
+		gone.bossPick(), null);
+
+	/* The other two gates in bossPick's preamble read the same helper. */
+	const forced = pick(S_LIVE(), { bossState: { forced: { name: 'goobrawl', at: Date.now() } } });
+	t.eq('an operator command reaches it', (forced.bossPick() || {}).src, 'command');
+	const relayed = pick(S_LIVE(), {
+		leader: false,
+		bossState: { fromLeader: { name: 'goobrawl', at: Date.now() } },
+	});
+	t.eq('and so does the leader relay, which is the follower path',
+		(relayed.bossPick() || {}).src, 'leader');
+
+	/* MECHANISM, not behaviour: no bare d.live gate may survive in bossPick,
+	   or one path answers differently from the other two - the "two state
+	   machines over one decision" shape this file keeps paying for. */
+	const { extract } = require('./lift');
+	const pickSrc = extract(RANGER, 'bossPick');
+	t.eq('bossPick holds no bare d.live test', /\bd\.live\b/.test(pickSrc), false);
+	t.eq('it goes through the helper, three times',
+		(pickSrc.match(/bossEntryLive\(/g) || []).length, 2);
+	t.note('two in bossPick plus the one in bossLiveNames is the third gate');
+
+	/* A goobrawl entry has no max_hp, and the ranked scan divides by it. */
+	t.eq('a missing max_hp does not throw - ratio falls back to 1',
+		(pick(S_LIVE()).bossPick() || {}).name, 'goobrawl');
+
+	/* The set stays narrow, asserted so a later name cannot be added without
+	   a reader confronting why presence is sound for it. */
+	t.eq('exactly one name has presence liveness', Object.keys(w.BOSS_PRESENCE_LIVE), ['goobrawl']);
 } },
 
 { name: 'localTarget ranks, and the ranking changes nothing today', fn(t) {

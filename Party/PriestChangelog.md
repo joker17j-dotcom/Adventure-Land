@@ -21,6 +21,73 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v63
+
+**goobrawl PUBLISHES NO `live` FIELD, SO THE BOSS-EVENT LAYER COULD NEVER
+HANDLE IT - ON ANY CHARACTER. THE 70-TO-0 bgoo SPLIT IS NOT A FOLLOWER
+ASYMMETRY.** Read from upstream `16881a27`, 2026-10-22. Three shapes reach `parent.S`:
+crabxx, franky, icegolem and horseman come out of one `forEach` in
+`server_functions.js` assigned `{live, map, hp, max_hp, target, x, y, end}`;
+`graveyard_public()` returns `live: true`; and goobrawl is assigned
+`E.goobrawl = { end: timers.goobrawl }`, with `delete E.goobrawl` when the
+window closes. No `live`, no map, no hp - its PRESENCE is the only signal it
+has.
+
+`bossPick()` gates all three of its paths on that field: the forced pick and
+the leader relay each tested `d && d.live`, and the own reading iterates
+`bossLiveNames()`, which filtered on `v.live`. So `bossPick('goobrawl')`
+returned null for Dexon, FatherToken and MageofOz alike; `shouldHandleEvents()`
+stayed false; `handleEvents()` never ran; and the join was never emitted by
+anybody. `bossApproach` is byte-identical in all three files and the relay suite
+pins it, so there was never a leader-only join path to find.
+
+**TWO HYPOTHESES DIED ON THE MECHANISM RATHER THAN ON A COUNTER-EXAMPLE, AND
+ONE OF THEM HAD BEEN REFUTED FOR THE WRONG REASON.** The followers' empty
+`CONFIG.combat.alwaysAttack` and `attackIfTargeted` were ruled out by the
+crabxx/franky/icegolem credit row - a sound refutation reaching the right answer
+through the wrong path, because those lists are not what engages a follower on a
+boss at all. `findBestTargetInner()` asks `BOSS_SET` membership plus
+`boss.target` plus `max_distance: character.range`, and `BOSS_SET` spreads
+`allBosses`, which names `bgoo` and `rgoo`. The followers were always able to
+engage a targeted goo in range. **A REFUTATION THAT LANDS ON THE RIGHT VERDICT
+BY THE WRONG ROUTE LEAVES THE NEXT READER BELIEVING THE WRONG MECHANISM**, and
+here it would have sent them to the combat lists.
+
+**THE FIX IS ONE PREDICATE READ FROM ALL THREE GATES.** `bossEntryLive(name, d)`
+answers `d.live`, else presence for a name in `BOSS_PRESENCE_LIVE`. Presence is
+sound for goobrawl because the server deletes the key, and the set is NAMED
+rather than general because `bossLiveNames()` iterates every key of `S` - which
+also carries `schedule`, `time_offset`, `night`, `dailies` and `nightlies`. A
+general "key present means live" rule reads all five as live bosses; that
+widening is an inverted assertion in `Tests/suite_bosshop.js`.
+
+One gate was extracted rather than three copies left in place, for the reason
+this repo already recorded against the give-up cooldown: a shared predicate read
+from only one call site is not yet shared, and the failure it produces is
+inaction with no log line.
+
+**AND THE RANKING TABLE'S OWN COMMENT CITED goobrawl AS ITS EXAMPLE OF WHY IT IS
+KEYED BY THE EVENT NAME - "because that is what bossLiveNames() yields".** True
+of every other entry and false of that one, so `bossRank.goobrawl = 3` was
+unreachable from the day it was written, exactly as dragold is under
+`lunarnewyear` - except that one is recorded and this one was not. The keying
+convention was right and the reason given for it was never checked. Corrected in
+place, with the falsified clause kept.
+
+Measured by mutation: dropping the row fails 9 assertions, reverting one gate to
+a bare `d.live` fails 3, widening to a general presence rule fails 5, and
+dropping the row from the PRIEST alone fails the relay divergence check.
+`bossEntryLive`, `bossLiveNames` and `BOSS_PRESENCE_LIVE` are on that list now -
+a drifted copy means the leader takes a trip the followers cannot see.
+
+**WHAT THIS DOES NOT ESTABLISH.** That the followers will now earn goobrawl
+credit. It removes the reason nobody could be routed there; whether all three are
+present at the kills, and in range, is a live question for the next window.
+Dexon's 70 bgoo were earned without this path, so something else put him on that
+map - the operator's own "I have even joined them but the script immediately goes
+to another boss and does not stay" is consistent with a manual join plus a farm
+layer that owned movement because `shouldHandleEvents()` was false.
+
 ## v62
 
 **horseman HAD NO `BOSS_JOIN_SPOTS` ROW, AND THE SERVER HAS JOINED IT ALL
