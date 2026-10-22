@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v63
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v64
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2576,11 +2576,24 @@ function bossCooperative(name) {
    never emitted - by the leader or by a follower. The 70-to-0 bgoo credit split
    measured 2026-10-22 is therefore NOT a follower asymmetry; bossApproach is
    byte-identical in all three files and the relay suite pins it.
-   WHY A NAMED SET AND NOT A RULE: this function iterates EVERY key of S, which
-   also carries schedule, time_offset, night, dailies and nightlies. A general
-   "key present means live" reads those as live bosses. Presence is sound for
-   the names below and for nothing else, so the set is declared rather than
-   derived - there is nothing client-side to derive it from. */
+   WHY A NAMED SET AND NOT A RULE: this function iterates EVERY key of S, and S
+   is the whole server_info payload rather than a boss table. MEASURED on US II
+   2026-10-22, ten keys: schedule, event_flags, event_ends, blessed_minutes,
+   blessed_by, halloween, witchcipher, slenderman, mrgreen, mrpumpkin. A general
+   "key present means live" reads event_flags, blessed_by and halloween as live
+   bosses. Presence is sound for the names below and for nothing else, so the
+   set is declared rather than derived - there is nothing client-side to derive
+   it from.
+   THIS COMMENT FIRST NAMED time_offset, night, dailies and nightlies as the
+   non-boss keys, and all four are FIELDS INSIDE schedule rather than keys of S.
+   The browser session caught it against a live read hours after it was written -
+   the conclusion was unaffected and the evidence cited for it did not exist,
+   which is this file's own "a comment is a claim" on a comment written to
+   explain a fix for a claim that rotted.
+   slenderman is the one key carrying the full boss shape (live, map, hp,
+   max_hp) and it is NOT here: it is refused by CONFIG.bossEvents.exclude, for
+   the reason recorded there - he cannot be walked to or chased. So a reader who
+   finds him live and unranked should look at the exclude set, not at this one. */
 const BOSS_PRESENCE_LIVE = { goobrawl: true };
 
 function bossEntryLive(name, d) {

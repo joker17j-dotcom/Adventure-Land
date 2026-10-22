@@ -801,13 +801,24 @@ module.exports = [
 	   and the key is DELETED when the window closes, so presence is the only
 	   signal it has. The non-boss keys are the ones a general presence rule
 	   would swallow - S is the whole server_info payload, not a boss table. */
+	/* THE NON-BOSS KEYS ARE THE MEASURED ONES, corrected 2026-10-22. The first
+	   version of this fixture carried time_offset, night, dailies and nightlies
+	   at the top level; all four are FIELDS INSIDE schedule and none is a key of
+	   S, so the widening assertion below was exercising a payload that does not
+	   exist. Measured on US II: schedule, event_flags, event_ends,
+	   blessed_minutes, blessed_by, halloween, witchcipher, slenderman, mrgreen,
+	   mrpumpkin. slenderman is included BECAUSE it carries the full boss shape -
+	   it is the case that makes the named set look wrong and is refused
+	   elsewhere. */
 	const S_LIVE = () => ({
 		goobrawl: { end: 1761130000 },
-		schedule: { realm: 'USI', server_time: 1761120000, events: [], repeats: [] },
-		time_offset: 0,
-		night: false,
-		dailies: [13, 20],
-		nightlies: [23],
+		schedule: { realm: 'USII', server_time: 1761120000, time_offset: -5, events: [], repeats: [] },
+		event_flags: { halloween: true },
+		event_ends: { halloween: 1762128000000 },
+		blessed_minutes: 0,
+		blessed_by: { name: 'someone' },
+		halloween: { candy: 3 },
+		slenderman: { live: true, map: 'spookytown', hp: 66666, max_hp: 66666 },
 	});
 
 	function pick(S, over = {}) {
@@ -836,8 +847,32 @@ module.exports = [
 	t.eq('a live field still wins for anyone', w.bossEntryLive('crabxx', { live: true }), true);
 	t.eq('and a missing entry is not live', w.bossEntryLive('goobrawl', undefined), false);
 
-	t.eq('bossLiveNames yields goobrawl', w.bossLiveNames(), ['goobrawl']);
-	t.note('schedule, dailies and nightlies are objects with no live - a general presence rule reads all three as live bosses, which is why the set is named');
+	t.eq('bossLiveNames yields goobrawl', w.bossLiveNames().indexOf('goobrawl') >= 0, true);
+	t.eq('and the non-boss keys stay out',
+		['schedule', 'event_flags', 'event_ends', 'blessed_minutes', 'blessed_by', 'halloween']
+			.filter((k) => w.bossLiveNames().indexOf(k) >= 0), []);
+	t.note('event_flags, blessed_by and halloween are objects with no live - a general presence rule reads all three as live bosses, which is why the set is named');
+
+	/* slenderman DOES carry live: true, so it reaches bossLiveNames on its own
+	   merits and always has - the presence set is not what admits it and not
+	   what should exclude it. It is refused by CONFIG.bossEvents.exclude, whose
+	   comment records why: he cannot be walked to (the server sends {name, map}
+	   with no x/y) and approaching him warps him away. Asserted from the SOURCE
+	   TEXT because that set is a non-liftable `new Set([...])`, and a fixture
+	   copy would prove nothing about the committed file. */
+	t.eq('slenderman is live by its own field', w.bossEntryLive('slenderman', w.parent.S.slenderman), true);
+	t.eq('so bossLiveNames yields it too', w.bossLiveNames().indexOf('slenderman') >= 0, true);
+	t.eq('it is NOT in the presence set - that is not what gates it',
+		Object.prototype.hasOwnProperty.call(w.BOSS_PRESENCE_LIVE, 'slenderman'), false);
+	t.eq('and not ranked either, so it would sort at the default',
+		w.bossRank('slenderman'), w.BOSS_RANK_DEFAULT);
+	const rangerSrc = require('fs').readFileSync(
+		require('path').join(require('./lift').ROOT, RANGER), 'utf8');
+	const exclLine = (rangerSrc.match(/exclude:\s*new Set\(\[[^\]]*\]\)/) || [''])[0];
+	t.ok('the committed exclude set names slenderman', /'slenderman'/.test(exclLine));
+	t.ok('and abtesting', /'abtesting'/.test(exclLine));
+	t.eq('goobrawl still wins the ranked scan against it, rank 3 over the default',
+		(w.bossPick() || {}).name, 'goobrawl');
 
 	/* THE WHOLE CHAIN, from the one fact: bossPick feeds shouldHandleEvents(),
 	   which is what authorises handleEvents() to move and to emit the join. */
@@ -848,9 +883,10 @@ module.exports = [
 	   event is invisible, bossPick returns null, shouldHandleEvents() stays
 	   false and NOBODY emits the join - leader or follower. */
 	const gone = pick(S_LIVE(), { drop: 'goobrawl' });
-	t.eq('drop the row and bossLiveNames is empty', gone.bossLiveNames(), []);
-	t.eq('and bossPick returns null, which is the state measured to 2026-10-22',
-		gone.bossPick(), null);
+	t.eq('drop the row and goobrawl leaves bossLiveNames', gone.bossLiveNames().indexOf('goobrawl') >= 0, false);
+	t.eq('and bossPick falls to the only other live entry rather than to goobrawl',
+		(gone.bossPick() || {}).name, 'slenderman');
+	t.note('slenderman is refused by the real bossEligible, which this harness stubs open - the point is only that goobrawl is gone');
 
 	/* The other two gates in bossPick's preamble read the same helper. */
 	const forced = pick(S_LIVE(), { bossState: { forced: { name: 'goobrawl', at: Date.now() } } });

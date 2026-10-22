@@ -1426,11 +1426,36 @@ this ranking until a Ranger build is actually running on him.
   lesson applied before it could bite: a shared predicate read from only one
   call site is not yet shared, and what it produces is inaction with no log
   line. **PRESENCE IS A NAMED SET, NOT A RULE**: `bossLiveNames()` iterates
-  EVERY key of `S`, which also carries `schedule`, `time_offset`, `night`,
-  `dailies` and `nightlies`, so a general "key present means live" reads all
-  five as live bosses. That widening is an inverted assertion, and so is the
-  dropped row (9 failures), one gate reverted to a bare `d.live` (3) and a
-  PRIEST-only drift (the divergence check).
+  EVERY key of `S`, and `S` is the whole `server_info` payload rather than a
+  boss table. That widening is an inverted assertion, and so is the dropped row
+  (9 failures), one gate reverted to a bare `d.live` (3) and a PRIEST-only
+  drift (the divergence check).
+  **AND THE KEY LIST THIS BULLET FIRST GAVE AS THE EVIDENCE DID NOT EXIST.** It
+  named `time_offset`, `night`, `dailies` and `nightlies` as keys of `S`; all
+  four are FIELDS INSIDE `schedule`, which the schedule section of this very
+  file already states. The browser session caught it against a live read hours
+  after it was written. **MEASURED, US II 2026-10-22, ten keys:** `schedule`,
+  `event_flags`, `event_ends`, `blessed_minutes`, `blessed_by`, `halloween`,
+  `witchcipher`, `slenderman`, `mrgreen`, `mrpumpkin` - so the keys a general
+  rule would actually swallow are `event_flags`, `blessed_by` and `halloween`.
+  The conclusion is untouched and was never in doubt; the FIXTURE was exercising
+  a payload shape the game does not produce, so the widening assertion passed
+  against fiction. Corrected in the three scripts and in
+  `Tests/suite_bosshop.js`; the re-run mutation still fails 4.
+  **THIS IS "A COMMENT IS A CLAIM" ON A COMMENT WRITTEN TO EXPLAIN A FIX FOR A
+  CLAIM THAT ROTTED**, inside the same day - and the tell was available to its
+  author, who had the schedule section's own field list in front of them and
+  reached for a remembered set instead of the measured one.
+  **`slenderman` IS THE KEY THAT MAKES THE NAMED SET LOOK WRONG AND DOES NOT
+  MAKE IT WRONG.** It carries the FULL boss shape - `live: true`, map, hp
+  66,666, max_hp - so it reaches `bossLiveNames()` on its own `live` field and
+  always has, with no presence rule involved. It is `cooperative: true` in
+  `design/monsters.js`, so `bossCooperative` would admit it; what refuses it is
+  `CONFIG.bossEvents.exclude`, whose own comment records why (the server sends
+  `{name, map}` with no x/y so `bossWalkTarget` returns null, and approaching
+  him warps him away). So a reader who finds him live and unranked should look
+  at the exclude set. Asserted from the SOURCE TEXT, because that set is a
+  non-liftable `new Set([...])` and a fixture copy would prove nothing.
   **AND THE RANKING TABLE CITED goobrawl AS ITS OWN EXAMPLE, WHICH IS HOW THIS
   HID FOR AS LONG AS IT DID.** `BOSS_RANK`'s comment explains the event-name
   keying "because that is what `bossLiveNames()` yields - goobrawl, not rgoo":
@@ -4123,6 +4148,44 @@ probes are listed at the end as still-open.
   graveyard immediately**, and nothing in the schedule code would need to
   change for that to happen - so record the simultaneity as contingent on the
   offset table, and re-derive it if `TIMEO` ever grows.
+- **READ LIVE FROM A CHARACTER'S CODE CONTEXT, 2026-10-22T17:17Z, US II - SO
+  QUESTION (2) IS ANSWERED FROM THE SEAT THAT MATTERS AND THE SCHEDULE IS
+  USABLE BY THE SCRIPTS, NOT ONLY BY THE BRIDGE.** `parent.S.schedule` on Dexon:
+  `realm` USII, `time_offset` -5, `server_time`, 43 `events` entries carrying
+  `{id, event, at, status}` plus `season`/`started`/`ended`, and ONE `repeats`
+  entry. **IDs ARE `USII-2026-10-22-1300-goobrawl` - realm date and REALM
+  HOUR**, so the offset arithmetic both sessions have been doing from memory is
+  published: realm 13 at offset -5 IS 18:00Z, which is where the logged
+  goobrawl detection at 18:01:58 sits, and realm 0 IS 05:00Z, which is this
+  morning's six-shard horseman spawn.
+  **THE DAILY SLOTS ROTATE AND THE NIGHTLY ALTERNATION IS A SPECIAL CASE OF
+  IT.** Realm-13 was goobrawl on the 22nd and crabxx on the 23rd; realm-20 was
+  abtesting then goobrawl. So "a server's nightly alternates unless it has been
+  restarted" is a hand-built model of something the server states outright,
+  with `status` attached - which SUPERSEDES `/schedule` (whose own source is
+  labelled "NOT measured live") and supersedes preposition-by-base-rate for
+  anything on the list. **A QUEUE CAN READ ITS DEADLINES INSTEAD OF ESTIMATING
+  THEM.**
+  **AND `graveyard` IS IN `repeats` AND NOT IN `events`, LIVE, exactly as the
+  creator's own test asserts** - so a consumer reading only `events` sees the
+  whole schedule except the graveyard. Third sighting of this shape after
+  `never_observable` and goobrawl's missing `live`: the data is complete and the
+  obvious read of it is not. Read both arrays.
+- **`duration` IS EVENT END MINUS EVENT START, AND THE "DESPAWN CLOCK" READING
+  OF IT IS RETRACTED BY ITS OWN AUTHOR.** `S.witchcipher` published
+  `start`/`end` 1,680,000 ms apart against `G.events.witchcipher.duration`
+  1680 - exact. So the plain reading covers every observation: the EVENT runs
+  for `duration`, and monsters it spawned can be fought after it ends. That is
+  why franky died at 2,628s and horseman at 2,971s while untouched bosses go at
+  2402-2556, and it needed no arrival-deadline theory to explain. **A MODEL THAT
+  FITS THE DATA IS NOT THEREBY THE MECHANISM**, and this one was reasoned off
+  the despawn cluster rather than read.
+  Nothing in the classifier changes - `BOSS_DESPAWN_*` were measured against the
+  window rather than derived from a theory of it, which is why the retraction
+  costs nothing. **THE GRAVEYARD IS WHERE IT DOES BITE**: duration 600, the
+  gargoyle wake gated at `duration - 60`, and `gargoyle_end` stamped FRESH at
+  wake, so legitimate content runs to ~1,160s against a 600s window and a row
+  from the gargoyle phase sits inside a window that already expired once.
 - **STILL OPEN - ONE ITEM, AND IT IS THE OPERATOR'S.** Which `--boss-source` the
   bridge is running: `server_info` carries the schedule and `aldata` fetches
   `monsters/<types>` with no schedule in it, so the bridge can collect this in
@@ -4153,7 +4216,7 @@ probes are listed at the end as still-open.
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 1018, 994, 992, 977, 967, 944, 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
+  It read 1084, 1076, 1056, 1044, 1018, 994, 992, 977, 967, 944, 908, 878 and 845 earlier on 2026-10-22; 789, 782, 770, 753, 730, 702, 690, 673,
   668 and 646 on 2026-10-21; 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
   EIGHTEEN figures in three days, which is the point rather than an embarrassment:

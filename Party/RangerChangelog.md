@@ -21,6 +21,43 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v116
+
+**A COMMENT-ONLY CORRECTION, AND IT IS THIS REPO'S OWN LESSON LANDING ON A
+COMMENT WRITTEN HOURS EARLIER TO EXPLAIN A CLAIM THAT ROTTED.** v115's
+`bossEntryLive` comment justified the named presence set by naming the non-boss
+keys a general rule would swallow: `schedule`, `time_offset`, `night`,
+`dailies` and `nightlies`. Only the first is a key of `S` - the other four are
+FIELDS INSIDE it, which `CLAUDE.md`'s own schedule section already stated. The
+browser session caught it against a live read.
+
+**MEASURED, US II 2026-10-22, ten keys:** `schedule`, `event_flags`,
+`event_ends`, `blessed_minutes`, `blessed_by`, `halloween`, `witchcipher`,
+`slenderman`, `mrgreen`, `mrpumpkin`. So the keys a general "key present means
+live" rule would actually read as live bosses are `event_flags`, `blessed_by`
+and `halloween`.
+
+The fix stands untouched; what was wrong was the EVIDENCE cited for it - and
+the test fixture had the same fiction in it, so the widening assertion was
+passing against a payload shape the game does not produce. Corrected here and
+in `Tests/suite_bosshop.js`; the re-run mutation still fails 4.
+
+**`slenderman` IS THE KEY THAT MAKES THE NAMED SET LOOK WRONG AND DOES NOT MAKE
+IT WRONG, so it is now named at the declaration.** It carries the FULL boss
+shape - `live: true`, map, hp 66,666, max_hp - so it reaches `bossLiveNames()`
+on its own `live` field and always has, with no presence rule involved. It is
+`cooperative: true`, so `bossCooperative` would admit it; what refuses it is
+`CONFIG.bossEvents.exclude`, whose comment records why - the server sends
+`{name, map}` with no x/y so `bossWalkTarget` returns null, and approaching him
+warps him away. A reader who finds him live and unranked should look at the
+exclude set, which the comment now says. Asserted from the SOURCE TEXT, because
+that set is a non-liftable `new Set([...])` and a fixture copy would prove
+nothing about the committed file.
+
+**NO BEHAVIOUR CHANGED.** This version is byte-identical to v115 but for the
+version number and that comment block, so a deploy of either is the same build
+functionally - v115's `bossEntryLive` is the feature to detect for both.
+
 ## v115
 
 **goobrawl PUBLISHES NO `live` FIELD, SO THE BOSS-EVENT LAYER COULD NEVER
