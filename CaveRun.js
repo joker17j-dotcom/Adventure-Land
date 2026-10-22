@@ -1,4 +1,51 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v21 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v22 (TEST BUILD)
+// v22 2026-10-22 LEADER MOTION PICKS THE DISTANCES, THE BAND'S OWN GEOMETRY
+//                PICKS THE KITE RULE - item 1, with the decoupling the handoff
+//                asked for and one correction it did not anticipate.
+//                THE SELECTOR ASKED NOTHING ABOUT THE LEADER until now, which
+//                is the third sighting of the wrong-actor shape. Caught live:
+//                leader STATIONARY, Dexon 171u away, recovering false, moving
+//                false, closeAt 180, nobody objecting to 171. On open ground
+//                doing nothing engagedNow was TRUE all session, so the travel
+//                band never applied at all.
+//                ITEM 1 AS SPECIFIED WOULD HAVE REINSTATED ITEM 2 THROUGH THE
+//                BACK DOOR, and that is the part worth reading twice. "A
+//                stationary leader uses the TRAVEL band regardless of follower
+//                engagement" - but travel carries the UNCONDITIONAL no-ratchet,
+//                and that is exactly the retreat freedom the operator just
+//                protected ("it also protects the followers ability to kite
+//                while in combat"). An engaged follower beside a parked leader
+//                would have lost it. So the stationary case gets its OWN pair,
+//                90/30, and cannot borrow travel's.
+//                90 IS FORCED, NOT CHOSEN. The oscillation invariant is
+//                `releaseAt + kiteStep > closeAt` while the no-ratchet is
+//                conditional, so any band that KEEPS the retreat must be at
+//                least kiteStep (55) wide: 30 + 55 = 85, and 90 is the round
+//                number above it. The operator may move it; the constraint
+//                travels with it, and the suite asserts it over every band the
+//                selector can return rather than over three hand-checked pairs.
+//                AND THE KITE RULE IS NOW DERIVED FROM GEOMETRY RATHER THAN
+//                FROM THE MODE LABEL. `L.mode === 'travel'` tied it to the
+//                band's NAME, which was correct with two bands and wrong the
+//                moment a third existed. noRatchetAlways(L) asks the question
+//                the invariant actually poses, reproduces BOTH shipped answers
+//                exactly - combat 175 <= 180 conditional, travel 85 > 60
+//                unconditional - and gives the right answer for any band added
+//                later. "The tight band and the unconditional no-ratchet are
+//                ONE change rather than two" is this file's own phrasing; it is
+//                one expression now.
+//                THE LEADER NOTES ITS OWN MOTION, because it returns from
+//                moveTick before noteLeaderMotion and would otherwise report
+//                the stationary band forever. Nothing acts on the leader's
+//                leash - the hold reads MOVE.* directly - but caveLeash()
+//                reports it, and a probe that lies is this file's most
+//                expensive recurring cost.
+//                TWO SUITE ASSERTIONS WERE REWRITTEN RATHER THAN DELETED, and
+//                the distinction from the item-2 episode is stated in the test
+//                itself: there an assertion encoded an operator RULING and the
+//                change removed a freedom; here it encoded a MECHANISM, the
+//                behaviour is identical, and the equivalence is asserted rather
+//                than claimed. Unscored, like v21 - no run has seen 90/30.
 // v21 2026-10-22 FOLLOWERS START ON LEADER MOTION - item 3 of the three
 //                proposed changes, and the only one the kiting ruling never
 //                touched. `closeAt / leaderSpeed + tickMs/2` IS the follower's
@@ -355,6 +402,28 @@ const MOVE = {
 	travelCloseAt: 60,
 	travelReleaseAt: 30,
 	travelCeiling: 135,
+
+	/* THE STATIONARY BAND - v22, item 1. A leader who is not going anywhere has
+	   no claim on 180 units of slack: the loose combat band exists so a
+	   FIGHTING follower is not yanked off a monster by a leader walking away,
+	   and when the leader is parked the second half of that is simply absent.
+	   Caught live: leader STATIONARY, Dexon 171u away, `recovering` false,
+	   `moving` false, closeAt 180, and nobody objected to 171.
+	   THE WIDTH IS FORCED BY THE OSCILLATION INVARIANT, NOT CHOSEN. The sawtooth
+	   fires when `releaseAt + kiteStep > closeAt` while the no-ratchet rule is
+	   conditional, so a band carrying the combat kite rule must be at least
+	   kiteStep (55) wide: 30 + 55 = 85, and 90 is the round number above it.
+	   COLLAPSING TO THE TRAVEL BAND INSTEAD WOULD HAVE BROKEN THE OPERATOR'S
+	   KITING RULING. 30 + 55 = 85 > 60 violates the invariant, and travel
+	   survives it only because its no-ratchet is unconditional - which is
+	   exactly the retreat freedom the ruling protects in combat. So the
+	   stationary case needs its own pair; it cannot borrow travel's.
+	   90 IS THE OPERATOR'S TO MOVE, with one constraint that is not: keep
+	   `travelReleaseAt + kiteStep <= stationaryCloseAt` or the retreat has to
+	   go with it. The suite asserts that over every band the selector returns. */
+	stationaryCloseAt: 90,
+	stationaryReleaseAt: 30,
+	stationaryCeiling: 135,
 };
 
 /* ---------------------------------------------------------------- v14 -----
@@ -631,10 +700,44 @@ function mateTrouble() {
    mean 10 with MOVE.staleSlack cut to 15, which is the lever this note does
    not mention and which was doing much of the bleeding. */
 function holdActive() { return HOLD.enabled && !(mode === 'crypt' && !HOLD.inCrypt); }
+/* THE NO-RATCHET RULE IS DERIVED FROM THE BAND'S OWN GEOMETRY - v22 - AND
+   THAT REPLACES READING THE MODE LABEL.
+   It used to be `L.mode === 'travel'`, which tied the kite rule to the band
+   NAME. That was correct while there were two bands and the narrow one was the
+   travel one, and it becomes wrong the moment a third exists: item 1 was
+   specified as "a stationary leader uses the travel band regardless of
+   follower engagement", and travel carries the unconditional rule, so an
+   ENGAGED follower beside a parked leader would have lost the retreat - which
+   is precisely what the operator ruled against on item 2 ("it also protects
+   the followers ability to kite while in combat"). The decoupling would have
+   reinstated item 2 through the back door.
+   SO THE PREDICATE IS THE INVARIANT ITSELF. A band needs the unconditional
+   rule exactly when a free kite step from releaseAt can land past closeAt,
+   because that is the oscillation condition; a band wider than kiteStep does
+   not, and keeps the retreat. Today that reproduces both shipped answers with
+   no behaviour change - combat 120 + 55 = 175 <= 180 stays CONDITIONAL and
+   keeps the retreat, travel 30 + 55 = 85 > 60 stays UNCONDITIONAL - and it
+   gives the right answer for any band added later without anyone re-deriving
+   it. "The tight band and the unconditional no-ratchet are ONE change rather
+   than two" is the file's own phrasing; this makes them one expression. */
+function noRatchetAlways(L) { return L.releaseAt + MOVE.kiteStep > L.closeAt; }
+
+/* WHICH BAND. Leader motion picks the DISTANCES; engagement still picks
+   whether the loose pair is even a candidate. The selector asked nothing about
+   the leader until v22 - the third sighting of the wrong-actor shape - and on
+   open ground doing nothing `engagedNow` was TRUE all session, so the travel
+   band never applied at all and every dry-run figure was the combat band. */
 function computeLeash() {
 	const base = { closeAt: MOVE.closeAt, releaseAt: MOVE.releaseAt, ceiling: MOVE.ceiling, mode: 'combat' };
 	if (!MOVE.tighten || !holdActive()) { base.mode = MOVE.tighten ? 'base/nohold' : 'base'; return base; }
-	if (engaged() || attackersOnMe() || troubleNow.length) return base;
+	if (engaged() || attackersOnMe() || troubleNow.length) {
+		/* ENGAGED. The loose band is for a follower being pulled off a monster
+		   by a leader walking away; parked, there is nothing to be pulled off
+		   by, so the distances tighten and the kite rule does not. */
+		if (leaderMoving()) return base;
+		return { closeAt: MOVE.stationaryCloseAt, releaseAt: MOVE.stationaryReleaseAt,
+			ceiling: MOVE.stationaryCeiling, mode: 'stationary' };
+	}
 	return { closeAt: MOVE.travelCloseAt, releaseAt: MOVE.travelReleaseAt, ceiling: MOVE.travelCeiling, mode: 'travel' };
 }
 function leash() { return leashNow || computeLeash(); }
@@ -1097,7 +1200,7 @@ function kiteStep(lp) {
 			   which is what the paragraph above already asks for; what it loses
 			   is the slow retreat, and out of combat staying with the party is
 			   worth more than backing away from a monster that is not attacking. */
-			if ((gapNow > L.releaseAt || L.mode === 'travel') && gapNew > gapNow + 1) continue;
+			if ((gapNow > L.releaseAt || noRatchetAlways(L)) && gapNew > gapNow + 1) continue;
 		}
 		let minD = Infinity;
 		for (const m of near) minD = Math.min(minD, Math.hypot(nx - (m.real_x !== undefined ? m.real_x : m.x), ny - (m.real_y !== undefined ? m.real_y : m.y)));
@@ -1208,7 +1311,17 @@ async function moveTick() {
 		}
 		return;
 	}
-	if (isLeader()) { warnOutrun(); return; }
+	if (isLeader()) {
+		/* The leader never reaches noteLeaderMotion below, so without this its
+		   own leaderMovedAt stays 0 and computeLeash would report the
+		   stationary band at all times. Nothing ACTS on the leader's leash -
+		   the hold reads MOVE.* directly and moveTick returns here - but
+		   caveLeash() reports it, and a probe that lies is this file's most
+		   expensive recurring cost. */
+		noteLeaderMotion({ x: character.real_x, y: character.real_y });
+		warnOutrun();
+		return;
+	}
 	if (!active()) return;
 
 	const lp = leaderPos();

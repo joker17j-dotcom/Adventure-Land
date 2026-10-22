@@ -44,10 +44,14 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 		/const need = \(holdFrom \? worst > MOVE\.releaseAt/.test(s), false);
 
 	const w = world({});
-	lift(w, 'CaveRun.js', ['MOVE', 'computeLeash']);
+	lift(w, 'CaveRun.js', ['MOVE', 'computeLeash', 'noRatchetAlways']);
 	w.holdActive = () => true;
 	w.engaged = () => false;
 	w.attackersOnMe = () => 0;
+	/* v22: the selector now asks whether the LEADER is going anywhere. Default
+	   it to moving, so every pre-existing assertion below keeps describing the
+	   case it was written for; the stationary branch has its own block. */
+	w.leaderMoving = () => true;
 	w.troubleNow = [];
 
 	const travel = w.computeLeash();
@@ -116,8 +120,54 @@ name: 'the leader hold no longer tracks the travel leash', fn(t) {
 		w.MOVE.releaseAt + w.MOVE.kiteStep < w.MOVE.closeAt);
 	t.eq('the travel band does NOT, which is why it needs the unconditional rule',
 		w.MOVE.travelReleaseAt + w.MOVE.kiteStep < w.MOVE.travelCloseAt, false);
-	t.ok('so travel exempts itself from the no-ratchet gate by mode, not by gap',
-		/gapNow > L\.releaseAt \|\| L\.mode === 'travel'/.test(s));
+	/* REWRITTEN IN v22, AND THE REWRITE HAD TO EARN IT. This read
+	   `L.mode === 'travel'`, pinning the exemption to the band's NAME. The
+	   rewrite is the move the item-2 episode warns against - "the tempting
+	   move, rewrite the assertions to match the new behaviour" - so the
+	   distinction is stated rather than assumed: THERE the assertion encoded an
+	   operator RULING and the change removed a freedom; HERE it encodes a
+	   mechanism, the behaviour is identical, and the equivalence is asserted
+	   below rather than claimed. Keying on the name was correct with two bands
+	   and became wrong at three. */
+	t.ok('the exemption is DERIVED from the band geometry, not from its name',
+		/gapNow > L\.releaseAt \|\| noRatchetAlways\(L\)/.test(s));
+	/* POSITION, NOT ABSENCE - this file's own keep-the-instance convention, and
+	   the first draft of this assertion failed against correct code for exactly
+	   the reason the v113 windbelt one did. The superseded form is QUOTED in
+	   the v22 comment inside an explicit retraction ("It used to be"), and a
+	   string search cannot tell quoted-as-superseded from asserted-as-current.
+	   So: it survives once, after the marker, and never as live code. */
+	const marker = s.indexOf('It used to be');
+	const stale = [...s.matchAll(/L\.mode === 'travel'/g)].map((m) => m.index);
+	t.ok('the retraction marker is present', marker > 0);
+	t.eq('the superseded form survives exactly once', stale.length, 1);
+	t.ok('and only after the marker, i.e. quoted rather than live', stale[0] > marker);
+	/* THE EQUIVALENCE, which is what makes the rewrite legitimate: the derived
+	   predicate reproduces BOTH shipped answers exactly, so no behaviour moved
+	   with the expression. */
+	const band = (c, r) => ({ closeAt: c, releaseAt: r });
+	t.eq('combat is CONDITIONAL exactly as before - the retreat survives',
+		w.noRatchetAlways(band(w.MOVE.closeAt, w.MOVE.releaseAt)), false);
+	t.eq('travel is UNCONDITIONAL exactly as before',
+		w.noRatchetAlways(band(w.MOVE.travelCloseAt, w.MOVE.travelReleaseAt)), true);
+	/* AND THE NEW BAND KEEPS THE RETREAT, which is the whole reason it exists
+	   rather than item 1 collapsing to travel: travel's unconditional rule IS
+	   the freedom the operator protected, so an engaged follower beside a
+	   parked leader must not inherit it. */
+	t.eq('the stationary band is CONDITIONAL, so an engaged follower may still retreat',
+		w.noRatchetAlways(band(w.MOVE.stationaryCloseAt, w.MOVE.stationaryReleaseAt)), false);
+	t.ok('and it is genuinely tighter than combat',
+		w.MOVE.stationaryCloseAt < w.MOVE.closeAt);
+	/* THE SOUNDNESS INVARIANT OVER THE WHOLE SELECTOR, rather than three
+	   hand-checked pairs: any band that keeps the retreat must be at least
+	   kiteStep wide, or it oscillates. Stated as a rule so the next band added
+	   cannot quietly violate it. */
+	for (const [name, c, r] of [['combat', w.MOVE.closeAt, w.MOVE.releaseAt],
+		['stationary', w.MOVE.stationaryCloseAt, w.MOVE.stationaryReleaseAt],
+		['travel', w.MOVE.travelCloseAt, w.MOVE.travelReleaseAt]]) {
+		t.eq(name + ': conditional implies at least kiteStep of width',
+			w.noRatchetAlways(band(c, r)) || (c - r) >= w.MOVE.kiteStep, true);
+	}
 	t.ok('the hold threshold is 3x the follow threshold', w.MOVE.closeAt / travel.closeAt === 3);
 	t.eq('and the hold threshold stays inside the priest 201 heal range',
 		w.MOVE.closeAt <= 201, true);
@@ -141,7 +191,7 @@ name: 'a travel-mode kite step may never grow the gap', fn(t) {
 	   travel mode until something is engaged, attacking or in trouble. */
 	const s = src();
 	t.ok('the no-ratchet clause is unconditional in travel mode',
-		/if \(\(gapNow > L\.releaseAt \|\| L\.mode === 'travel'\) && gapNew > gapNow \+ 1\) continue;/.test(s));
+		/if \(\(gapNow > L\.releaseAt \|\| noRatchetAlways\(L\)\) && gapNew > gapNow \+ 1\) continue;/.test(s));
 
 	/* THE GEOMETRY HAS TO PUT THE THREAT BETWEEN THE FOLLOWER AND THE LEADER, or
 	   the two modes are indistinguishable: with the leader on the far side from
@@ -152,7 +202,7 @@ name: 'a travel-mode kite step may never grow the gap', fn(t) {
 	   can stop it. */
 	function kite(mode, gapNow) {
 		const w = world({ character: { name: 'FatherToken', real_x: 0, real_y: 0, hp: 100, max_hp: 100, speed: 8 } });
-		lift(w, 'CaveRun.js', ['MOVE', 'kiteStep', 'dist']);
+		lift(w, 'CaveRun.js', ['MOVE', 'kiteStep', 'dist', 'noRatchetAlways']);
 		w.leash = () => mode === 'travel'
 			? { closeAt: 60, releaseAt: 30, ceiling: 135, mode: 'travel' }
 			: { closeAt: 180, releaseAt: 120, ceiling: 195, mode: 'combat' };
@@ -487,6 +537,74 @@ name: 'followers start on leader MOTION, without the recovering latch', fn(t) {
 	t.eq('and never calls smart_move', /smart_move/.test(body), false);
 	t.eq('nor touches recoverStep’s cached aim', /\baim\b/.test(body), false);
 	t.ok('it aims at the live leader point instead', /lp\.y - character\.real_y/.test(body));
+}
+
+}, {
+
+name: 'leader motion picks the distances, engagement picks the kite rule', fn(t) {
+	/* ITEM 1, v22. The selector was gated ENTIRELY on follower-side facts and
+	   asked nothing about whether the leader was going anywhere - the third
+	   sighting of the wrong-actor shape. Caught live: leader STATIONARY, Dexon
+	   171u away, recovering false, moving false, closeAt 180, and nobody
+	   objected to 171. On open ground doing nothing `engagedNow` was TRUE all
+	   session, so the travel band never applied at all. */
+	function w(over) {
+		over = over || {};
+		const x = world({});
+		lift(x, 'CaveRun.js', ['MOVE', 'computeLeash', 'noRatchetAlways']);
+		x.holdActive = () => over.hold !== false;
+		x.engaged = () => !!over.engaged;
+		x.attackersOnMe = () => 0;
+		x.troubleNow = [];
+		x.leaderMoving = () => !!over.moving;
+		return x;
+	}
+
+	t.eq('engaged with the leader MOVING is the combat band, unchanged',
+		w({ engaged: true, moving: true }).computeLeash().closeAt, 180);
+	const parked = w({ engaged: true, moving: false }).computeLeash();
+	t.eq('engaged with the leader PARKED tightens to the stationary band',
+		parked.closeAt, 90);
+	t.eq('and says so', parked.mode, 'stationary');
+	t.eq('releasing at 30', parked.releaseAt, 30);
+
+	/* THE PRECONDITION IS THE FINDING: only leader motion differs between
+	   those two, so the band moved because of the LEADER and nothing else. */
+	const wa = w({ engaged: true, moving: true }), wb = w({ engaged: true, moving: false });
+	t.eq('precondition: engaged() is true in BOTH worlds',
+		[wa.engaged(), wb.engaged()].join(','), 'true,true');
+	t.eq('precondition: and the only difference is leaderMoving()',
+		[wa.leaderMoving(), wb.leaderMoving()].join(','), 'true,false');
+	t.ok('so the band moved because of the LEADER and nothing else',
+		wa.computeLeash().closeAt !== wb.computeLeash().closeAt);
+
+	/* Not engaged is travel either way - the stationary band is a TIGHTENING of
+	   the loose case, never a loosening of the tight one. */
+	t.eq('unengaged, moving: travel', w({ moving: true }).computeLeash().closeAt, 60);
+	t.eq('unengaged, parked: still travel', w({ moving: false }).computeLeash().closeAt, 60);
+	t.ok('so the stationary band never loosens anything',
+		w({ engaged: true, moving: false }).computeLeash().closeAt
+		<= w({ engaged: true, moving: true }).computeLeash().closeAt);
+
+	/* The hold gate still outranks everything: travel numbers apply only where
+	   a hold will actually stop the leader, and that reasoning is untouched. */
+	t.eq('no hold, parked and engaged: back to the base band',
+		w({ engaged: true, moving: false, hold: false }).computeLeash().closeAt, 180);
+
+	/* AND THE RULING SURVIVES THE TIGHTENING, which is the whole reason the
+	   stationary band is not just travel: travel's no-ratchet is unconditional,
+	   and that IS the retreat freedom the operator protected. */
+	const x = w({});
+	t.eq('the stationary band keeps the retreat',
+		x.noRatchetAlways({ closeAt: 90, releaseAt: 30 }), false);
+	t.eq('where collapsing to travel would have removed it',
+		x.noRatchetAlways({ closeAt: 60, releaseAt: 30 }), true);
+	/* INVERTED: narrow the stationary band below kiteStep and the retreat has
+	   to go with it. That is the constraint on anyone moving the 90. */
+	t.eq('a stationary band narrower than kiteStep would lose the retreat',
+		x.noRatchetAlways({ closeAt: 80, releaseAt: 30 }), true);
+	t.eq('85 is the floor, so 90 clears it by five',
+		x.MOVE.stationaryReleaseAt + x.MOVE.kiteStep, 85);
 }
 
 }];
