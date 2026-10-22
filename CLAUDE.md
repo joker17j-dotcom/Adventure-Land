@@ -1005,37 +1005,62 @@ this ranking until a Ranger build is actually running on him.
   **SO A NAIVE OVERRIDE WOULD HAVE BEEN INERT RATHER THAN WRONG**, which is the
   failure mode this file keeps paying for: `safeMove` refuses every coordinate
   in a rage rectangle, so the party would never have arrived and nothing would
-  have logged a fault. Built in Ranger v108 on the park-and-pull pattern the
-  repo had already arrived at for this exact rectangle - park at (290,-990) in
-  the corridor band outside BOTH rectangles, `ragePull` one at a time - rather
-  than relaxing containment.
+  have logged a fault. The answer is the park-and-pull pattern the repo had
+  already arrived at for this exact rectangle - park at (290,-990) in the
+  corridor band outside BOTH rectangles, `ragePull` one at a time - rather than
+  relaxing containment. **IT IS NOT IN THE SCRIPT AND IS NOT GOING TO BE**; see
+  the correction three bullets down.
   **THE GARGOYLE IS UNREACHABLE FROM OUTSIDE THE BOX AND THAT IS THE OPERATOR'S
   DECISION, NOT A TUNING GAP.** Its spawn is fixed at [255,-1545], 555 units
   from the park point against the longest reach in the party (the mage's 235).
   Taking it means entering the box with 9 growing mummies applying `hexed` (-20
   speed, independent of the priest's curse) against a 180/120 leash band. NOT
   built; `enterRageBox` is where it would go.
-  **AND THE FIRST BUILD HAD THE WRONG SHAPE: THE OPERATOR WANTS A COMMAND THEY
-  RUN, NOT SOMETHING THE SCRIPT DECIDES.** v108 shipped `CONFIG.graveyard` plus
-  a `gyTick()` polling `parent.S.graveyard` every five seconds. Operator:
-  "not a script change / it should be an override I run". Rebuilt in v109 as
-  `gyFarm()` / `gyOff()` / `gyStatus()`, console commands beside `achvStop()`
-  and `mhOn()`; the toggle, the interval and the liveness gate are gone.
-  **THE AUTOMATION WAS CARRYING ITS OWN EXCEPTION, AND THAT IS THE REUSABLE
-  PART.** v108 had to edit `achvTick()` to exempt its takeover from the
+  **THE DELIVERABLE IS A PASTED SNIPPET AND NOTHING IN THE REPO. IT TOOK TWO
+  CORRECTIONS TO GET THERE AND THE SECOND ONE IS THE LESSON.** v108 shipped
+  `CONFIG.graveyard` plus a `gyTick()` polling `parent.S.graveyard` every five
+  seconds. Operator: "not a script change / it should be an override I run" -
+  so v109 removed the automation and shipped `gyFarm()` / `gyOff()` /
+  `gyStatus()` as console commands beside `achvStop()` and `mhOn()`. Operator
+  again: **"I did not want the ranger script updated. I wanted an override code
+  I could paste and execute."** Both are reverted; Ranger v110 is byte-identical
+  to v107 but for the version number.
+  **A COMMAND IN THE FILE IS STILL A FILE CHANGE, and reading "not a script
+  change" as "not an AUTOMATIC script change" is how one rejected shape became
+  two.** The first correction named the property the operator did not want
+  (the script deciding); the obvious repair preserved the property they did not
+  want either (the script carrying it at all), because the narrower reading was
+  the one that let the existing work survive. **WHEN A CORRECTION CAN BE READ
+  NARROWLY OR BROADLY, THE NARROW READING IS THE ONE THAT KEEPS YOUR WORK - so
+  it is the one to distrust**, and the cheap check is to ask what the operator
+  would have to do differently under each, which here was "nothing, they still
+  deploy a file".
+  **THE AUTOMATION WAS CARRYING ITS OWN EXCEPTION, AND THAT PART IS STILL THE
+  REUSABLE ONE.** v108 had to edit `achvTick()` to exempt its takeover from the
   queue's hand-move check, or a ten-minute event would have stood the queue
-  down until `achvResume()`. A command the operator runs IS a hand move, so the
-  queue's existing contract was already right and v109 leaves it untouched -
-  the exemption went out with the automation. It had looked like a necessary
-  integration rather than a cost the wrong design was paying, which is the
-  thing to notice: **when a new subsystem needs an exception carved into an old
-  one, ask whether the exception is the price of the shape rather than a
-  feature of the problem.**
-  Two smaller rules the command keeps: it REPORTS liveness and never gates on
-  it, because prepositioning before a window opens is the operator's to want
-  and a command that second-guesses them is not a command; and liveness is
-  `.live` and never `hp`, since `graveyard_public()` carries no hp until the
-  Gargoyle wakes.
+  down until `achvResume()`. An override the operator pastes IS a hand move, so
+  the queue's existing contract was already right and the exemption went out
+  with the automation - as did the whole file change, eventually. It had looked
+  like a necessary integration rather than a cost the wrong design was paying:
+  **when a new subsystem needs an exception carved into an old one, ask whether
+  the exception is the price of the shape rather than a feature of the
+  problem.**
+  **THE SNIPPET NEEDS `mummy` IN `rageAlso` AND THAT IS THE ONE PART A READER
+  WOULD GET WRONG.** `ragePullActive()` matches `ragePullTypes()` against the
+  rage BOXES on the map (`types.indexOf(b.type) >= 0`), and spookytown's only
+  box is the mummy's - zombie, ghoul and the gargoyle are EVENT spawns with no
+  box of their own - so `home: 'zombie'` alone leaves the pull machinery idle
+  and nothing ever leaves the field. The CANDIDATE scan is POSITION-based
+  (`rageHit(map, e.x, e.y, 0)` on the monster's own coordinates), so once the
+  machinery is running a zombie standing on a grave is pullable exactly like a
+  mummy, and `rageRequiredRange` measures it off the mummy rectangle's edges.
+  **TWO GATES ON ONE MECHANISM, ONE KEYED ON TYPE AND ONE ON POSITION**, and
+  reading either alone gives a confident wrong answer about whether the
+  override works. Pinned by mechanism in `Tests/suite_bosshop.js`.
+  One smaller fact survives the command going away because it is about the
+  game rather than about us: graveyard liveness is `.live` and never `hp`,
+  since `graveyard_public()` carries no hp field at all until the Gargoyle
+  wakes.
   **READING ONE DESIGN FILE ANSWERED THE EVENT AND NOT THE GROUND IT STANDS
   ON.** `design/events.js` gave the waves, the grave coordinates and the
   duration, and every one of those was right - the obstacle was in
@@ -3567,15 +3592,15 @@ probes are listed at the end as still-open.
   instant anything executed. Neither is reachable by a static check. 114
   assertions across three suites, no framework and no dependency, exit 1 on
   any failure so it works as a gate. `node Tests/run.js relay` runs a subset.
-  **COUNT AS OF 2026-10-21, LATEST: 545 JS assertions across NINE suites, plus
-  244 from the python bridge suite the runner shells out to and folds in, for
-  `all 789 pass`.** The ninth is `suite_merchantbuy`, split from
+  **COUNT AS OF 2026-10-22, LATEST: 591 JS assertions across NINE suites, plus
+  254 from the python bridge suite the runner shells out to and folds in, for
+  `all 845 pass`.** The ninth is `suite_merchantbuy`, split from
   `suite_merchantsell` rather than added to it because the stack cap is a BUY
   concern and the sell suite's name would have stopped being true of its
   contents - the `never_observable` lesson applied before it cost anything.
-  It read 782, 770, 753, 730, 702, 690, 673, 668 and 646 earlier the same day, 586
+  It read 789, 782, 770, 753, 730, 702, 690, 673, 668 and 646 on 2026-10-21, 586
   and 575 the day before, 285 / 61 / 346 before that, and 114 before that -
-  FOURTEEN figures in two days, which is the point rather than an embarrassment:
+  FIFTEEN figures in three days, which is the point rather than an embarrassment:
   re-derive from a run, never from any note here. Each supersession is appended here rather than
   erased, which is what the sentence below means by kept as the instance - the
   CURRENT figure is the only one that moves.

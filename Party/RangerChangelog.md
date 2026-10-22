@@ -21,6 +21,49 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v110
+
+**THE GRAVEYARD WORK IS REVERTED OUT OF THIS FILE ENTIRELY. v108 AND v109
+WERE BOTH THE WRONG SHAPE AND THE SECOND CORRECTION SAID SO IN SO MANY
+WORDS.** Operator, 2026-10-21: "I did not want the ranger script updated. I
+wanted an override code I could paste and execute." v108 built
+`CONFIG.graveyard` plus a `gyTick()` interval; told "not a script change / it
+should be an override I run", v109 removed the automation and shipped
+`gyFarm()` / `gyOff()` / `gyStatus()` as console commands. **A COMMAND IN THE
+FILE IS STILL A FILE CHANGE**, which is what the second correction was for,
+and reading "not a script change" as "not an automatic script change" is how
+one rejected shape became two. The tree is byte-identical to v107 apart from
+this version number; the deliverable is a pasted snippet and lives nowhere in
+the repo, because that is the point of it.
+
+**THE RESEARCH IS WHAT WAS ACTUALLY WANTED AND IT ALL SURVIVES** - none of it
+needed to be code. Graveyard Rising sits ENTIRELY inside the spookytown mummy
+rage box (spawn `boundary [31,-1571,480,-1293]`, `rage [-124,-1631,614,-1130]`
+from upstream `design/maps.js` at `16881a27`, against 24 grave plots spanning
+x 65..447 and y -1550..-1312), so the park point is `(290,-990)` in the
+corridor band and not the graves. `rageClips()` is TYPE-BLIND, so `safeMove`
+refuses the graves whatever `home` is set to and an override aimed at them
+would be INERT rather than wrong - the party never arrives and nothing logs a
+fault.
+
+**AND THE SNIPPET NEEDS `mummy` IN THE PULL TYPES, WHICH IS THE ONE PART A
+READER WOULD GET WRONG.** `ragePullActive()` matches `ragePullTypes()` against
+the rage BOXES on the map, and spookytown's only box is the mummy's - zombie
+and ghoul are event spawns with no box of their own - so `home: 'zombie'`
+alone leaves the pull machinery idle and nothing ever comes out of the field.
+The CANDIDATE scan is POSITION-based (`rageHit` on the monster's own x/y), so
+once the machinery is running a zombie standing on a grave is pullable like
+any mummy. Put `mummy` in `rageAlso` and the types list satisfies both.
+
+`Tests/suite_bosshop.js` keeps the geometry rather than deleting it with the
+code: the fixtures prove why the park point has to be out there, and the
+COMMITTED `CONFIG.movement.approaches['spookytown|290|-990']` chain is parsed
+out of this file and every one of its 13 waypoints asserted outside the
+rectangle - so the snippet's one load-bearing number stays pinned by something
+in the repo. Both rejected shapes are pinned ABSENT so neither returns by
+accident, and the two `ragePull*` gates above are pinned by mechanism so the
+snippet's `rageAlso` line cannot quietly stop being necessary.
+
 ## v109
 
 **GRAVEYARD RISING IS A COMMAND NOW, NOT AN AUTOMATIC OVERRIDE. v108 HAD THE
