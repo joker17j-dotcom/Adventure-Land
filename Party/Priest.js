@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v68
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v69
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -372,6 +372,18 @@ function scopedGet(base) {
 	const k = scopeKey(base);
 	return k ? get(k) : null;
 }
+/* Does the SCOPED key EXIST, as against holding null? `get()` cannot say:
+   it is `JSON.parse(localStorage.getItem('cstore_' + k))`, so a missing item
+   and a stored "null" both come back null. The raw item is the only thing
+   that separates them. The catch cannot be the Form B lie - `get()` above
+   reaches the same localStorage and would have thrown first, so there is no
+   state in which this silently substitutes for a missing one. */
+function scopedHas(base) {
+	const k = scopeKey(base);
+	if (!k) return false;
+	try { return window.localStorage.getItem('cstore_' + k) !== null; }
+	catch (e) { return false; }
+}
 /* Scoped, falling back to the legacy key once. Correct ONLY where the legacy
    value is unambiguously this character's: a key no other script has ever
    written, or one whose entries cannot be mistaken for another character's.
@@ -380,7 +392,13 @@ function scopedGetLegacy(base) {
 	const k = scopeKey(base);
 	if (!k) return null;
 	const v = get(k);
-	return (v === null || v === undefined) ? get(base) : v;
+	if (v !== null && v !== undefined) return v;
+	/* Null is TWO states and only one of them wants the legacy value: never
+	   written (migrate), or deliberately cleared - `mhForget()` writes null -
+	   where adopting the legacy value UNDOES the clear. Deleting the key on a
+	   clear does not fix that and looks as though it would: it merges the
+	   cleared state INTO the never-written one, which is the wrong direction. */
+	return scopedHas(base) ? v : get(base);
 }
 
 const PL_CURSOR_KEY = 'pl_cursor';

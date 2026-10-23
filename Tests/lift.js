@@ -119,6 +119,18 @@ function world(over = {}) {
 		game_log: (m) => { logs.push(String(m)); },
 		set: (k, v) => { store[k] = JSON.parse(JSON.stringify(v)); },
 		get: (k) => (k in store ? JSON.parse(JSON.stringify(store[k])) : null),
+		/* The raw item behind set/get, because a key holding null and an absent
+		   key are DIFFERENT states that get() reports identically - which is what
+		   scopedHas() exists to separate. Keyed through the same `store`, under
+		   the game's own `cstore_` prefix, so there is one source of truth.
+		   getItem only: nothing lifted calls setItem, and a stub for a call that
+		   never happens is untested code in a test helper. */
+		localStorage: {
+			getItem: (k) => {
+				const n = (k.indexOf('cstore_') === 0) ? k.slice(7) : k;
+				return (n in store) ? JSON.stringify(store[n]) : null;
+			},
+		},
 		character: Object.assign({
 			name: 'Dexon', level: 70, mp: 1000, max_mp: 1000, esize: 20,
 			home: 'USII', s: {}, items: [], q: {},
@@ -135,6 +147,7 @@ function world(over = {}) {
 		w[k] = over[k];
 	}
 	w.globalThis = w;
+	w.window = w;   // in the CODE iframe `window` IS the global
 	/* log() is declared in every character script; suites that do not lift it
 	   still need the calls inside lifted code to land somewhere. */
 	if (!w.log) w.log = (m) => { logs.push(String(m)); };

@@ -21,6 +21,18 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v69
+
+**`scopedGetLegacy` CAN NO LONGER UNDO A DELIBERATE CLEAR**, ported byte for
+byte from Ranger v122, where the defect was live. A scoped key written null is
+PRESENT holding null and one never written is absent; `get()` reports both as
+null, so the migration adopted the legacy value over a clear. `scopedHas()`
+reads the raw `localStorage` item, which is the only thing that separates
+them. Inert here - the one clear-to-null on this file is
+`PL_HOP_PENDING_KEY`, which is deliberately not migrating - and the five
+helpers must stay byte-identical across the three scripts, which is now
+asserted rather than assumed.
+
 ## v68
 
 **v119 SCOPED ONE KEY AND FROZE IT IN A `const`, WHICH IS A SECOND WAY TO HAVE

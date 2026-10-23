@@ -3153,6 +3153,37 @@ Claude Code session stops after `browser_code_eval`.
   `scopedGetLegacy('zz_leg')` against `scopedGet('zz_leg')` - 5 and null.
   Same family as "state the SET a negative was taken over": here the set was
   the writes that had happened, which was none.
+- **`set(key, null)` DOES NOT DELETE, AND THAT TURNED MY OWN MIGRATION INTO A
+  RESURRECTION BUG.** The browser session's finding, 2026-10-23, reported as a
+  property of the namespace after their cleanup left four keys present and
+  holding null - a STORAGE observation that landed on code they had not read.
+  `scopedGetLegacy` adopts the legacy key when the scoped one reads null, which
+  is right for a key never written and wrong for one deliberately CLEARED: a
+  scoped key written null is PRESENT holding null, and `get()` is
+  `JSON.parse(localStorage.getItem('cstore_' + k))`, so a missing item and a
+  stored `"null"` arrive identically. Live on exactly one key -
+  `mhForget()` clears `mh_state` that way and `mh_state` migrates - so clear,
+  reload, read returned the pre-deploy toggle and the command that exists to
+  STOP following a stored choice silently restored one. Fixed in Ranger v122 /
+  Priest v69 / Mage v92 with `scopedHas()`, which reads the raw item.
+  **THE OBVIOUS REPAIR IS THE WRONG DIRECTION AND LOOKS LIKE THE RIGHT ONE.**
+  Making the clear DELETE the key merges the cleared state INTO the
+  never-written one, so the fallback fires exactly as before. One null reading
+  collapses three states and only a presence test separates them; writing null
+  rather than deleting is therefore the CORRECT behaviour for `scopedSet` and is
+  now asserted as such.
+  **AND FIXING `mhForget()` INSTEAD WOULD HAVE BEEN A COINCIDENCE WITH GOOD
+  TIMING** - it is the only clear-to-null on a migrating key TODAY, with
+  `pl_hop_pending` cleared the same way and safe only because it deliberately
+  does not migrate.
+- **THE FIVE SCOPING HELPERS WERE ON NO DIVERGENCE LIST, BECAUSE THEY WERE
+  TRIVIAL WHEN WRITTEN AND ONE OF THEM STOPPED BEING.** `scopedGetLegacy` was
+  four lines with nothing to drift until it had to tell a cleared key from an
+  absent one. This file already records that a function joins the list when it
+  stops being trivial rather than when it is written, and nothing prompts that
+  review except noticing it - second instance, after `bossWalkTarget`. A
+  PRIEST-only drift now fails; the symptom it would otherwise produce is one
+  character resurrecting a value its siblings correctly dropped.
 - **`__probe_rt` IS LITTER IN THAT NAMESPACE, OWNER UNKNOWN.** Four bytes,
   sitting in `cstore_` where all four characters read. Recorded rather than
   cleared, because this session has no tab - and because a forgotten

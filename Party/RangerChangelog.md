@@ -21,6 +21,41 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v122
+
+**A CLEAR IS NOT AN ABSENCE, AND v120's MIGRATION TURNED `mhForget()` INTO A
+NO-OP THAT RESURRECTS THE OLD TOGGLE.** `scopedGetLegacy` adopts the legacy
+key when the scoped one reads null, which is right for a key nothing has ever
+written and wrong for one deliberately CLEARED - and `mhForget()` clears
+`mh_state` by writing null, while `mh_state` is on the migrating list. So the
+sequence clear, reload, read returned the pre-deploy stored toggle, and the
+console command that exists to stop following a stored choice silently
+restored one.
+**`get()` CANNOT TELL THE TWO APART AND THAT IS THE WHOLE DIFFICULTY.** It is
+`JSON.parse(localStorage.getItem('cstore_' + k))`, so a missing item and a
+stored `"null"` both arrive as null. `scopedHas()` reads the RAW item, which
+is the only thing in reach that separates them - the same `localStorage` the
+game's own `set`/`get` use, so the catch around it cannot be the Form B lie:
+`get()` above would have thrown first.
+**THE OBVIOUS REPAIR IS THE WRONG DIRECTION, WHICH IS WHY IT IS WRITTEN DOWN
+AT THE CALL SITE.** Making the clear DELETE the key instead of writing null
+looks like the fix and merges the cleared state INTO the never-written one,
+so the fallback fires exactly as before. Only an explicit presence test
+separates three states that one null reading collapses.
+**FIXING THE CALL SITE WOULD HAVE BEEN A COINCIDENCE WITH GOOD TIMING.**
+`mhForget()` is the only clear-to-null on a migrating key today;
+`PL_HOP_PENDING_KEY` is cleared the same way and is safe only because it is
+deliberately not migrating. A guard that holds because of which keys happen
+to be cleared this week is the `GEAR_PROGRESSION` repeal in another costume.
+Found by the browser session, who reported `set(key, null)` not deleting as a
+property of the namespace after their own cleanup left four keys present and
+null - a storage observation, not a code review, and it landed on code they
+had not read.
+**AND THE FIVE SCOPING HELPERS WERE ON NO DIVERGENCE LIST**, because they were
+trivial when written. One of them stopped being trivial here. A function joins
+that list when it stops being trivial, not when it is written, and nothing
+prompts the review except noticing it; a PRIEST-only drift now fails.
+
 ## v121
 
 **THE TRICK-OR-TREAT COSTUMES ARE PROTECTED, AND THE OPERATOR'S TWO HALVES OF

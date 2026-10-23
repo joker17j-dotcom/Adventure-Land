@@ -46,7 +46,7 @@ function ranger(over = {}) {
 	/* bossShard and bossCooldownKey joined the list when v103 keyed the
 	   cooldown by (type, shard); four tests threw ReferenceError the moment it
 	   landed, which is the same signal bossCooledDown gave in v99. */
-	lift(w, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
+	lift(w, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
 		'bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey',
 		'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'taxiProbeRead', 'taxiProbeWrite', 'taxiProbeNote', 'taxiProbeClose', 'bossHop']);
@@ -1954,7 +1954,7 @@ module.exports = [
   }
 
   const w = world({ character: { name: 'Dexon' } });
-  lift(w, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
+  lift(w, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
   t.eq('the key carries the character', w.scopeKey('k'), 'k_Dexon');
   w.scopedSet('k', 1);
   t.eq('a write lands on the scoped key', w.store['k_Dexon'], 1);
@@ -1965,9 +1965,38 @@ module.exports = [
      be another character's, and wrong where it can - boss_trip is the second
      case, which is why reading it once IS the import being removed. */
   const w2 = world({ character: { name: 'Dexon' }, store: { legacy: 'old' } });
-  lift(w2, RANGER, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
+  lift(w2, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
   t.eq('scopedGet refuses the legacy value', w2.scopedGet('legacy'), null);
   t.eq('scopedGetLegacy adopts it once', w2.scopedGetLegacy('legacy'), 'old');
+
+  /* A CLEAR IS NOT AN ABSENCE, AND get() REPORTS THEM IDENTICALLY. A scoped
+     key written null is PRESENT holding null; one never written is absent;
+     `JSON.parse(localStorage.getItem(...))` answers null to both. Without the
+     raw-item test the fallback UNDOES a deliberate clear by resurrecting the
+     legacy value - live on `mhForget()`, which clears mh_state that way while
+     mh_state is on the migrating list. */
+  t.eq('PRECONDITION: the harness tells an absent key from a null one',
+    [w2.scopedHas('legacy'), w2.scopedHas('k_Dexon')].join(), 'false,false');
+  w2.scopedSet('legacy', null);
+  t.eq('PRECONDITION: the clear is PRESENT, not absent',
+    ['legacy_Dexon' in w2.store, w2.scopedHas('legacy')].join(), 'true,true');
+  t.eq('PRECONDITION: and the legacy value is still there to be resurrected',
+    w2.get('legacy'), 'old');
+  t.eq('a cleared key stays cleared', w2.scopedGetLegacy('legacy'), null);
+
+  /* The inverse, so the fix cannot pass by refusing to migrate at all. */
+  const w2b = world({ character: { name: 'Dexon' }, store: { legacy: 'old' } });
+  lift(w2b, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy']);
+  t.eq('PRECONDITION: nothing has written the scoped key', w2b.scopedHas('legacy'), false);
+  t.eq('an untouched key still migrates', w2b.scopedGetLegacy('legacy'), 'old');
+
+  /* AND THE CASE IS LIVE RATHER THAN HYPOTHETICAL. mhForget() is the only
+     clear-to-null on a migrating key; PL_HOP_PENDING_KEY is cleared the same
+     way and is deliberately NOT migrating, so it cannot be resurrected. */
+  t.eq('mhForget clears MH_KEY to null through the scoped writer',
+    /function mhForget\(\)[\s\S]{0,200}scopedSet\(MH_KEY, null\)/.test(require('fs').readFileSync(RANGER, 'utf8')), true);
+  t.eq('and MH_KEY is read through the migrating reader',
+    /scopedGetLegacy\(MH_KEY\)/.test(require('fs').readFileSync(RANGER, 'utf8')), true);
 
   /* The point of the exercise: two characters, one store, no crossing. */
   /* world() COPIES the store it is given rather than aliasing it, so two

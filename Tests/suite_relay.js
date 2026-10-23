@@ -26,7 +26,7 @@ function relay(file, over = {}) {
 	   is undefined, plActed's catch answers "not acted" and every
 	   assertion here passes or fails for a reason that has nothing to do
 	   with the relay - which is what happened on the first run. */
-	lift(w, file, ['scopeKey', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
+	lift(w, file, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
 		'plSaveCursor', 'plActed', 'plMarkActed']);
 	return w;
 }
@@ -161,6 +161,21 @@ module.exports = [
 		const texts = FILES.map((f) => extract(f, name));
 		const same = texts.every((x) => x === texts[0]);
 		t.eq(`${name} is identical in Ranger, Priest and Mage`, same, true);
+	}
+} },
+
+{ name: 'the storage-scoping helpers have not diverged across the three scripts', fn(t) {
+	/* They were off every list until a defect made one of them non-trivial:
+	   scopedGetLegacy was four lines of nothing-to-drift, and then it had to
+	   tell a cleared key from an absent one. A FUNCTION JOINS THIS LIST WHEN
+	   IT STOPS BEING TRIVIAL, and nothing prompts that review except noticing
+	   it. Drift here is silent in the worst way - the symptom is one
+	   character resurrecting a value its siblings correctly dropped. */
+	const { extract } = require('./lift');
+	for (const name of ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy']) {
+		const texts = FILES.map((f) => extract(f, name));
+		t.eq(`${name} is identical in Ranger, Priest and Mage`,
+			texts.every((x) => x === texts[0]), true);
 	}
 } },
 
@@ -327,7 +342,7 @@ module.exports = [
 		w.hops = [];
 		w.change_server = (r, n) => { w.hops.push(r + n); };
 		lift(w, 'Party/Priest.js', ['scopeKey', 'scopedSet', 'scopedGet',
-			'scopedGetLegacy', 'plActed', 'plMarkActed', 'plHopPendingRead',
+			'scopedHas', 'scopedGetLegacy', 'plActed', 'plMarkActed', 'plHopPendingRead',
 			'plHopPendingWrite', 'plHopPendingClear', 'plHopPendingResolve']);
 		if (here) { w.parent.server_region = here.slice(0, 2); w.parent.server_identifier = here.slice(2); }
 		else { delete w.parent.server_region; delete w.parent.server_identifier; }
