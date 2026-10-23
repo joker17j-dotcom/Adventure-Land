@@ -4250,6 +4250,20 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   commented as inert rather than left looking load-bearing - the
   comment-strip/newline-guard lesson applied before anyone had to re-measure
   it.
+- **OPERATOR'S RULING 2026-10-23: dexbelt+2 NEEDS A CEILING, BECAUSE THE CRAFT
+  CANNOT CONSUME THEM.** Compounding to +2 does not free enough space, and
+  essenceofether arrives far slower than dexbelts do, so +2s accumulate faster
+  than windbelt can use them. Proposed thresholds, measured in BANK SLOTS of
+  dexbelt+2 against one 42-slot pack: stop the Ponty buy at HALF a pack (21) and
+  start selling at TWO THIRDS (28). NOT BUILT. Selling a dexbelt contradicts
+  rule (a) above, so the build has to carve the exception explicitly - above
+  the threshold only, +2 only - rather than weaken `SCARCE_ITEM_NAMES` or
+  `PROTECTED_ITEM_NAMES`, and the assertions pinning those sets will object to
+  any wider change, which is correct.
+- **OPERATOR'S RULING 2026-10-23: THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER
+  SOLD** - verdantspore, frostscale, embercoal, gloomfeather - and may go on the
+  Ponty buy list up to the "enough" quantity, which is still to be derived from
+  source (attempts per day times ingredients per attempt).
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
@@ -4582,6 +4596,17 @@ a day.
   and undated, which makes it worth re-confirming with the operator - but a
   thinly-sourced ruling is still a ruling, and "I could only find it in one
   place" is not authority to reverse it.
+- **RULED 2026-10-23: ITEM 2 IS REJECTED. COMBAT MOVEMENT STAYS AS IT IS.**
+  Operator: "A follower in combat should be doing movement as normal and kite
+  as normal. This includes backing away from both the creature and the leader.
+  In combat movement logic should not be changed to follow the out of combat
+  logic." So the `gapNow > L.releaseAt || L.mode === 'travel'` clause stays,
+  the three assertions that refused item 2 were right, and the single-sourced
+  test-comment ruling above is now confirmed by the operator directly. Any
+  tighter COMBAT band is off the table with it, because the oscillation
+  invariant says a tight combat band is unsafe without item 2. Items 1 and 3
+  touch the band SELECTOR and follower START, not combat kiting, and remain
+  open - but re-read each against this ruling before building.
 - **THE OSCILLATION FIX FELL OUT OF ALL THREE QUEUES AT ONCE, AND THAT IS A
   SHARPER FORM OF "A FIX NOBODY IS NAMED FOR IS A FIX NOBODY MAKES".** On
   2026-10-21 this session's queue read "skip row, then (c), then banking", the
@@ -5092,6 +5117,14 @@ for it in any script before Ranger v121 / Merchant v115.
   `oxhelmet` against a `sellItems()` with no level check, that whitelist is the
   operator's and CLOSED, and the right guard is on what came OFF - state the
   equip code owns and the equip code does not exist yet.
+- **OPERATOR'S SPEC FOR THE ROUTE, 2026-10-23. NOT BUILT.** Knock when NOT on a
+  boss. Read the knocks left from the game rather than counting, because the
+  first run of the script may land before the 00:00Z reset; take the first knock
+  at the soonest moment outside a boss window. The MERCHANT ignores boss
+  windows, but a valid arbitrage he has identified takes priority and the knock
+  follows it. One COMBAT character knocks on the way to a graveyard trip. The
+  costume swap is to be tested live by the browser session BEFORE the route is
+  built, so the design starts from the answer.
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.

@@ -280,8 +280,15 @@ function icon(key, scale) {
 }
 
 /* ------------------------------------------------------------- data load  */
+/* "no-cache", NOT "force-cache". force-cache serves any cached copy WITHOUT
+   asking the server, however old - so a browser that cached dimensions.js
+   before an item was added kept the old position table forever, iconPos()
+   found nothing, and the icon drew blank (mummyhex and canopener, Halloween
+   2026, both present upstream at rawitems 1,5 and 3,5). no-cache revalidates
+   every load; raw.githubusercontent.com answers an unchanged file with a 304
+   on its ETag, so the steady-state cost is a header round trip, not the body. */
 async function fetchText(url) {
-  const r = await fetch(url, { cache: "force-cache" });
+  const r = await fetch(url, { cache: "no-cache" });
   if (!r.ok) throw new Error(r.status + " " + url);
   return r.text();
 }
@@ -333,7 +340,7 @@ async function loadGameData() {
   /* Gap-fill the three sections the repo does not ship. */
   boot("Fetching repo-absent sections from aldata…", 88);
   try {
-    const r = await fetch(ALDATA_SITE + "/data.json", { cache: "force-cache" });
+    const r = await fetch(ALDATA_SITE + "/data.json", { cache: "no-cache" });   // same reason as fetchText
     if (r.ok) {
       const snap = await r.json();
       for (const k of ALDATA_ONLY) if (snap[k]) G[k] = snap[k];
