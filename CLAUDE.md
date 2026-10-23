@@ -4295,6 +4295,25 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   somebody vendors one. So putting them on the buy list costs little and will
   rarely fire, it needs a `q`-aware cap rather than the existing stack cap, and
   the "enough" quantity must not be planned around Ponty supply.
+- **RULED 2026-10-23: "25 OF EACH" IS A FARM-PRIORITY TRIGGER, NOT A BUY CAP,
+  AND THE q-AWARE PONTY CAP IS NOT WANTED.** The figure comes from
+  `witch_cipher_secret()` filling each of the five slots with `random_one`, so a
+  recipe can be five of one name and five mixes need 25 of every ingredient. While
+  the merchant holds fewer than 25 of one, and a gathering window is open, the party
+  prioritises that ingredient's monsters. The buy side needs no cap of its own: all
+  four cost 1,440 at Ponty, so a full 9,999 stack is 14,398,560 gold, and the
+  existing one-full-stack-held cap already bounds it. The four names go on
+  `CONFIG.pontyBuy.items` as plain entries, which is the operator's edit.
+- **THE GATHERING WINDOWS AGAINST THE HOP LIST, computed from `SLOTS` and `TIMEO`
+  at upstream `16881a27`.** Gathering is the first 20 minutes of a round and the
+  loot rows exist only on the shards running it: 05:00 and 17:00 UTC on EU, 11:00
+  and 23:00 on US and ASIA. horseman opens at the SAME MINUTE as three of them on
+  another region (US 05:00, ASIA 17:00, EU 23:00); franky's nightly opens an hour
+  before those three and can run into them; crabxx's rotation hours (01, 06, 12,
+  13, 18, 19) never touch one; dragold is gated. **11:00 UTC is the only window
+  clear of every `CONFIG.bossHop.targets` boss.** Operator's call: the existing
+  order stands, bosses and events first, so the other three windows farm only when
+  horseman is not taken.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
