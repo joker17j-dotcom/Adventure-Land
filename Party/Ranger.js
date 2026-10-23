@@ -845,6 +845,7 @@ const CONFIG = {
 			{ mtype: 'dragold', kills_to_rung: 1 },
 			{ mtype: 'franky', kills_to_rung: 68 },
 			{ mtype: 'crabxx', kills_to_rung: 70 },
+			{ mtype: 'horseman', kills_to_rung: 70 },
 		],
 	},
 
