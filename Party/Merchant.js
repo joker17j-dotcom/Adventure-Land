@@ -3169,7 +3169,7 @@ const PROTECTED_ITEM_NAMES = new Set([
 	   worn; the merchant is where a mule hand-off would otherwise vendor it,
 	   and gphelmet's 32,000 is in reach of the aggressive pass, which has no
 	   level check at all. */
-	'phelmet', 'gphelmet', 'horsemanpumpkin',
+	'horsemanpumpkin',
 	'stand0',
 	// Event boxes. Opening one yields ~8,232 (marketparcel) or ~21,907
 	// (anniversarygift) in vendor gold against an unopened NPC value of 60 -
