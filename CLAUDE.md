@@ -3117,6 +3117,42 @@ Claude Code session stops after `browser_code_eval`.
   `r.cursor` is the bridge's GLOBAL head (`self.seq`, one counter for all
   recipients), so all four converge there each tick and adopting a sibling's
   value is adopting your own; `loot_chest_ids` because sharing it is harmless.
+- **THE COST OF REFUSING THAT MIGRATION IS FOUR SHARD COOLDOWNS, NOT A TRIP
+  CLOCK - AND THE BLOB MIXING TWO SCOPES IS THE REAL FINDING.** The browser
+  session read the legacy key live on 2026-10-23: `trip` was **null**, so the
+  "one trip clock restarting" this file priced it at is currently ZERO, and
+  what is actually orphaned is `cooldown` carrying slenderman, icegolem, crabxx
+  and mrgreen, plus `giveUps`. One blob, three fields, and they do not share a
+  natural scope: a TRIP is per-character and must never cross, while a give-up
+  cooldown is a fact about a BOSS ON A SHARD and is arguably party-level.
+  **THE DECISION STANDS, AND CHECKING WHY STRENGTHENS IT RATHER THAN EXCUSING
+  IT.** `bossState.cooldown` is WRITTEN at exactly two sites, both the
+  character's own give-up, and CLEARED by `bossClearCooldown` (which a relay
+  `forced` call can trigger). Nothing ever imports a sibling's cooldowns at
+  runtime - so the shared key leaked them at LOAD only, where a character
+  adopted whichever sibling wrote last. That was never a design, and scoping
+  makes the load agree with the runtime. The loss is bounded by
+  `CONFIG.bossEvents.cooldownMs` (30 min) and self-heals, against a trip import
+  that does not.
+  **BUT THE SPLIT IS WORTH BUILDING THE DAY ANYTHING RESTS ON IT**: if a
+  party-level cooldown is wanted, it belongs in its own key with its own
+  sharing rule, not inherited from a blob that also carries the trip. **A
+  MIGRATION POLICY IS PER FIELD, AND A KEY HOLDING FIELDS OF TWO SCOPES FORCES
+  ONE ANSWER ON BOTH** - which is how a correct refusal acquires a cost nobody
+  priced.
+- **AND THE POST-DEPLOY CHECK AS BOTH SESSIONS SPECIFIED IT CANNOT
+  DISCRIMINATE, WHICH THE BROWSER SESSION CAUGHT RATHER THAN REPORTING THE
+  NULL AS A VERDICT.** Every scoped key read null at 00:07Z and every legacy
+  key was intact - consistent with the scoping working and with it not taking
+  at all, because a scoped key is only minted by a SAVE and no trip or
+  `achvSave` had fired since the deploy. **A CHECK THAT READS THE SAME EITHER
+  WAY IS NOT A CHECK**, and waiting for a natural write makes the answer
+  arrive at an unknown time. The discriminating probe needs no wait and no
+  real state: `scopedSet('zz_probe', 1)` then `get('zz_probe_Dexon')` and
+  `get('zz_probe')`, and for the fall-back `set('zz_leg', 5)` then
+  `scopedGetLegacy('zz_leg')` against `scopedGet('zz_leg')` - 5 and null.
+  Same family as "state the SET a negative was taken over": here the set was
+  the writes that had happened, which was none.
 - **`__probe_rt` IS LITTER IN THAT NAMESPACE, OWNER UNKNOWN.** Four bytes,
   sitting in `cstore_` where all four characters read. Recorded rather than
   cleared, because this session has no tab - and because a forgotten
