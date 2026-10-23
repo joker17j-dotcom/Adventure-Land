@@ -714,7 +714,7 @@ const CONFIG = {
 		// slice_blueberry was on this list until 2026-09-22. Arbitrage pays up to
 		// 2,000,000 for one and the NPC pays 6, so vendoring it on sight was a
 		// 300,000x loss waiting for the wrong moment.
-		whitelist: ['gslime', 'seashell', 'reefglass', 'crabclaw', 'gem0'],
+		whitelist: ['gslime', 'seashell', 'reefglass', 'crabclaw', 'gem0', 'phelmet', 'gphelmet'],
 
 		// Nothing else in this script actively guards against Meltymerch's
 		// -> MerchantComments.md#aggressiveEnabled
