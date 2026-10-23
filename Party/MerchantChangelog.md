@@ -1,4 +1,20 @@
 
+## v116
+
+**THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER SOLD** - verdantspore,
+frostscale, embercoal, gloomfeather - operator's ruling 2026-10-23. Read from
+upstream `16881a27`: they drop ONLY during the first 20 minutes of a cipher
+round (`witch_cipher_loot(on)` adds the drop rows at round start and strips them
+at gather end), each mix consumes five, and an account gets five mixes a UTC
+day. So a sold stack cannot be re-farmed until the next round. At g 1200 each
+they sit well inside what relief reaches.
+
+Added to `PROTECTED_ITEM_NAMES`, which both vendoring paths consult. Not on
+the sell whitelist, so `sellTrash()` cannot reach them either - asserted, since
+that path holds by omission. NOT on the Ponty buy list yet: the buy has no
+per-item quantity cap below a full stack, and the "enough" figure is the
+operator's to set.
+
 ## v115
 
 **THE TRICK-OR-TREAT COSTUMES ARE PROTECTED, AND THE OPERATOR'S TWO HALVES OF

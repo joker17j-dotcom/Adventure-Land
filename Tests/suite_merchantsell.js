@@ -317,10 +317,42 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
     parent: { calculate_item_value: () => 32000 },
   });
   lift(w, 'Party/Ranger.js', ['SCARCE_ITEM_NAMES', 'isScarceItem',
-    'COSTUME_ITEM_NAMES', 'isCostumeItem', 'reliefSellable']);
+    'COSTUME_ITEM_NAMES', 'isCostumeItem', 'CIPHER_INGREDIENT_NAMES', 'isCipherIngredient', 'reliefSellable']);
   const out = w.reliefSellable().map((r) => r.name);
   t.eq('CONTROL: an unprotected +0 item at the same value IS offered',
     out.includes('leather'), true);
   for (const c of COSTUMES) t.eq('relief refuses ' + c, out.includes(c), false);
   for (const c of SOLD) t.eq('and relief now OFFERS ' + c + ' - a second control, by ruling', out.includes(c), true);
+} },
+{ name: 'the Witch\'s Cipher ingredients survive every sell path', fn(t) {
+  /* Operator's ruling 2026-10-23: never sold. Asserted on every script that
+     sells - the merchant's protected set, both ranger paths, and the absence
+     from all three whitelists, since a whitelist-driven path holds by
+     omission and the operator edits those lists. */
+  const fs = require('fs');
+  const ING = ['verdantspore', 'frostscale', 'embercoal', 'gloomfeather'];
+  const merch = fs.readFileSync('Party/Merchant.js', 'utf8');
+  const prot = merch.slice(merch.indexOf('const PROTECTED_ITEM_NAMES'),
+    merch.indexOf(']);', merch.indexOf('const PROTECTED_ITEM_NAMES')));
+  for (const n of ING) t.ok('Merchant protects ' + n, prot.indexOf("'" + n + "'") > 0);
+  for (const f of ['Party/Merchant.js', 'Party/Ranger.js', 'Party/Mage.js']) {
+    const src = fs.readFileSync(f, 'utf8');
+    const i = src.indexOf('whitelist: [');
+    const wl = i < 0 ? '' : src.slice(i, src.indexOf(']', i));
+    for (const n of ING) t.eq(f + ': ' + n + ' is on no sell whitelist', wl.indexOf("'" + n + "'"), -1);
+  }
+  const ranger = fs.readFileSync('Party/Ranger.js', 'utf8');
+  t.ok('Ranger sellItems consults the ingredient guard', /isCipherIngredient\(item\.name\)/.test(ranger));
+  const w = world({
+    CONFIG: { inventoryRelief: { neverSell: new Set() } },
+    character: { name: 'Dexon', items: ING.map((n) => ({ name: n, level: 0, q: 5 }))
+      .concat([{ name: 'leather', level: 0, q: 1 }]) },
+    isExchangeable: () => false,
+    parent: { calculate_item_value: () => 1200 },
+  });
+  lift(w, 'Party/Ranger.js', ['SCARCE_ITEM_NAMES', 'isScarceItem', 'COSTUME_ITEM_NAMES',
+    'isCostumeItem', 'CIPHER_INGREDIENT_NAMES', 'isCipherIngredient', 'reliefSellable']);
+  const out = w.reliefSellable().map((r) => r.name);
+  t.eq('CONTROL: an unprotected +0 item at the same value IS offered', out.includes('leather'), true);
+  for (const n of ING) t.eq('relief refuses ' + n, out.includes(n), false);
 } }];

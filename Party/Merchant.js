@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v115
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v116
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3170,6 +3170,10 @@ const PROTECTED_ITEM_NAMES = new Set([
 	   and gphelmet's 32,000 is in reach of the aggressive pass, which has no
 	   level check at all. */
 	'horsemanpumpkin',
+	/* Witch's Cipher ingredients - operator's ruling 2026-10-23, never sold.
+	   They drop only in the first 20 minutes of a cipher round and each mix
+	   consumes five, so a sold stack cannot be re-farmed until the next round. */
+	'verdantspore', 'frostscale', 'embercoal', 'gloomfeather',
 	'stand0',
 	// Event boxes. Opening one yields ~8,232 (marketparcel) or ~21,907
 	// (anniversarygift) in vendor gold against an unopened NPC value of 60 -

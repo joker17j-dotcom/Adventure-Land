@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v124
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v125
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5603,6 +5603,15 @@ function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name
 const COSTUME_ITEM_NAMES = new Set(['horsemanpumpkin']);
 function isCostumeItem(name) { return !!name && COSTUME_ITEM_NAMES.has(String(name)); }
 
+/* WITCH'S CIPHER INGREDIENTS - operator's ruling 2026-10-23: never sold.
+   They drop ONLY during the first 20 minutes of a cipher round
+   (`witch_cipher_loot(on)` adds the drop rows at round start and strips them
+   at gather end), each mix consumes five, and an account gets five mixes a
+   UTC day - so a stack sold is a stack that cannot be re-farmed until the
+   next round. g 1200 each, which is inside what relief reaches. */
+const CIPHER_INGREDIENT_NAMES = new Set(['verdantspore', 'frostscale', 'embercoal', 'gloomfeather']);
+function isCipherIngredient(name) { return !!name && CIPHER_INGREDIENT_NAMES.has(String(name)); }
+
 function reliefSellable() {
 	const cfg = CONFIG.inventoryRelief;
 	const out = [];
@@ -5613,6 +5622,7 @@ function reliefSellable() {
 		if (isExchangeable(it.name)) continue;      // rule (b) - never sold at any price
 		if (isScarceItem(it.name)) continue;        // rule (a) - dexbelt / intbelt
 		if (isCostumeItem(it.name)) continue;       // worn for trick-or-treat
+		if (isCipherIngredient(it.name)) continue;  // Witch's Cipher input
 		if (it.l === 'l') continue;                 // locked by hand
 		if (it.p) continue;                         // special / shiny
 		if ((it.level || 0) > 0) continue;          // upgraded: someone paid for that
@@ -5772,6 +5782,7 @@ function sellItems() {
 		if (isExchangeable(item.name)) continue;
 		if (isScarceItem(item.name)) continue;
 		if (isCostumeItem(item.name)) continue;
+		if (isCipherIngredient(item.name)) continue;
 		sell(i);
 	}
 }

@@ -4254,16 +4254,30 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   CANNOT CONSUME THEM.** Compounding to +2 does not free enough space, and
   essenceofether arrives far slower than dexbelts do, so +2s accumulate faster
   than windbelt can use them. Proposed thresholds, measured in BANK SLOTS of
-  dexbelt+2 against one 42-slot pack: stop the Ponty buy at HALF a pack (21) and
-  start selling at TWO THIRDS (28). NOT BUILT. Selling a dexbelt contradicts
-  rule (a) above, so the build has to carve the exception explicitly - above
-  the threshold only, +2 only - rather than weaken `SCARCE_ITEM_NAMES` or
-  `PROTECTED_ITEM_NAMES`, and the assertions pinning those sets will object to
-  any wider change, which is correct.
+  dexbelt+2 against one 42-slot pack: stop the Ponty buy at HALF a pack (21);
+  at TWO THIRDS (28) stop COMPOUNDING dexbelts and SELL dexbelt+0 - the only
+  level then entering the merchant's bag. The count is bank PLUS merchant bag,
+  for dexbelt+2 only. Selling means: a player-run stand BUYING on the current
+  shard above NPC price gets it, otherwise the NPC; never listed on our own
+  stand. NOT BUILT. Selling a dexbelt contradicts rule (a) above, so the build
+  carves the exception explicitly - +0 only, above the threshold only - rather
+  than weakening `SCARCE_ITEM_NAMES` or `PROTECTED_ITEM_NAMES`, and the
+  assertions pinning those sets will object to any wider change, which is
+  correct. (First recorded as "sell +2 at 28"; corrected the same day by the
+  operator.)
 - **OPERATOR'S RULING 2026-10-23: THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER
   SOLD** - verdantspore, frostscale, embercoal, gloomfeather - and may go on the
   Ponty buy list up to the "enough" quantity, which is still to be derived from
-  source (attempts per day times ingredients per attempt).
+  source (attempts per day times ingredients per attempt). **DONE in Ranger
+  v125 / Merchant v116 for the sell half.** Read from upstream `16881a27`: five
+  ingredients per mix, five mixes per account per UTC day, ANY mix of the four
+  names per slot - so one day's worst case is 25 of a single ingredient and 25
+  in total. **THE INGREDIENTS DROP ONLY DURING THE FIRST 20 MINUTES OF A ROUND**
+  (`witch_cipher_loot(on)` adds the rows at start and strips them at gather
+  end), at rate `0.003 * monster.hp / 1000`, so a farm priority on the
+  ingredient monsters pays only inside those windows and nowhere else. The
+  payout read `{"fits":1,"crack":4}` at that commit, NOT the "50 per crack" this
+  file records under `witchcipher` above - stale, or rebalanced since.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.

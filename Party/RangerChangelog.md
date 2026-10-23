@@ -21,6 +21,23 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v125
+
+**THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER SOLD** - verdantspore,
+frostscale, embercoal, gloomfeather - operator's ruling 2026-10-23. Read from
+upstream `16881a27`: they drop ONLY during the first 20 minutes of a cipher
+round (`witch_cipher_loot(on)` adds the drop rows at round start and strips them
+at gather end), each mix consumes five, and an account gets five mixes a UTC
+day. So a sold stack cannot be re-farmed until the next round. At g 1200 each
+they sit well inside what relief reaches.
+
+`CIPHER_INGREDIENT_NAMES` / `isCipherIngredient()` is its own set, beside the
+costume and scarce sets rather than merged into either, for the reason those
+two are separate: one set, one reason. Consulted in `reliefSellable()` and
+`sellItems()`. Pinned in `Tests/suite_merchantsell.js` with a same-value control;
+removing either call fails by name. Not on any sell whitelist, asserted on all
+three files that carry one.
+
 ## v124
 
 **THE EVENT BRANCH NOW RUNS BEFORE THE FARM GATE IN mainLoop.** Measured by
