@@ -5576,7 +5576,7 @@ function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name
    and this one means "the event wants it worn". One set read by two rules for
    two reasons is the hazard this file already records against `alwaysAttack`
    and `pontyWanted`. */
-const COSTUME_ITEM_NAMES = new Set(['phelmet', 'gphelmet', 'horsemanpumpkin']);
+const COSTUME_ITEM_NAMES = new Set(['horsemanpumpkin']);
 function isCostumeItem(name) { return !!name && COSTUME_ITEM_NAMES.has(String(name)); }
 
 function reliefSellable() {
