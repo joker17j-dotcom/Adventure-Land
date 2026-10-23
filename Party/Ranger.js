@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v120
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v121
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5542,6 +5542,24 @@ function isExchangeable(name) { return !!name && exchangeableNames().has(String(
 const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt']);
 function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name)); }
 
+/* THE TRICK-OR-TREAT COSTUMES, AND THE SLOT IS NOT A CHOICE WE GET TO MAKE.
+   `trick_or_treat_settle` reads `player.slots.helmet` and asks whether the
+   name is in `G.events.trickortreat.costumes`, so the costume must be EQUIPPED
+   and all three - phelmet, gphelmet, horsemanpumpkin - are `"type":"helmet"`.
+   It is worth 85% treat against 70% bare.
+   REACHABLE TODAY, BEFORE ANY ROUTE EXISTS. `reliefSellable()` sorts ASCENDING
+   by `calculate_item_value` and refuses only `level > 0`, and gphelmet vendors
+   at 32,000 against the 30,000 dexbelt+0 this repo already measured a relief
+   run reaching. phelmet is 72,000. horsemanpumpkin is 4,800,000 and safe by
+   sort order alone, which is not a guard. A piece arrives from ordinary
+   farming at +0, which is exactly the level relief will take.
+   SEPARATE FROM SCARCE_ITEM_NAMES on purpose: that set means "not plentiful"
+   and this one means "the event wants it worn". One set read by two rules for
+   two reasons is the hazard this file already records against `alwaysAttack`
+   and `pontyWanted`. */
+const COSTUME_ITEM_NAMES = new Set(['phelmet', 'gphelmet', 'horsemanpumpkin']);
+function isCostumeItem(name) { return !!name && COSTUME_ITEM_NAMES.has(String(name)); }
+
 function reliefSellable() {
 	const cfg = CONFIG.inventoryRelief;
 	const out = [];
@@ -5551,6 +5569,7 @@ function reliefSellable() {
 		if (cfg.neverSell.has(it.name)) continue;
 		if (isExchangeable(it.name)) continue;      // rule (b) - never sold at any price
 		if (isScarceItem(it.name)) continue;        // rule (a) - dexbelt / intbelt
+		if (isCostumeItem(it.name)) continue;       // worn for trick-or-treat
 		if (it.l === 'l') continue;                 // locked by hand
 		if (it.p) continue;                         // special / shiny
 		if ((it.level || 0) > 0) continue;          // upgraded: someone paid for that
@@ -5709,6 +5728,7 @@ function sellItems() {
 		   exchangeable; these two guards outrank it. */
 		if (isExchangeable(item.name)) continue;
 		if (isScarceItem(item.name)) continue;
+		if (isCostumeItem(item.name)) continue;
 		sell(i);
 	}
 }

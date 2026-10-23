@@ -1,3 +1,52 @@
+
+## v115
+
+**THE TRICK-OR-TREAT COSTUMES ARE PROTECTED, AND THE OPERATOR'S TWO HALVES OF
+THE ASK TURN OUT TO BE OPPOSITES.** They asked to protect the costume piece AND
+the normal gear for that slot. **THE EQUIPPED ONE NEEDS NO WORK AT ALL**: every
+sell path on both characters iterates `character.items`, and `character.slots`
+is never a sell source anywhere in either file - so an item being worn is
+unreachable by construction. What needs a guard is whichever helmet is NOT
+worn, which is the costume between routes and THE NORMAL GEAR during one.
+
+**THE SLOT IS NOT A CHOICE.** `trick_or_treat_settle` reads
+`player.slots.helmet` against `G.events.trickortreat.costumes`, and phelmet,
+gphelmet and horsemanpumpkin are all `"type":"helmet"` at upstream `16881a27`.
+So the costume must be EQUIPPED - holding it does nothing - and the slot
+question is answered by the game.
+
+**THE COSTUME IS REACHABLE TODAY, BEFORE ANY ROUTE EXISTS.** `reliefSellable()`
+sorts ASCENDING by `calculate_item_value` and refuses only `level > 0`.
+gphelmet vendors at 32,000 against the 30,000 dexbelt+0 this repo already
+measured a relief run reaching; phelmet is 72,000. horsemanpumpkin at 4,800,000
+is safe by SORT ORDER, which is not a guard. A usable piece arrives from
+ordinary farming at +0 - exactly the level relief takes.
+`COSTUME_ITEM_NAMES` is read by `reliefSellable()` and `sellItems()`, and the
+three names join the merchant's `PROTECTED_ITEM_NAMES` because a mule hand-off
+is where they would otherwise meet the aggressive pass, which has no level
+check.
+
+**KEPT SEPARATE FROM `SCARCE_ITEM_NAMES` ON PURPOSE.** That set means "not
+plentiful"; this one means "the event wants it worn". One set read by two rules
+for two reasons is the hazard already recorded against `alwaysAttack` and
+`pontyWanted`, so the disjointness is asserted rather than left to the next
+editor.
+
+**WHAT IS NOT BUILT, AND WHY IT IS NOT A SMALLER VERSION OF THIS.** The normal
+gear is exposed only WHILE the costume is worn, and `CONFIG.selling.whitelist`
+names four helmets - `helmet`, `helmet1`, `hhelmet`, `oxhelmet` - against a
+`sellItems()` with NO level check, so unequipping one of those at any level
+vendors it on the next maintenance tick. The whitelist is the operator's and is
+CLOSED, so the fix is not an edit to it; it is a guard on what came OFF, which
+is state the equip code owns and the equip code does not exist. Flagged rather
+than guessed at.
+
+Three mutations, three named failures: the relief guard removed (3), the
+`sellItems` guard removed (1), one name dropped from the merchant's set (1).
+The relief assertion carries a CONTROL - an unprotected +0 item at the same
+vendor value, which must still be offered - because without it the test passes
+against a relief that sells nothing at all.
+
 ## v114
 
 **THE BANK SOURCES COMPOUND TRIPLES NOW, AND THE WHOLE CHANGE IS SOURCING -

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v114
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v115
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3164,6 +3164,12 @@ const PROTECTED_ITEM_NAMES = new Set([
 	'scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4',
 	'cscroll0', 'cscroll1', 'cscroll2', 'cscroll3', 'cscroll4',
 	'offeringp', 'offering', 'offeringx',
+	/* The trick-or-treat costumes. All three are `"type":"helmet"` and the
+	   server reads `player.slots.helmet`, so one of them has to be kept and
+	   worn; the merchant is where a mule hand-off would otherwise vendor it,
+	   and gphelmet's 32,000 is in reach of the aggressive pass, which has no
+	   level check at all. */
+	'phelmet', 'gphelmet', 'horsemanpumpkin',
 	'stand0',
 	// Event boxes. Opening one yields ~8,232 (marketparcel) or ~21,907
 	// (anniversarygift) in vendor gold against an unopened NPC value of 60 -

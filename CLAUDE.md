@@ -4923,6 +4923,77 @@ probes are listed at the end as still-open.
   running. Nothing should be built on this section until (1) and (4) are
   measured.
 
+## Trick or Treat
+
+**Both sessions.** Read from upstream `16881a27` on 2026-10-23, so SOURCE-
+DERIVED and a lead about the live game. The operator wants it; nothing existed
+for it in any script before Ranger v121 / Merchant v115.
+
+- **THE CAP IS PER ACCOUNT, NOT PER CHARACTER - 14 knocks, 7 doors.** So two
+  characters covering all seven doors each hits it exactly and a third
+  contributes nothing. That is the allocation rather than a tuning choice, and
+  the operator had assumed per character.
+- **THE LIMIT IS READABLE BEFORE KNOCKING, NOT ONLY DISCOVERABLE BY HITTING
+  IT.** `trick_or_treat_status(player)` is published as `character.trickortreat`
+  = `{doors, doors_left, stamps}`, and `doors_left` is
+  `min(7 - mine_today, account_knocks_left)` - so one field answers both "this
+  character has done them all" and "the account is out", with no counter to
+  drift and no UTC-midnight bookkeeping. A reject-driven loop works and is
+  strictly worse: it spends a round trip to learn what is already on the
+  character.
+  **IT IS REFRESHED ONLY ON THE KNOCKER'S OWN SHARD**, though -
+  `trick_or_treat_settle` walks `for (var id in players)` after a knock - so a
+  sibling on ANOTHER shard carries a stale `doors_left` until it knocks. Fine
+  for a co-located party and exactly the trap if one is away.
+- **THERE IS A FIFTH REJECT REASON THE CONTRACT DOES NOT LIST: `cant_in_bank`**
+  (`if (player.user)`), beyond `trickortreat_season`, `_door`, `_knocked` and
+  `_limit`. That matters for the ranger banking work, which is queued and would
+  put a character in exactly that state mid-route. A loop that advances on
+  `knocked` and stops on `limit` has no branch for it.
+- **A `limit` REJECTION DOES NOT CONSUME THE DOOR.** The door is claimed into
+  `record.doors` BEFORE the account check and rolled back with a `splice` on
+  failure, so a knock refused by the cap can be re-tried tomorrow at the same
+  door. The claim-first order is deliberate - its own comment says it stops a
+  second request doubling up.
+- **PROXIMITY IS 80 UNITS, not standing on the tile.** `trick_or_treat_door`
+  takes the nearest door on the character's own map within 80, so the route has
+  real tolerance and `knock()` can be called without a precise park point.
+- **THE COSTUME MUST BE EQUIPPED AND THE SLOT IS THE GAME'S CHOICE.** The test
+  is `player.slots.helmet` against `G.events.trickortreat.costumes`, and
+  phelmet, gphelmet and horsemanpumpkin are all `"type":"helmet"`. Holding one
+  does nothing. 85% treat against 70% bare - +15 points flat, about +21%
+  relative.
+- **THE TREAT TABLE IS A SECOND SUPPLIER OF THE WITCH'S CIPHER INGREDIENTS.**
+  `[[50,"candy1",3],[20,"candy0",1],[5,"verdantspore",2],[5,"frostscale",2],
+  [5,"embercoal",2],[5,"gloomfeather",2],[10,"witchparcel",1]]` - those four
+  are exactly the names the witchcipher entry already says must not be
+  vendored, so the sell-protection question there now has two sources feeding
+  it rather than one.
+- **`stamps` IS A REWARD LADDER, NOT JUST A READOUT**: `{"parcel":10,
+  "laugh":40}`, account-wide and keyed by YEAR (`stamps:<owner>:<year>`), so
+  every 10th knock pays a Witch's Parcel and the 40th a Sinister Laugh jar.
+  That is an argument for running the route daily rather than opportunistically
+  - and it is still not the cap signal, which is `doors_left`.
+- **GEOGRAPHY FAVOURS IT**: 5 of the 7 doors are on spookytown, where the party
+  already goes for graveyards, mummies and mrgreen; only 2 are on halloween.
+- **THE COST IS A GHOST.** Tricks are 15% costumed, `[[1,"spooked"],
+  [1,"ghost"]]` so half of those, `ghost_time` 120 - about one ghost per
+  14-knock run and two minutes of it. That argues for running the route right
+  after the 00:00Z reset rather than inside a boss window.
+- **PROTECTING THE EQUIPPED PIECE NEEDS NO CODE AND THE EXPOSED ONE IS THE
+  OPPOSITE OF WHAT IT LOOKS LIKE.** Every sell path on both characters iterates
+  `character.items`; `character.slots` is never a sell source. So what is at
+  risk is whichever helmet is NOT worn - the costume between routes, and THE
+  NORMAL GEAR during one. The costumes are protected as of Ranger v121 /
+  Merchant v115; the normal gear is NOT, because
+  `CONFIG.selling.whitelist` names `helmet`, `helmet1`, `hhelmet` and
+  `oxhelmet` against a `sellItems()` with no level check, that whitelist is the
+  operator's and CLOSED, and the right guard is on what came OFF - state the
+  equip code owns and the equip code does not exist yet.
+- **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
+  round-trips cleanly mid-route, and what a ghost landing between the two does
+  to the swap.
+
 ## Testing
 
 - **There IS one now: `node Tests/run.js`.** This section said there was no

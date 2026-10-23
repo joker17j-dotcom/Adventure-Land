@@ -253,4 +253,59 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
 		t.ok(f + ' only caches once the derived half read something',
 			body.indexOf('out.size > EXCHANGEABLE_SEED.length') > 0);
 	}
+} },
+
+{ name: 'the trick-or-treat costumes survive both characters\' sell paths', fn(t) {
+  /* The slot is the game's choice, not ours: `trick_or_treat_settle` reads
+     `player.slots.helmet` against `G.events.trickortreat.costumes`, and all
+     three costumes are `"type":"helmet"`. So one has to be kept and worn.
+     EQUIPPED is safe by construction - every sell path in both files iterates
+     `character.items`, and `character.slots` is never a sell source - so what
+     needs a guard is whichever helmet is NOT being worn. */
+  const fs = require('fs');
+  const COSTUMES = ['phelmet', 'gphelmet', 'horsemanpumpkin'];
+  const merch = fs.readFileSync('Party/Merchant.js', 'utf8');
+  const prot = merch.slice(merch.indexOf('const PROTECTED_ITEM_NAMES'),
+    merch.indexOf(']);', merch.indexOf('const PROTECTED_ITEM_NAMES')));
+  for (const c of COSTUMES) {
+    t.ok('Merchant protects ' + c, prot.indexOf("'" + c + "'") > 0);
+  }
+
+  const ranger = fs.readFileSync('Party/Ranger.js', 'utf8');
+  /* SEPARATE FROM SCARCE_ITEM_NAMES ON PURPOSE. That set means "not
+     plentiful"; this one means "the event wants it worn". One set read by two
+     rules for two reasons is the hazard already recorded against
+     `alwaysAttack` and `pontyWanted`, so the disjointness is asserted rather
+     than left to whoever edits next. */
+  const scarce = ranger.slice(ranger.indexOf('const SCARCE_ITEM_NAMES'),
+    ranger.indexOf(');', ranger.indexOf('const SCARCE_ITEM_NAMES')));
+  for (const c of COSTUMES) {
+    t.ok('Ranger names ' + c + ' as a costume',
+      ranger.indexOf("const COSTUME_ITEM_NAMES") > 0 &&
+      ranger.slice(ranger.indexOf('const COSTUME_ITEM_NAMES'),
+        ranger.indexOf(');', ranger.indexOf('const COSTUME_ITEM_NAMES'))).indexOf("'" + c + "'") > 0);
+    t.eq('and NOT as scarce - two sets, two reasons', scarce.indexOf("'" + c + "'"), -1);
+  }
+  t.ok('sellItems consults it', /isCostumeItem\(item\.name\)/.test(ranger));
+
+  /* THE DISCRIMINATING CASE. relief sorts ASCENDING by vendor value and
+     refuses only `level > 0`, so a +0 costume is exactly what it reaches -
+     gphelmet vendors at 32,000 against the 30,000 dexbelt+0 a relief run was
+     measured reaching. The control is an unprotected item at the same value:
+     without it this passes against a relief that sells nothing at all. */
+  const w = world({
+    CONFIG: { inventoryRelief: { neverSell: new Set() } },
+    character: { name: 'Dexon', items: [
+      { name: 'gphelmet', level: 0 }, { name: 'phelmet', level: 0 },
+      { name: 'horsemanpumpkin', level: 0 }, { name: 'leather', level: 0, q: 1 },
+    ] },
+    isExchangeable: () => false,
+    parent: { calculate_item_value: () => 32000 },
+  });
+  lift(w, 'Party/Ranger.js', ['SCARCE_ITEM_NAMES', 'isScarceItem',
+    'COSTUME_ITEM_NAMES', 'isCostumeItem', 'reliefSellable']);
+  const out = w.reliefSellable().map((r) => r.name);
+  t.eq('CONTROL: an unprotected +0 item at the same value IS offered',
+    out.includes('leather'), true);
+  for (const c of COSTUMES) t.eq('relief refuses ' + c, out.includes(c), false);
 } }];
