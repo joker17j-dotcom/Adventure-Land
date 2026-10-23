@@ -21,6 +21,47 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v124
+
+**THE EVENT BRANCH NOW RUNS BEFORE THE FARM GATE IN mainLoop.** Measured by
+the browser session on 2026-10-23 on the Ranger v123 and Priest v69 slots:
+after a hop the farm spot was decided and broadcast before any boss evaluation
+ran, because `if (!home || !mobMap || !destination) return` sat ABOVE
+`shouldHandleEvents()` and so above everything that calls `bossTick()`. The
+event path reads none of `home`, `mobMap` or `destination` (checked by
+extracting every function it reaches - `shouldHandleEvents`, `handleEvents`,
+`bossTick`, `bossPick`, `bossApproach`, `bossWalkTarget` - which read them in
+comments only), so the gate is now the ELSE-branch of the event test and
+guards only the farm-dependent movement branch. Looting and `updateCache()`
+run before it too. Pinned by position in `Tests/suite_bosshop.js`, all three
+scripts; moving the gate back fails two assertions.
+
+**THE RANGER HAD A SECOND GATE THE HANDOFF DID NOT LIST, IN `updateCache`.**
+`if (!destination) return;` at its top left `cache.targets` EMPTY - and
+`handleAttack` with nothing to shoot - on any trip that started before the farm
+search answered, which after a hop is every one of them. `destination` shapes
+ONLY the `clumped` bucket (measured off the farm spot), so that bucket now stays
+empty without one and `sortedByHP`/`inRange`/`outOfRange` populate regardless.
+Lifted with `destination` null: a monster in range lands in `inRange`, not in
+`clumped`; restoring the early return fails two assertions.
+
+**THE LEADER'S FIRST FARM-SPOT BROADCAST WAITS FOR ONE BOSS EVALUATION AND ONE
+ACHIEVEMENT TICK.** `farmBootBossEval` latches in mainLoop immediately after
+the event test (so a tick that returned early on jail or a potion emergency
+does not count), `farmBootAchvTick` latches when `achvTick()` SETTLES, and
+`sendFarmSpot` refuses until both are set. `achvTick()` is now called at boot
+through `achvTickRun()` rather than first at `reassertMs` (30s), so the queue's
+choice is in before the spot goes out. The achievement latch is on settle rather
+than success deliberately: a throwing tick is already logged and must not hold
+the farm spot hostage, and the tracker refresh inside is noHang-bounded so a
+hang cannot either. Ten mutations, ten named failures.
+
+**`BOSS_FIGHT_TYPES.horseman = ['horseman', 'jackowalker']`**, the operator's
+2026-10-23 hand edit to the Ranger slot, carried into all four copies (Ranger,
+Priest, Mage, `Codex/FamilyFleet.js`) so the next deploy does not revert it and
+the relay divergence check stays green. `bossCooperative()` is any-of over the
+row, so the jackowalker's own flag cannot remove the horseman.
+
 ## v123
 
 **THE GIVE-UP REASON IS PERSISTED, BECAUSE A HOP TRIP ALWAYS ENDS IN THE

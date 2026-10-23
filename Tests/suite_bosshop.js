@@ -6,6 +6,7 @@
 const { lift, world } = require('./lift');
 const RANGER = 'Party/Ranger.js';
 const MAGE_PATH = 'Party/Mage.js';
+const PRIEST_PATH = 'Party/Priest.js';
 
 const G_BASE = {
 	events: {
@@ -1664,10 +1665,13 @@ module.exports = [
   t.eq('an unrelated mob is still refused', w.shouldAttackMob(mob('goo')), false);
   t.eq('and neverAttack still wins', w.shouldAttackMob(mob('nerfedmummy')), false);
 
-  /* HORSEMAN FALLS OUT OF THE [name] DEFAULT with no table row, which is why
-     the fix is keyed on bossMonsterTypes rather than on a second list. */
+  /* HORSEMAN HAS A TABLE ROW NOW - the operator's, 2026-10-23, naming the
+     jackowalker beside it - so the trip yields both. It used to fall out of
+     the [name] default, which is why the fix is keyed on bossMonsterTypes
+     rather than on a second list; that mechanism is unchanged. */
   w = aw({ trip: { name: 'horseman' } });
-  t.eq('a horseman trip yields itself', w.bossFightTypes().join(','), 'horseman');
+  t.eq('a horseman trip yields the horseman and the jackowalker',
+    w.bossFightTypes().join(','), 'horseman,jackowalker');
   t.eq('and the horseman is attacked untargeted', w.shouldAttackMob(mob('horseman')), true);
 
   /* INVERTED, AND THIS IS THE ONE THAT KEEPS A DELIBERATE RULE INTACT.
@@ -2068,5 +2072,134 @@ module.exports = [
   wl.bossState.fromLeader = { name: 'mrgreen', at: Date.now() };
   t.eq('PRECONDITION: the call is fresh and live', wl.bossIsLeader(), true);
   t.eq('the leader never stamps a trip src=leader', wl.bossPick().src, 'own');
+} },
+
+{ name: 'boot order: the event branch runs before the farm gate in all three mainLoops', fn(t) {
+	/* MEASURED BY THE BROWSER SESSION 2026-10-23 on the Ranger v123 and Priest
+	   v69 slots: after a hop the farm spot was decided and broadcast before any
+	   boss evaluation ran, because `if (!home || !mobMap || !destination)
+	   return` sat ABOVE shouldHandleEvents() in every mainLoop. The gate now
+	   guards only the farm-dependent movement branch. Asserted by POSITION in
+	   the extracted mainLoop body, which is the only thing the defect was. */
+	const { extract } = require('./lift');
+	const fs = require('fs');
+	const GATE = /if \(!home \|\| !mobMap \|\| !destination\)/;
+	for (const f of [RANGER, PRIEST_PATH, MAGE_PATH]) {
+		const body = extract(f, 'mainLoop');
+		const ev = body.indexOf('shouldHandleEvents()');
+		const gate = body.search(GATE);
+		t.eq(`${f}: PRECONDITION: mainLoop consults shouldHandleEvents`, ev > 0, true);
+		t.eq(`${f}: PRECONDITION: mainLoop still carries the farm gate`, gate > 0, true);
+		t.eq(`${f}: the event branch precedes the farm gate`, ev < gate, true);
+		/* And the gate is an else-branch of the event test, not a second
+		   early return that happens to sit lower: `else if (!home` is the shape
+		   in all three. */
+		t.eq(`${f}: the gate is the else-branch of the event test`,
+			/else if \(!home \|\| !mobMap \|\| !destination\)/.test(body), true);
+	}
+
+	/* THE PRIEST_PATH PICKER HAD ITS OWN GATE and the browser session named it as
+	   the trap: `if (!home) return null` at the top of findBestTargetInner
+	   refused a targeted boss in range until the farm spot arrived. Lifted with
+	   home null and a boss on somebody: the boss is returned. */
+	const { lift, world } = require('./lift');
+	const boss = { id: 'h', mtype: 'horseman', target: 'Dexon' };
+	const w = world({
+		home: null,
+		BOSS_SET: new Set(['horseman']),
+		bossFightTypes: () => [],
+		focusFireTarget: () => null,
+		get_nearest_monster_v2: (a) => (a.type === 'horseman' ? boss : null),
+		CONFIG: { combat: { targetPriority: ['FatherToken'] } },
+	});
+	w.character.range = 100;
+	lift(w, PRIEST_PATH, ['findBestTargetInner']);
+	t.eq('priest: a targeted boss is picked with no farm spot', w.findBestTargetInner(), boss);
+	w.get_nearest_monster_v2 = () => null;
+	t.eq('priest: and with nothing on anyone the answer is still null', w.findBestTargetInner(), null);
+	/* The home-dependent loop is still guarded - source text, because a null
+	   `type: home` query against a stub answers nothing either way. */
+	const inner = extract(PRIEST_PATH, 'findBestTargetInner');
+	t.eq('priest: the `type: home` loop is guarded by a home check',
+		inner.indexOf('if (!home) return null') < inner.lastIndexOf('type: home,')
+		&& inner.indexOf('if (!home) return null') > inner.indexOf('bossFightTypes()'), true);
+
+	/* THE RANGER-SIDE TRAP THE HANDOFF DID NOT LIST: updateCache returned early
+	   on a null destination, so cache.targets stayed empty and handleAttack had
+	   nothing to shoot on any trip that started before the farm search. With
+	   destination null a monster in range still lands in inRange; only the
+	   clumped bucket, which is measured off the farm spot, stays empty. */
+	const mob = { type: 'monster', mtype: 'horseman', x: 0, y: 0, hp: 100, s: {} };
+	const wr = world({
+		destination: null, home: null,
+		performance: { now: () => 1000 },
+		CONFIG: { movement: { clumpRadius: 50 }, equipment: { xpMobHpThreshold: 10 } },
+		COMBAT_SETS: { xpMonsters: new Set(), alwaysAttack: new Set(), attackIfTargeted: new Set(['horseman']) },
+		shouldAttackMob: () => true,
+		is_in_range: () => true,
+		findHealTarget: () => null,
+		CACHE_TTL: 50,
+	});
+	wr.parent.entities = { a: mob };
+	lift(wr, RANGER, ['cache', 'updateCache']);
+	wr.updateCache();
+	t.eq('ranger: a monster in range is cached with no destination', wr.cache.targets.inRange.length, 1);
+	t.eq('ranger: and sortedByHP carries it', wr.cache.targets.sortedByHP.length, 1);
+	t.eq('ranger: clumped stays empty - it is measured off the farm spot', wr.cache.targets.clumped.length, 0);
+	wr.cache.lastUpdate = 0;
+	wr.destination = { x: 0, y: 0 };
+	wr.updateCache();
+	t.eq('ranger: with a destination the same monster is clumped', wr.cache.targets.clumped.length, 1);
+
+	/* THE LEADER'S FIRST BROADCAST WAITS FOR ONE BOSS EVALUATION AND ONE
+	   ACHIEVEMENT TICK. Both are one-way latches; sendFarmSpot refuses until
+	   both are set, and the farm-state guard above it is unchanged. */
+	const sent = [];
+	const ws = world({
+		home: 'crab', mobMap: 'main', destination: { x: 1, y: 2 }, rageAlso: [],
+		rageCfg: () => ({ concurrent: 1 }), plSend: (a, m) => sent.push(m), plLog: () => {},
+		FARM_SPOT: { audience: ['FatherToken'] },
+		farmSpotLast: null, farmSpotSentAt: 0, farmBootBossEval: false, farmBootAchvTick: false,
+	});
+	lift(ws, RANGER, ['farmSpotBootReady', 'farmSpotKey', 'sendFarmSpot']);
+	t.eq('leader: no broadcast before either latch', ws.sendFarmSpot('x'), false);
+	ws.farmBootBossEval = true;
+	t.eq('leader: no broadcast on the boss latch alone', ws.sendFarmSpot('x'), false);
+	ws.farmBootBossEval = false; ws.farmBootAchvTick = true;
+	t.eq('leader: nor on the achievement latch alone', ws.sendFarmSpot('x'), false);
+	ws.farmBootBossEval = true;
+	t.eq('leader: both set, it sends', ws.sendFarmSpot('x'), true);
+	t.eq('leader: and the payload is the farm spot', sent.length === 1 && sent[0].message === 'farm_spot', true);
+
+	/* The latches are SET where they claim to be: the boss one in mainLoop
+	   right after the event test (so a loop that returns early above it, on
+	   jail or a potion emergency, has not evaluated a boss and does not count),
+	   and the achievement one on settle of a tick that is ALSO called at boot
+	   rather than first at reassertMs. */
+	const ml = extract(RANGER, 'mainLoop');
+	const evAt = ml.indexOf('shouldHandleEvents()');
+	const latchAt = ml.indexOf('farmBootBossEval = true');
+	t.eq('ranger: the boss latch is set in mainLoop', latchAt > 0, true);
+	t.eq('ranger: after the event test', latchAt > evAt, true);
+	t.eq('ranger: and before the farm gate', latchAt < ml.search(GATE), true);
+	const rsrc = fs.readFileSync(RANGER, 'utf8');
+	const run = extract(RANGER, 'achvTickRun');
+	t.eq('ranger: achvTickRun latches on settle (finally), not on success', /\.finally\(\(\) => \{ farmBootAchvTick = true;/.test(run), true);
+	t.eq('ranger: achvTickRun is called at boot', /^achvTickRun\(\);$/m.test(rsrc), true);
+	t.eq('ranger: and on the interval', /setInterval\(achvTickRun,/.test(rsrc), true);
+} },
+
+{ name: 'BOSS_FIGHT_TYPES carries the operator\'s horseman row identically in all four copies', fn(t) {
+	/* The operator put `horseman: ['horseman', 'jackowalker']` into the Ranger
+	   SLOT by hand on 2026-10-23, unbumped. Carried into the repo so the next
+	   deploy does not revert it, and into the other three copies so the
+	   divergence check stays green. Exact text, all four. */
+	const fs = require('fs');
+	const path = require('path');
+	const { ROOT } = require('./lift');
+	for (const f of [RANGER, PRIEST_PATH, MAGE_PATH, path.join(ROOT, 'Codex/FamilyFleet.js')]) {
+		t.eq(`${path.basename(f)}: horseman row present`,
+			/horseman: \['horseman', 'jackowalker'\]/.test(fs.readFileSync(f, 'utf8')), true);
+	}
 } },
 ];

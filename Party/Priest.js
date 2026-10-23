@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v69
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v70
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1079,7 +1079,10 @@ function updateCache() {
    hole. -> rageHoldFire */
 function findBestTarget() { return rageFilterTarget(findBestTargetInner()); }
 function findBestTargetInner() {
-	if (!home) return null; // farm spot not received from Dexon yet
+	/* No `home` gate here any more. Focus fire and the boss loop below need no
+	   farm spot, and gating the whole picker on one left the priest unable to
+	   engage a boss the party reached before the farm search answered. Only
+	   the final `type: home` loop depends on it, and it is guarded there. */
 
 	/* Focus fire first - everything below picks independently. */
 	const shared = focusFireTarget();
@@ -1108,6 +1111,7 @@ function findBestTargetInner() {
 		if (target) return target;
 	}
 
+	if (!home) return null; // farm spot not received from Dexon yet
 	for (const name of CONFIG.combat.targetPriority) {
 		const target = get_nearest_monster_v2({
 			type: home,
@@ -1259,17 +1263,22 @@ async function mainLoop() {
 		if (await noHang(checkPotionEmergency(), 'checkPotionEmergency')) {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
-		if (!home || !mobMap || !destination) {
-			return setTimeout(mainLoop, 250); // haven't heard from Dexon yet
-		}
-
 		updateCache();
 
 		if (shouldLoot()) {
 			await noHang(handleLooting(), 'handleLooting');
 		}
+		/* BOOT ORDER. The farm gate used to sit ABOVE this chain, so after a hop
+		   nothing evaluated a boss until the farm search had answered - and the
+		   farm spot was decided (and, on the leader, broadcast) before any boss
+		   was considered. The event branch needs none of home/mobMap/destination
+		   (measured by extracting every function it reaches), so it runs first
+		   and the gate guards only the farm-dependent movement branch below. */
 		if (shouldHandleEvents()) {
 			handleEvents();
+		}
+		else if (!home || !mobMap || !destination) {
+			return setTimeout(mainLoop, 250); // haven't heard from Dexon yet; events above still ran
 		}
 		else if (CONFIG.movement.enabled) {
 			/* Closing on the party outranks everything else: out of heal range is
@@ -1711,7 +1720,7 @@ const BOSS_JOIN_SPOTS = {
    points carry over to it either way (graveyard_fallen banks them and the wake
    copies them), so excluding it costs no share. Whether a crowd should flip
    this to include it is the operator's open call, not a default. */
-const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'], horseman: ['horseman', 'jackowalker'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 /* THE EVENT'S OWN MONSTERS, AND ONLY WHILE A TRIP IS LIVE. The attack
    selectors ask `allBosses` (via COMBAT_SETS on the ranger, BOSS_SET on the

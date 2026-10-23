@@ -3696,6 +3696,24 @@ reading.
   It walked to an unreachable boss where priest and mage did not, because
   `bossTaxiWalkable` and the walk fall-through landed in Ranger v94 alone. See
   "Testing" for the byte-identity assertion that now catches this class of drift.
+- **THE FARM GATE SAT ABOVE THE EVENT BRANCH, SO AFTER A HOP THE FARM SPOT WAS
+  DECIDED AND BROADCAST BEFORE ANY BOSS WAS EVALUATED - A FIFTH SHAPE: THE
+  SECOND MACHINE IS NEVER REACHED.** Measured by the browser session 2026-10-23
+  on the Ranger v123 and Priest v69 slots. `if (!home || !mobMap ||
+  !destination) return` preceded `shouldHandleEvents()` in every mainLoop, and
+  `bossTick()` runs only from `handleEvents()`, so nothing boss-shaped executed
+  until the farm search had answered. Fixed in Ranger v124 / Priest v70 / Mage
+  v93: the gate is the ELSE-branch of the event test and guards only the
+  movement branch. **TWO MORE GATES WERE UNDER IT**, and the handoff named one:
+  Priest `findBestTargetInner` opened with `if (!home) return null` (now guards
+  only the `type: home` loop), and Ranger `updateCache` returned early on a
+  null `destination`, which left `cache.targets` empty and `handleAttack` with
+  nothing to shoot on any trip that began before the farm search - `destination`
+  shapes only the `clumped` bucket and that is all it gates now. **A GATE ON
+  FARM STATE IS A GATE ON EVERYTHING BELOW IT, and the boss path was below it
+  three times in two files.** The leader's first `sendFarmSpot` now waits for
+  one boss evaluation and one settled `achvTick()`, which is also called at
+  boot rather than first at 30s. Pinned by position and by lift, ten mutations.
 
 ## Self-chained async loops: a real hazard, but NOT what was wrong
 

@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v123
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v124
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -145,6 +145,13 @@ if (typeof performance === 'undefined') {
 
 let home = null;
 let mobMap = null;
+/* FIRST-BROADCAST GATE. The farm spot is not announced until one boss
+   evaluation (mainLoop) and one achievement tick (achvTick) have both run, so
+   a hop lands on the boss decision and the queue's choice rather than on
+   whatever the farm search answered first. Both are one-way latches. */
+let farmBootBossEval = false;
+let farmBootAchvTick = false;
+function farmSpotBootReady() { return farmBootBossEval && farmBootAchvTick; }
 // ============================================================================
 // PARTY LINK - cross-shard messaging for the party, with in-game as its twin
 // ============================================================================
@@ -1197,9 +1204,13 @@ const EXPLOSION_RADIUS = { boom: 68 / 3.6, dead: 23 / 3.6 };
 
 const updateCache = () => {
 	if (!cache.isValid()) {
-		if (!destination) return;
 		const now = performance.now();
-		const { x: homeX, y: homeY } = destination;
+		/* `destination` shapes ONLY the clumped bucket. This used to return
+		   early without it, which left cache.targets empty - and handleAttack
+		   with nothing to shoot - for any boss trip that starts before the farm
+		   search has answered, which after a hop is every one of them. */
+		const homeX = destination ? destination.x : null;
+		const homeY = destination ? destination.y : null;
 		const clumpRadius = CONFIG.movement.clumpRadius;
 		const xpHpThreshold = CONFIG.equipment.xpMobHpThreshold;
 
@@ -1250,7 +1261,7 @@ const updateCache = () => {
 		for (const mob of sortedByHP) {
 			if (is_in_range(mob)) {
 				inRange.push(mob);
-				if (Math.hypot(mob.x - homeX, mob.y - homeY) <= clumpRadius) {
+				if (destination && Math.hypot(mob.x - homeX, mob.y - homeY) <= clumpRadius) {
 					clumped.push(mob);
 				}
 			} else {
@@ -1355,10 +1366,6 @@ async function mainLoop() {
 		if (await noHang(checkPotionEmergency(), 'checkPotionEmergency')) {
 			return setTimeout(mainLoop, TICK_RATE.main);
 		}
-		if (!home || !mobMap || !destination) {
-			return setTimeout(mainLoop, 250);
-		}
-
 		updateCache();
 
 		if (CONFIG.equipment.useLicence) {
@@ -1382,8 +1389,19 @@ async function mainLoop() {
 			});
 		}
 
-		else if (shouldHandleEvents()) {
+		/* BOOT ORDER. The farm gate used to sit ABOVE this chain, so after a hop
+		   nothing evaluated a boss until the farm search had answered - and the
+		   farm spot was decided (and, on the leader, broadcast) before any boss
+		   was considered. The event branch needs none of home/mobMap/destination
+		   (measured by extracting every function it reaches), so it runs first
+		   and the gate guards only the farm-dependent movement branch below. */
+		const eventsNow = shouldHandleEvents();
+		farmBootBossEval = true;   // one boss evaluation has completed - sendFarmSpot reads this
+		if (eventsNow) {
 			handleEvents();
+		}
+		else if (!home || !mobMap || !destination) {
+			return setTimeout(mainLoop, 250);   // farm not decided yet; events above still ran
 		}
 		else if (CONFIG.movement.enabled) {
 			if (!get_nearest_monster({ type: home })) {
@@ -1987,7 +2005,7 @@ function bossRank(name) {
    points carry over to it either way (graveyard_fallen banks them and the wake
    copies them), so excluding it costs no share. Whether a crowd should flip
    this to include it is the operator's open call, not a default. */
-const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'] };
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'], horseman: ['horseman', 'jackowalker'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 /* THE EVENT'S OWN MONSTERS, AND ONLY WHILE A TRIP IS LIVE. The attack
    selectors ask `allBosses` (via COMBAT_SETS on the ranger, BOSS_SET on the
@@ -6882,9 +6900,19 @@ try {
 	});
 } catch (e) { }
 
-setInterval(() => {
-	achvTick().catch((e) => achvLog('tick threw: ' + ((e && e.message) || e), 'red'));
-}, (CONFIG.achievements && CONFIG.achievements.reassertMs) || 30000);
+/* At boot and then on the interval. The first tick used to arrive at
+   reassertMs (30s), long after the farm spot had been broadcast; the farm spot
+   now waits for it (farmSpotBootReady). The latch is set on SETTLE, not on
+   success: a tick that throws is logged above and must not hold the farm spot
+   hostage, and the tracker refresh inside is noHang-bounded so a hang cannot
+   either. */
+function achvTickRun() {
+	return achvTick()
+		.catch((e) => achvLog('tick threw: ' + ((e && e.message) || e), 'red'))
+		.finally(() => { farmBootAchvTick = true; });
+}
+achvTickRun();
+setInterval(achvTickRun, (CONFIG.achievements && CONFIG.achievements.reassertMs) || 30000);
 
 setInterval(() => {
 	mhTick().catch((e) => mhLog('tick threw: ' + ((e && e.message) || e), 'red'));
@@ -7804,6 +7832,7 @@ function farmSpotAudienceInParty() {
 
 function sendFarmSpot(reason) {
 	if (!home || !mobMap || !destination) return false;
+	if (!farmSpotBootReady()) return false;   // see farmBootBossEval
 	plSend(FARM_SPOT.audience, {
 		message: 'farm_spot',
 		home,

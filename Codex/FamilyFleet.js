@@ -1773,7 +1773,7 @@ async function bossStandOff(mob) {
    the same thirty lines. The party scripts carried the same single value and
    were fixed in Ranger v105 / Priest v57 / Mage v80.
    -> Party/RangerComments.md#bossFightTypes */
-const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'] };
+const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], horseman: ['horseman', 'jackowalker'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 
 /* The nearest of ANY of the event's monster types. Distance rather than

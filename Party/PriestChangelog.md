@@ -21,6 +21,35 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v70
+
+**THE EVENT BRANCH NOW RUNS BEFORE THE FARM GATE IN mainLoop.** Measured by
+the browser session on 2026-10-23 on the Ranger v123 and Priest v69 slots:
+after a hop the farm spot was decided and broadcast before any boss evaluation
+ran, because `if (!home || !mobMap || !destination) return` sat ABOVE
+`shouldHandleEvents()` and so above everything that calls `bossTick()`. The
+event path reads none of `home`, `mobMap` or `destination` (checked by
+extracting every function it reaches - `shouldHandleEvents`, `handleEvents`,
+`bossTick`, `bossPick`, `bossApproach`, `bossWalkTarget` - which read them in
+comments only), so the gate is now the ELSE-branch of the event test and
+guards only the farm-dependent movement branch. Looting and `updateCache()`
+run before it too. Pinned by position in `Tests/suite_bosshop.js`, all three
+scripts; moving the gate back fails two assertions.
+
+**`findBestTargetInner` NO LONGER REFUSES EVERYTHING ON A NULL `home`.** Its
+first line was `if (!home) return null`, which refused a targeted boss in range
+until the farm spot arrived - the trap the browser session named. Focus fire
+and the boss loop need no farm spot; only the final `type: home` loop does, and
+the guard now sits directly above that loop. Lifted with `home` null and a boss
+on somebody: the boss is returned. Both the old gate restored and the new one
+removed fail assertions.
+
+**`BOSS_FIGHT_TYPES.horseman = ['horseman', 'jackowalker']`**, the operator's
+2026-10-23 hand edit to the Ranger slot, carried into all four copies (Ranger,
+Priest, Mage, `Codex/FamilyFleet.js`) so the next deploy does not revert it and
+the relay divergence check stays green. `bossCooperative()` is any-of over the
+row, so the jackowalker's own flag cannot remove the horseman.
+
 ## v69
 
 **`scopedGetLegacy` CAN NO LONGER UNDO A DELIBERATE CLEAR**, ported byte for
