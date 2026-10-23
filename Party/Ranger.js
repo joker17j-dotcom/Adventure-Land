@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v125
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v126
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5590,12 +5590,14 @@ function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name
    name is in `G.events.trickortreat.costumes`, so the costume must be EQUIPPED
    and all three - phelmet, gphelmet, horsemanpumpkin - are `"type":"helmet"`.
    It is worth 85% treat against 70% bare.
-   REACHABLE TODAY, BEFORE ANY ROUTE EXISTS. `reliefSellable()` sorts ASCENDING
-   by `calculate_item_value` and refuses only `level > 0`, and gphelmet vendors
-   at 32,000 against the 30,000 dexbelt+0 this repo already measured a relief
-   run reaching. phelmet is 72,000. horsemanpumpkin is 4,800,000 and safe by
-   sort order alone, which is not a guard. A piece arrives from ordinary
-   farming at +0, which is exactly the level relief will take.
+   ONLY horsemanpumpkin IS KEPT - the operator's narrowing, 2026-10-23: phelmet
+   and gphelmet are plentiful and deliberately left sellable. horsemanpumpkin
+   is named because sort order is not a guard: `reliefSellable()` sorts
+   ASCENDING by `calculate_item_value` and refuses only `level > 0`, and its
+   +0 value of 2,880,000 merely puts it near the bottom of that list.
+   `calculate_item_value` is what an NPC pays (60% of G's `g` at +0), so G's
+   4,800,000 is not a vendor price; measured live, phelmet+0 is 43,200 and
+   gphelmet+0 19,200.
    SEPARATE FROM SCARCE_ITEM_NAMES on purpose: that set means "not plentiful"
    and this one means "the event wants it worn". One set read by two rules for
    two reasons is the hazard this file already records against `alwaysAttack`

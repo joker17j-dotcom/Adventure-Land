@@ -1,4 +1,13 @@
 
+## v117
+
+**COMMENT ONLY - NO BEHAVIOUR CHANGE, REDEPLOY WHEN CONVENIENT.** The note
+beside `horsemanpumpkin` in `PROTECTED_ITEM_NAMES` still described all three
+costumes as protected and quoted "gphelmet's 32,000", which is G's `g` rather
+than a vendor price (measured live by the browser session: gphelmet+0 vendors
+for 19,200). It now records the operator's 2026-10-23 narrowing - phelmet and
+gphelmet sold, horsemanpumpkin kept and worn on the merchant for its speed.
+
 ## v116
 
 **THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER SOLD** - verdantspore,

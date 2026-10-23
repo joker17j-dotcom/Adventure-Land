@@ -3236,6 +3236,21 @@ Claude Code session stops after `browser_code_eval`.
   lesson holds, the example did not. Merchant v104 did not displace OpenGifts
   either - different slots, which is why `OpenGifts.js` carries no `CH_` token
   in its header while all four party scripts do.
+  **AND IT HAPPENED AGAIN THE OTHER WAY ROUND, 2026-10-23.** The browser
+  session hashed every slot against `838f818`: Merchant v116 is byte-identical
+  but sits in NUMBERED SLOT 8, still named "Exchange Xyn", and slot 8 is the
+  ENGAGED one (`get_code_slot()` returns "8"). OpenGifts v11, which slot 8 held
+  that morning for the candy1 run, is in no slot read - it survives in the
+  repo. Meltymerch's CHARACTER slot is a STALE v115 that half-carries a later
+  edit (the whitelist change reached it, the `PROTECTED_ITEM_NAMES` removal did
+  not), inert while not engaged. `merchantVersion()` read 116 throughout;
+  **only the slot hash plus a feature probe told the two copies apart**, which
+  is the case for hashing every slot rather than probing the running one.
+- **SEEN ONCE, NOT EXPLAINED: A HOP CAN LAND ON THE CHARACTER PICKER'S SERVER.**
+  2026-10-23: a Meltymerch hop toward ASIA II sat on the picker for 40s+ with no
+  character and no socket, then came up on EU II - the picker's selected
+  server, not the target. Whether the operator clicked is unknown. Recorded so
+  the next instance is recognised as a second sample, not a first.
 - **Absence of a feature can mean a DIFFERENT SCRIPT, not an older build.**
   Same character, same probe: no Merchant symbol resolved because
   `Party/Merchant.js` was not loaded at all - Meltymerch was running what that
@@ -4278,6 +4293,11 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   ingredient monsters pays only inside those windows and nowhere else. The
   payout read `{"fits":1,"crack":4}` at that commit, NOT the "50 per crack" this
   file records under `witchcipher` above - stale, or rebalanced since.
+  **ANSWERED LIVE 2026-10-23: `G.events.witchcipher.payout` is
+  `{"right":1,"crack":50}`.** So the 50 is what RUNS and the upstream source is
+  AHEAD of the deployed game, with different KEY NAMES as well as values - code
+  written from `16881a27` that reads `.fits` gets undefined live. The cipher
+  automation reads live `G`, never the source's field names.
 - **THE CIPHER INGREDIENTS AGAINST NPCS AND PONTY, ANSWERED 2026-10-23 BY THE
   BROWSER SESSION, source at `16881a27` plus live.** `exclusive: true` is NOT a
   trade rule: its only readers are the two loops at the end of
@@ -5092,7 +5112,10 @@ probes are listed at the end as still-open.
   re-publishes on every push. `/schedule` is UNCHANGED and remains the
   fallback for `--boss-source aldata`. Both repeat shapes are accepted, the
   ARRAY the creator's test pins and the OBJECT the live read described, since
-  neither was measured as the wire format. Needs a bridge RESTART to take
+  neither was measured as the wire format. **MEASURED 2026-10-23 off MageofOz's
+  live `parent.S.schedule`: an ARRAY OF OBJECTS**, `{id, event, at, status,
+  season, every}`, `at` and `every` both epoch ms - the object branch, pinned
+  verbatim in `Tests/bridge/test_schedule.py`. Needs a bridge RESTART to take
   effect. `Tests/bridge/test_schedule.py`, five mutations named.
   **THE SCHEDULE TAB IN `Codex/boss_timers.html` READS IT, 2026-10-23, IN THE
   OPERATOR'S CHOSEN LAYOUT**: a hybrid of a timeline and a grid, one row per
@@ -5232,6 +5255,14 @@ for it in any script before Ranger v121 / Merchant v115.
   **STILL UNMEASURED**: one live knock confirming the knocker going 7 -> 6 and
   a same-shard sibling staying at 7; costume <-> ORDINARY helmet swap (same
   server path, no ordinary helmet was in any bag).
+- **G's `g` IS NOT A VENDOR PRICE.** Measured live 2026-10-23:
+  `calculate_item_value` - what an NPC pays - is 60% of `g` at +0, and Ponty
+  charges twice that. phelmet `g` 72,000 vendors for 43,200 (+1 63,200, +5
+  272,800, +7 1,428,960) and Ponty asks 86,400, which the bridge's `/ponty`
+  agrees with; gphelmet `g` 32,000 vendors for 19,200 (+1 819,200);
+  horsemanpumpkin `g` 4,800,000 vendors for 2,880,000. Comments in Ranger and
+  Merchant quoted `g` as the vendor price and were corrected in Ranger v126 /
+  Merchant v117.
 - **OPERATOR'S RULING 2026-10-23: THE MERCHANT NEVER SWAPS.** Meltymerch wears
   a costume as his ordinary helmet for the season and the operator changes it
   by hand afterwards - his gear matters less than the combat party's. So the

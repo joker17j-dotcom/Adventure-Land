@@ -53,6 +53,24 @@ chk("`every` read as milliseconds -> 7200 s", nth(snap["repeats"], 0).get("every
 
 obj = b.schedule_snapshot(payload(repeats=[{"event": "graveyard", "at": MS(T0), "every": 7_200_000, "status": "live"}]))
 chk("object-shaped repeat accepted", (len(obj["repeats"]), nth(obj["repeats"], 0).get("status")), (1, "live"))
+# THE MEASURED WIRE SHAPE, verbatim from MageofOz's live parent.S.schedule on US
+# II, 2026-10-23: an ARRAY OF OBJECTS carrying id and season as well, `at` and
+# `every` both epoch ms. It is the object branch above; pinned separately
+# because that branch was written before anyone had seen a real entry.
+LIVE_REP = {"id": "USII-2026-10-23-1930-graveyard", "event": "graveyard",
+            "at": 1792801800000, "status": "scheduled", "season": "halloween",
+            "every": 7200000}
+live = b.schedule_snapshot({"schedule": {"time_offset": -5, "dailies": [13, 20],
+    "nightlies": [23], "night": False, "realm": "USII", "server_time": 1792800000000,
+    "events": [], "repeats": [LIVE_REP]}})
+chk("measured live repeat parses: at 2026-10-24T00:30:00Z",
+    b.iso(num(nth((live or {}).get("repeats"), 0).get("at")) or 0), "2026-10-24T00:30:00Z")
+chk("measured live repeat parses: every 2h", nth((live or {}).get("repeats"), 0).get("every"), 7200.0)
+_lp = b.published_schedule({"US II": dict(live or {}, received_t=1792800000.0)},
+                           1792800000.0, hours_ahead=5)["occurrences"]
+chk("measured live repeat expands to graveyard at 00:30, 02:30, 04:30Z",
+    [o.get("at") for o in _lp if o.get("event") == "graveyard"],
+    ["2026-10-24T00:30:00Z", "2026-10-24T02:30:00Z", "2026-10-24T04:30:00Z"])
 chk("an unrecognised repeat entry is skipped",
     len(b.schedule_snapshot(payload(repeats=["graveyard", {"event": "x"}]))["repeats"]), 0)
 

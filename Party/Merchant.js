@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v116
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v117
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3164,11 +3164,12 @@ const PROTECTED_ITEM_NAMES = new Set([
 	'scroll0', 'scroll1', 'scroll2', 'scroll3', 'scroll4',
 	'cscroll0', 'cscroll1', 'cscroll2', 'cscroll3', 'cscroll4',
 	'offeringp', 'offering', 'offeringx',
-	/* The trick-or-treat costumes. All three are `"type":"helmet"` and the
-	   server reads `player.slots.helmet`, so one of them has to be kept and
-	   worn; the merchant is where a mule hand-off would otherwise vendor it,
-	   and gphelmet's 32,000 is in reach of the aggressive pass, which has no
-	   level check at all. */
+	/* The trick-or-treat costume the operator keeps. The server reads
+	   `player.slots.helmet` against `G.events.trickortreat.costumes`, so a
+	   costume only counts worn; this one adds speed and is the one wanted on
+	   the merchant. phelmet and gphelmet are deliberately on the sell
+	   whitelist instead (operator, 2026-10-23). Named here because the
+	   aggressive pass has no level check and a value test is not a guard. */
 	'horsemanpumpkin',
 	/* Witch's Cipher ingredients - operator's ruling 2026-10-23, never sold.
 	   They drop only in the first 20 minutes of a cipher round and each mix

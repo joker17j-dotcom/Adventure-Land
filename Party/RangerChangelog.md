@@ -21,6 +21,17 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v126
+
+**COMMENT ONLY - NO BEHAVIOUR CHANGE, REDEPLOY WHEN CONVENIENT.** The block
+above `COSTUME_ITEM_NAMES` still argued for protecting all three costumes after
+the operator narrowed the set to `horsemanpumpkin` on 2026-10-23, and it quoted
+G's `g` (phelmet 72,000, gphelmet 32,000, horsemanpumpkin 4,800,000) as vendor
+prices. The browser session measured `calculate_item_value` live: phelmet+0
+43,200, gphelmet+0 19,200, horsemanpumpkin+0 2,880,000 - an NPC pays 60% of `g`
+at +0, and Ponty charges twice `calculate_item_value`. The comment now says
+which costume is kept and why, with the measured figures.
+
 ## v125
 
 **THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER SOLD** - verdantspore,
