@@ -4278,6 +4278,23 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   ingredient monsters pays only inside those windows and nowhere else. The
   payout read `{"fits":1,"crack":4}` at that commit, NOT the "50 per crack" this
   file records under `witchcipher` above - stale, or rebalanced since.
+- **THE CIPHER INGREDIENTS AGAINST NPCS AND PONTY, ANSWERED 2026-10-23 BY THE
+  BROWSER SESSION, source at `16881a27` plus live.** `exclusive: true` is NOT a
+  trade rule: its only readers are the two loops at the end of
+  `design/drops.js` that build the `glitch`/`lglitch` tables, and the server
+  never reads it. **An NPC WILL buy them** - `socket.on("sell")` has no type
+  gate - at `calculate_item_value` 720 each, so the v125/v116 sell guard
+  covers a real path. **Ponty CAN carry them**, because `secondhands_logic`
+  keeps any sold item with no `buy` price that is not cash, expiring or
+  account-bound; he asks value x `secondhands_mult` (2) = 1,440 each.
+  **`sbuy` TAKES THE WHOLE ENTRY** - keyed by `rid`, no quantity parameter, so
+  "buy up to 25" cannot cap a purchase; it can only choose which entries to
+  take, and must read the entry's `q` first or accept the overshoot. **SUPPLY
+  WAS ZERO** across all 11 shards in a 3,936-entry `/ponty` snapshot
+  (`name` field confirmed before searching), and stock appears only when
+  somebody vendors one. So putting them on the buy list costs little and will
+  rarely fire, it needs a `q`-aware cap rather than the existing stack cap, and
+  the "enough" quantity must not be planned around Ponty supply.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
