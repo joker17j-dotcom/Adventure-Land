@@ -3155,8 +3155,9 @@ Claude Code session stops after `browser_code_eval`.
   the writes that had happened, which was none.
 - **`set(key, null)` DOES NOT DELETE, AND THAT TURNED MY OWN MIGRATION INTO A
   RESURRECTION BUG.** The browser session's finding, 2026-10-23, reported as a
-  property of the namespace after their cleanup left four keys present and
-  holding null - a STORAGE observation that landed on code they had not read.
+  property of the namespace after `set(key, null)` left four of their own probe
+  keys present and holding null, which they then removed - a STORAGE
+  observation that landed on code they had not read.
   `scopedGetLegacy` adopts the legacy key when the scoped one reads null, which
   is right for a key never written and wrong for one deliberately CLEARED: a
   scoped key written null is PRESENT holding null, and `get()` is
@@ -3176,6 +3177,18 @@ Claude Code session stops after `browser_code_eval`.
   TIMING** - it is the only clear-to-null on a migrating key TODAY, with
   `pl_hop_pending` cleared the same way and safe only because it deliberately
   does not migrate.
+- **THE SUPPRESSION IS REACHABLE ONLY THROUGH THE SCOPED READ, WHICH NARROWS
+  THE HAZARD TO A SHAPE OF KEY RATHER THAN TO A VALUE.** The browser session's
+  census, 2026-10-23: a BARE base holding null cannot reach it at all, because
+  `scopedGetLegacy` tests the SCOPED key and a bare null is simply adopted -
+  indistinguishable from adopting nothing, and harmless. So ONLY a
+  `<base>_<Name>` key holding null can suppress a migration, and
+  `Party/Merchant.js` carries no scoping helpers at all, which puts its keys
+  outside this entirely. The one-call check is a scan of `cstore_*` for a raw
+  item of `"null"`: a SCOPED name in that list is the fix firing on real data,
+  a bare one is nothing. **No census recorded here on purpose** - which keys
+  hold null, and whether `achv_queue_Dexon` exists yet, is what a single call
+  answers and it moves.
 - **THE FIVE SCOPING HELPERS WERE ON NO DIVERGENCE LIST, BECAUSE THEY WERE
   TRIVIAL WHEN WRITTEN AND ONE OF THEM STOPPED BEING.** `scopedGetLegacy` was
   four lines with nothing to drift until it had to tell a cleared key from an
