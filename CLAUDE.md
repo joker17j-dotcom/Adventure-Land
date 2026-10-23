@@ -5188,6 +5188,16 @@ for it in any script before Ranger v121 / Merchant v115.
   **STILL UNMEASURED**: one live knock confirming the knocker going 7 -> 6 and
   a same-shard sibling staying at 7; costume <-> ORDINARY helmet swap (same
   server path, no ordinary helmet was in any bag).
+- **OPERATOR'S RULING 2026-10-23: THE MERCHANT NEVER SWAPS.** Meltymerch wears
+  a costume as his ordinary helmet for the season and the operator changes it
+  by hand afterwards - his gear matters less than the combat party's. So the
+  merchant's knock route has NO equip step, and the swap logic is for the combat
+  knocker only. The operator WANTS the helmet the horseman drops for him,
+  because it adds speed. Checked, not assumed: neither `Party/Merchant.js` nor
+  `OpenGifts.js` equips a helmet on its own (no helmet entry drives an `equip()`
+  on the merchant; `GEAR_PROGRESSION` is the combat characters' goal table), so
+  a hand-worn costume stays on. A worn helmet is in `character.slots`, which no
+  sell path reads, so OpenGifts' keep-count `autoSell` cannot reach it.
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
