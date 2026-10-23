@@ -698,7 +698,7 @@ const CONFIG = {
 		muleName: 'Dexon',
 		fallbackMuleName: 'Meltymerch',
 		goldReserve: 500000,
-		excludeItems: new Set(['hpot1', 'mpot1', 'tracker', 'xptome']),
+		excludeItems: new Set(['hpot1', 'mpot1', 'tracker', 'xptome', 'mmhat']),
 	},
 };
 
