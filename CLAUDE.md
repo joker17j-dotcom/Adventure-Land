@@ -5044,6 +5044,20 @@ probes are listed at the end as still-open.
   to look up prices is a different risk class from putting it in the loop that
   decides where three characters travel, and `Crowns3bc/` is already the
   recorded precedent for a community repo going away.
+- **THE BRIDGE NOW KEEPS THE LINEUP, 2026-10-23: `BossWatch.schedules` AND
+  `/schedule_live`.** `schedule_snapshot()` takes `schedule.events` and
+  `schedule.repeats` off each shard's `server_info` payload in
+  `_on_server_info`; `published_schedule()` flattens every shard into ONE
+  time-sorted list, UTC throughout, with graveyard's repeat line EXPANDED by
+  `every`, a running event kept until its window closes, `window_sec` from
+  `SCHEDULE_EVENT_SEC` (null when unknown, never zero) and a per-shard
+  `age_sec`. A payload WITHOUT a lineup leaves the stored copy alone, because
+  absence of the field is not an empty schedule. Memory only - the game
+  re-publishes on every push. `/schedule` is UNCHANGED and remains the
+  fallback for `--boss-source aldata`. Both repeat shapes are accepted, the
+  ARRAY the creator's test pins and the OBJECT the live read described, since
+  neither was measured as the wire format. Needs a bridge RESTART to take
+  effect. `Tests/bridge/test_schedule.py`, five mutations named.
 - **STILL OPEN - NOTHING, AND THE ITEM BELOW IS KEPT AS THE INSTANCE.** Which
   `--boss-source` the bridge is running: `server_info` carries the schedule and `aldata` fetches
   `monsters/<types>` with no schedule in it, so the bridge can collect this in

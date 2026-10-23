@@ -1943,6 +1943,111 @@ def _pct(xs, q):
     return round(s[lo] + (s[hi] - s[lo]) * frac, 1)
 
 
+
+# ------------------------------------------------------------ published lineup
+# THE GAME PUBLISHES EACH SHARD'S OWN SEVEN-DAY LINEUP in the same server_info
+# payload this poller already receives (`schedule.events` + `schedule.repeats`),
+# and until 2026-10-23 it was dropped on the floor. schedule_windows() above
+# DERIVES windows from the hours table and can only say which events COULD
+# fire; this is what WILL fire, per shard, by name. It does not replace
+# schedule_windows: `--boss-source aldata` carries no schedule, so that remains
+# the fallback and /schedule keeps serving it.
+#
+# REPEATS ARE A SEPARATE ARRAY AND MUST BE EXPANDED. graveyard is a `repeat`
+# slot and never appears in `events` at all - the creator's own test asserts
+# it - so a reader of `events` alone sees the whole schedule except the
+# graveyard. One repeat line carries the live-or-next occurrence and `every`.
+# Two shapes are accepted because the creator's test deep-equals an ARRAY
+# ([event, at, every]) while the live read described an object with `every`;
+# whichever arrives, an unrecognised entry is skipped rather than guessed.
+
+def schedule_snapshot(payload):
+    """The published lineup from ONE server_info payload, or None.
+
+    None means "this payload carried no lineup" - a caller must leave the
+    stored copy alone then, because a payload without `schedule` is not
+    evidence that the shard's lineup became empty."""
+    if not isinstance(payload, dict):
+        return None
+    sch = payload.get("schedule")
+    if not isinstance(sch, dict):
+        return None
+    events, repeats = sch.get("events"), sch.get("repeats")
+    if not isinstance(events, list) and not isinstance(repeats, list):
+        return None
+    keep = []
+    for o in events if isinstance(events, list) else []:
+        if not isinstance(o, dict) or not o.get("event"):
+            continue
+        at = parse_ts(o.get("at"))
+        if at is None:
+            continue
+        keep.append({"id": o.get("id"), "event": str(o["event"]), "at": at,
+                     "status": o.get("status"), "season": o.get("season"),
+                     "started": parse_ts(o.get("started")),
+                     "ended": parse_ts(o.get("ended"))})
+    reps = []
+    for r in repeats if isinstance(repeats, list) else []:
+        if isinstance(r, (list, tuple)) and len(r) >= 3:
+            ev, at, every, status = r[0], r[1], r[2], None
+        elif isinstance(r, dict):
+            ev, at, every, status = r.get("event"), r.get("at"), r.get("every"), r.get("status")
+        else:
+            continue
+        at = parse_ts(at)
+        try:
+            every = float(every)
+        except (TypeError, ValueError):
+            continue
+        # Published in milliseconds (DAY / 12 = 7,200,000). A seconds value
+        # this large is not a plausible repeat, so the split is unambiguous.
+        if every > 1e5:
+            every = every / 1000.0
+        if not ev or at is None or every <= 0:
+            continue
+        reps.append({"event": str(ev), "at": at, "every": every, "status": status})
+    return {"realm": sch.get("realm"), "server_time": parse_ts(sch.get("server_time")),
+            "events": keep, "repeats": reps}
+
+
+def published_schedule(store, t_now, hours_ahead=48, hours_back=1):
+    """Every stored shard's lineup as ONE time-sorted list, UTC throughout.
+
+    An occurrence is kept while its window overlaps [now - hours_back,
+    now + hours_ahead], so a running event stays listed until it closes.
+    `window_sec` comes from SCHEDULE_EVENT_SEC and is null for an event that
+    table does not know - shown as unknown rather than as zero."""
+    lo, hi = t_now - hours_back * 3600, t_now + hours_ahead * 3600
+    occ, servers = [], {}
+    for server, snap in sorted((store or {}).items()):
+        rec = snap.get("received_t")
+        servers[server] = {"realm": snap.get("realm"),
+                           "age_sec": round(t_now - rec) if rec else None,
+                           "events": len(snap.get("events") or []),
+                           "repeats": len(snap.get("repeats") or [])}
+        rows = [dict(o, repeat=False) for o in snap.get("events") or []]
+        for r in snap.get("repeats") or []:
+            at, n = r["at"], 0
+            while at <= hi and n < 500:
+                rows.append({"id": None, "event": r["event"], "at": at,
+                             "status": r.get("status") if n == 0 else "scheduled",
+                             "season": None, "repeat": True})
+                at += r["every"]
+                n += 1
+        for o in rows:
+            w = SCHEDULE_EVENT_SEC.get(o["event"])
+            if (o["at"] + (w or 0)) < lo or o["at"] > hi:
+                continue
+            occ.append({"server": server, "event": o["event"], "at": iso(o["at"]),
+                        "at_ms": int(round(o["at"] * 1000)),
+                        "in_sec": round(o["at"] - t_now), "window_sec": w,
+                        "status": o.get("status"), "season": o.get("season"),
+                        "repeat": o["repeat"], "id": o.get("id")})
+    occ.sort(key=lambda r: (r["at_ms"], r["event"], r["server"]))
+    return {"source": "published", "now": iso(t_now), "hours": hours_ahead,
+            "servers": servers, "occurrences": occ}
+
+
 def schedule_windows(servers, path=None, hours_ahead=48, hours_back=24) -> dict:
     """Daily and nightly windows per server, as UTC instants.
 
@@ -2602,6 +2707,9 @@ class BossWatch:
         # cheap direction: a duplicate is visible in an append-only log and a
         # dropped decline is not.
         self._skip_last: dict = {}
+        # "US II" -> schedule_snapshot() of that shard's latest payload, plus
+        # received_t. Memory only: the game re-publishes on every push.
+        self.schedules: dict = {}
         self.source = source
         self.clients: list = []
         self.servers: list = []
@@ -2671,6 +2779,11 @@ class BossWatch:
         entries = server_info_entries(server, payload, self.types)
         key = (str(server["region"]), str(server["name"]))
         t = now()
+        snap = schedule_snapshot(payload)
+        if snap is not None:
+            snap["received_t"] = t
+            with self.lock:
+                self.schedules[f"{key[0]} {key[1]}"] = snap
         seen = set()
         for e in entries:
             k = self._record(e)
@@ -3594,6 +3707,16 @@ class Handler(BaseHTTPRequestHandler):
                 (q.get("server") or [""])[0].strip().lower() or None,
                 (q.get("since") or [""])[0].strip() or None,
                 (q.get("include_low") or [""])[0] in ("1", "true", "yes")))
+        elif path == "/schedule_live":
+            from urllib.parse import parse_qs, urlparse
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                ahead = max(1, min(168, int((q.get("hours") or ["48"])[0])))
+            except ValueError:
+                ahead = 48
+            with self.bosses.lock:
+                store = dict(self.bosses.schedules)
+            self._send(published_schedule(store, now(), ahead))
         elif path == "/schedule":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
