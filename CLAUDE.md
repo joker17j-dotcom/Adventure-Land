@@ -5064,8 +5064,12 @@ for it in any script before Ranger v121 / Merchant v115.
   OPPOSITE OF WHAT IT LOOKS LIKE.** Every sell path on both characters iterates
   `character.items`; `character.slots` is never a sell source. So what is at
   risk is whichever helmet is NOT worn - the costume between routes, and THE
-  NORMAL GEAR during one. The costumes are protected as of Ranger v121 /
-  Merchant v115; the normal gear is NOT, because
+  NORMAL GEAR during one. The costumes were protected as of Ranger v121 /
+  Merchant v115, and **ON 2026-10-23 THE OPERATOR NARROWED THAT TO
+  `horsemanpumpkin` ALONE** by editing the lists directly - `phelmet` and
+  `gphelmet` are on the merchant's sell whitelist by their hand, pinned in
+  `Tests/suite_merchantsell.js` as SOLD so it reads as a ruling and not a gap.
+  The normal gear is NOT protected, because
   `CONFIG.selling.whitelist` names `helmet`, `helmet1`, `hhelmet` and
   `oxhelmet` against a `sellItems()` with no level check, that whitelist is the
   operator's and CLOSED, and the right guard is on what came OFF - state the

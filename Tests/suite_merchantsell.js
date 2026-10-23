@@ -262,13 +262,24 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
      EQUIPPED is safe by construction - every sell path in both files iterates
      `character.items`, and `character.slots` is never a sell source - so what
      needs a guard is whichever helmet is NOT being worn. */
+  /* OPERATOR'S RULING, 2026-10-23, by editing the lists directly: ONE kept
+     costume, horsemanpumpkin; phelmet and gphelmet go to the merchant's sell
+     whitelist. The suite went red on that edit as a policy conflict and the
+     assertions moved to the ruling - the sold pair is pinned as SOLD so the
+     next reader sees a decision, not an omission. */
   const fs = require('fs');
-  const COSTUMES = ['phelmet', 'gphelmet', 'horsemanpumpkin'];
+  const COSTUMES = ['horsemanpumpkin'];
+  const SOLD = ['phelmet', 'gphelmet'];
   const merch = fs.readFileSync('Party/Merchant.js', 'utf8');
   const prot = merch.slice(merch.indexOf('const PROTECTED_ITEM_NAMES'),
     merch.indexOf(']);', merch.indexOf('const PROTECTED_ITEM_NAMES')));
   for (const c of COSTUMES) {
     t.ok('Merchant protects ' + c, prot.indexOf("'" + c + "'") > 0);
+  }
+  const mwl = merch.slice(merch.indexOf('whitelist: ['), merch.indexOf(']', merch.indexOf('whitelist: [')));
+  for (const c of SOLD) {
+    t.eq('Merchant does NOT protect ' + c + ' (operator sells it)', prot.indexOf("'" + c + "'"), -1);
+    t.ok('and ' + c + ' is on the merchant whitelist by the operator\'s hand', mwl.indexOf("'" + c + "'") > 0);
   }
 
   const ranger = fs.readFileSync('Party/Ranger.js', 'utf8');
@@ -286,6 +297,9 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
         ranger.indexOf(');', ranger.indexOf('const COSTUME_ITEM_NAMES'))).indexOf("'" + c + "'") > 0);
     t.eq('and NOT as scarce - two sets, two reasons', scarce.indexOf("'" + c + "'"), -1);
   }
+  const cset = ranger.slice(ranger.indexOf('const COSTUME_ITEM_NAMES'),
+    ranger.indexOf(');', ranger.indexOf('const COSTUME_ITEM_NAMES')));
+  for (const c of SOLD) t.eq('Ranger does NOT name ' + c + ' as a costume', cset.indexOf("'" + c + "'"), -1);
   t.ok('sellItems consults it', /isCostumeItem\(item\.name\)/.test(ranger));
 
   /* THE DISCRIMINATING CASE. relief sorts ASCENDING by vendor value and
@@ -308,4 +322,5 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
   t.eq('CONTROL: an unprotected +0 item at the same value IS offered',
     out.includes('leather'), true);
   for (const c of COSTUMES) t.eq('relief refuses ' + c, out.includes(c), false);
+  for (const c of SOLD) t.eq('and relief now OFFERS ' + c + ' - a second control, by ruling', out.includes(c), true);
 } }];
