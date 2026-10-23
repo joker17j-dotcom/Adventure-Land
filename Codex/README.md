@@ -648,7 +648,12 @@ falls back to the absolute loopback address when the protocol is `file:`.
 Four views. **Now** — every (type, server), live-and-dying first, with
 either "respawns 12:43 PM" and a ticking countdown or "up, ~11 min left".
 **Timers** — the next respawn per server for one type. **Schedule** — the
-daily and nightly windows above, per server, with what was observed in each. **Server ranking** —
+game's own published lineup from `GET /schedule_live`: one row per start time,
+one column per event starting then (ordered by `bossRank`, the number shown
+beside each name), the servers under each event grouped by region, and a
+clickable filter per event that the browser remembers. `next 24h / 48h / 7
+days` picks the span. Against a bridge without that route, or before any shard
+has published, it falls back to the computed windows above. **Server ranking** —
 the decision view, sorted by kills per day, with the stall count and a sample
 column; anything under `BOSS_MIN_KILLS_FOR_TREND` (5) logged kills is greyed
 out and labelled, because a 1-kill server otherwise tops the table. `dps` is

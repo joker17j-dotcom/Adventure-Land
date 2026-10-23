@@ -5094,6 +5094,14 @@ probes are listed at the end as still-open.
   ARRAY the creator's test pins and the OBJECT the live read described, since
   neither was measured as the wire format. Needs a bridge RESTART to take
   effect. `Tests/bridge/test_schedule.py`, five mutations named.
+  **THE SCHEDULE TAB IN `Codex/boss_timers.html` READS IT, 2026-10-23, IN THE
+  OPERATOR'S CHOSEN LAYOUT**: a hybrid of a timeline and a grid, one row per
+  start time and one column per event starting then, rank beside each name,
+  servers under it, an event filter remembered in the browser. Its rank table
+  is a COPY of `BOSS_RANK` because the page cannot load a CODE slot, and
+  `Tests/suite_bosstimers.js` fails if the two drift - edit both together. It
+  drops an occurrence whose window has closed, because the bridge keeps an hour
+  of history so that a running event stays listed.
 - **STILL OPEN - NOTHING, AND THE ITEM BELOW IS KEPT AS THE INSTANCE.** Which
   `--boss-source` the bridge is running: `server_info` carries the schedule and `aldata` fetches
   `monsters/<types>` with no schedule in it, so the bridge can collect this in

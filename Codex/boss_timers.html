@@ -58,6 +58,21 @@
   .empty { color:var(--dim); padding:24px 10px; }
   code { color:var(--hot); }
   b.hi { color:var(--txt); }
+  /* Schedule: one row per start time, one cell per event at that time. */
+  .filters { display:flex; gap:4px; flex-wrap:wrap; margin:0 0 10px; }
+  .fchip { padding:2px 8px; border:1px solid var(--line); border-radius:3px; font-size:11px;
+           cursor:pointer; background:#131922; user-select:none; }
+  .fchip.off { opacity:.35; text-decoration:line-through; }
+  .ev { font-weight:600; } .rk { font-size:11px; color:var(--dim); margin-left:4px; }
+  .ev.r1, .ev.r2 { color:var(--dead); } .ev.r3 { color:var(--warn); }
+  .ev.r4 { color:var(--hot); } .ev.r5, .ev.r6 { color:var(--accent); } .ev.r7 { color:var(--dim); }
+  td.evcell { min-width:150px; border-left:1px solid #1c2531; vertical-align:top; }
+  td.evcell .evhead { margin-bottom:3px; }
+  .chip { display:inline-block; padding:0 5px; margin:0 3px 2px 0; border:1px solid var(--line);
+          border-radius:3px; font-size:11px; color:var(--dim); }
+  .chip b { color:var(--txt); font-weight:600; }
+  tr.daysep td { color:var(--accent); font-size:11px; padding-top:12px; border-bottom:1px solid var(--line); }
+  tr.liverow td { background:#16201a; }
 </style>
 </head>
 <body>
@@ -70,6 +85,10 @@
     <button class="tab" data-v="rank">Server ranking</button>
   </div>
   <select id="type" hidden></select>
+  <select id="hours" hidden>
+    <option value="24" selected>next 24h</option><option value="48">next 48h</option>
+    <option value="168">next 7 days</option>
+  </select>
   <span class="grow"></span>
   <span id="status">connecting…</span>
 </header>
@@ -80,6 +99,9 @@
 const BASE = location.protocol.startsWith("http") ? "" : "http://127.0.0.1:8787";
 const TZ = "America/New_York";
 let VIEW = "now", TYPE = "mrgreen", BOSSES = null, HIST = null, SCHED = null, ERR = null;
+/* /schedule_live is fetched on its own so an older bridge without the route
+   still renders every other tab; LIVE_ERR then selects the legacy view. */
+let LIVE = null, LIVE_ERR = null, HOURS = 24;
 
 const fClock = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, hour:"numeric", minute:"2-digit", hour12:true });
@@ -87,6 +109,8 @@ const fStamp = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, month:"short", day:"numeric", hour:"numeric", minute:"2-digit", hour12:true });
 const fDow = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, weekday:"short", hour:"numeric", minute:"2-digit", hour12:true });
+const fDay = new Intl.DateTimeFormat("en-US",
+  { timeZone: TZ, weekday:"short", month:"short", day:"numeric" });
 const tzName = new Intl.DateTimeFormat("en-US",
   { timeZone: TZ, timeZoneName:"short" }).formatToParts(new Date())
   .find(p => p.type === "timeZoneName").value;
@@ -115,6 +139,8 @@ async function refresh() {
       grab("/bosses"), grab("/boss_history"), grab("/schedule?hours=48")]);
     BOSSES = b; HIST = h; SCHED = sc; ERR = null;
   } catch (x) { ERR = x.message; }
+  try { LIVE = await grab("/schedule_live?hours=" + HOURS); LIVE_ERR = null; }
+  catch (x) { LIVE = null; LIVE_ERR = x.message; }
   syncTypes(); paint();
 }
 
@@ -126,6 +152,7 @@ function allTypes() {
 }
 function syncTypes() {
   const sel = document.getElementById("type"), types = allTypes();
+  document.getElementById("hours").hidden = VIEW !== "sched";
   sel.hidden = (VIEW === "now") || (VIEW === "sched") || !types.length;
   if (sel.hidden) return;
   if (!types.includes(TYPE)) TYPE = types[0];
@@ -225,7 +252,144 @@ function timersView() {
 }
 
 /* -------------------------------------------------------------- schedule */
+/* A COPY OF bossRank()'s table in Party/Ranger.js, because this page cannot
+   load a CODE slot. Tests/suite_bosstimers.js fails if the two drift, so edit
+   both together. Colour and left-to-right order within a row follow it. */
+const SCHED_RANK = {
+  dragold: 1,
+  franky: 2,
+  crabxx: 3, wabbit: 3, goobrawl: 3,
+  horseman: 4, graveyard: 4,
+  mrgreen: 5,
+  snowman: 6, grinch: 6, mrpumpkin: 6,
+};
+const SCHED_RANK_DEFAULT = 7;
+function schedRank(ev) {
+  const r = SCHED_RANK[ev];
+  return typeof r === "number" ? r : SCHED_RANK_DEFAULT;
+}
+/* Shards sort I, II, III ... then PVP, not alphabetically (IV before V). */
+const SCHED_SHARD_ORDER = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "PVP"];
+function schedShardKey(s) {
+  const i = SCHED_SHARD_ORDER.indexOf(s);
+  return i < 0 ? 100 : i;
+}
+/* Region -> shards that PUBLISHED a lineup. "all" on a chip means all of
+   these, so a shard the bridge cannot reach shrinks the denominator rather
+   than turning every "all" into a list; the header counts reporting shards. */
+function schedRegionShards(servers) {
+  const out = {};
+  for (const key of Object.keys(servers || {})) {
+    const sp = key.indexOf(" ");
+    const region = sp < 0 ? key : key.slice(0, sp), shard = sp < 0 ? "" : key.slice(sp + 1);
+    (out[region] = out[region] || []).push(shard);
+  }
+  for (const r of Object.keys(out)) out[r].sort((a, b) => schedShardKey(a) - schedShardKey(b) || a.localeCompare(b));
+  return out;
+}
+/* The occurrences as rows: ONE ROW PER START TIME, one cell per event
+   starting then, cells by rank and then by name. `off` is the set of events
+   the filter hides; a row left with no cells is dropped. An occurrence is
+   live while now is inside [at, at + window); a null window (an event the
+   bridge has no length for) counts as live only through its start minute,
+   and an occurrence whose window has closed is dropped. */
+function schedRows(occ, servers, nowMs, off) {
+  const regionShards = schedRegionShards(servers);
+  const byAt = new Map();
+  for (const o of occ || []) {
+    if (off && off.has(o.event)) continue;
+    /* The bridge keeps an hour of history so a running event stays listed;
+       one already over has nothing left to show here. */
+    if (nowMs >= o.at_ms + (o.window_sec || 60) * 1000) continue;
+    if (!byAt.has(o.at_ms)) byAt.set(o.at_ms, new Map());
+    const evs = byAt.get(o.at_ms);
+    if (!evs.has(o.event)) evs.set(o.event, { event: o.event, rank: schedRank(o.event), window_sec: o.window_sec, list: [] });
+    evs.get(o.event).list.push(o);
+  }
+  const rows = [];
+  for (const [at, evs] of [...byAt.entries()].sort((a, b) => a[0] - b[0])) {
+    const cells = [...evs.values()].sort((a, b) => a.rank - b.rank || a.event.localeCompare(b.event));
+    for (const c of cells) {
+      const by = {};
+      for (const o of c.list) {
+        const sp = o.server.indexOf(" ");
+        const region = sp < 0 ? o.server : o.server.slice(0, sp), shard = sp < 0 ? "" : o.server.slice(sp + 1);
+        (by[region] = by[region] || []).push(shard);
+      }
+      c.regions = Object.keys(by).sort().map((region) => {
+        const shards = by[region].sort((a, b) => schedShardKey(a) - schedShardKey(b) || a.localeCompare(b));
+        const known = regionShards[region] || [];
+        return { region, shards, all: known.length > 0 && known.every((s) => shards.includes(s)) };
+      });
+      const endMs = at + (c.window_sec || 60) * 1000;
+      c.live = nowMs >= at && nowMs < endMs;
+      c.left_sec = c.live ? Math.round((endMs - nowMs) / 1000) : null;
+      delete c.list;
+    }
+    rows.push({ at_ms: at, cells });
+  }
+  return rows;
+}
+/* Every event in the payload, by rank, for the filter row. Hidden events are
+   included so they can be switched back on. */
+function schedEvents(occ, off) {
+  const set = new Set((occ || []).map((o) => o.event));
+  for (const e of off || []) set.add(e);
+  return [...set].sort((a, b) => schedRank(a) - schedRank(b) || a.localeCompare(b));
+}
+
+/* The filter survives a reload. Browser storage can be absent or throw, so
+   every touch is guarded and a failure just means the filter starts empty. */
+const SCHED_OFF_KEY = "boss_timers_sched_off";
+let SCHED_OFF = new Set();
+try { SCHED_OFF = new Set(JSON.parse(localStorage.getItem(SCHED_OFF_KEY) || "[]")); } catch (x) {}
+function schedToggle(ev) {
+  SCHED_OFF.has(ev) ? SCHED_OFF.delete(ev) : SCHED_OFF.add(ev);
+  try { localStorage.setItem(SCHED_OFF_KEY, JSON.stringify([...SCHED_OFF])); } catch (x) {}
+  paint();
+}
+
 function schedView() {
+  const srv = LIVE?.servers || {};
+  if (LIVE_ERR || !Object.keys(srv).length) {
+    const why = LIVE_ERR
+      ? `This bridge has no <code>/schedule_live</code> (${esc(LIVE_ERR)}) - restart it on the current <code>market_bridge.py</code>.`
+      : `The bridge has not received a published lineup from any shard yet. It arrives with each shard's
+         <code>server_info</code>, so it fills within a minute of a restart unless the bridge is running
+         <code>--boss-source aldata</code>, which carries no schedule.`;
+    return `<p class="note warn">${why} Showing the computed windows instead.</p>` + legacySchedView();
+  }
+  const nowMs = Date.now(), occ = LIVE.occurrences || [];
+  const rows = schedRows(occ, srv, nowMs, SCHED_OFF);
+  const evs = schedEvents(occ, SCHED_OFF);
+  const ages = Object.values(srv).map((s) => s.age_sec).filter((a) => a != null);
+  const oldest = ages.length ? Math.max(...ages) : null;
+  const evName = (e) => `<span class="ev r${schedRank(e)}">${esc(e)}</span><span class="rk">${schedRank(e)}</span>`;
+  const filters = evs.map((e) =>
+    `<span class="fchip${SCHED_OFF.has(e) ? " off" : ""}" data-ev="${esc(e)}">${evName(e)}</span>`).join("");
+  const cols = Math.max(1, ...rows.map((r) => r.cells.length));
+  let body = "", lastDay = "";
+  for (const r of rows) {
+    const day = fDay.format(new Date(r.at_ms));
+    if (day !== lastDay) { body += `<tr class="daysep"><td colspan="${cols + 2}">${esc(day)}</td></tr>`; lastDay = day; }
+    const live = r.cells.filter((c) => c.live);
+    const when = live.length
+      ? `<span class="up">live, ${dur(Math.max(...live.map((c) => c.left_sec)))} left</span>`
+      : `in ${dur((r.at_ms - nowMs) / 1000)}`;
+    let cells = r.cells.map((c) => `<td class="evcell"><div class="evhead">${evName(c.event)}</div>${
+      c.regions.map((g) => `<span class="chip"><b>${esc(g.region)}</b> ${g.all ? "all" : esc(g.shards.join(" "))}</span>`).join("")}</td>`).join("");
+    for (let i = r.cells.length; i < cols; i++) cells += `<td class="evcell"></td>`;
+    body += `<tr class="${live.length ? "liverow" : ""}"><td class="num">${clock(r.at_ms)}</td><td class="dim">${when}</td>${cells}</tr>`;
+  }
+  return `<p class="note">The game's own published lineup, all times ${tzName}. One row per start time; events
+    starting together sit side by side, ordered by rank (the number beside each name). Click an event to hide or
+    show it. ${Object.keys(srv).length} shards reporting${oldest != null ? `, oldest copy ${dur(oldest)} old` : ""}.</p>
+  <div class="filters">${filters}</div>
+  ${rows.length ? `<table><thead><tr><th class="num">Start</th><th>When</th>${"<th>Event</th>".repeat(cols)}</tr></thead>
+  <tbody>${body}</tbody></table>` : `<p class="empty">Nothing in this window${SCHED_OFF.size ? " with the current filter" : ""}.</p>`}`;
+}
+
+function legacySchedView() {
   const srv = SCHED?.servers || [];
   if (!srv.length) return `<p class="empty">No servers known yet.</p>`;
   const off = Object.entries(SCHED.region_offset)
@@ -347,6 +511,12 @@ document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
   VIEW = b.dataset.v; syncTypes(); paint();
 });
 document.getElementById("type").onchange = e => { TYPE = e.target.value; paint(); };
+document.getElementById("hours").onchange = e => { HOURS = Number(e.target.value) || 24; refresh(); };
+/* Delegated, because the view is re-rendered every second. */
+document.getElementById("view").onclick = e => {
+  const f = e.target.closest(".fchip");
+  if (f && VIEW === "sched") schedToggle(f.dataset.ev);
+};
 refresh();
 setInterval(refresh, 15000);
 /* Re-render between fetches so countdowns tick rather than stepping 15s. */
