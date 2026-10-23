@@ -5139,6 +5139,41 @@ for it in any script before Ranger v121 / Merchant v115.
   follows it. One COMBAT character knocks on the way to a graveyard trip. The
   costume swap is to be tested live by the browser session BEFORE the route is
   built, so the design starts from the answer.
+- **THE SWAP AND THE KNOCK, MEASURED LIVE 2026-10-23 BY THE BROWSER SESSION**
+  (no knocks spent; server reads at upstream `16881a27`). This SUPERSEDES the
+  two open questions in the bullet below, which are kept as the instance.
+  **SWAP WITH `equip(idx)`, NEVER `unequip`.** One call swaps both directions:
+  the worn helmet lands in the costume's own bag index, NO free slot needed,
+  35-37ms round trip, `character.slots` correct in the same tick. `unequip`
+  refuses `no_space` on a full bag. Each equip adds 120ms to `penalty_cd`, so
+  about 120ms of skill delay per swap on a combat knocker. The handler's only
+  gate is `stunned` and only for consumables - nothing for hexed, spooked,
+  combat, moving or rip - but it sets `player.c = {}`, which CANCELS A CHANNEL
+  IN PROGRESS, town teleport included. Never swap during one.
+  **THE COSTUME MUST STILL BE ON WHEN THE KNOCK SETTLES**, not merely when it is
+  emitted: `trick_or_treat_settle` reads `player.slots.helmet` after two awaited
+  Mongo updates. Swap back only after the knock's response.
+  **THE GHOST IS A MONSTER, NOT A CONDITION** - `G.conditions.ghost` does not
+  exist. It spawns as type `ghost` in a box just below the door, `special`,
+  hp 12,000, 200 magical, range 120, speed 12, aggro 0.05, NOT cooperative,
+  with an achievements entry, and floats away after 120s. It touches nothing on
+  the knocker. 7.5% of costumed knocks. `spooked` is a BUFF, speed +40 for 3s.
+  **`doors_left` IS A HINT, `trickortreat_limit` IS THE AUTHORITY.** Measured
+  shape `{doors: [], doors_left: 7, stamps: 0}` on all four. A sibling does
+  NOT drop after one knock BY DESIGN - `min(7 - own, 14 - account)` stays 7
+  until the account has spent 8 - and cross-shard it can OVERSTATE, because
+  account counts are cached per server process while the cap is enforced in
+  Mongo at knock time. So a route reads `doors_left` to decide whether to set
+  off and stops on the `trickortreat_limit` rejection.
+  **OPENGIFTS SELLS SPARE COSTUMES.** Its `autoSell` is a KEEP COUNT listing
+  phelmet:0 and gphelmet:0, and `sellChaff` sells every UNLOCKED copy on a
+  stall; it took the browser session's first test subject between two reads.
+  Locked items are skipped. And supply is not the constraint - a candy1 run
+  dropped 7 phelmet in about 105 boxes - so the route needs to TAKE a spare
+  (or lock it) before OpenGifts' next 25-box pass, not protect one.
+  **STILL UNMEASURED**: one live knock confirming the knocker going 7 -> 6 and
+  a same-shard sibling staying at 7; costume <-> ORDINARY helmet swap (same
+  server path, no ordinary helmet was in any bag).
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
