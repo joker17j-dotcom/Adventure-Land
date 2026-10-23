@@ -21,6 +21,24 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v123
+
+**THE GIVE-UP REASON IS PERSISTED, BECAUSE A HOP TRIP ALWAYS ENDS IN THE
+RELOAD THAT DESTROYED IT.** `bossEnd` stored `lastGiveUp` with a comment saying
+it is "kept" for the next window - kept in memory only, while the blob on disk
+carried `{trip, cooldown, giveUps}`. A hop trip ends in the hop home, which is
+a page reload, so for every trip bossHop makes the reason was gone before
+anyone could read it. Measured by the browser session 2026-10-23: twenty
+minutes on ASIA II, give-up at 16:21:05Z, franky despawned untouched at 100%,
+and the why had to be reconstructed from a cooldown timestamp. One field on
+the same save path, restored in the load block, now carrying `startedAt` and
+`deaths` too so the duration and the cause are a read and not an inference.
+Ranger-only: Priest and Mage never had `lastGiveUp`.
+**WHAT THIS DOES NOT ANSWER: why twenty minutes on shard produced zero
+damage.** franky stands on level2w and the party lands on spookytown; whether
+`bossWalkTarget` resolved or the walk stalled is not recorded by anything,
+and the next trip will say what the give-up was, not what happened before it.
+
 ## v122
 
 **A CLEAR IS NOT AN ABSENCE, AND v120's MIGRATION TURNED `mhForget()` INTO A

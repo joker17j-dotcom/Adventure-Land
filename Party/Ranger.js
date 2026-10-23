@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v122
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v123
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2885,7 +2885,7 @@ const bossState = {
 	   is over-restrictive for at most one cooldown and never permissive. */
 	cooldown: {},       // key -> ms until we will consider it again
 	giveUps: {},        // name -> [ms] shard-level give-ups, pruned to the window
-	lastGiveUp: null,   // { name, shard, why, at } - WHY, for the next window
+	lastGiveUp: null,   // { name, shard, why, at, startedAt, deaths } - WHY, for the next window; PERSISTED
 	fromLeader: null,   // { name, at } - the leader's current call
 	forced: null,       // { name, at } - bossJoin() from the console
 	lastNote: null,
@@ -2899,11 +2899,16 @@ try {
 		bossState.trip = bossSaved.trip || null;
 		bossState.cooldown = bossSaved.cooldown || {};
 		bossState.giveUps = bossSaved.giveUps || {};
+		/* A hop trip ALWAYS ends in a reload - the hop home - so a reason held in
+		   memory alone was destroyed before anyone could read it. Measured
+		   2026-10-23: twenty minutes on ASIA II, give-up, franky untouched, and
+		   the only record on disk was a cooldown timestamp. */
+		bossState.lastGiveUp = bossSaved.lastGiveUp || null;
 	}
 } catch (e) { }
 function bossSave() {
 	try { scopedSet(BOSS_KEY, { trip: bossState.trip, cooldown: bossState.cooldown,
-		giveUps: bossState.giveUps }); }
+		giveUps: bossState.giveUps, lastGiveUp: bossState.lastGiveUp }); }
 	catch (e) { bossLog('could not persist the trip - a reload will restart its clock', 'orange'); }
 }
 function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch (e) { } console.log('[boss] ' + m); }
@@ -3365,7 +3370,8 @@ function bossEnd(why) {
 		/* WHY, kept because "we could not kill it" and "we arrived too late"
 		   want different answers next window, and the reason string is the only
 		   place that distinction exists. */
-		bossState.lastGiveUp = { name: t.name, shard: sh, why: why, at: now };
+		bossState.lastGiveUp = { name: t.name, shard: sh, why: why, at: now,
+			startedAt: t.startedAt || null, deaths: t.deaths || 0 };
 		/* THE TYPE-LEVEL BACKSTOP. Pruned to one event window so give-ups from
 		   a previous window never add up. Its duration runs to the generation
 		   end only where that end is TYPE-WIDE, which is event bosses alone -

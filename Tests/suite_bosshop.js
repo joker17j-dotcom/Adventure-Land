@@ -1338,6 +1338,31 @@ module.exports = [
 		w.bossHop.scanResults[0].live, true);
 } },
 
+{ name: 'the give-up REASON survives the reload that every hop trip ends in', fn(t) {
+	/* bossState.lastGiveUp was memory-only while the blob on disk carried
+	   {trip, cooldown, giveUps}; a hop trip ends in the hop home, which is a
+	   page reload, so for every trip bossHop makes the reason was destroyed
+	   before it could be read. 2026-10-23: twenty minutes on ASIA II, franky
+	   untouched at 100%, and the why reconstructed from a cooldown timestamp. */
+	const body = require('fs').readFileSync(RANGER, 'utf8');
+	t.eq('the load block restores it',
+		/bossState\.lastGiveUp = bossSaved\.lastGiveUp \|\| null/.test(body), true);
+	const w = world({ character: { name: 'Dexon' } });
+	lift(w, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
+		'bossState', 'bossSave']);
+	w.BOSS_KEY = 'boss_trip';
+	w.bossLog = () => { };
+	w.bossState.lastGiveUp = { name: 'franky', shard: 'ASIAII', why: 'trip cap', at: 1, startedAt: 0, deaths: 0 };
+	w.bossSave();
+	const saved = w.store['boss_trip_Dexon'] || {};
+	t.eq('PRECONDITION: the blob was written under the scoped key', !!saved.cooldown, true);
+	t.eq('and it carries the reason', (saved.lastGiveUp || {}).why, 'trip cap');
+	t.eq('with the trip start, so the duration is a read rather than a reconstruction',
+		'startedAt' in (saved.lastGiveUp || {}), true);
+	t.eq('bossEnd records startedAt and deaths on it',
+		/lastGiveUp = \{ name: t\.name, shard: sh, why: why, at: now,\s*startedAt: t\.startedAt/.test(body), true);
+} },
+
 { name: 'the cooldown is keyed (type, shard), which is what lets the party fight on arrival', fn(t) {
 	const CD = 30 * 60 * 1000;
 	function w1(shard) {
