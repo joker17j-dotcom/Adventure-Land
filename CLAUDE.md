@@ -4577,6 +4577,15 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   or offline bag arrive as MAIL from "Dorr" that only the named character can
   take, and muling never sees mail - so the three combat scripts claim it
   (`claimCaveMail`, 20s after load and every 30 minutes).
+- **`api_call` CANNOT READ ANY API THAT ANSWERS IN `infs`, AND `pull_mail` IS
+  ONE.** The game's `api_call` deletes `infs` before resolving and passes them
+  to `handle_information()`, which the CODE frame does not have. So the cave
+  mail claimer read nothing and threw "handle_information is not defined"
+  20s after every load until Ranger v144 / Priest v79 / Mage v102, which POST to
+  `/api/pull_mail` directly and read `infs`, the way the merchant reads
+  `pull_merchants`. `load_bank` answers in top-level fields and is unaffected.
+  **The suite passed throughout because its fixture returned a shape the game
+  never produces.** Check the server's response shape before stubbing it.
 - **`Party/Ranger.js` HAS NO BANK PLUMBING AT ALL - this is new capability, not
   config.** Measured: zero `bank_store`, zero `bank_retrieve`, no `CONFIG.bank`,
   no bank map. Every "bank" string in that file is monster-hunt token language

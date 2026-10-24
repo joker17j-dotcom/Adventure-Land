@@ -463,14 +463,26 @@ module.exports = [
 	t.ok('the merchant does not carry it - it is never a cave member',
 		block('Party/Merchant.js') === null);
 
-	const mk = (esize, mail) => {
+	/* THE FIXTURE IS THE SERVER'S SHAPE, NOT A CONVENIENT ONE. pull_mail_api
+	   (upstream api.js) answers {success: true} and pushes the letters into
+	   `infs` as {type: 'mail', mail} beside {type: 'unread'}. Until v144 this
+	   stub had api_call return {type: 'mail', mail} - a shape the game never
+	   produces, because api_call deletes `infs` before resolving - so the
+	   suite passed while every live read came back empty and threw. */
+	const mk = (esize, mail, over) => {
 		const w = world({ CAVE_MAIL_FROM: 'Dorr' });
 		w.character = { name: 'MageofOz', esize: esize };
 		w.sent = []; w.logs = [];
-		w.parent = { socket: { emit: (k, d) => w.sent.push([k, d.id]) } };
+		w.parent = { socket: { emit: (k, d) => w.sent.push([k, d.id]) },
+			location: { origin: 'https://adventure.land' } };
 		w.game_log = (m) => w.logs.push(m);
-		w.api_call = async (name) => { w.asked = name; return { type: 'mail', mail: mail }; };
-		lift(w, 'Party/Mage.js', ['claimCaveMail']);
+		w.api_call = async () => { w.viaApiCall = true; return { success: true }; };
+		const body = (over && over.body) || { success: true,
+			infs: (mail ? [{ type: 'mail', mail: mail, more: false }] : []).concat([{ type: 'unread', count: 0 }]) };
+		w.fetch = async (url, o) => { w.asked = url; w.opts = o;
+			return { ok: !(over && over.status), status: (over && over.status) || 200, json: async () => body }; };
+		w.AbortController = function () { this.signal = {}; this.abort = () => {}; };
+		lift(w, 'Party/Mage.js', ['caveMailList', 'claimCaveMail']);
 		return w;
 	};
 	const MAIL = [
@@ -483,7 +495,9 @@ module.exports = [
 	];
 	let w = mk(10, MAIL);
 	const n = await w.claimCaveMail();
-	t.eq('it asks pull_mail', w.asked, 'pull_mail');
+	t.eq('it reads /api/pull_mail on the page origin', w.asked, 'https://adventure.land/api/pull_mail');
+	t.eq('as a POST with an empty body and the cookie', [w.opts.method, w.opts.body, w.opts.credentials].join('|'), 'POST||same-origin');
+	t.eq('and never through api_call, which strips infs', w.viaApiCall, undefined);
 	t.eq('it takes the two untaken Dorr item letters addressed to it', w.sent.map((x) => x[1]).join(), 'ML_cave:1,ML_cave:5');
 	t.eq('with mail_take_item', w.sent.every((x) => x[0] === 'mail_take_item'), true);
 	t.eq('and reports the count', n, 2);
@@ -492,7 +506,20 @@ module.exports = [
 	t.eq('a full bag takes nothing', w.sent.length, 0);
 	t.ok('and says why', w.logs.some((m) => /bag full/.test(m)));
 	w = mk(10, null);
-	t.eq('no list is a logged null, not a silent zero', await w.claimCaveMail(), null);
+	t.eq('no mail block is a logged null, not a silent zero', await w.claimCaveMail(), null);
+	t.ok('and says so', w.logs.some((m) => /without a mail block/.test(m)));
+	w = mk(10, []);
+	t.eq('an empty mailbox is zero', await w.claimCaveMail(), 0);
+	t.eq('and logs nothing', w.logs.length, 0);
+	w = mk(10, MAIL, { status: 502 });
+	t.eq('an HTTP failure is a logged null', await w.claimCaveMail(), null);
+	t.ok('naming the status', w.logs.some((m) => /pull_mail failed - HTTP 502/.test(m)));
+	w = mk(10, MAIL, { body: { failed: true, reason: 'not_logged_in' } });
+	t.eq('a refused call is a logged null', await w.claimCaveMail(), null);
+	t.ok('naming the reason', w.logs.some((m) => /not_logged_in/.test(m)));
+	const src = block('Party/Mage.js');
+	t.eq('no api_call(\'pull_mail\') call is left in the block',
+		/api_call\(\s*'pull_mail'/.test(src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')), false);
 } },
 
 ];

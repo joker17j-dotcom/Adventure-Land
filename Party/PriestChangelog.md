@@ -21,6 +21,26 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v79
+
+**THE CAVE MAIL CLAIMER NEVER SAW A LETTER, AND IT THREW INTO THE GAME LOG ON
+EVERY READ.** Found by the browser session after the first automated cave run,
+2026-10-24: "pull_mail returned no list" on all three, and "Uncaught
+ReferenceError: handle_information is not defined, Line 22, Column 14" right
+after each hand-back. Read from upstream `16881a2`: `pull_mail_api` returns
+`{success: true}` and puts the letters in `infs` as `{type: 'mail', mail}`. The
+game's `api_call` deletes `infs` before resolving and then hands them to
+`handle_information()`, which exists in the top window and not in the CODE
+frame. So the claimer read an object with no `mail`, and the frame's copy of
+`api_call` threw. Column 14 is where `handle_information` sits after three tabs
+and `if (infs) `; the frame's copy is served from `common/js/common_functions.js`,
+which is not in the upstream repo, so line 22 is inferred rather than read.
+`caveMailList()` now POSTs to `/api/pull_mail` directly, the way the merchant
+reads `pull_merchants`, and takes the list out of `infs`. An empty mailbox is
+now a quiet zero. The test fixture had `api_call` returning `{type: 'mail',
+mail}`, a shape the game never produces, which is how the suite passed while
+every live read failed; it now serves the server's real shape.
+
 ## v78
 
 **A BOSS TRIP IS NOT A FARM VERDICT.** The browser session counted 46

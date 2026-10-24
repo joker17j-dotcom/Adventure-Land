@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v78
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v79
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6029,16 +6029,45 @@ if (parent.$) {
    from "Dorr", subject "From the cave" - and only the character named on the
    letter can take it (`mail_take_item` refuses wrong_character). Muling never
    sees mail, so without this the item sits in the mailbox until someone opens
-   it by hand. Read with api_call('pull_mail'), which lists the newest 40; each
-   item letter carries `to`, `fro`, `id` and `taken`. Runs 20s after load and
-   every 30 minutes, and stops for the pass when the bag is full. */
+   it by hand. The newest 40 letters come back from /api/pull_mail; each item
+   letter carries `to`, `fro`, `id` and `taken`. Runs 20s after load and every
+   30 minutes, and stops for the pass when the bag is full.
+
+   READ STRAIGHT FROM /api/pull_mail, NEVER THROUGH api_call. The server puts
+   the letters INSIDE `infs` (`{success, infs: [{type: 'mail', mail}, ...]}`),
+   and api_call deletes `infs` before it resolves and then passes them to
+   handle_information(), a top-window function the CODE frame does not have.
+   So every api_call read answered "no list" and threw "handle_information is
+   not defined" into the game log, on all three, 20s after each load. Same POST
+   as the merchant's pull_merchants read: empty body, cookie auth, the method
+   in the path only. */
 const CAVE_MAIL_FROM = 'Dorr';
+async function caveMailList() {
+	const o = { method: 'POST', cache: 'no-store', credentials: 'same-origin', body: '' };
+	let stop = null;
+	if (typeof AbortController === 'function') {
+		const ac = new AbortController();
+		o.signal = ac.signal;
+		stop = setTimeout(function () { try { ac.abort(); } catch (e) { } }, 10000);
+	}
+	let payload = null;
+	try {
+		const r = await fetch(parent.location.origin + '/api/pull_mail', o);
+		if (!r.ok) throw new Error('HTTP ' + r.status);
+		payload = await r.json();
+	} finally { if (stop) clearTimeout(stop); }
+	if (payload && payload.failed) throw new Error(payload.reason || 'failed');
+	const infs = (payload && Array.isArray(payload.infs)) ? payload.infs : [];
+	for (const inf of infs) {
+		if (inf && inf.type === 'mail' && Array.isArray(inf.mail)) return inf.mail;
+	}
+	return null;
+}
 async function claimCaveMail() {
-	let d;
-	try { d = await api_call('pull_mail', {}, { timeout: 10000 }); }
+	let list;
+	try { list = await caveMailList(); }
 	catch (e) { game_log('cave mail: pull_mail failed - ' + ((e && (e.reason || e.message)) || e), 'orange'); return null; }
-	const list = (d && d.mail) || (Array.isArray(d) && d[0] && d[0].mail) || null;
-	if (!list) { game_log('cave mail: pull_mail returned no list', 'orange'); return null; }
+	if (!list) { game_log('cave mail: pull_mail answered without a mail block', 'orange'); return null; }
 	let claimed = 0;
 	for (const m of list) {
 		if (!m || m.fro !== CAVE_MAIL_FROM || !m.item || m.taken || m.to !== character.name) continue;
