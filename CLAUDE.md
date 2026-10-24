@@ -3249,8 +3249,20 @@ Claude Code session stops after `browser_code_eval`.
 - **SEEN ONCE, NOT EXPLAINED: A HOP CAN LAND ON THE CHARACTER PICKER'S SERVER.**
   2026-10-23: a Meltymerch hop toward ASIA II sat on the picker for 40s+ with no
   character and no socket, then came up on EU II - the picker's selected
-  server, not the target. Whether the operator clicked is unknown. Recorded so
-  the next instance is recognised as a second sample, not a first.
+  server, not the target. **The operator did NOT click** - away from the
+  computer for hours - so it happened unattended.
+  **A LEAD FROM SOURCE, NOT A FINDING** (upstream `16881a27`):
+  `change_server()` is a bare `location.href = "/character/<name>/in/<region>/<server>/"`,
+  and that route runs `redirect_inactive_server()` in `adventure_functions.js`,
+  which sends a link to an INACTIVE server to its configured `redirect`, or to
+  `/` - the character picker - when none is set. That matches the 40s on the
+  picker. Which servers are inactive lives in deploy config (`options.servers`),
+  not the repo. `node/test/cloudflare_servers.test.js` marks EU IV and ASIA II
+  inactive, but as FIXTURE DATA, and both were measured live in October, so do
+  NOT read that test as a retirement. What then put him on EU II is not explained
+  by anything read. The merchant's scout targets come from `parent.X.servers`,
+  which `get_browser_servers` already filters of inactive entries; an arbitrage or
+  home-server target from bridge data has no such filter.
 - **Absence of a feature can mean a DIFFERENT SCRIPT, not an older build.**
   Same character, same probe: no Merchant symbol resolved because
   `Party/Merchant.js` was not loaded at all - Meltymerch was running what that
@@ -5273,6 +5285,10 @@ for it in any script before Ranger v121 / Merchant v115.
   on the merchant; `GEAR_PROGRESSION` is the combat characters' goal table), so
   a hand-worn costume stays on. A worn helmet is in `character.slots`, which no
   sell path reads, so OpenGifts' keep-count `autoSell` cannot reach it.
+- **OPERATOR'S APPROVAL 2026-10-23 FOR THE LIVE TEST**: buy one Ponty phelmet
+  and take manual control of one combat character to measure the swap and a
+  knock in one trip, AS LONG AS THE PARTY IS NOT AT A HALLOWEEN-ONLY BOSS
+  (horseman, graveyard).
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
