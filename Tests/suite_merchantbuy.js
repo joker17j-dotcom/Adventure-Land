@@ -286,10 +286,10 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 			sleep: async () => {},
 			game_log: () => {},
 			arbHeldNames: () => over.held || {},
-			PARTY_CLASSES: [],
-			GEAR_PROGRESSION: {},
+			PARTY_CLASSES: over.plan ? ['priest'] : [],
+			GEAR_PROGRESSION: over.plan || {},
 		});
-		lift(w, MERCHANT, ['COMPOUND_RETRIEVE_HEADROOM', 'craftInputCap',
+		lift(w, MERCHANT, ['COMPOUND_RETRIEVE_HEADROOM', 'craftInputCap', 'isKnownGearItem',
 			'compoundWouldOvershootCap', 'isCompoundableItem', 'retrieveCompoundTriples',
 			'ceilingCfg', 'ceilingLog', 'ceilingNoteBank', 'ceilingCount', 'ceilingState']);
 		return w;
@@ -376,6 +376,20 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 		await (bw({ pack0: [{ name: 'intbelt', level: 1 }, { name: 'intbelt', level: 1 },
 			{ name: 'intbelt', level: 1 }] })).retrieveCompoundTriples(), 3);
 
+	/* --- a gear-plan item stays in the bank (v129) ----------------------- */
+	const plan = { priest: [null, { belt: { item: 'intbelt', level: 4, method: 'compound' } }, null] };
+	const ints = [{ name: 'intbelt', level: 0 }, { name: 'intbelt', level: 0 }, { name: 'intbelt', level: 0 }];
+	pulled.length = 0;
+	t.eq('PRECONDITION: with no plan the same triple is pulled',
+		await (bw({ pack0: ints.slice() })).retrieveCompoundTriples(), 3);
+	pulled.length = 0;
+	t.eq('in the plan, the triple is left in the bank',
+		await (bw({ pack0: ints.slice(), plan: plan })).retrieveCompoundTriples(), 0);
+	t.eq('and nothing was retrieved', pulled.length, 0);
+	t.eq('a material beside it is still pulled',
+		await (bw({ pack0: ints.slice().concat(belts(3, 0)), plan: plan })).retrieveCompoundTriples(), 3);
+	t.ok('the sweep asks isKnownGearItem', /if \(isKnownGearItem\(it\.name\)\) continue;/.test(body));
+
 	/* --- it rides a trip, hooked after the deposit sweep ------------------ */
 	t.ok('travelToBank calls it', /try \{ await retrieveCompoundTriples\(\); \}/.test(src));
 	t.ok('and catches it, because travelToBank is awaited in boolean position',
@@ -425,12 +439,12 @@ function ceilWorld(over) {
 		pontyBankQty: async () => null, pontyStackCap: () => null,
 		pontyBuyGate: () => ({ ok: true }), pontyRemember: () => {}, mShardKey: () => 'EUI',
 		pontyBuyOne: async (r) => { calls.bought.push(r.name + '+' + r.level); return { ok: true, spent: 1 }; },
-		PARTY_CLASSES: [], GEAR_PROGRESSION: {},
+		PARTY_CLASSES: over.plan ? ['priest'] : [], GEAR_PROGRESSION: over.plan || {},
 		calls,
 	});
 	lift(w, MERCHANT, ['ceilingCfg', 'ceilingLog', 'ceilingNoteBank', 'ceilingRefresh',
 		'ceilingCount', 'ceilingState', 'ceilingSellPass', 'ceilingBuyer', 'arbNetFromSale',
-		'pDist', 'pWhere', 'craftInputCap', 'compoundWouldOvershootCap', 'isCompoundableItem',
+		'pDist', 'pWhere', 'craftInputCap', 'compoundWouldOvershootCap', 'isCompoundableItem', 'isKnownGearItem',
 		'findBaseDuplicateGroup', 'pontyBuyPass']);
 	return w;
 }
@@ -508,6 +522,34 @@ module.exports.push(
 	t.ok('retrieveCompoundTriples counts from character.bank before planning',
 		/ceilingNoteBank\(character\.bank\);[\s\S]{0,200}const groups = new Map\(\);/.test(s));
 	t.ok('and skips a full item', /if \(ceilingState\(it\.name\)\.full\) continue;/.test(s));
+} },
+
+{ name: 'a gear-plan item is never auto-combined; a material still is (v129)', fn(t) {
+	/* Operator's ruling 2026-10-24: plan items go through attemptBestPlanStep()
+	   only, which counts what the copies are worth and hands over when an
+	   offering is due. The auto-combine prices scroll against chance alone, so
+	   it rolled a plan item's +0/+1 triples bare - sbelt at 90% then 70%. */
+	const plan = { priest: [null, { belt: { item: 'ringsj', level: 2, method: 'compound' } }, null] };
+	const rings = (lvl) => [0, 1, 2].map(() => ({ name: 'ringsj', level: lvl }));
+	let w = ceilWorld({ items: rings(0) });
+	const g0 = w.findBaseDuplicateGroup();
+	t.eq('PRECONDITION: with no plan the triple is a group', g0 && g0.name, 'ringsj');
+	w = ceilWorld({ items: rings(0), plan: plan });
+	t.eq('in the plan at +0 it is not', w.findBaseDuplicateGroup(), null);
+	w = ceilWorld({ items: rings(1), plan: plan });
+	t.eq('nor at +1', w.findBaseDuplicateGroup(), null);
+	w = ceilWorld({ items: rings(1).concat([belt(0), belt(0), belt(0)]), plan: plan });
+	const g = w.findBaseDuplicateGroup();
+	t.eq('the material beside it is still taken', g && g.name + '@' + g.level, 'dexbelt@0');
+	const met = { priest: [null, { belt: { item: 'ringsj', level: 1, method: 'compound' } }, null] };
+	w = ceilWorld({ items: rings(1), plan: met });
+	t.eq('a plan item past its goal is still the plan’s, not the auto-combine’s',
+		w.findBaseDuplicateGroup(), null);
+	const s = text();
+	const body = s.slice(s.indexOf('function findBaseDuplicateGroup'), s.indexOf('async function autoCombineOneBaseDuplicateGroup'));
+	t.ok('it asks isKnownGearItem', /if \(isKnownGearItem\(item\.name\)\) return;/.test(body));
+	t.ok('the plan path still finds its own compound groups',
+		/group = findCompoundGroup\(character\.items, c\.item\.name, level\);/.test(s));
 } },
 
 { name: 'ceiling: at 28 a +0 is sold - to a buying stand above the NPC, else the NPC', async fn(t) {

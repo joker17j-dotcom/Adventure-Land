@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v128
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v129
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -810,7 +810,7 @@ const CONFIG = {
 
 	   Enforced in BOTH compound paths, because they reach different levels:
 	     autoCombineOneBaseDuplicateGroup merges any 3 identical copies at level
-	       0 or 1, so it already tops out at +2 - but that ceiling is an accident
+	       0 or 1 of an item in NO gear plan, so it already tops out at +2 - but that ceiling is an accident
 	       of its level filter rather than a stated rule, so it is not relied on.
 	     attemptBestPlanStep compounds toward a GEAR_PROGRESSION goal. THIS is
 	       what produced the +3s. Nothing targets dexbelt today, so the guard
@@ -4794,6 +4794,10 @@ async function bankExchangeables() {
    than re-deriving them, which is also what makes it cover the NEXT craft input
    for free - nothing here names dexbelt.
 
+   GEAR-PLAN ITEMS STAY IN THE BANK. findBaseDuplicateGroup() refuses them -
+   they go through attemptBestPlanStep() only - so pulling a triple of one
+   would be exactly the refused retrieval above. Operator's ruling 2026-10-24.
+
    COMPLETE TRIPLES ONLY. Two of a kind cannot compound, so retrieving them
    moves slot pressure from the bank to the bag and buys nothing.
 
@@ -4834,6 +4838,7 @@ async function retrieveCompoundTriples() {
 			const lvl = Number(it.level) || 0;
 			if (lvl !== 0 && lvl !== 1) continue;
 			if (!isCompoundableItem(it.name)) continue;
+			if (isKnownGearItem(it.name)) continue;   // the plan's, never the auto-combine's
 			if (compoundWouldOvershootCap(it.name, lvl)) continue;
 			if (ceilingState(it.name).full) continue;   // -> CONFIG.craftInputCeilings
 			if (held[it.name]) continue;          // arbitrage owns this exit
@@ -5176,6 +5181,13 @@ function findBaseDuplicateGroup() {
 		if (!item || !item.name) return;
 		if (item.level !== 0 && item.level !== 1) return;
 		if (!isCompoundableItem(item.name)) return; // e.g. "coat" - meant to be upgraded individually, not merged 3-for-1
+		/* A gear-plan item is attemptBestPlanStep()'s alone. That path counts
+		   what the copies are worth and hands over when an offering is due;
+		   this one prices only scroll against chance, so it never buys an
+		   offering and would roll a valuable plan item bare. Materials - names
+		   in no plan, dexbelt among them - still merge here.
+		   -> MerchantComments.md#findBaseDuplicateGroup */
+		if (isKnownGearItem(item.name)) return;
 		/* A recipe wants this one at a fixed level, so merging past it spends
 		   the input instead of improving it. -> CONFIG.craftInputCaps */
 		if (compoundWouldOvershootCap(item.name, item.level)) return;

@@ -1,4 +1,18 @@
 
+## v129
+
+**GEAR-PLAN ITEMS ARE COMPOUNDED ONLY BY THE PLAN PATH**, operator's ruling
+2026-10-24: "Any items in the plan should only go through
+attemptBestPlanStep(). Materials like dexbelts for making +2 should not."
+`findBaseDuplicateGroup()` and `retrieveCompoundTriples()` now skip any name in
+`GEAR_PROGRESSION`. Until now the auto-combine took every plan item's +0 and +1
+triples first and rolled them with no offering, because its step ignores the
+item's value - sbelt at 90% and then 70%, three belts lost on each failure. The
+plan path weighs that value and hands over when an offering is due.
+**BANKED PLAN-ITEM COPIES ARE NO LONGER PULLED** for compounding; the sweep
+only ever fed the auto-combine. Materials are unchanged.
+-> MerchantComments.md#findBaseDuplicateGroup
+
 ## v128
 
 **THE MARKET MERGE LINE IS SAID ONCE EVERY 10 MINUTES** - 1,951 identical

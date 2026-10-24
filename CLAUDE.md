@@ -4561,8 +4561,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   v142, and `Tests/suite_bosshop.js` fails on any script that locates, buys or
   drinks an elixir by name.
 - **sbelt IS ON THE RANGER'S `SCARCE_ITEM_NAMES` (v142)**, operator 2026-10-24.
-  Whether three +0 copies are compounded automatically is the operator's call,
-  still pending.
+  Ruled the same day: no automatic sbelt compounding, the operator handles it.
+- **GEAR-PLAN ITEMS ARE COMPOUNDED ONLY BY `attemptBestPlanStep()` (Merchant
+  v129)** - operator's ruling 2026-10-24; materials such as dexbelt keep the
+  auto-combine. The auto-combine runs FIRST each visit and its step ignores the
+  item's value, so it never buys an offering: it was rolling plan items' +0/+1
+  triples bare, sbelt included, before the value-aware path could hand over.
+  `findBaseDuplicateGroup()` and the bank-triple sweep skip any name in
+  `GEAR_PROGRESSION`, so banked copies of a plan item are not pulled either.
 - **CAVE AMBER AND THE LOADED DIE ARE NEVER SOLD AND ALWAYS BANKED, AND THE DIE
   IS NEVER COMPOUNDED** - operator's rulings 2026-10-24 ("No compounding just
   bank"). Ranger v137 `SCARCE_ITEM_NAMES`; Merchant v126 `PROTECTED_ITEM_NAMES`,

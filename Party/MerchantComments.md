@@ -637,11 +637,33 @@ Walk to ONE place and buy everything from there.
 
 ## findBaseDuplicateGroup
 
-Finds the first group of 3+ identical (name, level) items at level 0/1,
-regardless of GEAR_PROGRESSION - junk from muling piles up fast and is
-worth consolidating on its own. Skips upgrade-only items (coat, pants,
-weapons, etc.) - compounding one of those either fails outright or
-silently blocks that item's real upgrade logic every tick.
+Finds the first group of 3+ identical (name, level) items at level 0/1 -
+junk from muling piles up fast and is worth consolidating on its own.
+Skips upgrade-only items (coat, pants, weapons, etc.) - compounding one of
+those either fails outright or silently blocks that item's real upgrade
+logic every tick.
+
+**IT SKIPS EVERY GEAR-PLAN ITEM, AND THAT IS THE OPERATOR'S RULING OF
+2026-10-24:** "Any items in the plan should only go through
+attemptBestPlanStep(). Materials like dexbelts for making +2 should not." This
+used to read "regardless of GEAR_PROGRESSION", and that was the hole. The
+auto-combine runs FIRST on every gear visit, and its step comes from
+`pickBestCompoundStep()`, which minimises scroll-plus-offering cost over
+chance and never sees the item's value - so the 27,420,000 offering is never
+the cheaper move and is never bought. The plan path's `pickBestValueStep()`
+counts the three copies being staked and stops with `wants_offering`, handing
+over, once an offering pays. For sbelt, a priest belt goal at a fallback value
+of 2,000,000,000, the two disagree completely: 90% at +0 -> +1 and 70% at
++1 -> +2, bare, where the plan path would have stopped and handed over. A plan
+item could only reach the value check when the auto-combine found nothing,
+and at +0 and +1 it always found something.
+
+"In the plan" is `isKnownGearItem()` - the name at ANY level of ANY tier of
+any party class - so an item whose goal is already met is still the plan's
+rather than falling back here. Materials are what remains: a name in no plan.
+`retrieveCompoundTriples()` applies the same test, because it exists to feed
+this function and a pulled triple this function refuses spends three slots
+for nothing.
 
 ## gearProgressionLoop
 
