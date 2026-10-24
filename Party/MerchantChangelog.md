@@ -1,4 +1,21 @@
 
+## v130
+
+**WITCH'S CIPHER INGREDIENTS STAY IN THE BAG UNTIL HALLOWEEN ENDS, AND DEXON
+HEARS HOW MANY THERE ARE**, operator's rulings 2026-10-24: "Nothing should go in
+the bank without first going through the merchant"; he keeps them on hand for
+the season and banks them only after.
+- `cipherHeldInBag()` gates all five `bank_store` sites: the exchangeable sweep,
+  the kept-material pass, both buy stashes and arbitrage's stranded-stock bank
+  (which now closes such a trade as `held_in_inventory`). The season end is
+  `S.event_ends.halloween`, with 2026-11-03T00:00Z as the fallback.
+- The four are now on `keepAndBank`, so once the season ends they ride the next
+  bank trip like any kept material.
+- `cipherStockTick()` sends Dexon the bag counts (`cipher_stock`) on every change
+  and at least every five minutes, in season only. Dexon farms against them
+  (Ranger v146) and treats a count he has not heard in fifteen minutes as
+  unknown, so a merchant running another script stops the farming.
+
 ## v129
 
 **GEAR-PLAN ITEMS ARE COMPOUNDED ONLY BY THE PLAN PATH**, operator's ruling

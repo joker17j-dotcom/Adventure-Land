@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v145
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v146
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -119,6 +119,7 @@ const PARTY_FEATURE_PROBE = {
 	combineItems: typeof combineItems,
 	totStatus: typeof totStatus,
 	prepStatus: typeof prepStatus,
+	cipherStatus: typeof cipherStatus,
 };
 
 function publishPartyBuild() {
@@ -524,6 +525,8 @@ const TOGGLES = {
 	achievementsPullRespectCourage:  true,   // CONFIG.achievements.pull.respectCourage
 	muling:                          true,   // CONFIG.muling.enabled
 	trickOrTreat:                    true,   // CONFIG.trickOrTreat.enabled
+	cipherFarm:                      true,   // CONFIG.cipherFarm.enabled
+	cipherFarmHop:                   true,   // CONFIG.cipherFarm.hop
 };
 
 const CONFIG = {
@@ -1102,6 +1105,29 @@ const CONFIG = {
 		retryMs: 10 * 60 * 1000,    // after a route that ended with doors still open
 		moveMs: 120000,             // noHang bound on one walk to a door
 		reach: 80,                  // the server's own door radius
+	},
+	/* WITCH'S CIPHER INGREDIENT FARMING - operator's rulings 2026-10-24.
+	   Farm only while Meltymerch holds fewer than `target` of ANY of the four
+	   ingredients IN HIS OWN BAG, and only during a gathering window (the first
+	   `gathering` seconds of a round, read live from G). The count reaches us as
+	   a `cipher_stock` message from him; one older than stockMaxAgeMs is
+	   unknown, and an unknown count farms nothing. Bosses and events outrank it
+	   throughout: it holds the party on a shard and points the farm spot, and
+	   nothing it does interrupts the boss layers. `hop` lets it take the party
+	   to another shard's window; home is preferred, but only inside home's own
+	   window. Off-shard it hops early enough to clear hop sickness first.
+	   -> RangerComments.md#cipherFarm */
+	cipherFarm: {
+		enabled: TOGGLES.cipherFarm,
+		hop: TOGGLES.cipherFarmHop,
+		target: 25,                       // per ingredient, in Meltymerch's own bag
+		stockMaxAgeMs: 15 * 60 * 1000,
+		tickMs: 15000,
+		walkLeadMaxMs: 10 * 60 * 1000,    // how early an on-shard window is planned for
+		marginMs: 60 * 1000,              // added to every lead
+		minUsefulMs: 3 * 60 * 1000,       // gathering left once there, or the trip is refused
+		pathFactor: 1.5,                  // door-graph distance to walking distance
+		unknownTravelSec: 300,            // no door route found - assume a long walk
 	},
 };
 
@@ -4378,6 +4404,53 @@ const bossHop = {
 		return best;
 	},
 
+	/* The cipher gathering window to be on, or null. Same feed and the same
+	   freshness rules as prepPlan; a lower rank than any boss, so this is only
+	   ever acted on when nothing else is. Due on another shard once the hop
+	   would still clear hop sickness by the opening; due on home or here once
+	   the walk is close. Home first - "prefer home, but only in home's own
+	   window", and the window is what makes home a candidate at all - then
+	   here, then the one with the most gathering left.
+	   -> RangerComments.md#cipherFarm */
+	cipherPlan(cur) {
+		const cf = CONFIG.cipherFarm, p = CONFIG.bossHop.preposition;
+		if (!cf || !cf.enabled || !cf.hop) return null;
+		const now = Date.now();
+		if (!cipherSeasonOpen(now)) return null;
+		const short = cipherShort(now);
+		if (!short || !short.length) return null;
+		if (!this.schedAt || now - this.schedAt > p.feedMaxAgeMs) return null;
+		const home = (typeof character !== 'undefined' && character && character.home) || null;
+		/* prepPlan's rule, for prepPlan's reason: without a fresh lineup for
+		   home, "is home in its own window" cannot be answered, and guessing no
+		   would hop the party off home in the middle of home's gathering. */
+		if (!home) return null;
+		const homeAge = this.lineupAgeSec(home, now);
+		if (homeAge === null || homeAge > p.lineupMaxAgeSec) return null;
+		const gather = cipherGatherMs();
+		let best = null;
+		for (const o of this.schedRows) {
+			if (o.event !== CIPHER_EVENT) continue;
+			if (o.status && o.status !== 'scheduled' && o.status !== 'live') continue;
+			const age = this.lineupAgeSec(o.shard, now);
+			if (age === null || age > p.lineupMaxAgeSec) continue;
+			const end = o.at + gather;
+			if (now >= end - cf.minUsefulMs) continue;
+			const here = o.shard === cur, isHome = !!home && o.shard === home;
+			/* Going home clears hop sickness at once, so home leads like here. */
+			const lead = (here || isHome) ? cf.walkLeadMaxMs
+				: this.hopsickMs() + cf.marginMs + CONFIG.bossHop.hopLatencyMs;
+			if (now < o.at - lead) continue;
+			const x = { shard: o.shard, event: CIPHER_EVENT, at: o.at, end, home: isHome, here, rank: CIPHER_RANK };
+			if (!best) { best = x; continue; }
+			if (x.home !== best.home) { if (x.home) best = x; continue; }
+			if (x.here !== best.here) { if (x.here) best = x; continue; }
+			if (x.end !== best.end) { if (x.end > best.end) best = x; continue; }
+			if (x.shard < best.shard) best = x;
+		}
+		return best;
+	},
+
 	/* The rank of what keeps the party HERE, or null. Two things do: a
 	   preposition whose shard is this one, and a boss-event trip that is live
 	   on this shard. The second is not a preposition at all - it is the gap
@@ -4399,6 +4472,10 @@ const bossHop = {
 			const tr = bossRank(trip.name);
 			if (r === null || tr < r) r = tr;
 		}
+		/* A third, below every boss: a cipher window here that Meltymerch's bag
+		   still wants. At CIPHER_RANK any boss hop is strictly better. */
+		const cp = this.cipherPlan(cur);
+		if (cp && cp.shard === cur && r === null) r = CIPHER_RANK;
 		return r;
 	},
 
@@ -5013,6 +5090,7 @@ const bossHop = {
 				   so an equal-ranked boss elsewhere cannot pull the party off a
 				   goobrawl it waited twelve minutes for. */
 				const hold = this.holdRank(cur, prep);
+				let cipher = null;
 				let pick = this.pickTarget();
 				if (pick && hold !== null && !(bossRank(pick.mtype) < hold)) pick = null;
 				if (pick && prep && prep.shard !== cur && !(bossRank(pick.mtype) < prep.rank)) pick = null;
@@ -5030,14 +5108,27 @@ const bossHop = {
 					this.targetShard = pick.shard;
 					this.targetType = pick.mtype;
 					game_log(`🐉 ${pick.mtype} on ${pick.shard}: ~${Math.round(pick.secsToDeath)}s to death — hopping`, '#FFD700');
+				} else if (hold === null && !(prep && prep.shard !== cur) && (cipher = this.cipherPlan(cur)) && cipher.shard !== cur) {
+					/* Last of all: nothing to fight, nothing planned, nothing
+					   holding us - a gathering window elsewhere. */
+					this.idleSince = 0;
+					this.state = 'HOPPING';
+					this.targetShard = cipher.shard;
+					this.targetType = CIPHER_EVENT;
+					game_log(`🐉 Hopping to ${cipher.shard} for the cipher gathering at ${new Date(cipher.at).toISOString().slice(11, 16)}Z`
+						+ (cipher.home ? ' (home)' : ''), '#C9A0FF');
 				} else if (hold !== null) {
 					this.idleSince = 0;
-					const key = cur + '|' + (prep && prep.shard === cur ? prep.event + '|' + prep.at : 'trip');
+					const why = prep && prep.shard === cur ? prep.event + '|' + prep.at
+						: (hold === CIPHER_RANK ? 'cipher' : 'trip');
+					const key = cur + '|' + why;
 					if (this.prepSaid !== key) {
 						this.prepSaid = key;
 						game_log(prep && prep.shard === cur
 							? `🐉 Holding on ${cur} for ${prep.event} at ${new Date(prep.at).toISOString().slice(11, 16)}Z`
-							: `🐉 Holding on ${cur} - an event fight is live here`, '#FFD700');
+							: hold === CIPHER_RANK
+								? `🐉 Holding on ${cur} for the cipher gathering`
+								: `🐉 Holding on ${cur} - an event fight is live here`, '#FFD700');
 					}
 					return 'continue';
 				} else {
@@ -5048,6 +5139,15 @@ const bossHop = {
 			case 'HOPPING': {
 				if (cur === this.targetShard) {
 					this.arrivedAt = Date.now();
+					/* S.witchcipher reads live: true for the whole round, so
+					   localBossLive would commit FIGHTING to it - fifteen minutes
+					   of a state that admits nothing. Back to IDLE, where the
+					   cipher hold keeps us and cipherTick points the spot. */
+					if (this.targetType === CIPHER_EVENT) {
+						game_log(`🐉 Arrived on ${cur} for the cipher gathering`, '#C9A0FF');
+						this.reset();
+						return 'continue';
+					}
 					if (this.localBossLive(this.targetType)) {
 						this.state = 'FIGHTING';
 						this.fightStart = Date.now();
@@ -7007,6 +7107,37 @@ function getTrackedPartyMembers() {
 	return members;
 }
 
+/* The kill-rate and survival half of a spot's score: how fast the party kills
+   this spawn, and what fraction of the time it is alive to do so. Nothing here
+   is about xp, which is why the cipher farm reads it too. */
+function farmSpotKill(mobData, spot, dps, healThroughput, partyEffectiveHp) {
+	const effPhysical = mitigated(dps.physical, mobData.armor || 0);
+	const effMagical = mitigated(dps.magical, mobData.resistance || 0);
+	const totalEffDps = Math.max((effPhysical + effMagical) * dodgeMultiplier(mobData), 1);
+
+	const ttk = mobData.hp / totalEffDps;
+	const rawKillRate = 1 / ttk;
+	const respawn = mobData.respawn || 1;
+	const sustainableKillRate = spot.count / respawn;
+	const killRate = Math.min(rawKillRate, sustainableKillRate);
+
+	const attackers = Math.min(spot.count, FARM_SEARCH.maxConcurrentAttackers);
+	/* THIS IS THE RAW HIT, with none of OUR mitigation taken off it, and that
+	   is a standing decision rather than an oversight.
+	   -> RangerComments.md#this-is-the-raw-hit-with-none */
+	const incomingDps = (mobData.attack || 0) * (mobData.frequency || 1) * attackers;
+	const survivabilityMargin = healThroughput - incomingDps;
+
+	let uptimeFraction = 1;
+	if (survivabilityMargin < 0) {
+		const timeToDeathSec = partyEffectiveHp / Math.abs(survivabilityMargin);
+		const deathsPerHour = 3600 / timeToDeathSec;
+		const downtimePerHour = deathsPerHour * FARM_SEARCH.avgDeathDowntimeSec;
+		uptimeFraction = Math.max(0, (3600 - downtimePerHour) / 3600);
+	}
+	return { killRate, incomingDps, uptimeFraction };
+}
+
 function scoreAllFarmSpots() {
 	if (!parent.G || !parent.G.maps || !parent.G.monsters) return [];
 
@@ -7029,31 +7160,10 @@ function scoreAllFarmSpots() {
 			if (isPermanentlyBlacklisted(key)) continue;
 			if (blacklist[key]) continue;
 
-			const effPhysical = mitigated(dps.physical, mobData.armor || 0);
-			const effMagical = mitigated(dps.magical, mobData.resistance || 0);
-			const totalEffDps = Math.max((effPhysical + effMagical) * dodgeMultiplier(mobData), 1);
-
-			const ttk = mobData.hp / totalEffDps;
-			const rawKillRate = 1 / ttk;
-			const respawn = mobData.respawn || 1;
-			const sustainableKillRate = spot.count / respawn;
-			const actualKillRate = Math.min(rawKillRate, sustainableKillRate);
-			const rawExpPerSecond = actualKillRate * mobData.xp;
-
-			const attackers = Math.min(spot.count, FARM_SEARCH.maxConcurrentAttackers);
-			/* THIS IS THE RAW HIT, with none of OUR mitigation taken off it, and that
-			   is a standing decision rather than an oversight.
-			   -> RangerComments.md#this-is-the-raw-hit-with-none */
-			const incomingDps = (mobData.attack || 0) * (mobData.frequency || 1) * attackers;
-			const survivabilityMargin = healThroughput - incomingDps;
-
-			let uptimeFraction = 1;
-			if (survivabilityMargin < 0) {
-				const timeToDeathSec = partyEffectiveHp / Math.abs(survivabilityMargin);
-				const deathsPerHour = 3600 / timeToDeathSec;
-				const downtimePerHour = deathsPerHour * FARM_SEARCH.avgDeathDowntimeSec;
-				uptimeFraction = Math.max(0, (3600 - downtimePerHour) / 3600);
-			}
+			const kill = farmSpotKill(mobData, spot, dps, healThroughput, partyEffectiveHp);
+			const rawExpPerSecond = kill.killRate * mobData.xp;
+			const incomingDps = kill.incomingDps;
+			const uptimeFraction = kill.uptimeFraction;
 			if (uptimeFraction < FARM_SEARCH.minUptimeFraction) continue;
 
 			let allMembersNetPositive = true;
@@ -7478,6 +7588,8 @@ async function achvTick() {
 	   hand - which stands the queue down PERMANENTLY until achvResume(). Return
 	   before that happens; the queue picks up again when mhOff() releases. */
 	if (typeof mhOwnsSpot === 'function' && mhOwnsSpot()) return;
+	/* The cipher farm likewise, for the length of a gathering window. */
+	if (typeof cipherOwnsSpot === 'function' && cipherOwnsSpot()) return;
 	const t = achvTarget();
 	if (!t) return;
 
@@ -7579,6 +7691,300 @@ setInterval(achvTickRun, (CONFIG.achievements && CONFIG.achievements.reassertMs)
 setInterval(() => {
 	mhTick().catch((e) => mhLog('tick threw: ' + ((e && e.message) || e), 'red'));
 }, (CONFIG.monsterHunt && CONFIG.monsterHunt.tickMs) || 5000);
+
+/* ============================================================================
+   WITCH'S CIPHER INGREDIENT FARMING  -> CONFIG.cipherFarm, RangerComments.md#cipherFarm
+
+   For the first `gathering` seconds of a cipher round, sixteen ordinary
+   monsters carry one of the four ingredients in their usual loot, at
+   `loot * hp / 1000` per kill - so the yield of a spot is its kill rate times
+   that, which comes to the damage the party lands. Read from the server at
+   upstream 16881a27 (`witch_cipher_loot`); the monster list is read LIVE from
+   G.events.witchcipher.ingredients, and the copy below is only the fallback.
+
+   What this owns: the farm spot, while a window is open here and Meltymerch is
+   short, and a hold on this shard while that is true. What it never owns:
+   movement while a boss layer has it. A window elsewhere is bossHop's to act
+   on, through cipherPlan() - ranked below every boss, so any boss outranks it.
+   ============================================================================ */
+const CIPHER_EVENT = 'witchcipher';
+/* Below BOSS_RANK_DEFAULT on purpose: "bosses and events first". A hold at this
+   rank admits any boss hop, ranked or not. */
+const CIPHER_RANK = BOSS_RANK_DEFAULT + 1;
+const CIPHER_INGREDIENTS_FALLBACK = [
+	['verdantspore', ['goo', 'bee', 'spider', 'croc']],
+	['frostscale', ['arcticbee', 'boar', 'wolfie', 'iceroamer']],
+	['embercoal', ['plantoid', 'porcupine', 'fireroamer', 'gscorpion']],
+	['gloomfeather', ['snake', 'osnake', 'minimush', 'ghost']],
+];
+const cipherFarm = { stock: null, stockAt: 0, pick: null, key: '', said: '' };
+
+function cipherLog(m, c) { try { game_log('[cipher] ' + m, c || '#C9A0FF'); } catch (e) { } console.log('[cipher] ' + m); }
+/* Once per distinct message, so a 15s tick repeating the same reason is quiet. */
+function cipherSay(m, c) { if (cipherFarm.said === m) return; cipherFarm.said = m; cipherLog(m, c); }
+
+function cipherRules() {
+	const e = parent.G && parent.G.events && parent.G.events[CIPHER_EVENT];
+	return e || null;
+}
+function cipherIngredients() {
+	const r = cipherRules();
+	const live = r && Array.isArray(r.ingredients) ? r.ingredients.filter((x) => Array.isArray(x) && x[0] && Array.isArray(x[1])) : [];
+	return live.length ? live : CIPHER_INGREDIENTS_FALLBACK;
+}
+function cipherGatherMs() {
+	const r = cipherRules();
+	return (r && typeof r.gathering === 'number' && r.gathering > 0 ? r.gathering : 1200) * 1000;
+}
+function cipherLootRate() {
+	const r = cipherRules();
+	return r && typeof r.loot === 'number' && r.loot > 0 ? r.loot : 0.003;
+}
+
+/* Meltymerch's own bag, as he last reported it. The receiver validates: only
+   finite non-negative counts are kept, and the four names are read from G so a
+   renamed ingredient is a missing count rather than a stale one. */
+function cipherOnStock(data) {
+	const c = data && data.counts;
+	if (!c || typeof c !== 'object') return;
+	const counts = {};
+	for (const [name] of cipherIngredients()) {
+		const n = c[name];
+		counts[name] = (typeof n === 'number' && isFinite(n) && n >= 0) ? n : null;
+	}
+	cipherFarm.stock = counts;
+	cipherFarm.stockAt = Date.now();
+}
+
+/* The ingredients he is short of, or NULL when that cannot be known - no
+   report, a stale one, or a name it does not carry. Null farms nothing. */
+function cipherShort(now) {
+	const cf = CONFIG.cipherFarm;
+	if (!cipherFarm.stock || !cipherFarm.stockAt) return null;
+	if ((now || Date.now()) - cipherFarm.stockAt > cf.stockMaxAgeMs) return null;
+	const out = [];
+	for (const [name] of cipherIngredients()) {
+		const n = cipherFarm.stock[name];
+		if (typeof n !== 'number') return null;
+		if (n < cf.target) out.push(name);
+	}
+	return out;
+}
+
+/* The gathering window on THIS shard: the live round from S when one is
+   gathering, else the next scheduled occurrence from the bridge. S is exact
+   (`gather_end` is the server's own); the schedule is the only source for a
+   round that has not started. */
+function cipherWindowHere(now) {
+	const w = parent.S && parent.S[CIPHER_EVENT];
+	if (w && w.live === true && w.phase === 'gathering' && typeof w.gather_end === 'number' && w.gather_end > now) {
+		return { start: typeof w.start === 'number' ? w.start : now, end: w.gather_end, open: true };
+	}
+	const cur = bossHop.currentShard();
+	const gather = cipherGatherMs();
+	let best = null;
+	for (const o of (bossHop.schedRows || [])) {
+		if (o.event !== CIPHER_EVENT || o.shard !== cur) continue;
+		if (o.status && o.status !== 'scheduled') continue;
+		if (o.at <= now || (best && o.at >= best.start)) continue;
+		best = { start: o.at, end: o.at + gather, open: false };
+	}
+	return best;
+}
+
+/* Straight-line distance over the door graph, from where we stand to (map, x,
+   y), or null if no chain of doors connects them. Doors only: the transporter
+   is not modelled, so a far map can read longer than smart_move makes it. It
+   is a ranking term - which spot pays more in what is left of a window - not
+   a schedule. */
+function cipherDoorDistance(fromMap, fx, fy, toMap, tx, ty) {
+	const maps = parent.G && parent.G.maps;
+	if (!maps || !maps[fromMap] || !maps[toMap]) return null;
+	if (fromMap === toMap) return Math.hypot(tx - fx, ty - fy);
+	const open = [{ map: fromMap, x: fx, y: fy, d: 0 }];
+	const done = new Set();
+	let best = null;
+	while (open.length && done.size < 400) {
+		open.sort((a, b) => a.d - b.d);
+		const n = open.shift();
+		if (best !== null && n.d >= best) break;
+		const key = n.map + '|' + Math.round(n.x) + '|' + Math.round(n.y);
+		if (done.has(key)) continue;
+		done.add(key);
+		if (n.map === toMap) {
+			const t = n.d + Math.hypot(tx - n.x, ty - n.y);
+			if (best === null || t < best) best = t;
+			continue;
+		}
+		for (const door of (maps[n.map].doors || [])) {
+			if (!Array.isArray(door) || door.length < 6) continue;
+			const there = maps[door[4]];
+			const sp = there && Array.isArray(there.spawns) ? there.spawns[door[5]] : null;
+			if (!Array.isArray(sp)) continue;
+			open.push({ map: door[4], x: sp[0], y: sp[1], d: n.d + Math.hypot(door[0] - n.x, door[1] - n.y) });
+		}
+	}
+	return best;
+}
+
+function cipherTravelSec(map, x, y) {
+	const cf = CONFIG.cipherFarm;
+	const d = cipherDoorDistance(character.map, character.real_x != null ? character.real_x : character.x,
+		character.real_y != null ? character.real_y : character.y, map, x, y);
+	const speed = Math.max(1, character.speed || 50);
+	return d === null ? cf.unknownTravelSec : (d * cf.pathFactor) / speed;
+}
+
+/* Every spot of a monster carrying a short ingredient, by expected quantity in
+   the window [start, end]: kills per second (the farm scorer's own model) times
+   the per-kill chance, over the time left once we have walked there. The same
+   safety gates as the xp scorer - unsafe maps, the coded and stored
+   blacklists, the uptime floor - and none of its xp or gold gates, which are
+   about a question this is not asking. */
+function cipherSpots(short, start, end, now) {
+	const G = parent.G;
+	if (!G || !G.maps || !G.monsters) return [];
+	const want = {};
+	for (const [name, types] of cipherIngredients()) if (short.indexOf(name) >= 0) for (const t of types) want[t] = name;
+	const loot = cipherLootRate();
+	const dps = getPartyDps();
+	const heal = estimateHealThroughput();
+	const ehp = 3 * (character.max_hp || 2000);
+	const blacklist = getBlacklist();
+	const out = [];
+	for (const mapName in G.maps) {
+		const mapData = G.maps[mapName];
+		if (!isMapSafeForFarming(mapData) || !mapData.monsters) continue;
+		for (const spot of mapData.monsters) {
+			const ing = want[spot.type];
+			if (!ing) continue;
+			const mob = G.monsters[spot.type];
+			if (!mob || !mob.hp || mob.hp > FARM_SEARCH.maxViableHp) continue;
+			const key = spotKey(spot.type, mapName);
+			if (isPermanentlyBlacklisted(key) || blacklist[key]) continue;
+			if (!Array.isArray(spot.boundary) || spot.boundary.length < 4) continue;
+			const kill = farmSpotKill(mob, spot, dps, heal, ehp);
+			if (!(kill.uptimeFraction >= FARM_SEARCH.minUptimeFraction)) continue;
+			const perSec = kill.killRate * kill.uptimeFraction * Math.min(1, loot * mob.hp / 1000);
+			if (!isFinite(perSec) || perSec <= 0) continue;
+			const x = (spot.boundary[0] + spot.boundary[2]) / 2, y = (spot.boundary[1] + spot.boundary[3]) / 2;
+			const travelSec = cipherTravelSec(mapName, x, y);
+			const from = Math.max(now + travelSec * 1000, start);
+			const qty = perSec * Math.max(0, (end - from) / 1000);
+			out.push({ home: spot.type, mobMap: mapName, x, y, ingredient: ing, perSec, travelSec, qty,
+				uptimeFraction: kill.uptimeFraction });
+		}
+	}
+	out.sort((a, b) => (b.qty - a.qty) || (b.perSec - a.perSec)
+		|| (spotKey(a.home, a.mobMap) < spotKey(b.home, b.mobMap) ? -1 : 1));
+	return out;
+}
+
+function cipherOwnsSpot() {
+	const p = cipherFarm.pick;
+	return !!(p && manualOverride && manualOverride.home === p.home && manualOverride.mobMap === p.mobMap);
+}
+
+/* Pinned the way the achievement queue and the hunt pin theirs, for the same
+   reason: checkFarmEconomics would otherwise judge a spot chosen for a reason
+   it cannot see. rageAlso is the queue's; its re-assert restores it after. */
+function cipherApply(p) {
+	try { PERMANENT_WHITELIST.add(spotKey(p.home, p.mobMap)); getBlacklist(); } catch (e) { }
+	manualOverride = { home: p.home, mobMap: p.mobMap, x: p.x, y: p.y, expPerSecond: 0, uptimeFraction: p.uptimeFraction || 1 };
+	rageAlso = [];
+	try { runFarmSearch(); } catch (e) { cipherLog('runFarmSearch threw: ' + e, 'red'); }
+}
+
+function cipherRelease(why) {
+	if (cipherOwnsSpot()) {
+		manualOverride = null;
+		try { runFarmSearch(); } catch (e) { }
+	}
+	if (cipherFarm.pick) cipherLog('released ' + cipherFarm.pick.home + '@' + cipherFarm.pick.mobMap + ' - ' + why, '#8b98ab');
+	cipherFarm.pick = null;
+	cipherFarm.key = '';
+}
+
+/* Why nothing is being farmed, or null when something should be. */
+function cipherIdleReason(short, win, now) {
+	if (!CONFIG.cipherFarm.enabled) return 'turned off';
+	if (!cipherSeasonOpen(now)) return 'Halloween has ended';
+	if (short === null) return 'no fresh count from Meltymerch';
+	if (!short.length) return 'Meltymerch holds ' + CONFIG.cipherFarm.target + ' of each';
+	if (!win) return 'no gathering window on this shard';
+	if (!win.open && win.start - now > CONFIG.cipherFarm.walkLeadMaxMs) return 'next window here opens ' + new Date(win.start).toISOString().slice(11, 16) + 'Z';
+	return null;
+}
+
+/* The hold on Meltymerch's bag runs to the end of Halloween, and the farming
+   with it: after the season he banks the ingredients, so his bag count stops
+   meaning anything. The end is the server's own (S.event_ends, epoch ms); the
+   date is the fallback, from design/event_flags.js at upstream 16881a27. */
+function cipherSeasonOpen(now) {
+	const e = parent.S && parent.S.event_ends && parent.S.event_ends.halloween;
+	const end = typeof e === 'number' && isFinite(e) ? e : Date.parse('2026-11-03T00:00:00Z');
+	return (now || Date.now()) < end;
+}
+
+function cipherTick() {
+	const now = Date.now();
+	const short = cipherShort(now);
+	const win = cipherWindowHere(now);
+	const idle = cipherIdleReason(short, win, now);
+	if (idle) {
+		if (cipherFarm.pick) cipherRelease(idle);
+		cipherSay(idle, '#8b98ab');
+		return;
+	}
+	/* A hand-set override outranks this, as it outranks the queue. Ours, the
+	   queue's and the hunt's are the only automatic ones. */
+	if (manualOverride && !cipherOwnsSpot() && !achvIsOurs() && !mhOwnsSpot()) {
+		cipherSay('the farm spot was set by hand - standing aside', 'orange');
+		return;
+	}
+	const key = win.start + '|' + short.join(',');
+	if (!cipherFarm.pick || cipherFarm.key !== key) {
+		const spots = cipherSpots(short, win.start, win.end, now);
+		if (!spots.length) {
+			if (cipherFarm.pick) cipherRelease('no viable spot');
+			cipherSay('no viable spot for ' + short.join(', '), 'orange');
+			return;
+		}
+		cipherFarm.pick = spots[0];
+		cipherFarm.key = key;
+	}
+	const p = cipherFarm.pick;
+	/* Not open yet: set off only once the walk would land at the opening. */
+	if (!win.open && now < win.start - p.travelSec * 1000 - CONFIG.cipherFarm.marginMs) {
+		cipherSay('window opens ' + new Date(win.start).toISOString().slice(11, 16) + 'Z - will walk to '
+			+ p.home + '@' + p.mobMap + ' (~' + Math.round(p.travelSec) + 's) for ' + p.ingredient, '#8b98ab');
+		return;
+	}
+	if (!cipherOwnsSpot()) {
+		cipherApply(p);
+		cipherSay('farming ' + p.home + '@' + p.mobMap + ' for ' + p.ingredient + ' (short: ' + short.join(', ')
+			+ '; ~' + p.qty.toFixed(1) + ' expected, until ' + new Date(win.end).toISOString().slice(11, 16) + 'Z)', '#C9A0FF');
+	}
+}
+
+function cipherStatus() {
+	const now = Date.now();
+	const short = cipherShort(now);
+	const win = cipherWindowHere(now);
+	const out = { enabled: !!CONFIG.cipherFarm.enabled, stock: cipherFarm.stock,
+		stockAgeSec: cipherFarm.stockAt ? Math.round((now - cipherFarm.stockAt) / 1000) : null,
+		short, window: win && { start: new Date(win.start).toISOString(), end: new Date(win.end).toISOString(), open: win.open },
+		idle: cipherIdleReason(short, win, now),
+		pick: cipherFarm.pick && { spot: cipherFarm.pick.home + '@' + cipherFarm.pick.mobMap, ingredient: cipherFarm.pick.ingredient,
+			qty: +cipherFarm.pick.qty.toFixed(2), travelSec: Math.round(cipherFarm.pick.travelSec) },
+		ownsSpot: cipherOwnsSpot(), plan: bossHop.cipherPlan(bossHop.currentShard()) };
+	console.log('[cipher]', out);
+	return out;
+}
+
+setTimeout(() => { try { cipherTick(); } catch (e) { cipherLog('tick threw: ' + ((e && e.message) || e), 'red'); } }, 12000);
+setInterval(() => { try { cipherTick(); } catch (e) { cipherLog('tick threw: ' + ((e && e.message) || e), 'red'); } },
+	(CONFIG.cipherFarm && CONFIG.cipherFarm.tickMs) || 15000);
 
 /* ============================================================================
    TRICK OR TREAT - the knock route.  -> CLAUDE.md "Trick or Treat"
@@ -8536,6 +8942,10 @@ async function mhTick() {
 		return;
 	}
 	if (mhPhase === 'off') { mhPhase = 'gather'; mhPhaseSince = Date.now(); mhPool = {}; mhDone = []; mhLog('enabled - collecting hunts', '#FFD700'); }
+	/* A cipher gathering window has the spot. The hunt would re-assert its own
+	   pick every tick and the two would trade the party back and forth; it
+	   waits instead, and picks up again when the window closes. */
+	if (typeof cipherOwnsSpot === 'function' && cipherOwnsSpot()) return;
 
 	/* Our own live state first, THEN the staleness judgement. Reading the pool
 	   before refreshing it meant our own shard change was only ever noticed on
@@ -8798,6 +9208,7 @@ function on_cm(name, data) {
 		state.waitingForMerchant = false;
 		game_log('Merchant business done - resuming', '#00FF00');
 	}
+	if (data.message === 'cipher_stock') cipherOnStock(data);
 }
 
 function on_party_request(name) {

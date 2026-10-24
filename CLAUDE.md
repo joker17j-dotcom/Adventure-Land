@@ -4562,6 +4562,17 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   clear of every `CONFIG.bossHop.targets` boss.** Operator's call: the existing
   order stands, bosses and events first, so the other three windows farm only when
   horseman is not taken.
+- **CIPHER INGREDIENT FARMING IS BUILT, Ranger v146 / Merchant v130** -
+  operator's rulings 2026-10-24 18:49-18:59 EDT. Meltymerch keeps the four in
+  his BAG until Halloween ends (all five `bank_store` sites gated) and sends
+  Dexon `cipher_stock` counts; while any is under 25 and a gathering window is
+  open, Dexon points the farm spot at the best spawn and `bossHop` holds or hops
+  for the window, ranked below every boss. An unknown or stale count farms
+  nothing. **THE MONSTER BARELY MATTERS WHERE THE PARTY'S DAMAGE IS THE LIMIT**:
+  kills/s is `dps / hp` and the chance is `loot * hp / 1000`, so hp cancels and
+  every such spawn yields `loot * dps / 1000`; hp matters only where a spawn
+  runs dry first. So the pick is a spawn that never runs dry, survivable, close.
+  NOT YET RUN LIVE. Design in `Party/RangerComments.md#cipherFarm`.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.

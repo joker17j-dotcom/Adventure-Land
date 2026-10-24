@@ -18,6 +18,76 @@ Anchors match the `-> RangerComments.md#anchor` pointers in the source.
 
 ---
 
+## cipherFarm
+
+**WHAT WAS ASKED.** Operator's rulings 2026-10-24 18:49-18:59 EDT, relayed by
+the browser session: farm the four Witch's Cipher ingredients only while
+Meltymerch holds fewer than 25 of ANY of them IN HIS OWN BAG; any shard whose
+gathering window is open, as long as nothing outranks it; hopping enabled;
+home preferred, but only in home's own window; the monster with the best
+expected quantity in the window, travel time counted; preposition so farming
+starts when the window opens.
+
+**THE MECHANISM, from the server at upstream 16881a27.** `witch_cipher_loot(on)`
+pushes `[loot * hp / 1000, ingredient]` onto each listed monster's NORMAL drop
+table at round start and strips it at `gather_end`. So it rolls like any normal
+drop - `share * luckm` - and only during gathering. The round is published on
+its own shard as `S.witchcipher` with `phase` and an exact `gather_end`, which is
+what `cipherWindowHere()` reads when a round is live; a round that has not
+started is known only from the bridge's `/schedule_live`.
+
+**WHY THE MONSTER BARELY MATTERS WHERE THE PARTY IS THE LIMIT.** Kills per
+second are `dps / hp` and the chance per kill is `loot * hp / 1000`, so hp
+cancels and the yield is `loot * dps / 1000` - the same for every monster the
+party can kill as fast as it can hit. hp matters only where the spawn runs dry
+first (count / respawn below dps / hp), and there a low-hp monster pays less.
+So "best expected quantity" comes down to: a spawn that never runs dry, that
+the party survives, that is close. `cipherSpots()` computes exactly that with
+the xp scorer's own kill model (`farmSpotKill`, extracted from
+`scoreAllFarmSpots` so the two cannot disagree) times the chance, over the
+window left after the walk. The chance is capped at 1 per kill; no listed
+monster comes near it.
+
+**TRAVEL IS A DOOR-GRAPH ESTIMATE.** Straight lines from door to door through
+`G.maps[*].doors` and the far map's spawn point, times `pathFactor` over our
+speed. The transporter is not modelled, so a far map reads long; no route at
+all reads as `unknownTravelSec`. It is a ranking term - which spot pays more in
+what is left of the window - not a schedule.
+
+**WHO OWNS WHAT.** `cipherTick()` owns the farm spot while a window is open
+here (or close enough that the walk lands at the opening) and Meltymerch is
+short - pinned the way the queue and the hunt pin theirs. A hand-set override
+outranks it; the queue's and the hunt's do not, and both wait while it holds
+the spot rather than reading it as a hand move. `bossHop.cipherPlan()` owns the
+shard: a hold at `CIPHER_RANK` (one below `BOSS_RANK_DEFAULT`) when the window
+is here, so ANY boss hop is strictly better and gets through - tonight's EU
+horseman over the US/ASIA window is that case - and a hop to another shard's
+window as the very last branch of IDLE, behind a boss pick, a boss preposition
+and any hold. Off-shard it hops once the hop would still clear hop sickness by
+the opening (sickness + margin + latency); home and here lead by the walk only,
+because going home clears sickness at once. Like `prepPlan`, it plans nothing
+without a fresh lineup for HOME: "is home in its own window" would otherwise be
+guessed as no, and the party hopped off home mid-gathering.
+
+**ARRIVING IS NOT FIGHTING.** `S.witchcipher.live` is true for the whole round,
+so `localBossLive('witchcipher')` would commit FIGHTING on arrival - fifteen
+minutes of a state that admits nothing else. The HOPPING arrival branch returns
+it to IDLE instead, where the hold keeps the party and the tick points the spot.
+
+**AN UNKNOWN COUNT FARMS NOTHING.** No report, one older than
+`stockMaxAgeMs`, or a name missing from it: `cipherShort()` answers null and
+nothing happens. The merchant reports on every change and at least every five
+minutes, so a merchant that stops reporting - another script in his slot, a
+dead tab - stops the farming within fifteen minutes rather than leaving it
+running on a stale number. The count is HIS BAG ONLY, by the ruling, so
+ingredients still in the party's bags awaiting muling are not counted and a
+window can overshoot.
+
+**AFTER HALLOWEEN.** The merchant banks them once the season ends
+(`S.event_ends.halloween`), so his bag count stops meaning anything; farming
+ends with the season too. witchcipher returns to the daily pool afterwards, so
+whether to keep farming then is the operator's call.
+
 ## preposition
 
 **WHY IT EXISTS.** Operator, 2026-10-24: why did the party not preposition for

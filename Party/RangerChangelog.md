@@ -21,6 +21,30 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v146
+
+**WITCH'S CIPHER INGREDIENT FARMING**, operator's rulings 2026-10-24 18:49-18:59
+EDT. -> RangerComments.md#cipherFarm
+- **Trigger.** Meltymerch reports his own bag's counts of verdantspore,
+  frostscale, embercoal and gloomfeather (`cipher_stock`, Merchant v130).
+  While any is under `CONFIG.cipherFarm.target` and a gathering window is open
+  on this shard - read exactly from `S.witchcipher`, or from `/schedule_live`
+  before it opens - `cipherTick()` points the farm spot at the best spawn for
+  what he is short of. No count, a stale one or a name missing: nothing.
+- **Which monster.** Expected quantity in the window after the walk: the xp
+  scorer's kill model (now `farmSpotKill()`, shared with `scoreAllFarmSpots`)
+  times `loot * hp / 1000`, over the gathering left once there. The monster
+  list is read live from `G.events.witchcipher.ingredients`.
+- **Which shard.** `bossHop.cipherPlan()`: a hold here at `CIPHER_RANK`, one
+  below every boss, and a hop to another shard's window as the last branch of
+  IDLE. Off-shard it leaves early enough to clear hop sickness by the opening;
+  home is preferred inside home's own window. Arriving for it returns to IDLE,
+  never FIGHTING.
+- **Ownership.** A hand-set override outranks it; the achievement queue and
+  the monster hunt wait while it holds the spot.
+- Toggles `cipherFarm` and `cipherFarmHop`. Ends with Halloween.
+- `Tests/suite_cipher.js`.
+
 ## v145
 
 **THE GRAVEYARD STAND, THE WAY OUT OF THE BOX, AND AN IDLE LEADER IS OBEYED** -

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v129
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v130
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -713,7 +713,10 @@ const CONFIG = {
 		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire',
 			'cave_amber', 'cave_loaded_die',
 			// The only Hop Sickness cure; kept and banked since v127.
-			'snakeoil'],
+			'snakeoil',
+			/* Witch's Cipher ingredients. Kept IN THE BAG until Halloween ends,
+			   then banked like the rest - cipherHeldInBag() is the gate. */
+			'verdantspore', 'frostscale', 'embercoal', 'gloomfeather'],
 	},
 
 	selling: {
@@ -3339,6 +3342,60 @@ function keptMaterialNames() {
 }
 function isKeptMaterial(name) { return !!name && keptMaterialNames().has(String(name)); }
 
+/* WITCH'S CIPHER INGREDIENTS STAY IN THIS BAG UNTIL HALLOWEEN ENDS - operator's
+   ruling 2026-10-24: "Nothing should go in the bank without first going
+   through the merchant", and he keeps them on hand for the season and banks
+   them only after. His bag count is what Dexon farms against (cipherStockTick
+   below), so an ingredient banked mid-season would read as one never farmed.
+   Every bank path that could take one asks this. The names come from live G
+   with the source's four as the fallback; the season end is the server's own
+   S.event_ends.halloween, with design/event_flags.js at upstream 16881a27 as
+   the fallback. */
+const CIPHER_INGREDIENTS_FALLBACK = ['verdantspore', 'frostscale', 'embercoal', 'gloomfeather'];
+function cipherIngredientNames() {
+	const e = parent.G && parent.G.events && parent.G.events.witchcipher;
+	const live = e && Array.isArray(e.ingredients) ? e.ingredients.map((x) => Array.isArray(x) ? x[0] : null).filter(Boolean) : [];
+	return live.length ? live : CIPHER_INGREDIENTS_FALLBACK;
+}
+function cipherSeasonOpen(now) {
+	const e = parent.S && parent.S.event_ends && parent.S.event_ends.halloween;
+	const end = typeof e === 'number' && isFinite(e) ? e : Date.parse('2026-11-03T00:00:00Z');
+	return (now || Date.now()) < end;
+}
+function cipherHeldInBag(name) {
+	return !!name && cipherIngredientNames().indexOf(String(name)) >= 0 && cipherSeasonOpen();
+}
+
+/* What he holds of each, summed over every stack in the bag. */
+function cipherStockCounts() {
+	const counts = {};
+	for (const n of cipherIngredientNames()) counts[n] = 0;
+	for (const it of (character.items || [])) {
+		if (it && it.name && Object.prototype.hasOwnProperty.call(counts, it.name)) counts[it.name] += (it.q || 1);
+	}
+	return counts;
+}
+
+/* Dexon farms while any count is under his target, so he hears it on every
+   change and at least every five minutes - a count he has not heard in fifteen
+   is unknown to him, and an unknown count farms nothing. So a merchant that
+   stops reporting (another script in the slot, a dead tab) stops the farming
+   rather than leaving it running on a stale number. Only during the season:
+   afterwards the ingredients go to the bank and the count means nothing. */
+let cipherStockSent = '', cipherStockSentAt = 0;
+function cipherStockTick() {
+	if (!cipherSeasonOpen()) return;
+	const counts = cipherStockCounts();
+	const sig = JSON.stringify(counts);
+	if (sig === cipherStockSent && Date.now() - cipherStockSentAt < 5 * 60 * 1000) return;
+	cipherStockSent = sig;
+	cipherStockSentAt = Date.now();
+	try { plSend('Dexon', { message: 'cipher_stock', counts, at: Date.now() }); }
+	catch (e) { game_log('[cipher] stock report failed: ' + e, 'orange'); }
+}
+setTimeout(cipherStockTick, 15000);
+setInterval(cipherStockTick, 30000);
+
 /* What the rule is costing or saving, on demand. */
 function exchangeableReport() {
 	const names = exchangeableNames();
@@ -4741,6 +4798,7 @@ async function bankExchangeables() {
 	for (let i = character.items.length - 1; i >= 0; i--) {
 		const it = character.items[i];
 		if (!it || !it.name || !(names.has(it.name) || isKeptMaterial(it.name))) continue;
+		if (cipherHeldInBag(it.name)) continue;    // in the bag until Halloween ends
 		if (it.b) continue;                        // blocked - the server refuses it
 		if (it.l === 'l') { locked++; continue; }  // the operator's own hands-off marker
 		if (arbHeldNames()[it.name]) continue;     // arbitrage owns this exit (arbBankItem)
@@ -4969,7 +5027,7 @@ async function bankFullyProgressedItems() {
 
 	const gearSlots = new Set(toBank);
 	character.items.forEach((item, idx) => {
-		if (item && item.name && isKeptMaterial(item.name)) toBank.push(idx);
+		if (item && item.name && isKeptMaterial(item.name) && !cipherHeldInBag(item.name)) toBank.push(idx);
 	});
 
 	const arrived = await travelToBank();
@@ -6749,6 +6807,7 @@ async function pontyStash(bought) {
 	if (!(await travelToBank())) { pontyLog('could not reach the bank - keeping them on hand', 'orange'); return; }
 	let stored = 0, kept = 0;
 	for (const b of bought) {
+		if (cipherHeldInBag(b.name)) continue;   // in the bag until Halloween ends
 		const idx = pontySlotOf(b.name, b.level);
 		if (idx < 0) continue;
 		try { await bank_store(idx); stored++; await sleep(300); }
@@ -7157,6 +7216,7 @@ async function sbStash(bought) {
 	if (!(await travelToBank())) { sbLog('could not reach the bank - keeping them on hand', 'orange'); return; }
 	let stored = 0, kept = 0;
 	for (const b of bought) {
+		if (cipherHeldInBag(b.name)) continue;   // in the bag until Halloween ends
 		const idx = pontySlotOf(b.name, b.level);
 		if (idx < 0) continue;
 		try { await bank_store(idx); stored++; await sleep(300); }
@@ -8561,6 +8621,12 @@ async function arbBankShareNow(t, share) {
 // Put an unsold item away rather than carry it. Inventory space is the scarcer
 // -> MerchantComments.md#arbBankItem
 async function arbBankItem(t) {
+	/* A cipher ingredient stays in the bag until Halloween ends. False, so the
+	   trade closes as held_in_inventory, which is what happened. */
+	if (cipherHeldInBag(t.item)) {
+		arbLog('keeping the unsold ' + t.item + ' in the bag - cipher ingredients are not banked until Halloween ends', '#9BD1FF');
+		return false;
+	}
 	if (CONFIG.arbitrage.dryRun) {
 		arbLog('[dry run] would bank the unsold ' + t.item, '#9BD1FF');
 		return true;
