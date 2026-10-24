@@ -5253,6 +5253,19 @@ for it in any script before Ranger v121 / Merchant v115.
   ran the route alone, so the assertion that `state.busy` was held while
   knocking was true in a world where nothing else ticked. The same clear had
   been releasing deliveries, gear progression and the kiss all along.
+- **THE FIVE SPOOKYTOWN DOOR POINTS ARE NOT PATHFINDING TARGETS, AND THE
+  OBSERVER THAT FOUND IT WAS THE GAME LOG, NOT OUR OWN FIELDS.** Captured live
+  by the browser session on Dexon's second route, 2026-10-24: the trip onto
+  spookytown arrived, then every door leg returned smart_move's "Path not
+  found!" in about 2s, while halloween door 0 had been walked to exactly. Our
+  own record of it was the bare string `failed` - the evidence existed only in
+  a ~100-line game log that a status poller had been flooding minutes earlier.
+  Fixed in Ranger v129 / Merchant v122 by walking to a STAND POINT: the
+  server's door test is distance only (within 80, no line of sight), so the
+  route probes the door, then rings at 40 and 65 units, and caches what works.
+  **A COORDINATE THAT NAMES A THING IS NOT A PLACE TO STAND** - the graveyard's
+  published point was the same lesson, recorded as "a published position is
+  the monster's"; this is it for an object on a wall.
 - **THE SWAP AND THE KNOCK, MEASURED LIVE 2026-10-23 BY THE BROWSER SESSION**
   (no knocks spent; server reads at upstream `16881a27`). This SUPERSEDES the
   two open questions in the bullet below, which are kept as the instance.

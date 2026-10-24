@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v121
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v122
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1058,6 +1058,7 @@ const CONFIG = {
 		enabled: TOGGLES.trickOrTreat,
 		checkIntervalMs: 20000,
 		retryMs: 10 * 60 * 1000,    // after a route that ended with doors still open
+		moveMs: 120000,             // bound on one walk to a door
 		reach: 80,                  // the server's own door radius
 	},
 
@@ -5742,6 +5743,10 @@ async function anniversaryKissLoop() {
 let totPauseUntil = 0;     // after a season refusal or a route that left doors open
 let totDoneDay = null;     // UTC day the account limit was hit
 let totLast = null;        // last route summary, for totStatus()
+/* Door index -> the stand point a walk last reached it from. Memory only: a
+   lost cache costs a few 2s probes, and the points are map facts that a
+   shared store would add nothing to. */
+let totStand = {};
 /* True for the whole route. state.busy alone did not hold: arbLoop used to
    release it on every tick with no trade in flight, and scoutLoop then hopped
    the merchant off the shard he had just set off across. The loops that can
@@ -5835,8 +5840,60 @@ function totNear(d) {
 	return character.map === d.map && Math.hypot(d.x - x, d.y - y) <= (CONFIG.trickOrTreat.reach || 80);
 }
 
+/* The door coordinates are not always places a character can be walked to.
+   Measured 2026-10-24: all five spookytown doors returned smart_move's "Path
+   not found!" within about 2s while the trip onto the map had arrived, and
+   halloween door 0 was walked to exactly. The server's test is distance only -
+   within 80 of the player, no line of sight (trick_or_treat_door in
+   halloween_events.js) - so any pathable point in reach will do. Candidates:
+   the stand point that worked last time, the door itself, then rings at 40 and
+   65 units. South first is a guess, unmeasured; the order only changes how
+   many probes a door costs, never which doors can be reached. */
+function totStandPoints(d) {
+	const out = [];
+	const known = totStand[d.i];
+	if (known) out.push({ x: known.x, y: known.y });
+	out.push({ x: d.x, y: d.y });
+	const dirs = [[0, 1], [-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [0, -1]];
+	for (const r of [40, 65]) {
+		for (const v of dirs) {
+			const n = Math.hypot(v[0], v[1]);
+			out.push({ x: Math.round(d.x + v[0] / n * r), y: Math.round(d.y + v[1] / n * r) });
+		}
+	}
+	return out;
+}
+
+/* Walk into reach of a door, trying stand points until one is reached. A
+   failure that leaves us OFF the door's map is the trip failing, not the last
+   leg, so a nearer point would not help and the door is given up. moveTo and
+   not travelTo: travelTo's town() fallback would recall the merchant after
+   every refused probe. arbNoHang bounds each walk, because a hang here would
+   hold totBusy - and with it scouting and arbitrage - for good. */
+async function totWalk(d) {
+	if (totNear(d)) return true;
+	const ms = CONFIG.trickOrTreat.moveMs || 120000;
+	let tried = 0, why = null, onMapAt = null;
+	for (const p of totStandPoints(d)) {
+		if (character.rip) break;
+		tried++;
+		try { await arbNoHang(moveTo({ map: d.map, x: p.x, y: p.y }), 'tot walk', ms); }
+		catch (e) {
+			why = (e && (e.reason || e.message)) || String(e);
+			if (e && e.moveBusy) break;     // another mover holds the lock; not a door problem
+		}
+		if (totNear(d)) { totStand[d.i] = { x: p.x, y: p.y }; return true; }
+		if (character.map !== d.map) break;
+		if (onMapAt === null) onMapAt = Date.now();
+		else if (Date.now() - onMapAt > ms) break;
+	}
+	delete totStand[d.i];
+	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
+	return false;
+}
+
 /* One route, holding state.busy so scouting, kisses and new trades stand
-   clear. travelTo closes the stand and takes the move lock itself. */
+   clear. totWalk's moveTo closes the stand and takes the move lock itself. */
 async function totRoute() {
 	const doors = totRemainingDoors();
 	const sum = { at: Date.now(), knocked: 0, treats: [], tricks: 0, stopped: null, failed: [] };
@@ -5846,8 +5903,7 @@ async function totRoute() {
 	try {
 		for (const d of doors) {
 			if (character.rip) { sum.stopped = 'died'; break; }
-			if (!totNear(d)) await travelTo(d.map, d.x, d.y);
-			if (!totNear(d)) { sum.failed.push(d.i + ':unreached'); continue; }
+			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached'); continue; }
 			const res = await totKnock(d.i);
 			if (res && res.success) {
 				sum.knocked++;

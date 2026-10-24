@@ -1,4 +1,40 @@
 
+## v122
+
+**THE SPOOKYTOWN DOORS ARE KNOCKED FROM A STAND POINT, BECAUSE THE DOOR
+POINTS ARE NOT PATHABLE.** Captured live by the browser session on Dexon's
+second route, 2026-10-24: the trip onto spookytown arrived, then all five door
+legs returned smart_move's "Path not found!" within about 2s and the route
+ended `0 knocked - failed 2:unreached 3:unreached 4:unreached 6:unreached
+5:unreached`. Halloween door 0 had been walked to exactly that morning, so the
+fault is the door coordinates, not the map, the move cap or a rage box (all
+ruled out live). The server's door test is distance only - within 80 of the
+player, no line of sight, `trick_or_treat_door` in `halloween_events.js` - so
+any pathable point in reach will do.
+
+- **`totWalk(d)` tries stand points in order** (`totStandPoints`): the point
+  that worked last time, the door itself, then rings at 40 and 65 units, eight
+  directions each, south first as an unmeasured guess. The first one that ends
+  within 80 of the door is cached per door for the rest of the session.
+- **A failure that leaves the character off the door's map ends the door**,
+  since that is the trip failing and a nearer point cannot fix it. Once on the
+  map the probing as a whole is bounded by `moveMs`; that bound is a hang guard
+  and is not exercised by the suite.
+- **One log line per unreachable door**, naming how many points were tried and
+  the last reason, instead of one per probe - so the game log keeps the
+  "Path not found!" lines that diagnosed this.
+- `totNear` and `totStandPoints` are byte-identical in Ranger and Merchant and
+  the suite fails if they drift.
+
+- **The walk uses `moveTo`, not `travelTo`.** `travelTo`'s town() fallback
+  would recall the merchant after every refused probe. Each walk is bounded by
+  `arbNoHang` with a new `CONFIG.trickOrTreat.moveMs`, because a hang would
+  hold `totBusy` - and with it scouting and arbitrage - for good. A held move
+  lock (`moveBusy`) ends the door rather than probing on.
+
+Meltymerch has only knocked the two halloween doors so far, so he would have
+hit the same wall on his first spookytown door. Same change as Ranger v129.
+
 ## v121
 
 **`totStatus(true)` READS THE KNOCK ROUTE'S STATE WITHOUT LOGGING, and the

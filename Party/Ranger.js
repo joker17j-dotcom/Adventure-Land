@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v128
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v129
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6984,6 +6984,10 @@ let totBusy = false;       // a knock route owns movement; mainLoop stands down
 let totPauseUntil = 0;     // after a season refusal or a route that left doors open
 let totDoneDay = null;     // UTC day the account limit was hit - nothing more today
 let totLast = null;        // last route summary, for totStatus()
+/* Door index -> the stand point a walk last reached it from. Memory only: a
+   lost cache costs a few 2s probes, and the points are map facts that a
+   shared store would add nothing to. */
+let totStand = {};
 
 function totLog(msg, color) { game_log('[tot] ' + msg, color || '#F5A05B'); }
 function totG() { return (typeof parent !== 'undefined' && parent.G) || (typeof G !== 'undefined' ? G : null); }
@@ -7121,6 +7125,40 @@ async function totCostumeOff(idx) {
 	if (totWearing()) totLog('still wearing the costume after the swap back - check the helmet slot', 'red');
 }
 
+function totNear(d) {
+	const x = character.real_x != null ? character.real_x : character.x;
+	const y = character.real_y != null ? character.real_y : character.y;
+	return character.map === d.map && Math.hypot(d.x - x, d.y - y) <= (CONFIG.trickOrTreat.reach || 80);
+}
+
+/* The door coordinates are not always places a character can be walked to.
+   Measured 2026-10-24: all five spookytown doors returned smart_move's "Path
+   not found!" within about 2s while the trip onto the map had arrived, and
+   halloween door 0 was walked to exactly. The server's test is distance only -
+   within 80 of the player, no line of sight (trick_or_treat_door in
+   halloween_events.js) - so any pathable point in reach will do. Candidates:
+   the stand point that worked last time, the door itself, then rings at 40 and
+   65 units. South first is a guess, unmeasured; the order only changes how
+   many probes a door costs, never which doors can be reached. */
+function totStandPoints(d) {
+	const out = [];
+	const known = totStand[d.i];
+	if (known) out.push({ x: known.x, y: known.y });
+	out.push({ x: d.x, y: d.y });
+	const dirs = [[0, 1], [-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [0, -1]];
+	for (const r of [40, 65]) {
+		for (const v of dirs) {
+			const n = Math.hypot(v[0], v[1]);
+			out.push({ x: Math.round(d.x + v[0] / n * r), y: Math.round(d.y + v[1] / n * r) });
+		}
+	}
+	return out;
+}
+
+/* Walk into reach of a door, trying stand points until one is reached. A
+   failure that leaves us OFF the door's map is the trip failing, not the last
+   leg, so a nearer point would not help and the door is given up. moveMs
+   bounds each walk and, once on the map, the probing as a whole. */
 async function totWalk(d) {
 	/* Take the wheel from a farm trip already in flight, exactly as the Daisy
 	   trip does - standing mainLoop down stops NEW movement only. */
@@ -7128,11 +7166,21 @@ async function totWalk(d) {
 		travelState.attemptId++;
 		travelState.inFlight = false;
 	}
-	try { await noHang(safeSmartMove({ map: d.map, x: d.x, y: d.y }), 'tot walk', CONFIG.trickOrTreat.moveMs); }
-	catch (e) { totLog('walk to door ' + d.i + ' failed: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
-	const x = character.real_x != null ? character.real_x : character.x;
-	const y = character.real_y != null ? character.real_y : character.y;
-	return character.map === d.map && Math.hypot(d.x - x, d.y - y) <= (CONFIG.trickOrTreat.reach || 80);
+	if (totNear(d)) return true;
+	let tried = 0, why = null, onMapAt = null;
+	for (const p of totStandPoints(d)) {
+		if (character.rip) break;
+		tried++;
+		try { await noHang(safeSmartMove({ map: d.map, x: p.x, y: p.y }), 'tot walk', CONFIG.trickOrTreat.moveMs); }
+		catch (e) { why = (e && (e.reason || e.message)) || String(e); }
+		if (totNear(d)) { totStand[d.i] = { x: p.x, y: p.y }; return true; }
+		if (character.map !== d.map) break;
+		if (onMapAt === null) onMapAt = Date.now();
+		else if (Date.now() - onMapAt > CONFIG.trickOrTreat.moveMs) break;
+	}
+	delete totStand[d.i];
+	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
+	return false;
 }
 
 /* One route. Every exit leaves totBusy false and the ordinary helmet back on. */

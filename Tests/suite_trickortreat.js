@@ -24,12 +24,26 @@ const RULES = { doors: DOORS, costumes: ['phelmet', 'gphelmet', 'horsemanpumpkin
 
 const RANGER_FNS = ['totLog', 'totG', 'totRules', 'totUtcDay', 'totSeasonOpen', 'totRemainingDoors',
 	'totBossSoon', 'totBlocked', 'totCostumeIdx', 'totWearing', 'totKnock', 'totCostumeOn',
-	'totCostumeOff', 'totWalk', 'totRoute', 'totStatus', 'BOSS_RANK', 'bossRank'];
+	'totCostumeOff', 'totNear', 'totStandPoints', 'totWalk', 'totRoute', 'totStatus', 'BOSS_RANK', 'bossRank'];
 const MERCHANT_FNS = ['totLog', 'totRules', 'totUtcDay', 'totSeasonOpen', 'totRemainingDoors',
-	'totArbClear', 'totBlocked', 'totKnock', 'totNear', 'totRoute', 'totStatus'];
+	'totArbClear', 'totBlocked', 'totKnock', 'totNear', 'totStandPoints', 'totWalk', 'totRoute', 'totStatus'];
 
 /* `let x = <non-brace>` is not liftable (CLAUDE.md "Testing"), so the module
    state is supplied here and its committed initial values are pinned below. */
+/* One walk, as the game's pathfinder does it. over.pathable(dest) false means
+   "Path not found!": the trip onto the map arrives and the last leg is refused
+   without moving, which is what the 2026-10-24 spookytown route measured.
+   over.reachMap false means the trip itself fails before the map. */
+async function walkStub(box, calls, over, d) {
+	const ch = box.ch;
+	calls.walks.push(d.map + '@' + d.x + ',' + d.y);
+	if (over.reachMap === false) throw { reason: 'failed' };
+	ch.map = d.map;
+	if (over.pathable && !over.pathable(d)) throw { reason: 'failed' };
+	ch.real_x = d.x; ch.real_y = d.y;
+	return true;
+}
+
 function rangerWorld(over = {}) {
 	const calls = { equip: 0, knock: [], walks: [] };
 	/* world() copies the character into a fresh object, so the stubs must
@@ -52,11 +66,11 @@ function rangerWorld(over = {}) {
 		ragePull: { busy: false }, rageNav: { busy: false },
 		bossHop: { state: 'IDLE', hopping: false },
 		travelState: { inFlight: false, attemptId: 0 },
-		totBusy: false, totPauseUntil: 0, totDoneDay: null, totLast: null,
+		totBusy: false, totPauseUntil: 0, totDoneDay: null, totLast: null, totStand: {},
 		is_disabled: () => false,
 		noHang: (p) => p,
 		shouldHandleEvents: over.shouldHandleEvents || (() => false),
-		safeSmartMove: async (d) => { const ch = box.ch; calls.walks.push(d.map + '#' + d.x); ch.map = d.map; ch.real_x = d.x; ch.real_y = d.y; return true; },
+		safeSmartMove: (d) => walkStub(box, calls, over, d),
 		/* equip(idx): the bag item and the worn helmet trade places, as measured. */
 		equip: async (idx) => {
 			const ch = box.ch;
@@ -88,7 +102,7 @@ function rangerWorld(over = {}) {
 }
 
 function merchantWorld(over = {}) {
-	const calls = { knock: [], travel: [] };
+	const calls = { knock: [], walks: [] };
 	const box = {};
 	const seed = Object.assign({
 		name: 'Meltymerch', map: 'main', x: 0, y: 0, real_x: 0, real_y: 0, rip: false, gold: 9e9,
@@ -98,7 +112,7 @@ function merchantWorld(over = {}) {
 	const w = world({
 		character: seed,
 		parent: { S: { halloween: true }, G: { events: { trickortreat: RULES } } },
-		CONFIG: { trickOrTreat: { enabled: true, checkIntervalMs: 20000, retryMs: 600000, reach: 80 },
+		CONFIG: { trickOrTreat: { enabled: true, checkIntervalMs: 20000, retryMs: 600000, moveMs: 120000, reach: 80 },
 			arbitrage: { lookEveryMs: 30000 } },
 		state: Object.assign({ busy: false, queue: [] }, over.state || {}),
 		ARB: Object.assign({ cur: null, busy: false, lastLookAt: Date.now() - 1000 }, over.ARB || {}),
@@ -106,8 +120,10 @@ function merchantWorld(over = {}) {
 		arbCanStart: over.arbCanStart || (() => ({ ok: true })),
 		arbOldestJobAgeMs: () => null,
 		moveLockHeld: () => false,
-		totPauseUntil: 0, totDoneDay: null, totLast: null, totBusy: false,
-		travelTo: async (map, x, y) => { const ch = box.ch; calls.travel.push(map); ch.map = map; ch.real_x = x; ch.real_y = y; return true; },
+		totPauseUntil: 0, totDoneDay: null, totLast: null, totBusy: false, totStand: {},
+		moveTo: (d) => walkStub(box, calls, over, d),
+		arbNoHang: (p) => p,
+		travelTo: async () => { throw new Error('the route must not use travelTo - its town() fallback recalls on every refused probe'); },
 		equip: () => { throw new Error('the merchant must never swap'); },
 		knock: over.knock || (async (i) => ({ success: true, door: i, stamps: 1, treat: { name: 'candy1', q: 3 } })),
 		calls,
@@ -173,6 +189,11 @@ function scoutLoopWorld(over = {}) {
 	lift(w, 'Party/Merchant.js', ['scoutLoop']);
 	return w;
 }
+
+/* The 2026-10-24 spookytown route: every door point refused by the
+   pathfinder, the map itself reached. */
+const DOOR_POINT = (d) => DOORS.some((D) => D[0] === d.map && D[1] === d.x && D[2] === d.y);
+const SPOOKY_DOORS_REFUSED = (d) => !(d.map === 'spookytown' && DOOR_POINT(d));
 
 module.exports = [
 
@@ -418,6 +439,79 @@ module.exports = [
 	t.ok('ranger: quiet call still returns the status', rq && 'blocked' in rq && 'busy' in rq);
 	r.totStatus();
 	t.eq('ranger: the bare call logs one line', rlogs.length, 1);
+} },
+
+{ name: 'Both: an unpathable door is knocked from a stand point within reach', async fn(t) {
+	for (const [who, mk] of [['ranger', rangerWorld], ['merchant', merchantWorld]]) {
+		const w = mk({ pathable: SPOOKY_DOORS_REFUSED });
+		const sum = await w.totRoute();
+		t.eq(who + ': all seven knocked', w.calls.knock.length, 7);
+		t.eq(who + ': nothing failed', sum.failed.length, 0);
+		const spooky = DOORS.map((D, i) => ({ map: D[0], x: D[1], y: D[2], i })).filter((d) => d.map === 'spookytown');
+		t.eq(who + ': precondition - the door points really were tried and refused',
+			spooky.every((d) => w.calls.walks.includes(d.map + '@' + d.x + ',' + d.y)), true);
+		t.eq(who + ': a stand point is cached for every spookytown door', spooky.every((d) => !!w.totStand[d.i]), true);
+		t.eq(who + ': every cached point is off the door and within the server\'s 80',
+			spooky.every((d) => { const p = w.totStand[d.i]; const r = Math.hypot(p.x - d.x, p.y - d.y); return r > 0 && r <= 80; }), true);
+		t.eq(who + ': halloween doors, pathable, are walked to exactly and cached as such',
+			w.totStand[0] && w.totStand[0].x === 331 && w.totStand[0].y === -210, true);
+	}
+} },
+
+{ name: 'Both: a cached stand point is tried first next time', async fn(t) {
+	for (const [who, mk] of [['ranger', rangerWorld], ['merchant', merchantWorld]]) {
+		const w = mk({ pathable: SPOOKY_DOORS_REFUSED });
+		w.totStand[2] = { x: -130, y: -20 };
+		const d = { map: 'spookytown', x: -130, y: -60, i: 2 };
+		w.character.map = 'spookytown'; w.character.real_x = 0; w.character.real_y = 0;
+		t.eq(who + ': reached', await w.totWalk(d), true);
+		t.eq(who + ': one walk, to the cached point', w.calls.walks.join(' '), 'spookytown@-130,-20');
+	}
+} },
+
+{ name: 'Both: no stand point reachable - the door is given up after the ring, the cache is dropped', async fn(t) {
+	for (const [who, mk] of [['ranger', rangerWorld], ['merchant', merchantWorld]]) {
+		const w = mk({ pathable: () => false });
+		const logs = [];
+		w.totLog = (m) => logs.push(m);
+		w.totStand[2] = { x: 1, y: 1 };
+		const d = { map: 'spookytown', x: -130, y: -60, i: 2 };
+		t.eq(who + ': not reached', await w.totWalk(d), false);
+		t.eq(who + ': cached point, the door and 16 ring points tried', w.calls.walks.length, 18);
+		t.eq(who + ': every candidate is within reach of the door',
+			w.calls.walks.every((k) => { const [x, y] = k.split('@')[1].split(',').map(Number); return k === 'spookytown@1,1' || Math.hypot(x - d.x, y - d.y) <= 80; }), true);
+		t.eq(who + ': the stale cache entry is dropped', w.totStand[2], undefined);
+		t.eq(who + ': one log line for the door, not one per probe', logs.filter((m) => /door 2: no stand point/.test(m)).length, 1);
+	}
+} },
+
+{ name: 'Both: a trip that never reaches the door\'s map stops after one walk', async fn(t) {
+	for (const [who, mk] of [['ranger', rangerWorld], ['merchant', merchantWorld]]) {
+		const w = mk({ reachMap: false });
+		t.eq(who + ': not reached', await w.totWalk({ map: 'spookytown', x: -130, y: -60, i: 2 }), false);
+		t.eq(who + ': one walk only - a nearer point cannot fix the trip', w.calls.walks.length, 1);
+	}
+} },
+
+{ name: 'Merchant: a held move lock ends the probing, and the route never calls travelTo', async fn(t) {
+	const w = merchantWorld();
+	w.character.map = 'spookytown';
+	let n = 0;
+	w.moveTo = async () => { n++; const e = new Error('busy'); e.moveBusy = true; throw e; };
+	t.eq('not reached', await w.totWalk({ map: 'spookytown', x: -130, y: -60, i: 2 }), false);
+	t.eq('one attempt, then stand aside for the other mover', n, 1);
+	t.eq('travelTo is not in the route or the walk',
+		/travelTo\(/.test(body('Party/Merchant.js', 'async function totRoute()') + body('Party/Merchant.js', 'async function totWalk(')), false);
+} },
+
+{ name: 'Both: the door helpers are byte-identical across the two scripts', fn(t) {
+	t.ok('module state: let totStand = {} in both',
+		/^let totStand = \{\};/m.test(text('Party/Ranger.js')) && /^let totStand = \{\};/m.test(text('Party/Merchant.js')));
+	for (const decl of ['function totNear(d)', 'function totStandPoints(d)']) {
+		const a = body('Party/Ranger.js', decl), b = body('Party/Merchant.js', decl);
+		t.ok(decl + ' present', a.length > 0);
+		t.eq(decl + ' identical', a, b);
+	}
 } },
 
 ];
