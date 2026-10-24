@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v144
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v145
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1931,6 +1931,19 @@ const BOSS_JOIN_SPOTS = {
 	graveyard: { map: 'spookytown', x: 255, y: -1030 },
 };
 
+/* WHERE TO STAND ONCE RAGE ENTRY HAS TAKEN THE PARTY INTO AN EVENT'S BOX.
+   Operator's ruling 2026-10-24: the middle of the graveyard, where the zombie
+   and ghoul kills are, and NOT the Gargoyle's spawn. The 24 graves span x
+   65..447 and y -1550..-1312, so (256,-1430) is their centre, about 115 from
+   the spawn at (255,-1545). S.graveyard publishes that spawn from wave 1, and
+   with entry on bossWalkTarget's rage guard is off, so on 2026-10-24 22:30Z all
+   three walked onto it eight seconds into the first wave. Stand here through
+   the waves and fight from here after the wake. */
+const BOSS_FIELD_SPOTS = {
+	graveyard: { map: 'spookytown', x: 256, y: -1430 },
+};
+const BOSS_FIELD_HOLD = 40;   // walk back to the spot when further than this from it
+
 /* goobrawl and graveyard are the joinable events whose parent.S key is an
    EVENT name and not a monster name. This read "goobrawl is the ONE" until
    2026-10-22; `parent.S.graveyard` is the second, confirmed live, and the
@@ -2517,14 +2530,68 @@ async function rageGuard() {
 	   Detect on the real rectangle; escape out to the planner's margin. Using
 	   one number for both is what pinned the party in place for a whole run. */
 	try { hit = rageHit(character.map, character.x, character.y, cfg.guardMargin); } catch (e) { return false; }
-	if (!hit) return false;
+	if (!hit) { rageEscapeEp.joinAt = 0; return false; }
+	/* A TOWN CHANNEL IS UNDER WAY - any move would cancel it. */
+	if (character.c && character.c.town) return true;
 	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' - leaving now', 'red');
 	try { if (typeof stop === 'function') stop(); } catch (e) { }
 	const e2 = rageEscape(character.map, character.x, character.y, cfg.margin);
+	let why = 'no xmove';
 	if (typeof xmove === 'function') {
-		try { await xmove(e2.x, e2.y); } catch (err) { rageLog('escape move failed: ' + (err && err.message || err), 'red'); }
+		try { await xmove(e2.x, e2.y); return true; } catch (err) { why = errText(err); }
 	}
+	rageLog('escape move failed: ' + why, 'red');
+	await rageEscapeLadder(e2, why);
 	return true;
+}
+
+/* THE ESCAPE LADDER, operator's ruling 2026-10-24, for when the pathfinder
+   cannot get us out. Measured that evening on EU III: Dexon sat on the
+   Gargoyle spawn for eight minutes logging "Path not found!" every tick while
+   can_move_to(255,-1030) - the graveyard's join spot - was TRUE, and he and
+   the mage died inside the box after the event had ended. The pathfinder's
+   target is the NEAREST point outside the rectangle, which there is the wall
+   north of the field. In order:
+   (1) a straight-line move to that point, or to the join spot of an event on
+       this map, wherever can_move_to says the line is clear;
+   (2) the event's own join, which moves anyone more than 200 from the spot
+       back onto it - only while the event is live, once per stay inside;
+   (3) town. Not refused for attackers the way rageStuckTown is: inside the
+       box something is always on us, and staying is what killed them. */
+const RAGE_ESCAPE_JOIN_WAIT_MS = 6000;   // let a join's teleport land before town
+const RAGE_ESCAPE_TOWN_GAP_MS = 20000;
+const rageEscapeEp = { joinAt: 0, townAt: 0 };
+async function rageEscapeLadder(out, why) {
+	const now = Date.now();
+	const S = (typeof parent !== 'undefined' && parent.S) || {};
+	const targets = [{ x: out.x, y: out.y, name: null }];
+	for (const n in BOSS_JOIN_SPOTS) {
+		const s = BOSS_JOIN_SPOTS[n];
+		if (s && s.map === character.map && typeof s.x === 'number') targets.push({ x: s.x, y: s.y, name: n });
+	}
+	if (typeof can_move_to === 'function' && typeof move === 'function') {
+		for (const p of targets) {
+			if (!can_move_to(p.x, p.y)) continue;
+			rageLog('pathfinder failed (' + why + ') - straight line to ' + Math.round(p.x) + ',' + Math.round(p.y), '#FFD700');
+			try { await move(p.x, p.y); return 'straight'; }
+			catch (e) { rageLog('straight move failed: ' + errText(e), 'orange'); }
+		}
+	}
+	if (!rageEscapeEp.joinAt) {
+		for (const p of targets) {
+			if (!p.name || !bossEntryLive(p.name, S[p.name])) continue;
+			rageEscapeEp.joinAt = now;
+			rageLog('no straight line out - joining ' + p.name + ' to be moved to its spot', '#FFD700');
+			try { parent.socket.emit('join', { name: p.name }); } catch (e) { rageLog('join emit failed: ' + errText(e), 'orange'); }
+			return 'join';
+		}
+	} else if (now - rageEscapeEp.joinAt < RAGE_ESCAPE_JOIN_WAIT_MS) return 'waiting';
+	if (now - rageEscapeEp.townAt < RAGE_ESCAPE_TOWN_GAP_MS) return 'waiting';
+	rageEscapeEp.townAt = now;
+	rageLog('no way out on foot - using town', '#FFD700');
+	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
+	catch (e) { rageLog('town refused: ' + errText(e), 'orange'); }
+	return 'town';
 }
 
 // ---- one-at-a-time pulling -------------------------------------------------
@@ -3213,11 +3280,12 @@ const BOSS_RECAST_MS = 8000;
 function bossRecast() {
 	if (!bossIsLeader()) return;
 	const t = bossState.trip;
-	if (!t || !t.name) return;
 	const now = Date.now();
 	if (now - (bossState.lastCast || 0) < BOSS_RECAST_MS) return;
 	bossState.lastCast = now;
-	bossBroadcast(t.name);
+	/* AN IDLE LEADER SAYS SO TOO, so the followers hold back rather than pick
+	   for themselves - see bossPick. A forced pick still outranks it. */
+	bossBroadcast(t && t.name ? t.name : null);
 }
 
 /* THE BEAT RUNS ON ITS OWN TIMER - Ranger v140, kept byte-identical in all
@@ -3410,9 +3478,15 @@ function bossPick() {
 		bossLog('dropping the forced pick ' + f + ' - it is not live', 'orange');
 		bossState.forced = null;
 	}
-	if (!bossIsLeader() && bossState.fromLeader && bossState.fromLeader.name
+	if (!bossIsLeader() && bossState.fromLeader
 		&& (Date.now() - bossState.fromLeader.at) < cfg.leaderTrustMs) {
 		const n = bossState.fromLeader.name;
+		/* A FRESH "NO BOSS" FROM THE LEADER IS AN ANSWER, NOT SILENCE. Until
+		   v144 a follower read it as nothing heard and fell to its own pick -
+		   2026-10-24 on EU III, MageofOz went to franky twice, alone, on his
+		   own type-wide reading, while Dexon had given up on it there and was
+		   idle, and died both times. bossRecast() now repeats the null. */
+		if (!n) return null;
 		const d = (parent.S || {})[n];
 		if (bossEntryLive(n, d)) return { name: n, src: 'leader' };
 	}
@@ -3577,6 +3651,17 @@ function bossJoinWanted(name) {
 }
 
 async function bossApproach(name) {
+	/* INSIDE THE BOX, HOLD THE FIELD SPOT AND LET THE ATTACK LOOP SHOOT FROM
+	   IT, rather than posturing off whichever monster is nearest - which on the
+	   graveyard walks the party onto the Gargoyle spawn. */
+	const field = rageEntryActive ? BOSS_FIELD_SPOTS[name] : null;
+	if (field && character.map === field.map) {
+		if (smart.moving) return;
+		if (Math.hypot(character.x - field.x, character.y - field.y) <= BOSS_FIELD_HOLD) return;
+		bossNote('holding the middle of ' + name);
+		await safeMove(field.x, field.y);
+		return;
+	}
 	const mon = bossNearestMonster(name);
 	if (mon) { await bossPosture(mon); return; }
 	if (BOSS_JOIN_SPOTS[name]) {

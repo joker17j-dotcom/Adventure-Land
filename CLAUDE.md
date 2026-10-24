@@ -1454,6 +1454,16 @@ this ranking until a Ranger build is actually running on him.
   `bossJoinWanted()` joins only from another map or from beyond 1000 on this
   one, never during rage entry. The horseman's 200-unit skip is the browser
   session's read of upstream `16881a2`; this container's clone predates it.
+- **INSIDE THE BOX THE PARTY HOLDS THE MIDDLE OF THE FIELD, AND GETS OUT BY A
+  LADDER** - Ranger v145 / Priest v80 / Mage v103, the operator's rulings on
+  the 22:30Z 2026-10-24 EU III graveyard. Entry had walked all three onto the
+  Gargoyle spawn in wave 1, then Dexon sat there eight minutes on "Path not
+  found!" and he and the mage died inside after the event. `BOSS_FIELD_SPOTS`
+  holds (256,-1430); `rageEscapeLadder()` goes straight line where
+  `can_move_to` allows, then the event's join, then town. **An idle leader now
+  repeats "no boss" and followers obey it**, after MageofOz died twice
+  self-picking a franky Dexon had given up on. The retreat count is unchanged
+  and is the operator's to set.
 - **FOLLOWERS ASKED DEXON TO BLACKLIST THE FARM SPOT ON EVERY mrgreen TRIP,
   AND THE EARLIER FIX KEYED ON THE WRONG FACT.** 46 requests on 2026-10-24,
   measured by the browser session. The follower's xp monitor re-baselined only

@@ -2006,8 +2006,13 @@ module.exports = [
 
   /* Scoped three ways, each its own assertion so a mutation cannot pass by
      satisfying a neighbour. */
+  /* v144: AN IDLE LEADER SAYS "NO BOSS" ON THE SAME BEAT. Until then it said
+     nothing, and a follower read the silence as nothing heard and picked for
+     itself - MageofOz to franky, alone, twice, 2026-10-24 on EU III. */
   w = rw({ trip: null });
-  t.eq('no trip, nothing said', (w.bossRecast(), w.sent.length), 0);
+  t.eq('an idle leader tells both followers there is no boss', (w.bossRecast(), w.sent),
+    ['FatherToken:null', 'MageofOz:null']);
+  t.eq('on the same throttle', (w.bossRecast(), w.sent.length), 2);
   w = rw({ me: 'MageofOz', trip: { name: 'graveyard' } });
   t.eq('PRECONDITION: that character is not the leader', w.bossIsLeader(), false);
   t.eq('so a follower never casts', (w.bossRecast(), w.sent.length), 0);
@@ -2839,7 +2844,8 @@ module.exports = [
 { name: 'v142 rage entry ends with the trip, a join never pulls the party out, errors read', fn(t) {
 	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
 	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
-	for (const n of ['rageEntryEnd', 'rageEntryExpire', 'bossJoinWanted', 'errText', 'bossBeat', 'bossThrew', 'bossApproach']) {
+	for (const n of ['rageEntryEnd', 'rageEntryExpire', 'bossJoinWanted', 'errText', 'bossBeat', 'bossThrew', 'bossApproach',
+		'BOSS_FIELD_SPOTS', 'rageGuard', 'rageEscapeLadder', 'bossPick', 'bossRecast']) {
 		const r = extract(RANGER, n);
 		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === r, true);
 	}
@@ -2910,10 +2916,12 @@ module.exports = [
 			bossWalkTarget: () => ({ map: 'spookytown', x: 255, y: -1545 }),
 			safeSmartMove: (p) => { walked.push(p); return Promise.resolve(); },
 			bossTaxiWalkable: () => true,
+			BOSS_FIELD_HOLD: 40,
+			safeMove: async (x, y) => { walked.push({ x, y, held: true }); },
 		}, over));
 		w.parent.socket = { emit: (ev, d) => emitted.push([ev, d.name]) };
 		w.emitted = emitted; w.walked = walked;
-		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'bossJoinWanted', 'bossApproach']);
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'bossApproach']);
 		return w;
 	};
 	t.eq('from another map it joins', jw('main', 0, 0).bossJoinWanted('graveyard'), true);
@@ -2929,7 +2937,8 @@ module.exports = [
 		let a = jw('spookytown', 255, -1545, { rageEntryActive: true });
 		await a.bossApproach('graveyard');
 		t.eq('in the box with nothing in view: no join is sent', a.emitted.length, 0);
-		t.eq('it walks on toward the event instead', a.walked.length, 1);
+		t.eq('it goes to the middle of the field instead (v144), not the Gargoyle spawn',
+			JSON.stringify(a.walked), '[{"x":256,"y":-1430,"held":true}]');
 		a = jw('main', 0, 0);
 		await a.bossApproach('graveyard');
 		t.eq('from another map the join still goes', JSON.stringify(a.emitted), '[["join","graveyard"]]');
@@ -2953,6 +2962,120 @@ module.exports = [
 		const sw = world({});
 		lift(sw, RANGER, ['SCARCE_ITEM_NAMES', 'isScarceItem']);
 		t.eq('the ranger keeps sbelt', sw.isScarceItem('sbelt'), true);
+	})();
+} },
+{ name: 'v144 the field spot, the escape ladder, and an idle leader is obeyed', fn(t) {
+	/* Measured 2026-10-24 22:30Z on EU III by the browser session: rage entry
+	   walked all three onto the Gargoyle spawn eight seconds into wave 1;
+	   Dexon then sat inside for eight minutes on "Path not found!" while
+	   can_move_to to the join spot was true, and he and the mage died in the
+	   box after the event. Operator's rulings: stand in the middle of the
+	   field, and escape by straight line, then the join, then town. */
+	const src = require('fs').readFileSync(RANGER, 'utf8');
+	t.ok('the hold distance is what this suite supplies', /\nconst BOSS_FIELD_HOLD = 40;/.test(src));
+	t.ok('and the ladder timings', /\nconst RAGE_ESCAPE_JOIN_WAIT_MS = 6000;/.test(src) && /\nconst RAGE_ESCAPE_TOWN_GAP_MS = 20000;/.test(src));
+
+	/* THE FIELD SPOT. */
+	const fw = (x, y, over = {}) => {
+		const moved = [], walked = [];
+		const w = world(Object.assign({
+			character: { name: 'Dexon', map: 'spookytown', x, y, s: {} },
+			rageEntryActive: true, BOSS_FIELD_HOLD: 40, BOSS_JOIN_NEAR: 1000,
+			smart: { moving: false },
+			bossNearestMonster: () => ({ x: 255, y: -1545 }),
+			bossPosture: async (m) => { moved.push(['posture', m.x, m.y]); },
+			bossNote: () => {},
+			safeMove: async (px, py) => { moved.push(['field', px, py]); },
+			safeSmartMove: (p) => { walked.push(p); return Promise.resolve(); },
+			bossWalkTarget: () => ({ map: 'spookytown', x: 255, y: -1545 }),
+			bossTaxiWalkable: () => true,
+		}, over));
+		w.parent.socket = { emit: () => {} };
+		w.moved = moved;
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'bossApproach']);
+		return w;
+	};
+
+	/* THE LADDER. */
+	const lw = (over = {}) => {
+		const logs = [], moves = [], emits = [], skills = [];
+		const w = world(Object.assign({
+			character: { name: 'Dexon', map: 'spookytown', x: 255, y: -1545, s: {} },
+			RAGE_ESCAPE_JOIN_WAIT_MS: 6000, RAGE_ESCAPE_TOWN_GAP_MS: 20000,
+			rageLog: (m) => logs.push(String(m)),
+			can_move_to: () => false,
+			move: async (x, y) => { moves.push([x, y]); },
+			use_skill: async (n) => { skills.push(n); },
+		}, over));
+		w.parent.S = over.S || { graveyard: { live: true } };
+		w.parent.socket = { emit: (ev, d) => emits.push([ev, d.name]) };
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'errText', 'rageEscapeEp', 'rageEscapeLadder']);
+		Object.assign(w, { logs, moves, emits, skills });
+		return w;
+	};
+
+	/* AN IDLE LEADER. */
+	const pw = (fromLeader, over = {}) => {
+		const w = world(Object.assign({
+			character: { name: 'MageofOz' },
+			CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 } },
+			bossEligible: () => ({ ok: true }),
+			bossLog: () => {},
+		}, over));
+		w.parent.S = { franky: { live: true, hp: 10, max_hp: 100 } };
+		lift(w, RANGER, ['bossState', 'bossIsLeader', 'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames', 'bossPick']);
+		w.bossState.fromLeader = fromLeader;
+		return w;
+	};
+
+	return (async () => {
+		let a = fw(260, -1440);
+		await a.bossApproach('graveyard');
+		t.eq('within the hold of the field spot it stays put - no posture, no walk', a.moved.length, 0);
+		a = fw(255, -1545);
+		await a.bossApproach('graveyard');
+		t.eq('115 away on the spawn it walks back to the middle', JSON.stringify(a.moved), '[["field",256,-1430]]');
+		a = fw(255, -1545, { rageEntryActive: false });
+		await a.bossApproach('graveyard');
+		t.eq('PRECONDITION of the gate: with entry off it postures as before', a.moved[0] && a.moved[0][0], 'posture');
+		a = fw(0, 0, { character: { name: 'Dexon', map: 'halloween', x: 0, y: 0, s: {} } });
+		await a.bossApproach('graveyard');
+		t.eq('off the field map the spot does not apply', a.moved[0] && a.moved[0][0], 'posture');
+		a = fw(255, -1545);
+		await a.bossApproach('horseman');
+		t.eq('an event with no field spot postures as before', a.moved[0] && a.moved[0][0], 'posture');
+
+		let w = lw({ can_move_to: (x, y) => x === 255 && y === -1030 });
+		t.eq('(1) a clear straight line to the join spot is taken', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'straight');
+		t.eq('and is a plain move to that spot', JSON.stringify(w.moves), '[[255,-1030]]');
+		t.eq('the escape point comes first when it is clear',
+			(w = lw({ can_move_to: () => true }), await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), JSON.stringify(w.moves)), '[[255,-1641]]');
+		t.ok('the real reason is logged, not [object Object]', w.logs.some((m) => /pathfinder failed \(failed\)/.test(m)));
+		w = lw();
+		t.eq('(2) no straight line: the live event is joined', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'join');
+		t.eq('one join, for the graveyard', JSON.stringify(w.emits), '[["join","graveyard"]]');
+		t.eq('then it waits for the teleport', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'waiting');
+		t.eq('and does not join twice', w.emits.length, 1);
+		w.rageEscapeEp.joinAt = Date.now() - 7000;
+		t.eq('(3) still inside after the join: town', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'town');
+		t.eq('use_town is the call', JSON.stringify(w.skills), '["use_town"]');
+		t.eq('town is not re-cast inside its gap', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'waiting');
+		w = lw({ S: {} });
+		t.eq('an event that has ended is not joined - straight to town', await w.rageEscapeLadder({ x: 255, y: -1641 }, 'failed'), 'town');
+		t.eq('and nothing was emitted', w.emits.length, 0);
+		w = lw({ use_skill: async () => { throw { reason: 'cooldown', ms: 900 }; } });
+		w.rageEscapeEp.joinAt = 1;
+		await w.rageEscapeLadder({ x: 0, y: 0 }, 'failed');
+		t.ok('a refused town logs its reason readably', w.logs.some((m) => m === 'town refused: cooldown {"ms":900}'));
+		t.ok('rageGuard resets the join on leaving and skips a town channel',
+			/if \(!hit\) \{ rageEscapeEp\.joinAt = 0; return false; \}/.test(src) && /if \(character\.c && character\.c\.town\) return true;/.test(src));
+
+		t.eq('a fresh "no boss" from the leader: the follower picks nothing', pw({ name: null, at: Date.now() }).bossPick(), null);
+		t.eq('PRECONDITION: with no word at all it picks for itself', (pw(null).bossPick() || {}).src, 'own');
+		t.eq('and a stale null releases it the same way', (pw({ name: null, at: Date.now() - 30000 }).bossPick() || {}).src, 'own');
+		const fp = pw({ name: null, at: Date.now() });
+		fp.bossState.forced = { name: 'franky', at: Date.now() };
+		t.eq('a forced call still outranks the null', (fp.bossPick() || {}).src, 'command');
 	})();
 } },
 { name: 'v143 a boss trip is not a farm verdict - followers and Dexon both hold it', fn(t) {

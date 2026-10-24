@@ -21,6 +21,34 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v145
+
+**THE GRAVEYARD STAND, THE WAY OUT OF THE BOX, AND AN IDLE LEADER IS OBEYED** -
+from the browser session's 22:30Z EU III graveyard, 2026-10-24, and the
+operator's rulings on it.
+- **Field spot.** With rage entry on, `bossApproach` holds `BOSS_FIELD_SPOTS`
+  (graveyard: (256,-1430), the centre of the 24 graves) within
+  `BOSS_FIELD_HOLD` 40 and lets the attack loop shoot from there, through the
+  waves and after the wake. Entry used to walk all three onto the Gargoyle
+  spawn (255,-1545) eight seconds into wave 1, because `S.graveyard` publishes
+  that point and the rage guard in `bossWalkTarget` is off while entry is on.
+- **Escape ladder.** When `rageGuard`'s pathfinder fails, `rageEscapeLadder()`
+  tries (1) a straight-line `move` to the escape point or to a join spot on
+  this map, wherever `can_move_to` is true; (2) that event's join, once per
+  stay, only while it is live, then waits 6s for the teleport; (3) town, at
+  most every 20s, whatever is on us. A town channel is never cancelled by a
+  move. Dexon sat on the spawn for eight minutes on "Path not found!" with
+  `can_move_to(255,-1030)` true, and he and the mage died inside after the
+  event. Every failure now logs through `errText`, not "[object Object]".
+- **An idle leader says "no boss".** `bossRecast()` repeats a null on its 8s
+  beat when there is no trip, and a follower's `bossPick()` takes a fresh null
+  as the answer instead of picking for itself. MageofOz went to franky alone
+  twice on EU III, on his own type-wide reading, while Dexon had given up on it
+  there, and died both times. A forced call still outranks it; a stale null
+  still releases the follower, as before.
+- The retreat itself (`retreatAtAttackers` 3) is unchanged; its numbers are
+  the operator's to set.
+
 ## v144
 
 **THE CAVE MAIL CLAIMER NEVER SAW A LETTER, AND IT THREW INTO THE GAME LOG ON
