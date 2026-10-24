@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v120
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v121
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5891,17 +5891,20 @@ async function totLoop() {
 	setTimeout(totLoop, (CONFIG.trickOrTreat && CONFIG.trickOrTreat.checkIntervalMs) || 20000);
 }
 
-/* Console: why a route is or is not running, and how the last one went. */
-function totStatus() {
+/* Why a route is or is not running, and how the last one went. Logs a [tot]
+   line for console use; totStatus(true) returns the same object silently, for
+   a sampler - polling the logging form scrolls real [tot] lines out of the
+   game log, which is where a route's failure reasons are read. */
+function totStatus(quiet) {
 	const now = Date.now();
 	const t = character.trickortreat || null;
 	const out = {
-		blocked: totBlocked(now), season: totSeasonOpen(),
+		blocked: totBlocked(now), busy: totBusy, season: totSeasonOpen(),
 		doors: t ? t.doors : null, doorsLeft: t ? t.doors_left : null, stamps: t ? t.stamps : null,
 		next: totRemainingDoors().map((d) => d.map + '#' + d.i),
 		pausedForSec: Math.max(0, Math.round((totPauseUntil - now) / 1000)), last: totLast,
 	};
-	totLog(JSON.stringify(out), '#8b98ab');
+	if (!quiet) totLog(JSON.stringify(out), '#8b98ab');
 	return out;
 }
 

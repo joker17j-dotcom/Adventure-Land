@@ -1,4 +1,16 @@
 
+## v121
+
+**`totStatus(true)` READS THE KNOCK ROUTE'S STATE WITHOUT LOGGING, and the
+status now carries `busy`.** The browser session's report, 2026-10-24, while
+checking v120: `totStatus()` writes a `[tot]` line on every call, so their 2s
+sampler flooded the game log and pushed the real `[tot]` lines out - the
+scroll-off that hid Dexon's failure reasons. The logging form stays for the
+console; a truthy argument returns the same object silently. `busy` is
+`totBusy`, so one quiet call answers whether a route is running without a
+second probe, matching the ranger's status. Same change as Ranger v128.
+
+
 ## v120
 
 **THE KNOCK ROUTE NO LONGER GETS HOPPED OFF THE SHARD.** Operator, 2026-10-24:

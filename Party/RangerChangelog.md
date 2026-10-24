@@ -21,6 +21,16 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v128
+
+**`totStatus(true)` READS THE KNOCK ROUTE'S STATE WITHOUT LOGGING.** The
+browser session's report, 2026-10-24: `totStatus()` writes a `[tot]` line on
+every call, so a 2s sampler polling it filled the ~100-line game log and
+scrolled the real `[tot]` lines - the ones carrying a route's failure reasons -
+out of it, which is how Dexon's failures were hidden before. The logging form
+stays for the console; a truthy argument returns the same object silently.
+Nothing else changed.
+
 ## v127
 
 **TRICK OR TREAT: DEXON KNOCKS HIS SEVEN DOORS.** The operator's spec of

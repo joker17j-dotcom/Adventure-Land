@@ -399,4 +399,25 @@ module.exports = [
 	t.eq('queued jobs do not send him home mid-route', queued.calls.home, 0);
 } },
 
+{ name: 'totStatus(true) is silent on both scripts; the bare call still logs', fn(t) {
+	const m = merchantWorld();
+	const logs = [];
+	m.totLog = (msg) => logs.push(msg);
+	const q = m.totStatus(true);
+	t.eq('merchant: quiet call writes nothing', logs.length, 0);
+	t.eq('merchant: quiet call still returns the status', typeof q.blocked, 'object');
+	t.eq('merchant: the status carries busy', q.busy, false);
+	m.totStatus();
+	t.eq('merchant: the bare call logs one line', logs.length, 1);
+
+	const r = rangerWorld();
+	const rlogs = [];
+	r.totLog = (msg) => rlogs.push(msg);
+	const rq = r.totStatus(true);
+	t.eq('ranger: quiet call writes nothing', rlogs.length, 0);
+	t.ok('ranger: quiet call still returns the status', rq && 'blocked' in rq && 'busy' in rq);
+	r.totStatus();
+	t.eq('ranger: the bare call logs one line', rlogs.length, 1);
+} },
+
 ];

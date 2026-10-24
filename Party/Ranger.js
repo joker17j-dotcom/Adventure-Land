@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v127
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v128
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -7185,8 +7185,11 @@ async function totTick() {
 	await totRoute();
 }
 
-/* Console: why a route is or is not running, and how the last one went. */
-function totStatus() {
+/* Why a route is or is not running, and how the last one went. Logs a [tot]
+   line for console use; totStatus(true) returns the same object silently, for
+   a sampler - polling the logging form scrolls real [tot] lines out of the
+   game log, which is where a route's failure reasons are read. */
+function totStatus(quiet) {
 	const now = Date.now();
 	const t = character.trickortreat || null;
 	const out = {
@@ -7197,7 +7200,7 @@ function totStatus() {
 		rankedEventInMin: Math.round(totBossSoon(now) / 60000), pausedForSec: Math.max(0, Math.round((totPauseUntil - now) / 1000)),
 		last: totLast,
 	};
-	totLog(JSON.stringify(out), '#8b98ab');
+	if (!quiet) totLog(JSON.stringify(out), '#8b98ab');
 	return out;
 }
 
