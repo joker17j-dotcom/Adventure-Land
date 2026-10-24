@@ -5268,6 +5268,22 @@ for it in any script before Ranger v121 / Merchant v115.
   **STILL UNMEASURED**: one live knock confirming the knocker going 7 -> 6 and
   a same-shard sibling staying at 7; costume <-> ORDINARY helmet swap (same
   server path, no ordinary helmet was in any bag).
+  **ANSWERED LIVE 2026-10-24 BY THE BROWSER SESSION, ONE KNOCK SPENT.**
+  Dexon, operator-paused, fury+6 worn and a phelmet+0 in bag 3, BOTH
+  hand-locked first. **A LOCKED ITEM EQUIPS AND SWAPS NORMALLY AND KEEPS ITS
+  LOCK** - four `equip(3)` calls, both read `l: 'l'` after every one, promise
+  39-42ms, `character.slots` updated in 6-7ms - which is the source read
+  confirmed, and costume <-> ORDINARY helmet is now measured, not only costume
+  <-> costume. **`equip` DOES NOT CANCEL MOVEMENT**: a swap pair 1.5s into a
+  `smart_move` left `character.moving` true and the move arrived. The knock,
+  door 0 on halloween from 2 units, costume worn: `knock()` resolved in 241ms
+  to `{success, door: 0, stamps: 1, treat: {name: "candy1", q: 3}}`, no
+  ghost; swapped back only after it resolved. `doors_left` 1.2s later: Dexon
+  7 -> 6 with `doors: [0]`; FatherToken and MageofOz on the SAME shard stayed
+  7 but picked up `stamps: 1` with no knock of their own, so the same-shard
+  resend is live; Meltymerch on ANOTHER shard stayed at `stamps: 0`, so the
+  per-process cache is confirmed and `trickortreat_limit` stays the
+  authority. Hexed, spooked and combat were not provoked; source says no gate.
 - **G's `g` IS NOT A VENDOR PRICE.** Measured live 2026-10-23:
   `calculate_item_value` - what an NPC pays - is 60% of `g` at +0, and Ponty
   charges twice that. phelmet `g` 72,000 vendors for 43,200 (+1 63,200, +5
@@ -5331,6 +5347,11 @@ for it in any script before Ranger v121 / Merchant v115.
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
+  **THE FIRST IS ANSWERED** (the live test above: `equip` round-trips
+  mid-`smart_move` and does not stop it). **THE SECOND IS STILL UNMEASURED** -
+  no ghost has spawned on a test knock - but it is low-stakes on the facts
+  already measured: the ghost is a 120s monster that touches nothing on the
+  knocker, and the swap back waits only for the knock's own response.
 
 ## Testing
 
