@@ -21,6 +21,46 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v142
+
+**RAGE ENTRY ENDS WITH THE TRIP.** Measured 2026-10-24 16:41 EDT by the
+browser session: the graveyard ended and both followers were still in entry
+mode, with containment off, parked beside the mummy box seven minutes later. A
+follower's trip ends through `bossOnCall` ("the leader moved on"). `bossPick()`
+is then null and `shouldHandleEvents()` goes false, so `bossTick`, which held
+both the reset and the follower's trust timeout, never ran again. Now `bossEnd`
+calls `rageEntryEnd()`, which clears the state on every character and has the
+leader send an explicit "out". `rageEntryExpire()` drops a follower's stale
+"in" from `bossBeat`'s own timer, which runs whether or not there is a trip.
+
+**A JOIN IS A TAXI TO THE EVENT, NOT A WAY TO STAY AT IT.** The server teleports
+anyone more than 200 from the join spot back onto it, so a join sent from inside
+the fight pulled the party out of the box: the operator watched Dexon teleport
+out. `bossJoinWanted()` joins only from another map or from more than
+`BOSS_JOIN_NEAR` (1000) across this one, never while rage entry is on, and never
+on goobrawl's own map. Otherwise the approach walks on, as it already did while
+hop-sick.
+
+**ERRORS READ.** `errText()` keeps a game rejection's reason and adds its scalar
+fields (`place` and the rest), so "tick threw: failed" and "pull tick threw:
+[object Object]" now say where.
+
+**NO ELIXIR FROM THE BAG.** Operator's ruling, 2026-10-24: an elixir in the
+elixir slot may be used, but a script never drinks or equips one from the bag
+and never buys one. `elixirUsage()`, which drank `pumpkinspice` from the bag,
+is gone.
+
+**sbelt IS SCARCE.** Operator, 2026-10-24: added to `SCARCE_ITEM_NAMES`, which
+both sell paths consult. A third Belt of Hallowed Trials was muled to Dexon, and
+the ranger had named it nowhere. Whether three +0 copies get compounded is the
+operator's call and is not touched here.
+
+**ACHIEVEMENT QUEUE: A SECOND booboo SPOT FIRST.** The operator's
+`{ m: 'booboo', map: 'spookytown', x: -530, y: -785, rung: null, also: [] }`
+goes at the top of the queue, for now, because the corridor spot has
+competition. The saved position is an index, so a saved 0 now means this entry;
+`achvReset(n)` if it was anything else.
+
 ## v141
 
 **A BUY IS SENT ONLY WHERE THAT ITEM'S VENDOR IS IN REACH.** The browser

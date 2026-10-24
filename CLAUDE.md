@@ -1439,6 +1439,21 @@ this ranking until a Ranger build is actually running on him.
   for 20s, and cast town after two refusals in a row - the operator's ruling,
   the leader taking the other two. **WHERE TOWN LANDS ON spookytown, AND THAT
   `use_skill('use_town')` IS THE CALL, ARE UNMEASURED.**
+- **ENTRY OUTLIVED THE TRIP ON BOTH FOLLOWERS, AND THE JOIN TELEPORTED THE
+  PARTY OUT OF THE BOX - BOTH FIXED IN Ranger v142 / Priest v77 / Mage v100.**
+  Measured by the browser session at the 16:30 EDT 2026-10-24 graveyard. The
+  followers were still `rageEntryActive` with containment off seven minutes
+  after the end: their trip ended through `bossOnCall`, after which
+  `shouldHandleEvents()` was false and `bossTick` - holding the reset AND the
+  trust timeout - never ran again. The same shape as v140's starved heartbeat:
+  a check living in a loop that stops being reached exactly when it is
+  needed. `bossEnd` now clears entry everywhere and the timeout runs from
+  `bossBeat`'s own timer. **THE JOIN IS A TAXI, NOT A KEEP-ALIVE**: the server
+  moves anyone more than 200 from the join spot back onto it, so the approach's
+  join on any tick with nothing in view undid every step into the box.
+  `bossJoinWanted()` joins only from another map or from beyond 1000 on this
+  one, never during rage entry. The horseman's 200-unit skip is the browser
+  session's read of upstream `16881a2`; this container's clone predates it.
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
@@ -4531,6 +4546,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
+- **ELIXIRS: THE SLOT MAY BE USED, THE BAG NEVER, AND NONE IS BOUGHT** -
+  operator's ruling 2026-10-24. Priest and Ranger `elixirUsage()` drank one from
+  the bag and the priest's also bought one; both are gone in Priest v77 / Ranger
+  v142, and `Tests/suite_bosshop.js` fails on any script that locates, buys or
+  drinks an elixir by name.
+- **sbelt IS ON THE RANGER'S `SCARCE_ITEM_NAMES` (v142)**, operator 2026-10-24.
+  Whether three +0 copies are compounded automatically is the operator's call,
+  still pending.
 - **CAVE AMBER AND THE LOADED DIE ARE NEVER SOLD AND ALWAYS BANKED, AND THE DIE
   IS NEVER COMPOUNDED** - operator's rulings 2026-10-24 ("No compounding just
   bank"). Ranger v137 `SCARCE_ITEM_NAMES`; Merchant v126 `PROTECTED_ITEM_NAMES`,

@@ -1499,6 +1499,7 @@ module.exports = [
 			BOSS_TYPE_GIVEUP_MAX: 2,
 			parent: { server_region: shard.slice(0, 2), server_identifier: shard.slice(2) },
 			character: { name: 'Dexon', rip: false },
+			rageEntryEnd: () => {},   // v142; the rage side is tested on its own
 		});
 		lift(w, RANGER, ['bossState', 'bossShard', 'bossCooldownKey', 'bossCooledDown',
 			'bossClearCooldown', 'bossEligible', 'bossGenerationEnd', 'bossEnd']);
@@ -1603,6 +1604,7 @@ module.exports = [
 			BOSS_TYPE_GIVEUP_MAX: 2,
 			parent: { server_region: 'US', server_identifier: 'II' },
 			character: { name: 'Dexon', rip: false },
+			rageEntryEnd: () => {},   // v142; the rage side is tested on its own
 		});
 		lift(w, RANGER, ['bossState', 'bossShard', 'bossCooldownKey', 'bossCooledDown',
 			'bossClearCooldown', 'bossEligible', 'bossGenerationEnd', 'bossEnd']);
@@ -2643,7 +2645,7 @@ module.exports = [
 	/* NOTES: two alternating messages each say once per trip. */
 	const nw = world({ bossState: { trip: { startedAt: 1 }, lastNote: null } });
 	nw.logs2 = []; nw.bossLog = (m) => nw.logs2.push(m);
-	lift(nw, RANGER, ['bossNote', 'bossThrew']);
+	lift(nw, RANGER, ['bossNote', 'bossThrew', 'errText']);
 	/* `const X = new Map()` is the non-liftable initialiser this repo records -
 	   supplied here and pinned from the source text. */
 	const rs = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
@@ -2817,26 +2819,139 @@ module.exports = [
 		await w.buyMissingPotions();
 		t.eq('at the vendor it buys both', JSON.stringify(w.bought), '[["hpot1",1000],["mpot1",1000]]');
 
-		/* THE PRIEST'S ELIXIR. Only Warin sells it. */
-		const pw = (map, x, y) => {
-			const p = vw(map, x, y, { locate_item: () => -1, use: () => {} });
-			p.character.slots = { elixir: null };
-			lift(p, 'Party/Priest.js', ['elixirUsage']);
-			return p;
-		};
-		let p = pw('main', 0, 0);
-		p.elixirUsage(); p.elixirUsage();
-		t.eq('the priest away from Warin buys no elixir', p.bought.length, 0);
-		t.eq('and says so once', p.logs.filter((l) => /^\[buy\] want elixirluck \(luck elixir\)/.test(l)).length, 1);
-		p = pw('winter_inn', -140, -200);
-		p.elixirUsage();
-		t.eq('beside Warin he buys the two', JSON.stringify(p.bought), '[["elixirluck",2]]');
-
+		/* THE ELIXIR RULING, operator 2026-10-24: one in the elixir SLOT may be
+		   used; one in the BAG is never drunk or equipped by a script, and none
+		   is ever bought. Both scripts that had an elixirUsage() lose it. */
+		for (const f of FILES) {
+			const s = fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+			t.eq(f + ': no elixirUsage', /elixirUsage/.test(s), false);
+			t.eq(f + ': no script drinks an elixir from the bag', /locate_item\(\s*['"](elixir\w*|pumpkinspice)['"]/.test(s), false);
+			t.eq(f + ': no script buys an elixir', /buy(WhereSold)?\(\s*['"](elixir\w*|pumpkinspice)['"]/.test(s), false);
+		}
 		/* THE RANGER'S OTHER BUYS go through the wrapper, with a reason. */
 		const rs = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
 		t.ok('the licence buy is gated', /const p = buyWhereSold\('licence', 1, 'licence'\);\n\t+if \(p\) \{ await p; slot = locate_item\("licence"\); \}/.test(rs));
 		t.ok('the upgrade scroll buy is gated', /buyWhereSold\(scrollname, 1, 'upgrade'\);/.test(rs));
 		t.ok('the compound scroll buy is gated', /buyWhereSold\(scrollName, 1, 'compound'\);/.test(rs));
+	})();
+} },
+{ name: 'v142 rage entry ends with the trip, a join never pulls the party out, errors read', fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
+	for (const n of ['rageEntryEnd', 'rageEntryExpire', 'bossJoinWanted', 'errText', 'bossBeat', 'bossThrew', 'bossApproach']) {
+		const r = extract(RANGER, n);
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === r, true);
+	}
+	for (const f of FILES) {
+		t.ok(f + ': bossEnd clears rage entry', /rageEntryEnd\('the trip ended'\);/.test(extract(f, 'bossEnd')));
+		const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		t.ok(f + ': the pull tick logs through errText', /ragePullTick\(\)\.catch\(e => rageLog\('pull tick threw: ' \+ errText\(e\), 'red'\)\);/.test(s));
+		t.ok(f + ': BOSS_JOIN_NEAR is what this suite supplies', /\nconst BOSS_JOIN_NEAR = 1000;\n/.test(s));
+	}
+
+	/* THE FOLLOWER. 16:41 EDT: entry still on seven minutes after the trip. */
+	const ew = (me, over = {}) => {
+		const sent = [];
+		const w = world(Object.assign({
+			character: { name: me, map: 'spookytown', x: 285, y: -1025 },
+			CONFIG: { bossEvents: { leaderName: 'Dexon', rageEntry: { trustMs: 15000 } }, party: { groupMembers: ['Dexon', 'FatherToken', 'MageofOz'] } },
+			bossState: { trip: null },
+			rageEntryActive: true, rageEntryOkSince: 5, rageEntryInSince: 5, rageEntryWindow: [[1, 6]], rageEntryHeard: { on: true, at: Date.now() - 20000 },
+			plSend: (to, m) => { sent.push([to, m.message, m.on]); },
+			rageLog: (m) => { w.logs.push(String(m)); },
+			bossRecast: () => { sent.push(['recast']); },
+		}, over));
+		w.sent = sent;
+		lift(w, RANGER, ['bossIsLeader', 'rageEntrySet', 'rageEntryBroadcast', 'rageEntryEnd', 'rageEntryExpire', 'bossBeat']);
+		return w;
+	};
+	let w = ew('FatherToken');
+	t.eq('precondition: no trip and the word is 20s old', [w.bossState.trip, Date.now() - w.rageEntryHeard.at > 15000], [null, true]);
+	w.bossBeat();
+	t.eq('the beat drops a follower’s stale entry with no trip at all', w.rageEntryActive, false);
+	w = ew('FatherToken', { rageEntryHeard: { on: true, at: Date.now() - 1000 } });
+	w.bossBeat();
+	t.eq('a fresh word keeps it', w.rageEntryActive, true);
+	w = ew('Dexon', { rageEntryHeard: null });
+	w.bossBeat();
+	t.eq('the leader’s own flag is not his followers’ timeout to drop', w.rageEntryActive, true);
+
+	w = ew('Dexon');
+	w.rageEntryEnd('the trip ended');
+	t.eq('rageEntryEnd clears the leader’s state', [w.rageEntryActive, w.rageEntryWindow.length, w.rageEntryOkSince, w.rageEntryHeard], [false, 0, 0, null]);
+	t.eq('and tells both followers OUT', JSON.stringify(w.sent), '[["FatherToken","rageentry",false],["MageofOz","rageentry",false]]');
+	w = ew('MageofOz', { rageEntryHeard: { on: true, at: Date.now() } });
+	w.rageEntryEnd('the trip ended');
+	t.eq('a follower clears even with a fresh word, and sends nothing', [w.rageEntryActive, w.sent.length], [false, 0]);
+
+	/* bossEnd ON A FOLLOWER - the far side of the handoff, through the path that
+	   actually ended the 16:41 trips. */
+	w = ew('FatherToken', {
+		rageEntryHeard: { on: true, at: Date.now() },
+		bossState: { trip: { name: 'graveyard', startedAt: Date.now() - 600000 }, cooldown: {}, fromLeader: null },
+		bossSave: () => {}, bossLog: (m) => { w.logs.push(String(m)); }, bossBroadcast: () => {},
+		CONFIG: { bossEvents: { leaderName: 'Dexon', cooldownMs: 1800000, rageEntry: { trustMs: 15000 } }, party: { groupMembers: ['Dexon', 'FatherToken', 'MageofOz'] } },
+	});
+	lift(w, 'Party/Priest.js', ['bossEnd', 'bossOnCall']);
+	w.bossOnCall('Dexon', { name: null });
+	t.eq('"the leader moved on" ends the follower’s trip', w.bossState.trip, null);
+	t.eq('and takes the follower out of the box with it', w.rageEntryActive, false);
+
+	/* THE JOIN. */
+	const jw = (map, x, y, over = {}) => {
+		const emitted = [], walked = [];
+		const w = world(Object.assign({
+			character: { name: 'Dexon', map, x, y, s: {} },
+			BOSS_JOIN_NEAR: 1000, rageEntryActive: false,
+			smart: { moving: false },
+			bossNearestMonster: () => null, bossPosture: async () => {},
+			bossNote: (m) => { w.logs.push(String(m)); },
+			bossWalkTarget: () => ({ map: 'spookytown', x: 255, y: -1545 }),
+			safeSmartMove: (p) => { walked.push(p); return Promise.resolve(); },
+			bossTaxiWalkable: () => true,
+		}, over));
+		w.parent.socket = { emit: (ev, d) => emitted.push([ev, d.name]) };
+		w.emitted = emitted; w.walked = walked;
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'bossJoinWanted', 'bossApproach']);
+		return w;
+	};
+	t.eq('from another map it joins', jw('main', 0, 0).bossJoinWanted('graveyard'), true);
+	t.eq('on spookytown 515 from the spot it does not', jw('spookytown', 255, -1545).bossJoinWanted('graveyard'), false);
+	t.eq('nor inside the 200 the server skips anyway', jw('spookytown', 260, -1040).bossJoinWanted('graveyard'), false);
+	t.eq('far across the same map it still does', jw('spookytown', 255, 100).bossJoinWanted('graveyard'), true);
+	t.eq('never while rage entry has the party in the box', jw('main', 0, 0, { rageEntryActive: true }).bossJoinWanted('graveyard'), false);
+	t.eq('on goobrawl’s own map never', jw('goobrawl', 0, 0).bossJoinWanted('goobrawl'), false);
+	t.eq('to goobrawl from elsewhere, yes', jw('main', 0, 0).bossJoinWanted('goobrawl'), true);
+	t.eq('an event with no join spot never', jw('main', 0, 0).bossJoinWanted('mrgreen'), false);
+
+	return (async () => {
+		let a = jw('spookytown', 255, -1545, { rageEntryActive: true });
+		await a.bossApproach('graveyard');
+		t.eq('in the box with nothing in view: no join is sent', a.emitted.length, 0);
+		t.eq('it walks on toward the event instead', a.walked.length, 1);
+		a = jw('main', 0, 0);
+		await a.bossApproach('graveyard');
+		t.eq('from another map the join still goes', JSON.stringify(a.emitted), '[["join","graveyard"]]');
+		a = jw('goobrawl', 0, 0, { bossWalkTarget: () => null });
+		await a.bossApproach('goobrawl');
+		t.eq('on goobrawl with nothing in view: no join, no walk', [a.emitted.length, a.walked.length], [0, 0]);
+		a = jw('spookytown', 255, -1545, { character: { name: 'Dexon', map: 'spookytown', x: 255, y: -1545, s: { hopsickness: { ms: 1 } } } });
+		await a.bossApproach('graveyard');
+		t.eq('hop-sick on the map: walks, never joins', [a.emitted.length, a.walked.length], [0, 1]);
+
+		/* THE ERRORS. */
+		const ew2 = world({});
+		lift(ew2, RANGER, ['errText']);
+		t.eq('a game rejection keeps its place', ew2.errText({ success: false, reason: 'failed', place: 'smart_move' }), 'failed {"place":"smart_move"}');
+		t.eq('an Error is its message', ew2.errText(new Error('boom')), 'boom');
+		t.eq('nested objects are left out', ew2.errText({ reason: 'x', data: { a: 1 }, n: 2 }), 'x {"n":2}');
+		t.eq('a bare object is not [object Object]', ew2.errText({ place: 'buy' }), '{"place":"buy"}');
+		t.eq('a string is itself', ew2.errText('nope'), 'nope');
+
+		/* sbelt - the operator's word, 2026-10-24. */
+		const sw = world({});
+		lift(sw, RANGER, ['SCARCE_ITEM_NAMES', 'isScarceItem']);
+		t.eq('the ranger keeps sbelt', sw.isScarceItem('sbelt'), true);
 	})();
 } },
 ];

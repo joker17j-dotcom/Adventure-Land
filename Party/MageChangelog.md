@@ -21,6 +21,30 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v100
+
+**RAGE ENTRY ENDS WITH THE TRIP.** Measured 2026-10-24 16:41 EDT by the
+browser session: the graveyard ended and both followers were still in entry
+mode, with containment off, parked beside the mummy box seven minutes later. A
+follower's trip ends through `bossOnCall` ("the leader moved on"). `bossPick()`
+is then null and `shouldHandleEvents()` goes false, so `bossTick`, which held
+both the reset and the follower's trust timeout, never ran again. Now `bossEnd`
+calls `rageEntryEnd()`, which clears the state on every character and has the
+leader send an explicit "out". `rageEntryExpire()` drops a follower's stale
+"in" from `bossBeat`'s own timer, which runs whether or not there is a trip.
+
+**A JOIN IS A TAXI TO THE EVENT, NOT A WAY TO STAY AT IT.** The server teleports
+anyone more than 200 from the join spot back onto it, so a join sent from inside
+the fight pulled the party out of the box: the operator watched Dexon teleport
+out. `bossJoinWanted()` joins only from another map or from more than
+`BOSS_JOIN_NEAR` (1000) across this one, never while rage entry is on, and never
+on goobrawl's own map. Otherwise the approach walks on, as it already did while
+hop-sick.
+
+**ERRORS READ.** `errText()` keeps a game rejection's reason and adds its scalar
+fields (`place` and the rest), so "tick threw: failed" and "pull tick threw:
+[object Object]" now say where.
+
 ## v99
 
 **A BUY IS SENT ONLY WHERE THAT ITEM'S VENDOR IS IN REACH.** The browser

@@ -142,7 +142,7 @@ module.exports = [
 		t.eq(`${FILES3[i]}: no unconditional hopsick bail`,
 			/hopsickness\)\s*\{\s*bossNote\('hopsick - cannot join/.test(b), false);
 		t.that(`${FILES3[i]}: the bail is gated on bossTaxiWalkable`,
-			/if \(!bossTaxiWalkable\(name\)\)/.test(b), b.slice(0, 80));
+			/if \(sick && !bossTaxiWalkable\(name\)\)/.test(b), b.slice(0, 80));
 	}
 
 	/* The predicate itself has to be the same function, not merely present. */

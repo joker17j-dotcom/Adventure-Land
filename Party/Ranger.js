@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v141
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v142
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1055,6 +1055,9 @@ const CONFIG = {
 			   because booboo respawns every 48s against mummy's 24 and would otherwise
 			   idle most of the trip; the rung still tracks `m`. rung null means run
 			   until the toggle goes off or achvStop(). */
+			/* The operator's spot, 2026-10-24, put first for now: the corridor
+			   spot below has competition. */
+			{ m: 'booboo', map: 'spookytown', x: -530, y: -785, rung: null, also: [] },
 			{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
 			{ m: 'stoneworm',  map: 'spookytown',  x:  677, y:   129, rung: 100000 },
 			{ m: 'mole',       map: 'tunnel',      x:   14, y: -1072, rung: 10000  },
@@ -1402,7 +1405,7 @@ async function mainLoop() {
 		   HANG_GUARD, which is exactly the trap restockTrip was detached to avoid. */
 		if (await rageGuard()) return setTimeout(mainLoop, 250);
 		if (ragePull.busy || rageNav.busy) return setTimeout(mainLoop, 250);
-		if (ragePullActive()) ragePullTick().catch(e => rageLog('pull tick threw: ' + (e && e.message || e), 'red'));
+		if (ragePullActive()) ragePullTick().catch(e => rageLog('pull tick threw: ' + errText(e), 'red'));
 		if (is_disabled(character)) return setTimeout(mainLoop, 250);
 		// Selling junk off to make room. Same shape as waiting for the merchant:
 		// stand down until it finishes, and it always finishes.
@@ -1688,7 +1691,6 @@ const maintenanceLoop = async () => {
 		if (CONFIG.combining.enabled) combineItems();
 
 		if (CONFIG.muling.enabled) clearInventory();
-		elixirUsage();
 		checkFarmEconomics();
 
 		if (character.rip) {
@@ -2838,6 +2840,29 @@ function rageEntryOnCall(from, data) {
 	rageEntryHeard = { on: !!data.on, at: Date.now() };
 }
 
+/* ENTRY ENDS WITH THE TRIP, ON EVERY CHARACTER, AND THE LEADER SAYS SO.
+   Measured 2026-10-24 16:41 EDT: the graveyard ended and both followers were
+   still in entry mode - containment off, parked beside the mummy box - seven
+   minutes later. A follower's trip ends through bossOnCall ("the leader moved
+   on"), bossPick() is then null, shouldHandleEvents() goes false, and bossTick
+   - which held both the reset and the follower's trust timeout - never ran
+   again. So bossEnd clears it, the leader sends an explicit "out", and the
+   timeout runs from the beat's own timer (rageEntryExpire) rather than from a
+   loop that stops being reached exactly when it is needed. */
+function rageEntryEnd(why) {
+	rageEntryOkSince = 0; rageEntryWindow = []; rageEntryHeard = null;
+	rageEntrySet(false, why);
+	if (bossIsLeader()) { try { rageEntryBroadcast(false); } catch (e) { } }
+}
+
+/* A follower's "in" lasts only as long as the leader keeps saying it. */
+function rageEntryExpire() {
+	if (!rageEntryActive || bossIsLeader()) return;
+	const cfg = (CONFIG.bossEvents && CONFIG.bossEvents.rageEntry) || {};
+	const fresh = rageEntryHeard && (Date.now() - rageEntryHeard.at) < (cfg.trustMs || 15000);
+	if (!fresh) rageEntrySet(false, 'no recent word from the leader');
+}
+
 function rageEngagedCount(types) {
 	const E = (typeof parent !== 'undefined' && parent.entities) || {};
 	const names = (typeof CONFIG !== 'undefined' && CONFIG.party && CONFIG.party.groupMembers) || [];
@@ -3134,12 +3159,35 @@ function bossNote(m) {
    found". Said once a minute per reason. */
 const bossThrewSeen = new Map();
 function bossThrew(e) {
-	const why = (e && (e.message || e.reason)) || (function () { try { return JSON.stringify(e); } catch (x) { return String(e); } })();
+	const text = errText(e);
+	const why = (e && (e.message || e.reason)) || text;
 	const now = Date.now(), last = bossThrewSeen.get(why);
 	if (last && now - last < 60000) return;
 	if (bossThrewSeen.size > 50) bossThrewSeen.clear();
 	bossThrewSeen.set(why, now);
-	bossLog('tick threw: ' + why, 'red');
+	bossLog('tick threw: ' + text, 'red');
+}
+
+/* A rejection the game hands back is an OBJECT - {reason: "failed", place:
+   "smart_move", ...} - so its message alone said "failed" and a template
+   string said "[object Object]", both measured in the 2026-10-24 log. This
+   keeps the reason and adds every scalar field beside it. */
+function errText(e) {
+	if (e instanceof Error) return e.message;
+	if (e && typeof e === 'object') {
+		let s = String(e.message || e.reason || '');
+		const extra = {};
+		for (const k of Object.keys(e)) {
+			if (k === 'message' || k === 'reason' || k === 'success') continue;
+			const v = e[k];
+			if (v === null || typeof v !== 'object') extra[k] = v;
+		}
+		const tail = JSON.stringify(extra);
+		if (tail !== '{}') s += (s ? ' ' : '') + tail;
+		if (s) return s.slice(0, 240);
+		try { return JSON.stringify(e).slice(0, 240); } catch (x) { }
+	}
+	return String(e);
 }
 function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName; }
 /* THE TRUST WINDOW NEEDS A HEARTBEAT, OR IT IS A TIMER THAT ALWAYS EXPIRES.
@@ -3183,6 +3231,7 @@ function bossRecast() {
    same gate and the followers fall out on its silence too. */
 const BOSS_BEAT_MS = 2000;
 function bossBeat() {
+	try { rageEntryExpire(); } catch (e) { }
 	if (!bossIsLeader() || !bossState.trip) return;
 	try { bossRecast(); } catch (e) { }
 	try { rageEntryBroadcast(rageEntryActive); } catch (e) { }
@@ -3489,6 +3538,24 @@ function bossWalkTarget(name) {
 	return null;
 }
 
+/* THE JOIN IS A TAXI TO THE EVENT, NOT A WAY TO STAY AT IT. The server moves
+   anyone more than 200 from the join spot back onto it (100 for icegolem), so
+   a join sent from INSIDE the fight is a teleport out of it - measured
+   2026-10-24 at the graveyard, where rage entry walked the party toward the
+   Gargoyle at 515 from the spot and the next tick with nothing in view joined
+   them straight back. So: join from another map, or from far across this one;
+   never while rage entry has taken the party into the box; and on goobrawl's
+   own map never at all, where the server does nothing with it anyway. */
+const BOSS_JOIN_NEAR = 1000;
+function bossJoinWanted(name) {
+	const spot = BOSS_JOIN_SPOTS[name];
+	if (!spot) return false;
+	if (rageEntryActive) return false;
+	if (character.map !== spot.map) return true;
+	if (spot.x == null) return false;
+	return Math.hypot(character.x - spot.x, character.y - spot.y) > BOSS_JOIN_NEAR;
+}
+
 async function bossApproach(name) {
 	const mon = bossNearestMonster(name);
 	if (mon) { await bossPosture(mon); return; }
@@ -3504,13 +3571,15 @@ async function bossApproach(name) {
 		   So: not sick, teleport. Sick and walkable, fall through to the walk
 		   below. Sick and NOT walkable (goobrawl, abtesting), still bail,
 		   because for those the join really is the only way in. */
-		if (!(character.s && character.s.hopsickness)) {
+		const sick = !!(character.s && character.s.hopsickness);
+		if (!sick && bossJoinWanted(name)) {
 			bossNote('joining ' + name);
 			try { parent.socket.emit('join', { name: name }); } catch (e) { bossLog('join emit failed: ' + e, 'red'); }
 			return;
 		}
-		if (!bossTaxiWalkable(name)) { bossNote('hopsick - ' + name + ' has no walkable entrance, waiting it out'); return; }
-		bossNote('hopsick - walking to ' + name + ' instead of joining');
+		if (!sick && BOSS_JOIN_SPOTS[name].x == null) { bossNote('on ' + name + ' - nothing in view yet'); return; }
+		if (sick && !bossTaxiWalkable(name)) { bossNote('hopsick - ' + name + ' has no walkable entrance, waiting it out'); return; }
+		if (sick) bossNote('hopsick - walking to ' + name + ' instead of joining');
 		/* The probe is DEXON'S - he is the one whose credit is in question -
 		   but the guard keeps this branch byte-identical in all three files,
 		   which is what lets suite_relay.js assert they have not diverged.
@@ -3645,6 +3714,7 @@ function bossEnd(why) {
 	bossState.trip = null;
 	bossState.forced = null;
 	bossState.lastNote = null;
+	rageEntryEnd('the trip ended');
 	bossSave();
 	bossLog('leaving ' + t.name + ' after ' + mins + ' min (' + why + ') - back to farming'
 		+ (gaveUp ? ', and leaving it alone for ' + Math.round(CONFIG.bossEvents.cooldownMs / 60000)
@@ -5834,15 +5904,6 @@ function restockNow() {
 	return restockStatus();
 }
 
-function elixirUsage() {
-	const required = 'pumpkinspice';
-	const currentElixir = character.slots.elixir?.name;
-
-	if (currentElixir !== required) {
-		const slot = locate_item(required);
-		if (slot !== -1) use(slot);
-	}
-}
 
 const targetStartTimes = new Map();
 
@@ -6051,7 +6112,10 @@ function isExchangeable(name) { return !!name && exchangeableNames().has(String(
    vendors for 120, so it sorts FIRST in relief's cheapest-first list. */
 /* snakeoil since v138 - it is the only Hop Sickness cure, and relief sold it
    early at ~120. */
-const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt', 'cave_amber', 'cave_loaded_die', 'snakeoil']);
+/* sbelt since v142 - operator, 2026-10-24. The Belt of Hallowed Trials is a
+   rare drop the merchant already keeps twice over (Ponty buy list, priest gear
+   goal), and the ranger named it nowhere - a third copy was muled to Dexon. */
+const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt', 'cave_amber', 'cave_loaded_die', 'snakeoil', 'sbelt']);
 function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name)); }
 
 /* THE TRICK-OR-TREAT COSTUMES, AND THE SLOT IS NOT A CHOICE WE GET TO MAKE.
