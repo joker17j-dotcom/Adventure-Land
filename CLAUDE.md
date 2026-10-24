@@ -5440,9 +5440,14 @@ scrolling away.
   repeats, cut in Ranger v140 / Priest v75 / Mage v98 / Merchant v128: the two
   alternating graveyard notes (42%), the rage no-route refusal and its echo
   (26%), "undefined looted chest" on the priest, and the merchant's merge line.
-  The game's own "Get closer" (8%, Dexon and FatherToken, attacks out of range)
-  and the pathfinder's "Searching for a path" lines are not ours to cut and are
-  still open as a question.
+  **"Get closer" (8%, Dexon and FatherToken) WAS NOT ATTACKS, IT WAS REFUSED
+  BUYS** - the browser session's live catch, 14:55 EDT: `distance@buy` 29 a
+  minute on FatherToken, from `elixirUsage()` buying `elixirluck` where only
+  Warin in winter_inn sells it, and Dexon's pairs from the post-respawn potion
+  top-up while `respawn()` was refused on cooldown. Ranger v141 / Priest v76 /
+  Mage v99 send a buy only where `vendorInReach()` finds that item's vendor
+  within the server's 400. The pathfinder's "Searching for a path" lines are not
+  ours to cut and are still open as a question.
 - **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
   The wrapper and buffer are built with the PAGE's `Function`, so they outlive
   the CODE iframe. A failed POST leaves its lines in the buffer, and a hop

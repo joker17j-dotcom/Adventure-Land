@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v140
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v141
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1428,8 +1428,8 @@ async function mainLoop() {
 		if (CONFIG.equipment.useLicence) {
 			let slot = locate_item("licence");
 			if (slot === -1 && (character?.s?.licenced?.ms ?? 0) < 5000) {
-				await buy("licence");
-				slot = locate_item("licence");
+				const p = buyWhereSold('licence', 1, 'licence');
+				if (p) { await p; slot = locate_item("licence"); }
 			}
 			if ((character?.s?.licenced?.ms ?? 0) < 250 && slot !== -1) {
 				await consume(slot);
@@ -5571,6 +5571,47 @@ function askForPotions(kind, have) {
 	});
 }
 
+/* Can buy(name) be served from where we stand? The server answers a buy only
+   from a vendor of THAT item on the buyer's own map within B.sell_dist, 400
+   units (node/server.js, the "buy" handler), and refuses anything else with
+   "distance" - which the client prints as "Get closer". A buy made without
+   asking this fired on every tick it was wanted and filled the game log with
+   that line. Read from live G, so a moved or added vendor needs no edit; the
+   margin keeps a reading at the edge from passing here and failing there. */
+const VENDOR_REACH = 380;
+
+function vendorInReach(name) {
+	const map = G.maps && G.maps[character.map];
+	if (!map || !map.npcs || !G.npcs) return false;
+	for (const n of map.npcs) {
+		const def = G.npcs[n.id];
+		if (!def || !def.items || def.items.indexOf(name) === -1) continue;
+		const spots = n.position ? [n.position] : (n.positions || []);
+		for (const p of spots) {
+			if (Math.hypot(character.x - p[0], character.y - p[1]) < VENDOR_REACH) return true;
+		}
+	}
+	return false;
+}
+
+/* buy() where the item's vendor is in reach, else nothing. A caller that
+   passes `why` wants to hear about the shortfall, once per item per half
+   hour; a caller with another supply route (the merchant, the restock trip)
+   passes none. Returns buy()'s promise, or null when nothing was sent. */
+const buyShortSaid = new Map();
+
+function buyWhereSold(name, qty, why) {
+	if (vendorInReach(name)) return buy(name, qty);
+	if (why) {
+		const now = Date.now();
+		if (now - (buyShortSaid.get(name) || 0) >= 1800000) {
+			buyShortSaid.set(name, now);
+			game_log(`[buy] want ${name} (${why}) - no vendor of it within reach on ${character.map}`, 'orange');
+		}
+	}
+	return null;
+}
+
 function autoBuyPotions() {
 	/* Only attempt the purchase where there is something to sell to us. This
 	   runs on the 2s maintenance tick, and off-vendor it was emitting two
@@ -5586,12 +5627,17 @@ function autoBuyPotions() {
 	if (totalMp < 500) askForPotions('mp', totalMp);
 }
 
+// Away from a vendor this sends nothing: the merchant's delivery and the
+// restock trip are the supply there, and a respawn refused on cooldown used to
+// land here every tick while the character was still dead.
 async function buyMissingPotions() {
 	if (quantity('hpot0') + quantity('hpot1') < CONFIG.potions.minStock) {
-		try { await buy('hpot1', CONFIG.potions.minStock); } catch (e) { console.error('buy hpot1 failed:', e); }
+		const p = buyWhereSold('hpot1', CONFIG.potions.minStock);
+		if (p) try { await p; } catch (e) { console.error('buy hpot1 failed:', e); }
 	}
 	if (quantity('mpot0') + quantity('mpot1') < CONFIG.potions.minStock) {
-		try { await buy('mpot1', CONFIG.potions.minStock); } catch (e) { console.error('buy mpot1 failed:', e); }
+		const p = buyWhereSold('mpot1', CONFIG.potions.minStock);
+		if (p) try { await p; } catch (e) { console.error('buy mpot1 failed:', e); }
 	}
 }
 
@@ -6233,7 +6279,7 @@ async function upgradeItems() {
 
 		const scrollSlot = locate_item(scrollname);
 		if (scrollSlot === -1) {
-			buy(scrollname);
+			buyWhereSold(scrollname, 1, 'upgrade');
 			return;
 		}
 
@@ -6285,7 +6331,7 @@ async function combineItems() {
 		for (let i = 2; i + 2 < group.length; i += 3) {
 			const scrollSlot = locate_item(scrollName);
 			if (scrollSlot === -1) {
-				buy(scrollName);
+				buyWhereSold(scrollName, 1, 'compound');
 				return;
 			}
 

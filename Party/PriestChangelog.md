@@ -21,6 +21,32 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v76
+
+**A BUY IS SENT ONLY WHERE THAT ITEM'S VENDOR IS IN REACH.** The browser
+session caught the "Get closer" spam live on 2026-10-24: they are buy refusals,
+not attacks. The server answers a buy only from a vendor of that exact item on
+the buyer's own map within `B.sell_dist` (400, the "buy" handler in
+`node/server.js`). `vendorInReach(name)` asks that question of live `G`
+with a 380 margin, and `buyWhereSold(name, qty, why)` buys only when it says
+yes. When it says no, it logs the shortfall once per item per half hour, for
+callers that pass a reason. It is byte-identical in all three scripts.
+
+`buyMissingPotions()` goes through it. While dead with `respawn()` refused on
+cooldown, the post-respawn top-up used to send two refused buys every
+maintenance tick: Dexon's pairs. The merchant's delivery and the restock trip
+remain the supply away from a vendor; the restock trip calls this only once
+`atPotionVendor()` (200) holds, which is inside 380, so it is unchanged.
+`Tests/suite_bosshop.js` counts the bare `buy()` calls in each file, comments
+stripped, and fails at a fourth.
+
+**FATHERTOKEN'S LUCK ELIXIR.** `elixirUsage()` bought `elixirluck` every
+maintenance tick wherever he stood, and only Warin (`wbartender`, winter_inn)
+sells it. That was 29 refusals a minute. He now logs that he wants it, and
+the refusals stop. He has none in his bag and none worn (`elixirluck` 0,
+`slots.elixir` null), so he still goes without until someone brings him one:
+the operator, or a merchant delivery if that is wanted. Nothing builds that yet.
+
 ## v75
 
 **THE LEADER'S BEAT RUNS ON ITS OWN TIMER.** The browser session's pull of

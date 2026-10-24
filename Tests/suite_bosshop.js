@@ -2735,4 +2735,108 @@ module.exports = [
 	const m = fs.readFileSync(path.join(ROOT, 'Party/Merchant.js'), 'utf8');
 	t.ok('the merge line is throttled', /if \(Date\.now\(\) - arbMergeSaidAt >= 600000\) \{ arbMergeSaidAt = Date\.now\(\); pLog\(m\.rows\.length/.test(m));
 } },
+{ name: 'v141 a buy is sent only where that item’s vendor is in reach', fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
+	for (const n of ['vendorInReach', 'buyWhereSold', 'buyMissingPotions']) {
+		const r = extract(RANGER, n);
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === r, true);
+	}
+	/* EVERY BARE buy() IN THE THREE FILES, counted with comments stripped:
+	   the one inside buyWhereSold and the two in autoBuyPotions, which sit
+	   behind atPotionVendor(). A new ungated buy fails here rather than
+	   printing "Get closer" every tick in the live game. */
+	const bare = (s) => {
+		const code = s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+		return (code.match(/(^|[^\w.$])buy\(/g) || []).length;
+	};
+	for (const f of FILES) {
+		const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		t.eq(f + ': three bare buy() calls and no more', bare(s), 3);
+		t.ok(f + ': VENDOR_REACH sits inside the server’s 400', /\nconst VENDOR_REACH = 380;\n/.test(s));
+		t.ok(f + ': the shortfall memo is what this suite supplies', /\nconst buyShortSaid = new Map\(\);\n/.test(s));
+		const ab = extract(f, 'autoBuyPotions');
+		t.ok(f + ': autoBuyPotions still buys only at a vendor', /if \(atPotionVendor\(\)\) \{\n\t\tif \(quantity\('hpot1'\)/.test(ab));
+	}
+	t.eq('the bare-buy counter sees an ungated buy', bare('x();\nbuy("a");\n// buy("b")\n/* buy("c") */\nfoo.buy("d");'), 1);
+
+	/* THE PREDICATE. */
+	const G = {
+		npcs: { pots: { items: ['hpot1', 'mpot1'] }, wbartender: { items: ['hpot1', 'elixirluck'] }, thief: { items: ['licence'] } },
+		maps: {
+			main: { npcs: [{ id: 'pots', position: [0, 0] }, { id: 'thief', positions: [[900, 0], [2000, 0]] }] },
+			winter_inn: { npcs: [{ id: 'wbartender', position: [-143, -220] }] },
+		},
+	};
+	const vw = (map, x, y, over = {}) => {
+		const bought = [];
+		const w = world(Object.assign({
+			G, character: { map, x, y },
+			buy: (n, q) => { bought.push([n, q]); return Promise.resolve(true); },
+			quantity: () => 0,
+			CONFIG: { potions: { minStock: 1000 } },
+			buyShortSaid: new Map(),
+		}, over));
+		w.bought = bought;
+		lift(w, RANGER, ['VENDOR_REACH', 'vendorInReach', 'buyWhereSold', 'buyMissingPotions']);
+		return w;
+	};
+	let w = vw('main', 379, 0);
+	t.eq('379 from the pots vendor is in reach', w.vendorInReach('hpot1'), true);
+	w = vw('main', 381, 0);
+	t.eq('381 is not', w.vendorInReach('hpot1'), false);
+	w = vw('main', 0, 0);
+	t.eq('a vendor of OTHER items in reach does not count', w.vendorInReach('elixirluck'), false);
+	t.eq('the item’s vendor on another map does not count', vw('winter_inn', 5000, 5000).vendorInReach('elixirluck'), false);
+	t.eq('a vendor listed by positions[] is read at every spot', vw('main', 2010, 0).vendorInReach('licence'), true);
+	t.eq('a map with no npcs is not in reach', vw('desertland', 0, 0).vendorInReach('hpot1'), false);
+
+	/* THE WRAPPER. */
+	w = vw('main', 0, 0);
+	t.ok('in reach it returns buy()’s promise', w.buyWhereSold('hpot1', 5, 'x') instanceof Promise);
+	t.eq('and buys what was asked', JSON.stringify(w.bought), '[["hpot1",5]]');
+	w = vw('main', 0, 0);
+	t.eq('out of reach it sends nothing', w.buyWhereSold('elixirluck', 2, 'luck elixir'), null);
+	w.buyWhereSold('elixirluck', 2, 'luck elixir');
+	t.eq('and no buy was made', w.bought.length, 0);
+	t.eq('the shortfall is logged once, not per call', w.logs.filter((l) => l.indexOf('[buy] want elixirluck') === 0).length, 1);
+	w.buyShortSaid.set('elixirluck', Date.now() - 1800001);
+	w.buyWhereSold('elixirluck', 2, 'luck elixir');
+	t.eq('and again after half an hour', w.logs.filter((l) => l.indexOf('[buy] want elixirluck') === 0).length, 2);
+	w = vw('main', 5000, 0);
+	w.buyWhereSold('hpot1', 1);
+	t.eq('a caller that passes no reason is silent', w.logs.length, 0);
+
+	/* THE TOP-UP. Dexon's "Get closer" pairs: dead away from town, respawn
+	   refused on cooldown, then two buys every tick. */
+	return (async () => {
+		w = vw('cave', 900, 900);
+		await w.buyMissingPotions();
+		t.eq('away from a vendor the top-up sends nothing', w.bought.length, 0);
+		w = vw('main', 50, 50);
+		await w.buyMissingPotions();
+		t.eq('at the vendor it buys both', JSON.stringify(w.bought), '[["hpot1",1000],["mpot1",1000]]');
+
+		/* THE PRIEST'S ELIXIR. Only Warin sells it. */
+		const pw = (map, x, y) => {
+			const p = vw(map, x, y, { locate_item: () => -1, use: () => {} });
+			p.character.slots = { elixir: null };
+			lift(p, 'Party/Priest.js', ['elixirUsage']);
+			return p;
+		};
+		let p = pw('main', 0, 0);
+		p.elixirUsage(); p.elixirUsage();
+		t.eq('the priest away from Warin buys no elixir', p.bought.length, 0);
+		t.eq('and says so once', p.logs.filter((l) => /^\[buy\] want elixirluck \(luck elixir\)/.test(l)).length, 1);
+		p = pw('winter_inn', -140, -200);
+		p.elixirUsage();
+		t.eq('beside Warin he buys the two', JSON.stringify(p.bought), '[["elixirluck",2]]');
+
+		/* THE RANGER'S OTHER BUYS go through the wrapper, with a reason. */
+		const rs = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
+		t.ok('the licence buy is gated', /const p = buyWhereSold\('licence', 1, 'licence'\);\n\t+if \(p\) \{ await p; slot = locate_item\("licence"\); \}/.test(rs));
+		t.ok('the upgrade scroll buy is gated', /buyWhereSold\(scrollname, 1, 'upgrade'\);/.test(rs));
+		t.ok('the compound scroll buy is gated', /buyWhereSold\(scrollName, 1, 'compound'\);/.test(rs));
+	})();
+} },
 ];
