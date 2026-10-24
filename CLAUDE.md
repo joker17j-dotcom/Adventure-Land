@@ -1304,6 +1304,17 @@ this ranking until a Ranger build is actually running on him.
   block; `minSoaked`, `holdMs`, `retreatAtAttackers` and `trustMs` are
   PROVISIONAL, because nobody has measured a crowded graveyard and the rip edge
   now records the two fields that would settle them.
+- **RULED 2026-10-24: THE PARTY ENTERS THE BOX FOR THE GARGOYLE, AND ENTRY
+  IS ON IN Ranger v130 / Priest v71 / Mage v94.** Operator: "the ability for the
+  party to enter the ragebox for gargoyle". That settles the open call recorded
+  under the gargoyle "defect" below, NARROWLY: the leader enters only on a
+  graveyard trip whose event entry carries `gargoyle: true` (the wake), and
+  still only with the crowd gate met. `bossFightTypes()` adds the Gargoyle
+  while `rageEntryActive` and nowhere else; `BOSS_FIGHT_TYPES` still leaves it
+  out, because that table also feeds the rage pull and the eligibility gate.
+  **THE GATE'S INPUT IS STILL UNMEASURED IN A REAL CROWD**, so the first live
+  question is whether `rageCrowdSoak()` from the corridor ever reaches
+  `minSoaked` with the Gargoyle up.
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we

@@ -198,7 +198,7 @@ module.exports = [
 		   another still refuses - the party splits and nothing logs a fault.
 		   This is the set where identity is load-bearing rather than tidy. */
 		'rageCrowdSoak', 'rageAttackersOnMe', 'rageEntrySet', 'rageEntryTick',
-		'rageEntryBroadcast', 'rageEntryOnCall',
+		'rageEntryBroadcast', 'rageEntryOnCall', 'rageEntryNotWanted',
 		/* The pull context set, added 2026-10-22. ragePullCtx decides which park
 		   point and which monster types the pull serves, and a copy that drifts
 		   means one character pulling for the farm while another pulls for the

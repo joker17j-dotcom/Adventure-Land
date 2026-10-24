@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v129
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v130
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -518,7 +518,7 @@ const TOGGLES = {
 	monsterHuntReAcceptAtDaisy:      true,   // CONFIG.monsterHunt.reAcceptAtDaisy
 	achievements:                    true,   // CONFIG.achievements.enabled
 	achievementsPull:                true,   // CONFIG.achievements.pull.enabled
-	rageEntry:                       false,  // CONFIG.bossEvents.rageEntry.enabled
+	rageEntry:                       true, // CONFIG.bossEvents.rageEntry.enabled
 	achievementsPullRespectCourage:  true,   // CONFIG.achievements.pull.respectCourage
 	muling:                          true,   // CONFIG.muling.enabled
 	trickOrTreat:                    true,   // CONFIG.trickOrTreat.enabled
@@ -2022,8 +2022,11 @@ function bossRank(name) {
    three characters cannot take it - and its spawn is inside the mummy rage
    rectangle, which nothing can stand on while containment is on. The waves'
    points carry over to it either way (graveyard_fallen banks them and the wake
-   copies them), so excluding it costs no share. Whether a crowd should flip
-   this to include it is the operator's open call, not a default. */
+   copies them), so excluding it costs no share. It stays out of THIS table
+   because the table also feeds the rage pull and the eligibility gate, and the
+   pull must never reach for a 6,000,000 hp boss from the corridor. The
+   operator's call came 2026-10-24 - enter the box for it - and it is taken
+   in bossFightTypes(), which adds the Gargoyle only while we are inside. */
 const BOSS_FIGHT_TYPES = { goobrawl: ['rgoo', 'bgoo'], graveyard: ['zombie', 'ghoul'], horseman: ['horseman', 'jackowalker'] };
 function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 /* THE EVENT'S OWN MONSTERS, AND ONLY WHILE A TRIP IS LIVE. The attack
@@ -2043,7 +2046,12 @@ function bossMonsterTypes(name) { return BOSS_FIGHT_TYPES[name] || [name]; }
 function bossFightTypes() {
 	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
 	if (!trip || !trip.name) return [];
-	return bossMonsterTypes(trip.name);
+	const types = bossMonsterTypes(trip.name);
+	/* INSIDE THE RAGE BOX THE GARGOYLE IS WHAT WE WENT IN FOR. rageEntryActive
+	   is containment off, which is also what points the walk at its spawn
+	   rather than the join spot (bossWalkTarget), so the two widen together. */
+	if (trip.name === 'graveyard' && rageEntryActive) return types.concat(['gargoyle']);
+	return types;
 }
 
 /* The nearest of ANY of the event's monster types. Distance rather than
@@ -2675,6 +2683,21 @@ function rageEntrySet(on, why) {
    characters died", and attackers going 3 to 9 at the band's own threshold -
    so `retreatAtAttackers` is its own number, meant to sit below courage, and
    escalation is fast enough that it has to. */
+/* Why the leader should stay out right now, or null. Entry is for the
+   Gargoyle - operator, 2026-10-24: "the ability for the party to enter the
+   ragebox for gargoyle" - so only on a graveyard trip whose Gargoyle has
+   woken. graveyard_public() adds `gargoyle: true` to the event's entry at the
+   wake and carries nothing like it before. Going in earlier adds mummy risk
+   and buys nothing: the waves are pulled from the corridor and their points
+   carry over to the Gargoyle anyway. */
+function rageEntryNotWanted() {
+	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
+	if (!trip || trip.name !== 'graveyard') return 'not on a graveyard trip';
+	const S = (typeof parent !== 'undefined' && parent.S) || {};
+	if (!S.graveyard || !S.graveyard.gargoyle) return 'the gargoyle is not up';
+	return null;
+}
+
 function rageEntryTick(map) {
 	const cfg = (CONFIG.bossEvents && CONFIG.bossEvents.rageEntry) || {};
 	if (!cfg.enabled) { rageEntryOkSince = 0; rageEntrySet(false, 'entry is off'); return; }
@@ -2705,6 +2728,14 @@ function rageEntryTick(map) {
 		const fresh = rageEntryHeard && (Date.now() - rageEntryHeard.at) < (cfg.trustMs || 15000);
 		if (!fresh) { rageEntrySet(false, 'no recent word from the leader'); return; }
 		rageEntrySet(!!rageEntryHeard.on, 'the leader says ' + (rageEntryHeard.on ? 'in' : 'out'));
+		return;
+	}
+
+	const notNow = rageEntryNotWanted();
+	if (notNow) {
+		rageEntryOkSince = 0;
+		rageEntrySet(false, notNow);
+		rageEntryBroadcast(rageEntryActive);
 		return;
 	}
 

@@ -346,7 +346,9 @@ module.exports = [
           }, over.cfg || {}),
         },
       },
-      parent: { G: G, entities: over.ents || {} },
+      parent: { G: G, entities: over.ents || {},
+        S: over.S || { graveyard: { live: true, gargoyle: true } } },
+      bossState: { trip: over.trip === undefined ? { name: 'graveyard' } : over.trip },
       plSend: (to, d) => sent.push([to, d]),
       rageLog: () => {},
       ragePullShared: null,
@@ -355,8 +357,8 @@ module.exports = [
       rageEntryHeard: over.heard || null,
     });
     lift(w, RANGER, ['rageBoxes', 'rageHit', 'rageCfg', 'bossIsLeader', 'rageCrowdSoak',
-      'rageAttackersOnMe', 'rageEntrySet', 'rageEntryTick', 'rageEntryBroadcast',
-      'rageEntryOnCall']);
+      'rageAttackersOnMe', 'rageEntrySet', 'rageEntryNotWanted', 'rageEntryTick',
+      'rageEntryBroadcast', 'rageEntryOnCall']);
     return w;
   };
   /* Monsters INSIDE the rectangle. `other` is held by a stranger, `mine` by us,
@@ -380,10 +382,15 @@ module.exports = [
   t.eq('a monster on one of OURS is not crowd soak',
     w.rageCrowdSoak('spookytown').soaked < soak.boxed, true);
 
-  /* --- off by default ---------------------------------------------------- */
-  const rs = require('fs').readFileSync(
-    require('path').join(require('./lift').ROOT, RANGER), 'utf8');
-  t.ok('the toggle ships false', /rageEntry:\s+false,/.test(rs));
+  /* --- ON since 2026-10-24, on the operator's word ------------------------
+     "the ability for the party to enter the ragebox for gargoyle". It shipped
+     off from v112 until then; the gate below is what keeps it narrow. All
+     three, because a follower's tick checks its OWN toggle before it hears
+     the leader, and one left off is a party split. */
+  for (const f of ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js']) {
+    const rs = require('fs').readFileSync(require('path').join(require('./lift').ROOT, f), 'utf8');
+    t.ok(f + ': the toggle ships true', /\trageEntry:\s+true,/.test(rs));
+  }
   w = mk({ cfg: { enabled: false }, ents: IN(20, 'Stranger') });
   w.rageEntryTick('spookytown');
   t.eq('a crowd of 20 does not open a disabled gate', w.rageEntryActive, false);
@@ -400,6 +407,26 @@ module.exports = [
   t.eq('and containment comes off, which IS entering', w.rageCfg().enabled, false);
   t.eq('the decision is broadcast to the other two', sent.length >= 2, true);
   t.eq('never to the merchant', sent.some(x => x[0] === 'Meltymerch'), false);
+
+  /* --- FOR THE GARGOYLE, AND ONLY ONCE IT IS UP -------------------------- */
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, S: { graveyard: { live: true } } });
+  w.rageEntryTick('spookytown');
+  t.eq('PRECONDITION: the crowd alone would convince the leader',
+    w.rageCrowdSoak('spookytown').soaked >= 6, true);
+  t.eq('but before the gargoyle wakes the leader stays out', w.rageEntryActive, false);
+  t.eq('and the sustain clock is reset rather than banked', w.rageEntryOkSince, 0);
+  t.eq('and still tells the followers OUT', sent.length > 0 && sent[sent.length - 1][1].on, false);
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, trip: { name: 'mrgreen' } });
+  w.rageEntryTick('spookytown');
+  t.eq('on any other trip the box stays shut, crowd or not', w.rageEntryActive, false);
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, active: true, S: {} });
+  w.rageEntryTick('spookytown');
+  t.eq('the graveyard ending puts an entered leader straight back out', w.rageEntryActive, false);
+  /* INVERTED: the gargoyle being up is necessary, not sufficient - no crowd,
+     no entry, exactly as before. */
+  w = mk({ ents: IN(5, 'Stranger'), okSince: Date.now() - 60000 });
+  w.rageEntryTick('spookytown');
+  t.eq('a gargoyle up with a thin crowd is still a no', w.rageEntryActive, false);
 
   /* A single tick below the threshold ends it - biased toward staying out,
      because missing a graveyard costs ~nothing and a wipe in the box does. */
@@ -1643,6 +1670,7 @@ module.exports = [
     lift(w, RANGER, ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossFightTypes',
       'bossState', 'shouldAttackMob']);
     w.bossState.trip = over.trip === undefined ? null : over.trip;
+    w.rageEntryActive = !!over.inside;
     return w;
   };
   const mob = (mtype, target) => ({ mtype: mtype, target: target === undefined ? null : target });
@@ -1700,6 +1728,19 @@ module.exports = [
     w.shouldAttackMob(mob('gargoyle')), false);
   t.eq('and it is reached only the way it always was, by aggro on the priest',
     w.shouldAttackMob(mob('gargoyle', 'FatherToken')), true);
+
+  /* INSIDE THE BOX IT IS THE TARGET - operator, 2026-10-24. The table still
+     leaves it out, because the table also feeds the pull and the eligibility
+     gate; only the attack list widens, and only while entry is active. */
+  w = aw({ trip: { name: 'graveyard' }, inside: true });
+  t.eq('inside the box the graveyard trip yields the gargoyle too',
+    w.bossFightTypes().join(','), 'zombie,ghoul,gargoyle');
+  t.eq('so an untargeted gargoyle IS attacked in there', w.shouldAttackMob(mob('gargoyle')), true);
+  t.eq('while the table the pull reads still excludes it',
+    w.bossMonsterTypes('graveyard').indexOf('gargoyle'), -1);
+  w = aw({ trip: { name: 'horseman' }, inside: true });
+  t.eq('entry on any other trip adds nothing',
+    w.bossFightTypes().join(','), 'horseman,jackowalker');
 } },
 
 /* THE FOLLOWER HALF, WHICH A MUTATION CAUGHT AS UNTESTED. Reverting the Mage's
@@ -1755,6 +1796,7 @@ module.exports = [
     lift(w, MAGE, ['BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'bossFightTypes',
       'bossState', 'findBestTargetInner']);
     w.bossState.trip = over.trip === undefined ? null : over.trip;
+    w.rageEntryActive = !!over.inside;
     return w;
   };
   const src = require('fs').readFileSync(MAGE_PATH, 'utf8');
@@ -1779,8 +1821,13 @@ module.exports = [
   /* And the gargoyle stays out on the follower side too, for the same
      recorded reason - the open call is not enacted here either. */
   w = fw({ trip: { name: 'graveyard' }, mobs: [{ mtype: 'gargoyle', target: 'Dexon' }] });
-  t.eq('a targeted gargoyle is NOT joined, the fight list still excludes it',
+  t.eq('a targeted gargoyle is NOT joined from outside the box',
     w.findBestTargetInner(), null);
+  w = fw({ trip: { name: 'graveyard' }, inside: true, mobs: [{ mtype: 'gargoyle', target: 'Dexon' }] });
+  const gg = w.findBestTargetInner();
+  t.eq('inside the box the follower joins the targeted gargoyle', gg && gg.mtype, 'gargoyle');
+  w = fw({ trip: { name: 'graveyard' }, inside: true, mobs: [{ mtype: 'gargoyle', target: null }] });
+  t.eq('and still waits for someone to be on it', w.findBestTargetInner(), null);
 
   /* AND THE PRIEST IS COVERED BY POSITION RATHER THAN BY BEHAVIOUR, because a
      priest-only revert of this loop was ALSO invisible - measured by mutation,

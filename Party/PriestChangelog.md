@@ -21,6 +21,37 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v71
+
+**THE PARTY ENTERS THE RAGE BOX FOR THE GARGOYLE.** Operator, 2026-10-24:
+"the ability for the party to enter the ragebox for gargoyle". The entry
+machinery shipped in Ranger v112 / Priest v60 / Mage v83 but OFF, and even
+inside the box nothing would have shot the Gargoyle, because it was
+deliberately left out of the attack list.
+
+- **`rageEntry` toggle is ON in all three.** A follower's tick checks its own
+  toggle before it listens to the leader, so one left off would split the
+  party at the corridor.
+- **Entry is now for the Gargoyle only, and only once it is up**
+  (`rageEntryNotWanted`). The leader stays out unless the trip is graveyard
+  and the event's entry carries `gargoyle: true`, which the server adds at the
+  wake and not before. The waves are pulled from the corridor as before, and
+  their points carry over to the Gargoyle anyway, so going in earlier would
+  add mummy risk and buy nothing. The crowd gate is unchanged and still
+  required: `minSoaked` other players' mummies held for `holdMs`. The
+  retreat on bodies is unchanged and still each character's own.
+- **Inside the box the Gargoyle joins the attack list** (`bossFightTypes`),
+  and only there. `BOSS_FIGHT_TYPES` still leaves it out, because that table
+  also feeds the rage pull and the eligibility gate, and the pull must never
+  reach for a 6,000,000 hp boss from the corridor. The ranger opens on it; a
+  follower joins once something is on it, as with every other event monster.
+- **Untested in the field.** Whether the leader can see enough of the mummy
+  field from the corridor to count a crowd at all is still unmeasured; if it
+  cannot, the gate never opens, which is the safe direction.
+
+Seven mutations across the three scripts, each caught in
+`Tests/suite_bosshop.js` and `Tests/suite_relay.js`.
+
 ## v70
 
 **THE EVENT BRANCH NOW RUNS BEFORE THE FARM GATE IN mainLoop.** Measured by
