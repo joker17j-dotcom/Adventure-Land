@@ -5289,6 +5289,25 @@ for it in any script before Ranger v121 / Merchant v115.
   and take manual control of one combat character to measure the swap and a
   knock in one trip, AS LONG AS THE PARTY IS NOT AT A HALLOWEEN-ONLY BOSS
   (horseman, graveyard).
+- **A SPARE COSTUME ON A COMBAT CHARACTER LEAVES BY MULING, NOT BY RELIEF** -
+  the browser session's correction, read from the deployed Ranger v125 / Mage
+  v93 slots. Ranger `clearInventory()` sends every unlocked, non-excluded bag
+  item to Meltymerch whenever he is in range; Mage `muleToMerchant()` sends to
+  Dexon first. Neither `excludeItems` names a costume, and the merchant's
+  whitelist then vendors phelmet/gphelmet on sight. Muling fires far more often
+  than relief, which waits for a full bag.
+  **THE LOCK EXISTS FROM CODE AND COSTS MORE THAN THE COSTUME.** Read from
+  upstream `16881a27`: `lock_item(num)` is a runner function wrapping
+  `socket.emit("locksmith", {num, operation: "lock"})`. The server charges
+  **250,000 gold to lock and 250,000 to unlock**, refuses inside the bank
+  (`cant_in_bank`), and requires standing within `B.sell_dist` of the desertland
+  locksmith unless `player.computer`. A locked item (`item.l`) is skipped by
+  every exit measured - both muling loops, the merchant's sell paths, ranger
+  relief, OpenGifts `sellChaff`, and the server's own sell. So a lock is one trip
+  to desertland and 250,000 for the season, against a phelmet at 86,400 from
+  Ponty. The cheaper scripted route is to exclude, on the KNOCKER only, whatever
+  live `G.events.trickortreat.costumes` names from its own muling - derived from
+  `G`, so no hand list returns. The operator's call between the two.
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
