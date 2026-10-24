@@ -4957,7 +4957,7 @@ a day.
   **THE SCORES ARE THE OPERATOR'S ORDERING EXPRESSED AS NUMBERS, NOT
   MEASUREMENTS** - the hunt miss chances in particular are guesses.
 
-- **CaveRun v26 IS A LAUNCHER AND THE CAVE LEADER STILL HAS NO NAVIGATION.**
+- **CaveRun v26 IS A LAUNCHER.**
   On load outside the cave it asks the server (`interaction` action `info`,
   answered through `game_response` with `{visit: {available, resets, resume}}`)
   and restocks for Dorr if today's visit is open, or hands back after 20s if it
@@ -4965,13 +4965,28 @@ a day.
   said it did; it reads the event flag, home, party and combat only. Leaving the
   cave writes a CAVE DUMP row to the game log and runs `load_code(character.name)`,
   which the browser session measured resolving the character slot by name.
-  **NOTHING IN CaveRun MOVES THE CAVE LEADER INSIDE THE CAVE** - `moveTick`
-  returns at the leader branch and the operator walks him - so the rulings that
-  plan a ROUTE (the die-shop detour, camp waves, post-completion farming, "the
-  party walks back") are the operator's to walk until a leader autopilot is
-  built, which is its own piece of work. The client's `G` carries
-  `G.events.dreams.encounters` with every effect (G version 18183), and v26
-  votes from it when present.
+  The client's `G` carries `G.events.dreams.encounters` with every effect (G
+  version 18183), and v26 votes from it when present.
+- **THE CAVE LEADER DRIVES ITSELF AS OF CaveRun v27** - operator's ruling
+  2026-10-24, "from leader manually driven to a fully automated cave run". It
+  makes the call the objective buttons make: a stair goal's onclick is
+  `cave_walk_to("room", i)`, which is `smart_move({map, x, y})` at the
+  objective's own x/y (client `js/generated_zones.js`, upstream `16881a2`).
+  **WHAT THE SERVER NEEDS AT A ROOM** (`node/logic/cave_of_many_dreams.js`): a
+  room activates once anyone is within 1100; a fight, boss or camp attacks once
+  someone is within 210 of a monster; an encounter's vote opens only within 280
+  of the room AND 160 of its NPC; an escort finishes when its NPC is within 120
+  of the down door. The stairs unlock when the floor's three required rooms are
+  done. The plan is `navPlan()` and its ORDER is the design: party first
+  (healer dead or two dead -> landing; a member waiting -> collect; a member
+  dead or resting -> no new objectives), then a fight, an escort, an open vote,
+  the room under way, the die, a camp under way, an unopened shop, the next
+  required room (cheapest order to the stairs, exhaustive over three), the
+  stairs. **A SMART_MOVE THE AUTOPILOT DID NOT MAKE PAUSES IT 45s**, so the
+  objective buttons still work as an override; `caveNav(false)` hands the leader
+  back outright. **PATH LENGTH IS STRAIGHT LINE x 1.5** at the leader's speed -
+  the runner's pathfinder only plans by moving - and every leg logs `navLeg`
+  with its measured time so the factor can be refined. NOT YET RUN LIVE.
 
 ## The published event schedule - upstream's new mechanism
 

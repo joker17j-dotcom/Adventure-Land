@@ -1,4 +1,33 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v26 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v27 (TEST BUILD)
+// v27 2026-10-24 THE CAVE LEADER DRIVES ITSELF - the operator's ruling: "a
+//                change in method for cave from leader manually driven to a
+//                fully automated cave run". navPlan() reads the floor's
+//                required rooms from character.cave, orders them by the
+//                cheapest walk ending at the stairs, and smart_moves the leader
+//                to each one at the objective's own x/y - the call the
+//                objective buttons make. At a room it pulls the monsters or
+//                walks to the NPC so the vote opens, sees the room through,
+//                then takes the stairs (chests first, up to 20s).
+//                In order: the party first (healer dead or two dead -> the
+//                landing; a member waiting -> go and collect it; a member dead
+//                or resting -> no new objectives), then whatever attacks, an
+//                escort (walked to the stairs), an open vote, the room under
+//                way, the Loaded Die (inserted into the route where it costs
+//                least, under 2 min and the run's slack; "die skipped - why"
+//                logged), a camp wave already under way nearby (only if the
+//                clock allows, freely after the last seal), an unopened shop
+//                or revealed room close to the route, the next required room,
+//                the stairs. After the last seal: camp waves and encounters
+//                by Amber per second while they fit, then leave; the
+//                followers leave when the leader's beacon says so.
+//                The followers' half: healer dead or two dead pulls them back
+//                to the landing, and a leader in a death loop is walked to and
+//                collected rather than held off (his loop ends once every
+//                living follower is beside him). A smart_move the autopilot did not make
+//                pauses it 45s; caveNav(false) hands the leader back to the
+//                operator, caveNavStatus() shows the plan. Path lengths are
+//                straight line x 1.5 at the leader's speed, logged against
+//                the measured time per leg (navLeg) to be refined.
 // v26 2026-10-24 CAVERUN IS A LAUNCHER, THE DIE IS RETRIED, DEATHS REGROUP -
 //                the operator's rulings relayed in the 12:22 EDT block.
 //                LAUNCHER: on load outside the cave each character asks the
@@ -721,6 +750,11 @@ function beaconWrite() {
 			loop: !!deathLoop,
 			deaths: myDeaths.length,
 			ctype: character.ctype || null,
+			/* v27: `wait` is a member waiting for the party to collect it - rested
+			   but blocked by a hostile, or held by a death loop; `exit` is the
+			   leader leaving, which the followers follow. */
+			wait: !!(deathLoop || (resting && restSaid)),
+			exit: !!exitForce,
 		}));
 	} catch (e) { bump('beaconWriteFail'); }
 }
@@ -1471,9 +1505,14 @@ async function moveTick() {
 		   still firing on main after the exit, at a 1,453u "gap" to followers
 		   who were simply elsewhere. */
 		if (active()) warnOutrun();
+		/* v27: and then the autopilot, which moves the leader unless the hold
+		   above has stopped him or the operator has turned it off. */
+		if (active()) await navTick();
 		return;
 	}
 	if (!active()) return;
+	/* v27: healer dead or two dead - pull back to the landing. */
+	if (!resting && !deathLoop && await followerLanding()) return;
 
 	const lp = leaderPos();
 	if (!lp) { if (await followFloor()) return; return; }
@@ -1546,7 +1585,9 @@ function followerGaps() {
 function holdResume() {
 	const g = holdGoing;
 	holdFrom = 0; holdGoing = null;
-	if (!g) return;
+	/* The autopilot re-plans by itself; a straight move to one smart_move node
+	   would only fight it. */
+	if (!g || navDriving()) return;
 	try {
 		move(g.x, g.y);
 		bump('holdResumes');
@@ -1605,6 +1646,9 @@ function warnOutrun() {
 		   walks back to collect a member stranded at the landing, so a move whose
 		   target is nearer that member than the leader is now passes through. */
 		if (regroup.length && collectingMove(regroup)) { bump('regroupCollectMoves'); return; }
+		/* v27: the autopilot going back for a member, or to the landing, is the
+		   move a regroup hold waits for - it ends the hold rather than fighting it. */
+		if (regroup.length && navRegroupMove()) { if (holdFrom) { holdFrom = 0; holdGoing = null; } bump('regroupCollectMoves'); return; }
 		if (holdDone && !regroup.length) return;
 
 		if (!holdFrom) {
@@ -1956,13 +2000,27 @@ function restTick() {
 		resting = false; deathLoop = false;
 		return;
 	}
+	/* v27: A LEADER IN A DEATH LOOP IS COLLECTED THE SAME WAY - the followers
+	   walk to him (leaderDown() does not hold them for a loop), and he is
+	   released once every living one is beside him. Without this nothing but
+	   caveResume() could end it, and the autopilot would wait out the run. */
+	if (isLeader() && deathLoop) {
+		const gaps = followerGaps().filter((g) => g.src !== 'rip');
+		if (gaps.length && gaps.every((g) => g.gap <= REGROUP.collectedWithin)) {
+			clog('the party has come back for me - back to normal', '#7FD98A');
+			ev('collected', { loop: true, leader: true });
+			resting = false; deathLoop = false;
+			return;
+		}
+	}
 	if (deathLoop) return;
 	const hp = character.max_hp ? character.hp / character.max_hp : 1;
 	const mp = character.max_mp ? character.mp / character.max_mp : 1;
 	const full = hp >= REGROUP.hpAt && mp >= REGROUP.mpAt && !(character.fear > 0);
 	const aged = Date.now() - restSince >= REGROUP.restMaxMs;
 	if (!full && !aged) return;
-	/* The leader is the operator's to drive, so it only waits for hp/mp/fear. */
+	/* The leader only waits for hp/mp/fear: the autopilot (v27) or the operator
+	   then takes him back to the party, so there is no hostile check to make. */
 	const h = isLeader() ? null : hostileInView();
 	if (h) {
 		if (!restSaid) {
@@ -1979,7 +2037,9 @@ function restTick() {
 function leaderDown() {
 	if (isLeader()) return false;
 	const L = leaderName(), b = beacons()[L];
-	if (b && Date.now() - b.t <= TROUBLE.staleMs && (b.rip || b.rest)) return true;
+	/* A leader in a DEATH LOOP is not held off: the party walks back to collect
+	   him (v27), which is the only thing that ends his loop. */
+	if (b && Date.now() - b.t <= TROUBLE.staleMs && (b.rip || (b.rest && !b.loop))) return true;
 	const e = leaderEntity();
 	return !!(e && e.rip);
 }
@@ -2713,7 +2773,7 @@ function voteTick() {
 	const st = caveState(), choice = st && st.choice;
 	if (!choice) return;
 	if (!choice.resolved) voteOpen(st, choice);
-	else learnShop(choice);
+	else { learnShop(choice); navNoteResolved(choice); }
 }
 function voteOpen(st, choice) {
 	if (choice.deadline && Date.now() > choice.deadline) return;
@@ -2778,7 +2838,8 @@ function voteOpen(st, choice) {
    purse covers the price: a respawn at the doorway, or the party passing back.
    The server's answer settles it - bought, or sold_out - and other refusals
    are retried every retryMs. The leader also says, throttled, when the die is
-   affordable but out of reach, because the detour is the operator's to walk. */
+   affordable but out of reach, for a leader the operator is walking; the
+   autopilot (v27) makes that detour decision itself and says why it skips one. */
 const DIE = { reach: 150, retryMs: 5000, maxTries: 8 };
 let voteNoted = {}, dieShops = {}, pendingBuys = {};
 function learnShop(choice) {
@@ -2810,7 +2871,7 @@ function dieTick() {
 		const k = shopKeeper(room);
 		const reach = k ? dist(character, k) : Infinity;
 		if (reach > DIE.reach) {
-			if (isLeader()) throttleLog('Loaded Die affordable (' + gold + ' of ' + d.price + ') at the shop '
+			if (isLeader() && !navDriving()) throttleLog('Loaded Die affordable (' + gold + ' of ' + d.price + ') at the shop '
 				+ (k ? Math.round(reach) + 'u away' : 'out of sight') + ' - detour if the route allows');
 			continue;
 		}
@@ -2981,7 +3042,8 @@ function exitTick() {
 	const X = CFG.exit;
 	if (!X || !X.enabled || stopped || mode !== 'cave' || !inCave() || character.rip) return;
 	const st = caveState();
-	if (!st || (!runFinished(st) && !exitForce)) { finishedAt = 0; return; }
+	const follow = leaderExiting();
+	if (!st || (!runFinished(st) && !exitForce && !follow)) { finishedAt = 0; return; }
 	const now = Date.now();
 	if (!finishedAt) {
 		finishedAt = now; chestsClearSince = 0;
@@ -2993,7 +3055,7 @@ function exitTick() {
 	if (chests) chestsClearSince = 0; else if (!chestsClearSince) chestsClearSince = now;
 	const capped = !!(st.limits && st.limits.amber != null && st.limits.amber_spawned >= st.limits.amber);
 	const lastMinute = st.remaining_ms != null && st.remaining_ms <= X.finalMs;
-	if (!capped && !lastMinute && !exitForce) return;
+	if (!capped && !lastMinute && !exitForce && !follow) return;
 	if (!exitWhyFrom) exitWhyFrom = now;
 	const settled = chestsClearSince && now - chestsClearSince >= X.settleMs;
 	const timedOut = now - exitWhyFrom >= X.chestWaitMs;
@@ -3005,7 +3067,7 @@ function exitTick() {
 			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
 		bump('exits');
 		ev('exit', { chestsLeft: chests, waitedMs: now - finishedAt, amber: st.amber, gold: st.gold,
-			why: exitForce ? 'asked' : capped ? 'amber cap' : 'clock' });
+			why: exitForce ? 'asked' : follow ? 'leader left' : capped ? 'amber cap' : 'clock' });
 		clog('leaving the cave' + (chests ? ' with ' + chests + ' chest(s) unopened after ' + Math.round((now - finishedAt) / 1000) + 's' : ''), chests ? 'orange' : '#7FD98A');
 	} catch (e) { bump('exitErr'); clog('exit emit failed: ' + e, 'red'); }
 }
@@ -3090,6 +3152,484 @@ function launcherTick() {
 function caveStay() {
 	launcher.handBackAt = 0;
 	clog('staying on CaveRun', '#FFD700');
+	return true;
+}
+
+// ------------------------------------------------------------ autopilot ----
+/* THE LEADER DRIVES ITSELF - v27, the operator's ruling of 2026-10-24: "a
+   change in method for cave from leader manually driven to a fully automated
+   cave run. The leader should be able to identify the 3 tasks for each floor to
+   unlock the stairs". Until v26 nothing here moved the cave leader; the
+   operator walked him with the objective buttons at the top of the screen.
+
+   WHAT THE BUTTON DOES IS WHAT THIS DOES. Read from the client at upstream
+   16881a2: a stair goal's onclick is cave_walk_to("room", i), which calls
+   smart_move({map, x, y}) in the CODE context at the objective's own x/y. So
+   the movement call is the one the operator has been using all along, made
+   from here instead of from a click.
+
+   WHAT THE SERVER NEEDS AT A ROOM, from cave_of_many_dreams.js at the same
+   commit. Every room on a floor activates once anyone is within 1100 of it. A
+   fight, boss or camp attacks once someone comes within 210 of one of its
+   monsters or hits one, and is done when its monsters are dead. An encounter's
+   vote opens only with someone within 280 of the room AND 160 of its NPC.
+   Stairs unlock when the floor's three required rooms (fight, encounter, boss)
+   are done. An escort finishes when its NPC, which follows the party, is
+   within 120 of the down door, so an escort is walked to the stairs. A hunt's
+   monsters spawn in the room and come to the party.
+
+   THE ORDER OF ASKING IS THE SAFETY PROPERTY. Regroup first (the party's
+   members before any objective), then a fight in progress, then whatever is
+   under way at the current room, and only then a new objective. The plan is
+   pure data - navPlan() - so caveNavStatus() and the suite read exactly what
+   the leader would do.
+
+   PATH LENGTH IS AN ESTIMATE: straight line times mazeFactor at the leader's
+   speed. The runner's pathfinder only plans by moving, so a plan-without-moving
+   is not available from here; every leg logs its measured time against the
+   estimate (navLeg) so the factor can be refined from the game log. */
+const NAV = {
+	enabled: true,
+	arriveAt: 70,           // a room point this close is reached (monsters engage at 210)
+	npcAt: 110,             // an encounter NPC this close opens its vote (the server's test is 160)
+	stallMs: 45000,         // at an unfinished room this long with nothing happening
+	speedFallback: 60,
+	mazeFactor: 1.5,
+	roomMs: 60000,          // a required room still to do, travel aside
+	floorMs: 360000,        // a floor not yet reached - the operator's ~6 min, refine from the logs
+	marginMs: 60000,
+	detourMaxMs: 120000,    // the Loaded Die detour limit
+	inspectMaxMs: 45000,    // an unopened shop or revealed room is visited only this far off the route
+	waveMs: 25000,          // one camp wave: the 10 s gap plus the fight
+	campAmber: 2,           // per wave: a cave_farm roll (~0.97 Amber) plus the flat 1
+	encounterAmber: 1.2,    // a revealed encounter, about a parcel
+	encounterMs: 45000,
+	campReach: 700,         // a camp in progress this close is on the route
+	fightWithin: 250,       // a monster on the party this close stops the leader
+	chestWaitMs: 20000,     // at the stairs, wait this long for chests to be opened
+	manualPauseMs: 45000,   // an operator's own smart_move pauses the autopilot this long
+	smartMaxMs: 30000,      // a smart_move older than this is re-issued from where we stand
+	failSkip: 3,            // an optional target that fails this often is dropped
+};
+let navOn = true, navGoal = null, navFlight = null, navManualUntil = 0, navEscort = null, navAt = {},
+	navSkip = {}, navFails = {}, navSaid = {}, navLastDoor = 0, navDoorSince = 0, navLeg = null, navFloor = null;
+
+function navSpeed() { const s = character.speed; return (typeof s === 'number' && s > 0) ? s : NAV.speedFallback; }
+function navMs(a, b) {
+	if (!a || !b) return Infinity;
+	return Math.hypot(a.x - b.x, a.y - b.y) * NAV.mazeFactor / navSpeed() * 1000;
+}
+function navMe() { return { x: character.real_x, y: character.real_y }; }
+function navLanding(st) { const d = ((st && st.doors) || []).filter((x) => !x.down)[0]; return d ? { x: d.x, y: d.y } : null; }
+function navDownDoor(st) { return ((st && st.doors) || []).filter((x) => x.down)[0] || null; }
+function navFloorObjs(st) { return ((st && st.objectives) || []).filter((o) => o.floor === st.floor); }
+function navRequired(st) { return navFloorObjs(st).filter((o) => o.required && !o.done); }
+function navActors(room) {
+	const out = [];
+	try {
+		for (const id in parent.entities) {
+			const e = parent.entities[id];
+			if (e && !e.dead && e.cave && e.cave.room === room) out.push(e);
+		}
+	} catch (e) {}
+	return out;
+}
+/* THE CHEAPEST ORDER OVER THE FLOOR'S REMAINING REQUIRED ROOMS, ENDING AT THE
+   STAIRS when there are stairs. Three rooms is six orders, so this is exhaustive
+   rather than greedy; a room nearer the landing is not always the right first. */
+function navRoute(st, from) {
+	const rooms = navRequired(st).filter((o) => !navSkip[o.id]).slice(0, 6), door = navDownDoor(st);
+	const end = door ? { x: door.x, y: door.y } : null;
+	let best = [], bestMs = Infinity;
+	const walk = (left, at, path, ms) => {
+		if (ms >= bestMs) return;
+		if (!left.length) { const t = ms + (end ? navMs(at, end) : 0); if (t < bestMs) { bestMs = t; best = path; } return; }
+		for (let i = 0; i < left.length; i++) walk(left.slice(0, i).concat(left.slice(i + 1)), left[i], path.concat([left[i]]), ms + navMs(at, left[i]));
+	};
+	walk(rooms, from, [], 0);
+	const points = [from].concat(best);
+	if (end) points.push(end);
+	return { rooms: best, end: end, points: points, travelMs: bestMs === Infinity ? 0 : bestMs };
+}
+/* What the rest of the run still costs: this floor's route and rooms, every
+   floor below, and a margin. Floors are 0-2 by the server. */
+function navNeedMs(st, route) {
+	return route.travelMs + route.rooms.length * NAV.roomMs + Math.max(0, 2 - (st.floor || 0)) * NAV.floorMs + NAV.marginMs;
+}
+function navSlackMs(st, route) {
+	if (!st || st.remaining_ms == null) return Infinity;
+	return st.remaining_ms - navNeedMs(st, route);
+}
+/* The cheapest place to insert a point into the route: A->p + p->B - A->B over
+   every leg, the leg from where we stand included. `at` 0 means go now. With no
+   leg ahead (the last floor done) it is simply the walk there. */
+function navInsert(points, p) {
+	if (points.length < 2) return { at: 0, ms: navMs(points[0], p) };
+	let best = { at: 0, ms: Infinity };
+	for (let i = 0; i < points.length - 1; i++) {
+		const c = navMs(points[i], p) + navMs(p, points[i + 1]) - navMs(points[i], points[i + 1]);
+		if (c < best.ms) best = { at: i, ms: c };
+	}
+	return best;
+}
+function navPoint(st, id) {
+	const o = ((st && st.objectives) || []).filter((x) => x.id === id)[0];
+	if (o) return { x: o.x, y: o.y };
+	const k = shopKeeper(id);
+	return k ? { x: k.real_x !== undefined ? k.real_x : k.x, y: k.real_y !== undefined ? k.real_y : k.y } : null;
+}
+function navOnce(key, msg, color) {
+	if (navSaid[key]) return;
+	navSaid[key] = 1;
+	clog(msg, color || 'orange');
+	ev('navNote', { key: key, msg: msg });
+}
+/* Deaths and rests in the party, from the beacons, plus this character. */
+function navParty() {
+	const bs = beacons(), now = Date.now(), out = [];
+	for (const nm of TEAM) {
+		if (nm === character.name) {
+			out.push({ who: nm, ctype: character.ctype, dead: !!character.rip, rest: !!(resting || deathLoop), wait: !!deathLoop, x: character.real_x, y: character.real_y, map: character.map });
+			continue;
+		}
+		const b = bs[nm];
+		if (!b || now - b.t > TROUBLE.staleMs) { out.push({ who: nm, unknown: true }); continue; }
+		out.push({ who: nm, ctype: b.ctype, dead: !!b.rip, rest: !!b.rest, wait: !!(b.wait || b.loop), x: b.x, y: b.y, map: b.map });
+	}
+	return out;
+}
+/* HEALER DEAD, OR TWO DEAD: THE LIVING PULL BACK TO THE LANDING - the
+   operator's rulings of 2026-10-24. Answered the same way on every character,
+   so the leader and the followers agree without a message. */
+function landingWanted() {
+	const p = navParty();
+	const dead = p.filter((m) => m.dead).length;
+	if (character.rip) return null;
+	if (dead >= 2) return 'two of the party are dead';
+	const healer = p.filter((m) => m.ctype === 'priest')[0];
+	if (healer && healer.dead && healer.who !== character.name) return 'the healer is dead';
+	return null;
+}
+function navFighting() {
+	if (attackersOnMe() > 0) return true;
+	const names = partyNames();
+	return threats().some((m) => m.target && names.indexOf(m.target) >= 0 && !caveFriendly(m) && dist(character, m) <= NAV.fightWithin);
+}
+
+/* THE PLAN. Returns { kind, x, y, id, why } or a no-move kind. Pure apart from
+   the reads above, so the suite drives it with a stubbed world. */
+function navPlan(st, now) {
+	if (!st) return { kind: 'idle', why: 'no cave state' };
+	if (character.rip) return { kind: 'idle', why: 'dead' };
+	if (resting || deathLoop) return { kind: 'rest', why: 'resting at the landing' };
+	if (now < navManualUntil) return { kind: 'manual', why: 'the operator is driving' };
+	const me = navMe();
+
+	/* 1. THE PARTY BEFORE ANY OBJECTIVE. */
+	const lw = landingWanted();
+	if (lw) { const l = navLanding(st); if (l) return { kind: 'landing', x: l.x, y: l.y, why: lw }; }
+	const party = navParty();
+	const waiting = party.filter((m) => m.who !== character.name && m.wait && !m.dead && m.map === character.map)[0];
+	if (waiting) return { kind: 'collect', x: waiting.x, y: waiting.y, id: waiting.who, why: waiting.who + ' is waiting for the party' };
+	const down = party.filter((m) => m.who !== character.name && (m.dead || m.rest))[0];
+	if (down) return { kind: 'hold', why: down.who + (down.dead ? ' is dead' : ' is resting') + ' - no new objectives' };
+
+	/* 2. WHAT ATTACKS IS FINISHED FIRST. */
+	if (navFighting()) return { kind: 'fight', why: 'the party is being attacked' };
+
+	const objs = navFloorObjs(st);
+	const byId = {};
+	for (const o of objs) byId[o.id] = o;
+
+	/* 3. AN ESCORT WALKS TO THE STAIRS. */
+	if (navEscort && byId[navEscort] && !byId[navEscort].done) {
+		const d = navDownDoor(st);
+		if (d) return { kind: 'escort', x: d.x, y: d.y, id: navEscort, why: 'escorting to the stairs' };
+	}
+	if (navEscort && (!byId[navEscort] || byId[navEscort].done)) navEscort = null;
+
+	/* 4. A ROOM UNDER WAY IS SEEN THROUGH: an open vote, or the goal room not
+	   yet done and reached. */
+	if (st.choice && !st.choice.resolved) return { kind: 'vote', why: 'a vote is open' };
+	if (navGoal && navGoal.id && byId[navGoal.id] && !byId[navGoal.id].done && navAt[navGoal.id] && !navSkip[navGoal.id]
+		&& NAV_ROOM_KINDS.indexOf(navGoal.kind) >= 0) {
+		const o = byId[navGoal.id];
+		return { kind: navGoal.kind, x: o.x, y: o.y, id: o.id, why: navGoal.why };
+	}
+
+	const route = navRoute(st, me);
+	const slack = navSlackMs(st, route);
+	const finished = runFinished(st);
+
+	/* 5. THE LOADED DIE: insert the shop where it costs least, once the purse
+	   covers it, within detourMaxMs and the run's slack. Re-scored every plan. */
+	for (const room in dieShops) {
+		const d = dieShops[room];
+		if (d.done || d.map !== character.map || navSkip[room]) continue;
+		if ((st.gold || 0) < d.price) continue;
+		const p = navPoint(st, room);
+		if (!p) { navOnce('die-nopos-' + room, 'die skipped - the shop ' + room + ' has no position'); continue; }
+		const ins = navInsert(route.points, p);
+		/* After the last seal the die is the prize and the detour limit no longer
+		   applies - only the clock does. */
+		if (!finished && ins.ms > NAV.detourMaxMs) { navOnce('die-far-' + room + '-' + route.rooms.length, 'die skipped - the detour is ' + Math.round(ins.ms / 1000) + 's, over the ' + Math.round(NAV.detourMaxMs / 1000) + 's limit'); continue; }
+		if (ins.ms > slack) { navOnce('die-time-' + room + '-' + route.rooms.length, 'die skipped - ' + Math.round(ins.ms / 1000) + 's of detour, ' + Math.round(slack / 1000) + 's of slack'); continue; }
+		if (ins.at === 0) return { kind: 'shop', x: p.x, y: p.y, id: room, why: 'buying the Loaded Die (' + d.price + ')' };
+	}
+
+	/* 6. A CAMP ALREADY UNDER WAY NEARBY is waited out when the clock allows -
+	   early floors rarely, the last floor freely. */
+	for (const o of objs) {
+		if (o.kind !== 'farm' || o.done || !(o.waves >= 1) || navSkip[o.id]) continue;
+		if (Math.hypot(o.x - me.x, o.y - me.y) > NAV.campReach) continue;
+		const need = (3 - o.waves) * NAV.waveMs;
+		if (finished || slack >= need) return { kind: 'camp', x: o.x, y: o.y, id: o.id, why: 'camp wave ' + o.waves + ' of 3' };
+		navOnce('camp-' + o.id + '-' + o.waves, 'camp ' + (o.name || o.id) + ': not waiting for wave ' + (o.waves + 1) + ' - ' + Math.round(slack / 1000) + 's of slack');
+	}
+
+	/* 7. AN UNOPENED SHOP OR A REVEALED ROOM CLOSE TO THE ROUTE. The floor's own
+	   shop is in its first room by the doorway, so it is usually a pass-through. */
+	if (!finished) {
+		let pick = null;
+		for (const o of objs) {
+			/* encounters only: a revealed traveller has no vote to open, and the
+			   rare darkmage is not something to walk into on purpose */
+			if (o.required || o.kind !== 'encounter' || o.done || navSkip[o.id] || dieShops[o.id]) continue;
+			const ins = navInsert(route.points, o);
+			if (ins.ms > NAV.inspectMaxMs || ins.ms > slack) continue;
+			if (ins.at === 0 && (!pick || ins.ms < pick.ms)) pick = { o: o, ms: ins.ms };
+		}
+		if (pick) return { kind: 'inspect', x: pick.o.x, y: pick.o.y, id: pick.o.id, why: 'opening ' + (pick.o.name || pick.o.id) + ' (+' + Math.round(pick.ms / 1000) + 's)' };
+	}
+
+	/* 8. THE NEXT REQUIRED ROOM, in the cheapest order. */
+	if (route.rooms.length) {
+		const o = route.rooms[0];
+		return { kind: 'room', x: o.x, y: o.y, id: o.id, why: o.kind + ' ' + (o.name || o.id) };
+	}
+
+	/* 9. THE STAIRS once the floor is done. */
+	const d = navDownDoor(st);
+	if (d && !d.locked && !navRequired(st).length) return { kind: 'door', x: d.x, y: d.y, id: 'door:' + d.to, door: d, why: 'the stairs to ' + d.to };
+	if (d && navRequired(st).length) return { kind: 'idle', why: 'required rooms left but none reachable' };
+
+	/* 10. AFTER THE LAST SEAL: Amber per second, best first, while it fits. */
+	if (finished) {
+		const lim = st.limits || {};
+		if (lim.amber != null && lim.amber_spawned >= lim.amber) return { kind: 'leave', why: 'the Amber cap' };
+		const left = (st.remaining_ms == null ? Infinity : st.remaining_ms) - CFG.exit.finalMs - NAV.marginMs;
+		let best = null;
+		for (const o of objs) {
+			if (o.done || o.required || navSkip[o.id]) continue;
+			let amber, ms;
+			if (o.kind === 'farm') { const w = Math.max(1, 3 - (o.waves || 0)); amber = w * NAV.campAmber; ms = navMs(me, o) + w * NAV.waveMs; }
+			else if (o.kind === 'encounter' && !dieShops[o.id]) { amber = NAV.encounterAmber; ms = navMs(me, o) + NAV.encounterMs; }
+			else continue;
+			if (ms > left) continue;
+			const score = amber / ms;
+			if (!best || score > best.score) best = { o: o, score: score, amber: amber, ms: ms };
+		}
+		if (best) return { kind: 'farm', x: best.o.x, y: best.o.y, id: best.o.id,
+			why: 'after the last seal: ' + (best.o.name || best.o.id) + ' ~' + best.amber.toFixed(1) + ' Amber in ~' + Math.round(best.ms / 1000) + 's' };
+		return { kind: 'leave', why: 'nothing left that fits the clock' };
+	}
+	return { kind: 'idle', why: 'nothing to do' };
+}
+
+/* ---- doing it ---- */
+function navHalt(why) {
+	const f = navFlight;
+	if (f) f.halted = true;
+	navFlight = null;
+	try { if (typeof stop === 'function') stop(); else move(character.real_x, character.real_y); } catch (e) {}
+	if (why) bump('navHalts');
+}
+function navLanded(f, e) {
+	if (navFlight === f) navFlight = null;
+	if (f.halted) return;
+	const why = String((e && (e.reason || e.message)) || e);
+	if (/interrupt/i.test(why)) {
+		navManualUntil = Date.now() + NAV.manualPauseMs;
+		bump('navManual');
+		clog('a move I did not make - the autopilot waits ' + Math.round(NAV.manualPauseMs / 1000) + 's (caveNav(true) resumes now)', '#FFD700');
+		ev('navManual', {});
+		return;
+	}
+	const key = f.id || (Math.round(f.x) + ',' + Math.round(f.y));
+	navFails[key] = (navFails[key] || 0) + 1;
+	bump('navFails');
+	ev('navFail', { id: f.id || null, x: Math.round(f.x), y: Math.round(f.y), why: why, n: navFails[key] });
+	clog('path to ' + (f.id || key) + ' failed (' + why + ', #' + navFails[key] + ')', 'orange');
+}
+function navGo(g) {
+	const f = { x: g.x, y: g.y, id: g.id || null, at: Date.now(), halted: false };
+	if (navFlight) navFlight.halted = true;
+	navFlight = f;
+	bump('navMoves');
+	try {
+		const pr = smart_move({ map: character.map, x: g.x, y: g.y });
+		if (pr && typeof pr.then === 'function') pr.then(() => { if (navFlight === f) navFlight = null; }, (e) => navLanded(f, e));
+		else navFlight = null;
+	} catch (e) { navLanded(f, e); }
+}
+/* ONCE A ROOM HAS BEEN REACHED IT STAYS REACHED WITHIN THE SERVER'S OWN ROOM
+   RADIUS, 280, or walking out to pull one of its monsters would send the
+   leader back to the room's centre and out again. */
+const NAV_ROOM_KINDS = ['room', 'inspect', 'camp', 'farm', 'shop'];
+function navReached(g) {
+	const d = Math.hypot(g.x - character.real_x, g.y - character.real_y);
+	if (g.id && navAt[g.id] && NAV_ROOM_KINDS.indexOf(g.kind) >= 0) return d <= 280;
+	if (g.kind === 'door' || g.kind === 'escort') return d <= CFG.doorNear;
+	if (g.kind === 'collect') return d <= REGROUP.collectedWithin * 0.7;
+	return d <= NAV.arriveAt;
+}
+/* At a room that is not done: pull its monsters, walk to its NPC, or wait. */
+function navAtRoom(g, st, now) {
+	const actors = navActors(g.id);
+	const hostile = actors.filter((a) => !caveFriendly(a));
+	if (hostile.length) {
+		engagedUntil = now + CFG.engageHoldMs;
+		let near = null;
+		for (const a of hostile) if (!near || dist(character, a) < dist(character, near)) near = a;
+		const reach = Math.max(60, (character.range || 100) * 0.8);
+		if (near && dist(character, near) > reach && !navFlight) navGo({ x: near.real_x !== undefined ? near.real_x : near.x, y: near.real_y !== undefined ? near.real_y : near.y, id: g.id });
+		return;
+	}
+	const npc = actors.filter((a) => caveFriendly(a))[0];
+	if (npc && dist(character, npc) > NAV.npcAt && !navFlight) {
+		navGo({ x: npc.real_x !== undefined ? npc.real_x : npc.x, y: npc.real_y !== undefined ? npc.real_y : npc.y, id: g.id });
+		return;
+	}
+	const since = navAt[g.id];
+	if (since && now - since > NAV.stallMs) {
+		const o = navFloorObjs(st).filter((x) => x.id === g.id)[0];
+		if (o && !o.required) {
+			navSkip[g.id] = 1;
+			navOnce('stall-' + g.id, 'nothing is happening at ' + (o.name || g.id) + ' - moving on');
+		} else navOnce('stall-' + g.id, 'STALLED at required ' + (o ? (o.name || o.id) : g.id) + ' for ' + Math.round((now - since) / 1000) + 's - the operator may need to look', 'red');
+	}
+}
+async function navTick() {
+	if (!NAV.enabled || !navOn || stopped || mode !== 'cave' || !inCave() || !active() || !isLeader()) return;
+	if (cavePaused()) return;
+	const st = caveState(), now = Date.now();
+	if (!st) return;
+	if (navFloor !== st.floor) { navFloor = st.floor; navAt = {}; navLeg = null; navDoorSince = 0; navEscort = null; }
+	const g = navPlan(st, now);
+	const changed = !navGoal || navGoal.kind !== g.kind || navGoal.id !== g.id;
+	if (changed) {
+		ev('navGoal', { kind: g.kind, id: g.id || null, why: g.why, floor: st.floor, rem: st.remaining_ms });
+		if (g.kind !== 'fight' && g.kind !== 'vote') clog('autopilot: ' + g.kind + ' - ' + g.why, '#7FD1FF');
+	}
+	navGoal = g;
+	/* THE HOLD STOPS THE LEADER FOR THE PARTY and the autopilot must not walk
+	   off - except to go back for a member, which is what a regroup hold is
+	   waiting for. Planned BEFORE this test, or a hold that began would hide the
+	   collect goal that ends it. */
+	if (holdFrom && !holdDone && !navRegroupMove()) { if (navFlight) navHalt('hold'); return; }
+	if (g.kind === 'leave') {
+		if (!exitForce) { exitForce = true; exitWhyFrom = 0; clog('autopilot: leaving - ' + g.why, '#FFD700'); ev('navLeave', { why: g.why }); }
+		return;
+	}
+	if (['fight', 'hold', 'rest', 'idle', 'vote', 'manual'].indexOf(g.kind) >= 0) {
+		if (navFlight && (g.kind === 'fight' || g.kind === 'hold')) navHalt(g.kind);
+		return;
+	}
+	if (!navReached(g)) {
+		if (!navLeg || navLeg.key !== g.kind + ':' + (g.id || '')) navLeg = { key: g.kind + ':' + (g.id || ''), from: navMe(), at: now, est: navMs(navMe(), g) };
+		const stale = navFlight && now - navFlight.at > NAV.smartMaxMs;
+		const elsewhere = navFlight && Math.hypot(navFlight.x - g.x, navFlight.y - g.y) > 40 && !(navFlight.id && navFlight.id === g.id);
+		if (!navFlight || stale || elsewhere) {
+			const key = g.id || (Math.round(g.x) + ',' + Math.round(g.y));
+			if ((navFails[key] || 0) >= NAV.failSkip && !(navRequired(st).some((o) => o.id === g.id))) {
+				navSkip[g.id || key] = 1;
+				navOnce('fail-' + key, 'no path to ' + (g.id || key) + ' after ' + navFails[key] + ' tries - dropped');
+				return;
+			}
+			navGo(g);
+		}
+		return;
+	}
+	/* Arrived. */
+	if (navLeg && navLeg.key === g.kind + ':' + (g.id || '')) {
+		const ms = now - navLeg.at;
+		ev('navLeg', { kind: g.kind, id: g.id || null, straight: Math.round(Math.hypot(g.x - navLeg.from.x, g.y - navLeg.from.y)),
+			ms: ms, est: Math.round(navLeg.est), factor: navLeg.est > 0 ? Math.round((ms / navLeg.est) * NAV.mazeFactor * 100) / 100 : null });
+		navLeg = null;
+	}
+	if (g.id && !navAt[g.id]) navAt[g.id] = now;
+	if (NAV_ROOM_KINDS.indexOf(g.kind) >= 0) { navAtRoom(g, st, now); return; }
+	if (g.kind === 'door') {
+		let chests = 0;
+		try { chests = Object.keys((typeof get_chests === 'function' && get_chests()) || {}).length; } catch (e) {}
+		if (!navDoorSince) navDoorSince = now;
+		if (chests && now - navDoorSince < NAV.chestWaitMs) { throttleLog('at the stairs - waiting for ' + chests + ' chest(s)'); return; }
+		if (now - navLastDoor < 3000) return;
+		navLastDoor = now;
+		bump('navDoors');
+		clog('autopilot: taking the stairs to ' + g.door.to, '#7FD1FF');
+		try { await transport(g.door.to, 0); ev('navDoor', { to: g.door.to, ok: true }); }
+		catch (e) { const why = String((e && (e.reason || e.message)) || e); ev('navDoor', { to: g.door.to, ok: false, why: why }); clog('stairs refused: ' + why, 'orange'); }
+	}
+}
+function navRegroupMove() { return !!(navGoal && (navGoal.kind === 'collect' || navGoal.kind === 'landing')); }
+/* Is the autopilot the one moving the leader. */
+function navDriving() { return NAV.enabled && navOn && mode === 'cave' && isLeader() && inCave(); }
+/* Off/on by hand: caveNav(false) hands the leader back to the operator. */
+function caveNav(on) {
+	if (on === undefined) on = !navOn;
+	navOn = !!on; navManualUntil = 0;
+	if (!navOn && navFlight) navHalt('off');
+	clog('autopilot ' + (navOn ? 'ON' : 'OFF'), '#FFD700');
+	return navOn;
+}
+function caveNavStatus() {
+	const st = caveState();
+	const g = st ? navPlan(st, Date.now()) : null;
+	const out = { on: navOn, goal: g, flying: navFlight ? { id: navFlight.id, x: Math.round(navFlight.x), y: Math.round(navFlight.y) } : null,
+		escort: navEscort, skip: Object.keys(navSkip), manualFor: Math.max(0, navManualUntil - Date.now()) };
+	clog(JSON.stringify(out));
+	return out;
+}
+/* A RESOLVED VOTE THAT CHOSE AN ESCORT makes the room an escort: the NPC
+   follows us and finishes at the stairs, so the goal room becomes the door. */
+function navNoteResolved(choice) {
+	if (!choice || !choice.resolved || !choice.result || navSaid['res-' + choice.id]) return;
+	navSaid['res-' + choice.id] = 1;
+	const enc = encounterOf(choice);
+	const opt = enc && enc.o.filter((o) => o.i === choice.result)[0];
+	if (opt && opt.e === 'escort' && navGoal && navGoal.id) {
+		navEscort = navGoal.id;
+		clog('autopilot: escort chosen - walking ' + navGoal.id + ' to the stairs', '#7FD1FF');
+		ev('navEscort', { room: navGoal.id });
+	}
+}
+/* The followers leave when the leader does: its beacon carries `exit`. */
+function leaderExiting() {
+	if (isLeader()) return false;
+	const b = beacons()[leaderName()];
+	return !!(b && b.exit && Date.now() - b.t <= TROUBLE.staleMs);
+}
+/* A FOLLOWER'S HALF OF THE LANDING RULING. Walks to the landing and kites
+   there; returns true while it owns the move. */
+async function followerLanding() {
+	const why = landingWanted();
+	if (!why || mode !== 'cave' || !inCave()) return false;
+	const l = navLanding(caveState());
+	if (!l) return false;
+	const d = Math.hypot(l.x - character.real_x, l.y - character.real_y);
+	if (recovering) { recovering = false; aim = null; }
+	navOnce('landing-' + why + '-' + (caveState() || {}).floor, why + ' - pulling back to the landing', 'orange');
+	if (d > NAV.arriveAt) {
+		if (smartFlight && Date.now() - smartFlight < MOVE.smartMoveMaxMs) return true;
+		smartFlight = Date.now();
+		bump('landingMoves');
+		try { await smart_move({ map: character.map, x: l.x, y: l.y }); } catch (e) {}
+		smartFlight = 0;
+		return true;
+	}
+	const k = kiteStep(null);
+	if (k) { try { move(k.x, k.y); bump('kiteSteps'); } catch (e) {} }
 	return true;
 }
 
@@ -3654,6 +4194,7 @@ try {
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
 	window.caveDump = caveDump; window.caveLeash = caveLeash; window.caveVotePreview = caveVotePreview;
 	window.caveExit = caveExit; window.caveStay = caveStay; window.caveResume = caveResume;
+	window.caveNav = caveNav; window.caveNavStatus = caveNavStatus;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
@@ -3663,7 +4204,9 @@ async function tick() {
 		const was = phase;
 		if (inCave()) phase = 'inside';
 		else if (phase === 'inside') { leaving = true; phase = 'idle'; votedFor = {}; deadDoors = {}; dieShops = {}; pendingBuys = {}; voteNoted = {}; reserveReleased = false; reviveSpent = {};
-			myDeaths = []; resting = false; deathLoop = false; friendlySkip = {}; exitAsked = 0; finishedAt = 0; exitForce = false; exitWhyFrom = 0; }
+			myDeaths = []; resting = false; deathLoop = false; friendlySkip = {}; exitAsked = 0; finishedAt = 0; exitForce = false; exitWhyFrom = 0;
+			navGoal = null; navFlight = null; navManualUntil = 0; navEscort = null; navAt = {}; navSkip = {}; navFails = {}; navSaid = {};
+			navLastDoor = 0; navDoorSince = 0; navLeg = null; navFloor = null; }
 		else if (offCave()) phase = stopped ? 'idle' : 'active';
 		else if (phase === 'gather' && character.map === CFG.keeper.map && dist(character, CFG.keeper) <= CFG.stageWithin) phase = 'staged';
 		if (phase !== was) { clog('phase -> ' + phase, '#7FD1FF'); ev('phase', { from: was, to: phase }); }

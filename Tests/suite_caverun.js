@@ -875,6 +875,24 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	x = mk({ deathLoop: true, leader: { x: 50, y: 0 } });
 	x.restTick();
 	t.eq('a death loop ends when the leader collects it', [x.resting, x.deathLoop].join(), 'false,false');
+	/* v27: the LEADER's loop ends when the followers come to him. */
+	const ml = (gaps) => { const y = mk({ deathLoop: true }); y.isLeader = () => true; y.followerGaps = () => gaps; return y; };
+	x = ml([{ who: 'Dexon', gap: 60, src: 'entity' }, { who: 'MageofOz', gap: 400, src: 'beacon' }]);
+	x.restTick();
+	t.eq('a looped leader with one follower still away keeps holding', x.deathLoop, true);
+	x = ml([{ who: 'Dexon', gap: 60, src: 'entity' }, { who: 'MageofOz', gap: 0, src: 'rip' }]);
+	x.restTick();
+	t.eq('every LIVING follower beside him ends it', [x.resting, x.deathLoop].join(), 'false,false');
+	x = ml([{ who: 'Dexon', gap: 0, src: 'rip' }, { who: 'MageofOz', gap: 0, src: 'rip' }]);
+	x.restTick();
+	t.eq('both followers dead is nobody coming - a corpse reads gap 0 and must not count', x.deathLoop, true);
+	const ld = world({ TROUBLE: { staleMs: 5000 } });
+	ld.isLeader = () => false; ld.leaderName = () => 'FatherToken'; ld.leaderEntity = () => null;
+	lift(ld, 'CaveRun.js', ['leaderDown']);
+	ld.beacons = () => ({ FatherToken: { t: Date.now(), rest: true, loop: false } });
+	t.eq('a resting leader holds the followers where they are', ld.leaderDown(), true);
+	ld.beacons = () => ({ FatherToken: { t: Date.now(), rest: true, loop: true } });
+	t.eq('a death-looped leader does not - they go and collect him', ld.leaderDown(), false);
 } },
 
 { name: 'v26 the Loaded Die is retried whenever someone is beside its shop with the gold', fn(t) {
@@ -888,6 +906,7 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		w.sent = []; w.parent.socket = { emit: (k, d) => w.sent.push(d) };
 		w.dist = (a, b) => Math.hypot((a.real_x != null ? a.real_x : a.x) - b.x, (a.real_y != null ? a.real_y : a.y) - b.y);
 		w.isLeader = () => true; w.logs = []; w.throttleLog = (m) => w.logs.push(m);
+		w.navDriving = () => !!w.__nav;
 		w.bump = () => {}; w.ev = () => {}; w.clog = () => {};
 		lift(w, 'CaveRun.js', ['shopKeeper', 'dieTick', 'onCaveResponse']);
 		return w;
@@ -907,7 +926,10 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	w = mk(12000, 900);
 	w.dieTick();
 	t.eq('out of reach: no buy', w.sent.length, 0);
-	t.ok('but the leader says the detour is worth it', w.logs.some((m) => /affordable/.test(m)));
+	t.ok('but a leader the operator walks is told the detour is worth it', w.logs.some((m) => /affordable/.test(m)));
+	w = mk(12000, 900); w.__nav = true;
+	w.dieTick();
+	t.eq('v27: under the autopilot, which decides the detour itself, that note is not repeated', w.logs.length, 0);
 	w = mk(12000, 50);
 	w.dieTick();
 	w.onCaveResponse({ interaction: 'cave', request_id: w.sent[0].request_id, failed: true, reason: 'sold_out' });
@@ -961,6 +983,7 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		w.get_chests = () => ({});
 		w.sent = []; w.parent.socket = { emit: (k, d) => w.sent.push(d.action) };
 		w.bump = () => {}; w.ev = () => {}; w.clog = () => {};
+		w.leaderExiting = () => !!w.__leaderExit;
 		lift(w, 'CaveRun.js', ['runFinished', 'exitTick']);
 		return w;
 	};
@@ -980,6 +1003,10 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	w = mk(Object.assign({}, done, { floor: 1 }), { exitForce: true });
 	w.exitTick(); w.exitWhyFrom = 1; w.exitTick();
 	t.eq('caveExit() leaves even before the last seal', w.sent.join(), 'exit');
+	w = mk(Object.assign({}, done, { floor: 1 }));
+	w.__leaderExit = true;
+	w.exitTick(); w.exitWhyFrom = 1; w.exitTick();
+	t.eq('v27: a follower leaves when the leader\u2019s beacon says it is leaving', w.sent.join(), 'exit');
 
 	const d = world({ tel: { counters: { a: 1 } } });
 	d.character = { name: 'Dexon' };
@@ -990,6 +1017,221 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	t.eq('the dump is written', d.caveDumpToLog('exit'), true);
 	t.ok('as one CAVE DUMP row', /^CAVE DUMP \(exit\) - Dexon$/.test(buf[0].message));
 	t.eq('with the telemetry under dump', JSON.stringify(buf[0].dump.counters), '{"a":1}');
+} },
+
+{ name: 'v27 the leader drives itself: the plan, in order of asking', fn(t) {
+	const s = src();
+	const m = /const NAV_ROOM_KINDS = (\[[^\]]*\]);/.exec(s);
+	t.ok('PRECONDITION: NAV_ROOM_KINDS is an array literal the suite can pin', !!m);
+	/* Required rooms are fight / encounter / boss, three a floor. Me at 0,0. A
+	   is the NEARER room, but B first is the cheaper whole walk to the stairs. */
+	const floor = (extra) => ({ floor: 0, remaining_ms: 1200000, gold: 0,
+		doors: [{ x: 0, y: 0, to: 'main', down: false }, { x: 500, y: 0, to: 'zone_1', down: true, locked: true }],
+		objectives: [
+			{ id: '0:0', floor: 0, kind: 'fight', required: true, done: false, x: 100, y: 0 },
+			{ id: '0:1', floor: 0, kind: 'encounter', required: true, done: false, x: -150, y: 0 },
+		].concat(extra || []) });
+	let w = navWorld();
+	const a = floor();
+	t.ok('PRECONDITION: the fight room is the nearer one', Math.abs(a.objectives[0].x) < Math.abs(a.objectives[1].x));
+	let g = w.navPlan(a, Date.now());
+	t.eq('the cheapest order to the stairs, not the nearest room first', [g.kind, g.id].join(), 'room,0:1');
+	const ro = w.navRoute(a, { x: 0, y: 0 });
+	t.eq('the route ends at the stairs', ro.points[ro.points.length - 1].x, 500);
+
+	const done = floor();
+	done.objectives.forEach((o) => { o.done = true; });
+	done.doors[1].locked = false;
+	g = w.navPlan(done, Date.now());
+	t.eq('the floor done: the stairs', [g.kind, g.door && g.door.to].join(), 'door,zone_1');
+	done.doors[1].locked = true;
+	t.eq('a door still locked is not walked into', w.navPlan(done, Date.now()).kind === 'door', false);
+
+	/* THE PARTY FIRST. */
+	w = navWorld({ beacons: { Dexon: { t: Date.now(), rip: true, ctype: 'ranger', map: 'z', x: 0, y: 0 },
+		MageofOz: { t: Date.now(), rip: true, ctype: 'mage', map: 'z', x: 0, y: 0 } } });
+	g = w.navPlan(floor(), Date.now());
+	t.eq('two dead: the landing, before any room', [g.kind, g.x, g.y].join(), 'landing,0,0');
+	w = navWorld({ me: { name: 'Dexon', ctype: 'ranger' },
+		beacons: { FatherToken: { t: Date.now(), rip: true, ctype: 'priest', map: 'z', x: 0, y: 0 } } });
+	t.eq('the healer dead: the landing', w.navPlan(floor(), Date.now()).kind, 'landing');
+	t.eq('and the same rule moves a follower', w.landingWanted(), 'the healer is dead');
+	w = navWorld({ beacons: { MageofOz: { t: Date.now(), rip: true, ctype: 'mage', map: 'z', x: 0, y: 0 } } });
+	t.eq('one member dead: no new objectives, and no walk away', w.navPlan(floor(), Date.now()).kind, 'hold');
+	w = navWorld({ beacons: { MageofOz: { t: Date.now(), rest: true, wait: true, ctype: 'mage', map: 'z', x: 40, y: 70 } } });
+	g = w.navPlan(floor(), Date.now());
+	t.eq('a member waiting for the party is collected', [g.kind, g.id, g.x, g.y].join(), 'collect,MageofOz,40,70');
+	w = navWorld({ beacons: { MageofOz: { t: Date.now() - 60000, rip: true, ctype: 'mage', map: 'z' } } });
+	t.eq('a STALE beacon is neither dead nor fine - it does not stop the run', w.navPlan(floor(), Date.now()).kind, 'room');
+
+	w = navWorld({ attackers: 1 });
+	t.eq('anything on me is fought before the next room', w.navPlan(floor(), Date.now()).kind, 'fight');
+	w = navWorld();
+	const v = floor(); v.choice = { id: 'c1', resolved: false };
+	t.eq('an open vote holds the leader where it opened', w.navPlan(v, Date.now()).kind, 'vote');
+	w = navWorld(); w.navManualUntil = Date.now() + 10000;
+	t.eq('a move the operator made pauses the autopilot', w.navPlan(floor(), Date.now()).kind, 'manual');
+	w = navWorld(); w.resting = true;
+	t.eq('a respawned leader rests first', w.navPlan(floor(), Date.now()).kind, 'rest');
+
+	/* AN ESCORT WALKS TO THE STAIRS, and stops being one when its room is done. */
+	w = navWorld(); w.navEscort = '0:1';
+	g = w.navPlan(floor(), Date.now());
+	t.eq('an escort is walked to the down door even with the stairs locked', [g.kind, g.x].join(), 'escort,500');
+	const ed = floor(); ed.objectives[1].done = true;
+	g = w.navPlan(ed, Date.now());
+	t.eq('the escort done: back to the rooms', [g.kind, w.navEscort].join(), 'room,');
+} },
+
+{ name: 'v27 the Loaded Die, camps and unopened shops are inserted where they cost least', fn(t) {
+	const base = () => ({ floor: 0, remaining_ms: 1200000, gold: 12000,
+		doors: [{ x: 0, y: 0, to: 'main', down: false }, { x: 600, y: 0, to: 'zone_1', down: true, locked: true }],
+		objectives: [{ id: '0:0', floor: 0, kind: 'fight', required: true, done: false, x: 300, y: 0 },
+			{ id: '0:shop', floor: 0, kind: 'encounter', required: false, done: true, x: 20, y: 30 }] });
+	let w = navWorld();
+	w.dieShops = { '0:shop': { map: 'z', price: 10000, done: false } };
+	let g = w.navPlan(base(), Date.now());
+	t.eq('the die affordable and beside the route: bought now', [g.kind, g.id].join(), 'shop,0:shop');
+	const poor = base(); poor.gold = 9000;
+	t.eq('not affordable: the route goes on', w.navPlan(poor, Date.now()).kind, 'room');
+	const far = base(); far.objectives[1].x = -6000;
+	w = navWorld(); w.dieShops = { '0:shop': { map: 'z', price: 10000, done: false } };
+	g = w.navPlan(far, Date.now());
+	t.eq('a detour over the limit is skipped', g.kind, 'room');
+	t.ok('and says why', w.said.some((m) => /die skipped - the detour is \d+s, over the 120s limit/.test(m)));
+	const tight = base(); tight.remaining_ms = 400000; tight.objectives[1].x = -1500;
+	w = navWorld(); w.dieShops = { '0:shop': { map: 'z', price: 10000, done: false } };
+	g = w.navPlan(tight, Date.now());
+	t.ok('PRECONDITION: inside the 2-minute limit', w.navInsert(w.navRoute(tight, { x: 0, y: 0 }).points, { x: -1500, y: 30 }).ms <= w.NAV.detourMaxMs);
+	t.eq('but not inside the run’s slack: skipped', g.kind, 'room');
+	t.ok('with the slack named', w.said.some((m) => /die skipped - \d+s of detour, -?\d+s of slack/.test(m)));
+	/* The insertion is re-scored every plan: further along the route the same
+	   shop can become the cheapest insertion AT 0. */
+	const later = base(); later.objectives[1].x = 320; later.objectives[1].y = 40;
+	w = navWorld({ me: { x: 0, y: 0 } }); w.dieShops = { '0:shop': { map: 'z', price: 10000, done: false } };
+	t.eq('a shop beside the NEXT room waits for that leg', w.navPlan(later, Date.now()).kind, 'room');
+
+	/* CAMPS. */
+	const camp = base();
+	camp.gold = 0;
+	camp.objectives.push({ id: '0:farm:a', floor: 0, kind: 'farm', required: false, done: false, waves: 1, x: 100, y: 100 });
+	w = navWorld();
+	g = w.navPlan(camp, Date.now());
+	t.eq('a camp under way nearby, time to spare: waited out', [g.kind, g.id].join(), 'camp,0:farm:a');
+	const rush = JSON.parse(JSON.stringify(camp)); rush.remaining_ms = 860000;
+	w = navWorld();
+	t.eq('no slack for the next wave: the run comes first', w.navPlan(rush, Date.now()).kind, 'room');
+	t.ok('and it says so', w.said.some((m) => /not waiting for wave 2/.test(m)));
+	const unstarted = JSON.parse(JSON.stringify(camp)); unstarted.objectives[2].waves = 0;
+	w = navWorld();
+	t.eq('a camp nobody has started is not a detour on early floors', w.navPlan(unstarted, Date.now()).kind, 'room');
+
+	/* AN UNOPENED SHOP by the route is opened on the way; a revealed traveller is not visited. */
+	const shop = base(); shop.gold = 0; shop.objectives[1].done = false;
+	w = navWorld();
+	t.eq('the floor shop by the doorway is opened on the way', [w.navPlan(shop, Date.now()).kind].join(), 'inspect');
+	const cit = base(); cit.gold = 0; cit.objectives[1].done = false; cit.objectives[1].kind = 'citizen';
+	w = navWorld();
+	t.eq('a citizen has no vote to open', w.navPlan(cit, Date.now()).kind, 'room');
+} },
+
+{ name: 'v27 after the last seal: Amber per second while it fits, then leave', fn(t) {
+	const fin = () => ({ floor: 2, remaining_ms: 600000, gold: 0, limits: { amber: 36, amber_spawned: 20 },
+		doors: [{ x: 0, y: 0, to: 'zone_1', down: false }],
+		objectives: [{ id: '2:0', floor: 2, kind: 'boss', required: true, done: true, x: 50, y: 0 },
+			{ id: '2:farm:a', floor: 2, kind: 'farm', required: false, done: false, waves: 0, x: 400, y: 0 },
+			{ id: '2:farm:b', floor: 2, kind: 'farm', required: false, done: false, waves: 0, x: 4000, y: 0 }] });
+	let w = navWorld();
+	let g = w.navPlan(fin(), Date.now());
+	t.eq('the nearer camp has the better Amber per second', [g.kind, g.id].join(), 'farm,2:farm:a');
+	const capped = fin(); capped.limits.amber_spawned = 36;
+	t.eq('at the Amber cap: leave', w.navPlan(capped, Date.now()).kind, 'leave');
+	const late = fin(); late.remaining_ms = 100000;
+	t.eq('nothing fits the clock: leave', w.navPlan(late, Date.now()).kind, 'leave');
+	const die = fin(); die.gold = 15000; die.objectives.push({ id: '2:shop', floor: 2, kind: 'encounter', required: false, done: true, x: -6000, y: 0 });
+	w = navWorld(); w.dieShops = { '2:shop': { map: 'z', price: 10000, done: false } };
+	g = w.navPlan(die, Date.now());
+	t.ok('PRECONDITION: the walk is over the floor-route detour limit', w.navMs({ x: 0, y: 0 }, { x: -6000, y: 0 }) > w.NAV.detourMaxMs);
+	t.eq('after the last seal the die is fetched on the clock alone', [g.kind, g.id].join(), 'shop,2:shop');
+} },
+
+{ name: 'v27 doing it: one smart_move per goal, the hold wins, the stairs wait for chests', fn(t) {
+	const st = { floor: 0, remaining_ms: 1200000, gold: 0,
+		doors: [{ x: 0, y: 0, to: 'main', down: false }, { x: 30, y: 0, to: 'zone_1', down: true, locked: false }],
+		objectives: [{ id: '0:0', floor: 0, kind: 'fight', required: true, done: false, x: 400, y: 0 }] };
+	let w = navWorld({ st: st });
+	w.navTick();
+	w.navTick();
+	t.eq('one smart_move to the room, not one a tick', w.moves.length, 1);
+	t.eq('at the objective’s own x/y, which is what the button does', [w.moves[0].x, w.moves[0].y].join(), '400,0');
+	w.holdFrom = Date.now(); w.holdDone = false;
+	w.navTick();
+	t.eq('a hold halts the flight', [w.stops, w.navFlight].join(), '1,');
+	w.navTick();
+	t.eq('and nothing new is issued while it holds', w.moves.length, 1);
+	w.holdDone = true;
+	w.navTick();
+	t.eq('a hold that gave up lets the autopilot go on', w.moves.length, 2);
+
+	/* A regroup hold does NOT stop the leader going back for the member it waits for. */
+	w = navWorld({ st: st, beacons: { MageofOz: { t: Date.now(), rest: true, wait: true, ctype: 'mage', map: 'z', x: -300, y: 0 } } });
+	w.holdFrom = Date.now(); w.holdDone = false;
+	w.navTick();
+	t.eq('collecting a member is the move a regroup hold waits for', [w.moves.length, w.moves[0] && w.moves[0].x].join(), '1,-300');
+
+	/* THE STAIRS: arrived, chests still down - wait; then transport. */
+	const fl = JSON.parse(JSON.stringify(st)); fl.objectives[0].done = true;
+	w = navWorld({ st: fl, me: { x: 30, y: 0 } });
+	w.chests = { c1: {} };
+	w.navTick();
+	t.eq('at the stairs with a chest down: wait', w.transports.length, 0);
+	w.navDoorSince = Date.now() - 25000;
+	w.navLastDoor = 0;
+	w.navTick();
+	t.eq('the chest wait is bounded', w.transports.join(), 'zone_1');
+
+	/* A smart_move the autopilot did not make (the button, a hand move) pauses it. */
+	w = navWorld({ st: st });
+	const f = { x: 1, y: 1, halted: false };
+	w.navFlight = f;
+	w.navLanded(f, { reason: 'interrupted' });
+	t.ok('an interruption we did not cause pauses the autopilot', w.navManualUntil > Date.now());
+	w = navWorld({ st: st });
+	const h = { x: 1, y: 1, halted: true };
+	w.navLanded(h, { reason: 'interrupted' });
+	t.eq('our own halt is not a manual takeover', w.navManualUntil, 0);
+	w = navWorld({ st: st });
+	w.navLanded({ x: 1, y: 1, id: 'r', halted: false }, { reason: 'failed' });
+	t.eq('a failed path is counted, not read as the operator', [w.navManualUntil, w.navFails.r].join(), '0,1');
+
+	/* Off is off. */
+	w = navWorld({ st: st }); w.navOn = false;
+	w.navTick();
+	t.eq('caveNav(false): the leader is the operator’s again', w.moves.length, 0);
+	w = navWorld({ st: st, me: { name: 'Dexon', ctype: 'ranger' } }); w.isLeader = () => false;
+	w.navTick();
+	t.eq('a follower never runs the autopilot', w.moves.length, 0);
+} },
+
+{ name: 'v27 wiring: escort from the vote, the leader’s exit carried to the followers', fn(t) {
+	const s = src();
+	t.ok('moveTick runs the autopilot after the hold check',
+		/if \(active\(\)\) warnOutrun\(\);\n[\s\S]{0,200}if \(active\(\)\) await navTick\(\);\n\t\treturn;/.test(s));
+	t.ok('a follower pulls back to the landing before following',
+		/if \(!resting && !deathLoop && await followerLanding\(\)\) return;/.test(s));
+	t.ok('a resolved vote is read for an escort', /else \{ learnShop\(choice\); navNoteResolved\(choice\); \}/.test(s));
+	t.ok('the beacon carries exit and wait', /wait: !!\(deathLoop \|\| \(resting && restSaid\)\),\n\t\t\texit: !!exitForce,/.test(s));
+	t.ok('the regroup hold yields to a collect move', /if \(regroup\.length && navRegroupMove\(\)\)/.test(s));
+	t.ok('holdResume does not fight the autopilot', /if \(!g \|\| navDriving\(\)\) return;/.test(s));
+	t.ok('leaving the cave resets the autopilot', /navGoal = null; navFlight = null; navManualUntil = 0; navEscort = null;/.test(s));
+
+	const w = navWorld();
+	w.navGoal = { kind: 'room', id: '0:1' };
+	w.encounterOf = () => ({ o: [{ i: 'e23_0', e: 'escort' }, { i: 'e23_3', e: 'guide' }] });
+	w.navNoteResolved({ id: 'c1', resolved: true, result: 'e23_3' });
+	t.eq('a guide finishes in the room - no escort', w.navEscort, null);
+	w.navNoteResolved({ id: 'c2', resolved: true, result: 'e23_0' });
+	t.eq('an escort makes the goal room an escort', w.navEscort, '0:1');
 } },
 ];
 
@@ -1015,5 +1257,40 @@ function voteWorld() {
 	lift(w, 'CaveRun.js', ['VOTE', 'CAVE_REVIVAL', 'compactEncounter', 'encounterTable', 'voteTableSource', 'encounterOf',
 		'voteFightValue', 'voteFlagValue', 'voteOutcomeValue', 'voteScore', 'reserveNow', 'voteContext', 'votePlan',
 		'REVIVE', 'deadMates', 'reviveChoice', 'voteEmit', 'voteOpen']);
+	return w;
+}
+function navWorld(o) {
+	o = o || {};
+	const s = src();
+	const kinds = /const NAV_ROOM_KINDS = (\[[^\]]*\]);/.exec(s);
+	const me = Object.assign({ name: 'FatherToken', ctype: 'priest', x: 0, y: 0 }, o.me || {});
+	const w = world({ TEAM: ['Dexon', 'FatherToken', 'MageofOz'], mode: 'cave', stopped: false,
+		navOn: true, navGoal: null, navFlight: null, navManualUntil: 0, navEscort: null, navAt: {}, navSkip: {},
+		navFails: {}, navSaid: {}, navLastDoor: 0, navDoorSince: 0, navLeg: null, navFloor: null,
+		dieShops: {}, resting: false, deathLoop: false, holdFrom: 0, holdDone: false, exitForce: false, exitWhyFrom: 0,
+		engagedUntil: 0, TROUBLE: { staleMs: 5000 }, REGROUP: { collectedWithin: 150 },
+		CFG: { doorNear: 40, engageHoldMs: 8000, exit: { finalMs: 60000 } } });
+	w.NAV_ROOM_KINDS = JSON.parse(kinds[1].replace(/'/g, '"'));
+	w.character = { name: me.name, ctype: me.ctype, real_x: me.x, real_y: me.y, map: 'z', speed: 60, rip: false, range: 150 };
+	w.beacons = () => o.beacons || {};
+	w.said = [];
+	w.clog = (m) => w.said.push(m); w.ev = () => {}; w.bump = () => {}; w.throttleLog = () => {};
+	w.attackersOnMe = () => o.attackers || 0;
+	w.threats = () => []; w.partyNames = () => w.TEAM; w.caveFriendly = () => false;
+	w.dist = (a, b) => Math.hypot((a.real_x !== undefined ? a.real_x : a.x) - (b.real_x !== undefined ? b.real_x : b.x),
+		(a.real_y !== undefined ? a.real_y : a.y) - (b.real_y !== undefined ? b.real_y : b.y));
+	w.shopKeeper = () => null;
+	w.isLeader = () => true; w.inCave = () => true; w.active = () => true; w.cavePaused = () => false;
+	w.caveState = () => o.st || null;
+	w.moves = []; w.stops = 0; w.transports = []; w.chests = {};
+	w.smart_move = (p) => { w.moves.push(p); return new Promise(() => {}); };
+	w.stop = () => { w.stops++; };
+	w.move = () => {};
+	w.transport = (to) => { w.transports.push(to); return Promise.resolve({}); };
+	w.get_chests = () => w.chests;
+	lift(w, 'CaveRun.js', ['NAV', 'navSpeed', 'navMs', 'navMe', 'navLanding', 'navDownDoor', 'navFloorObjs', 'navRequired',
+		'navActors', 'navRoute', 'navNeedMs', 'navSlackMs', 'navInsert', 'navPoint', 'navOnce', 'navParty', 'landingWanted',
+		'navFighting', 'navPlan', 'runFinished', 'navHalt', 'navLanded', 'navGo', 'navReached', 'navAtRoom', 'navTick',
+		'navRegroupMove', 'navDriving', 'navNoteResolved']);
 	return w;
 }
