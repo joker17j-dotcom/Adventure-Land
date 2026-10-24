@@ -2361,7 +2361,7 @@ module.exports = [
 	const rsrc = fs.readFileSync(RANGER, 'utf8');
 	const run = extract(RANGER, 'achvTickRun');
 	t.eq('ranger: achvTickRun latches on settle (finally), not on success', /\.finally\(\(\) => \{ farmBootAchvTick = true;/.test(run), true);
-	t.eq('ranger: achvTickRun is called at boot', /^achvTickRun\(\);$/m.test(rsrc), true);
+	t.eq('ranger: achvTickRun is called at boot', /^setTimeout\(achvTickRun, 0\);$/m.test(rsrc), true);
 	t.eq('ranger: and on the interval', /setInterval\(achvTickRun,/.test(rsrc), true);
 } },
 
@@ -2603,5 +2603,136 @@ module.exports = [
 	const gh = src.slice(src.indexOf('\tasync goHomeIfIdle(cur) {'), src.indexOf('\tasync lootBeforeHop()'));
 	t.ok('goHomeIfIdle consults the hold', /this\.holdRank\(cur, this\.prepPlan\(cur\)\) !== null/.test(gh));
 	t.ok('prepStatus is on the feature probe', /prepStatus: typeof prepStatus,/.test(src));
+} },
+{ name: 'v140 the leader beats on its own timer, notes dedupe per message, errors read', fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
+	for (const n of ['bossNote', 'bossThrew', 'bossBeat', 'safeSmartMove', 'rageBlockKey', 'rageViaStaging', 'rageStuckTown', 'rageTownOnCall']) {
+		const r = extract(RANGER, n);
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === r, true);
+	}
+	for (const f of FILES) {
+		const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		t.ok(f + ': the beat has its own timer', /\nsetInterval\(bossBeat, BOSS_BEAT_MS\);\n/.test(s));
+		t.ok(f + ': handleEvents logs through bossThrew', /bossTick\(\)\.catch\(bossThrew\);/.test(s));
+		t.ok(f + ': on_cm routes ragetown', /if \(data\.message === 'ragetown'\) \{ rageTownOnCall\(name, data\); return; \}/.test(s));
+		t.eq(f + ': the refusal is not echoed by the approach', /rageLog\('boss approach blocked/.test(s), false);
+		t.ok(f + ': BOSS_BEAT_MS is inside the followers’ trust', Number((/const BOSS_BEAT_MS = (\d+)/.exec(s) || [])[1]) * 2 < Number((/leaderTrustMs: (\d+)/.exec(s) || [])[1]));
+	}
+
+	/* THE BEAT. */
+	const bw = (me, trip) => {
+		const sent = [];
+		const w = world({ character: { name: me }, CONFIG: { bossEvents: { leaderName: 'Dexon' }, party: { groupMembers: ['Dexon', 'FatherToken', 'MageofOz'] } },
+			plSend: (to, d) => sent.push(to + ':' + d.message + ':' + (d.name || d.on)), rageEntryActive: true });
+		lift(w, RANGER, ['bossState', 'bossIsLeader', 'bossBroadcast', 'bossRecast', 'rageEntryBroadcast', 'bossBeat']);
+		w.BOSS_RECAST_MS = 8000;
+		w.bossState.trip = trip;
+		w.sent = sent;
+		return w;
+	};
+	let w = bw('Dexon', { name: 'graveyard' });
+	w.bossBeat();
+	t.eq('the leader on a trip re-sends the trip and the rage-entry state', w.sent.slice().sort(),
+		['FatherToken:boss:graveyard', 'FatherToken:rageentry:true', 'MageofOz:boss:graveyard', 'MageofOz:rageentry:true']);
+	w = bw('MageofOz', { name: 'graveyard' }); w.bossBeat();
+	t.eq('a follower says nothing', w.sent.length, 0);
+	w = bw('Dexon', null); w.bossBeat();
+	t.eq('no trip, nothing', w.sent.length, 0);
+
+	/* NOTES: two alternating messages each say once per trip. */
+	const nw = world({ bossState: { trip: { startedAt: 1 }, lastNote: null } });
+	nw.logs2 = []; nw.bossLog = (m) => nw.logs2.push(m);
+	lift(nw, RANGER, ['bossNote', 'bossThrew']);
+	/* `const X = new Map()` is the non-liftable initialiser this repo records -
+	   supplied here and pinned from the source text. */
+	const rs = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
+	t.ok('PRECONDITION: the two maps and the window are what the fixture supplies',
+		/const BOSS_NOTE_MS = 120000;\nconst bossNoteSeen = new Map\(\);/.test(rs) && /const bossThrewSeen = new Map\(\);/.test(rs));
+	nw.bossNoteSeen = new Map(); nw.bossThrewSeen = new Map();
+	nw.BOSS_NOTE_MS = 120000;
+	for (let i = 0; i < 50; i++) { nw.bossNote('A'); nw.bossNote('B'); }
+	t.eq('PRECONDITION-free: 100 alternating notes log twice', nw.logs2, ['A', 'B']);
+	nw.bossState.trip = { startedAt: 2 };
+	nw.bossNote('A');
+	t.eq('a new trip says it again', nw.logs2.length, 3);
+	nw.bossThrew({ reason: 'Path not found' }); nw.bossThrew({ reason: 'Path not found' });
+	t.eq('a rejection reads by its reason, once a minute', nw.logs2.slice(3), ['tick threw: Path not found']);
+} },
+
+{ name: 'v140 a refused route is remembered, tried via the spawn, and two in a row use town', fn(t) {
+	const mk = (o) => {
+		o = o || {};
+		const w = world({ character: { name: o.me || 'Dexon', map: 'spookytown', x: 290, y: -990, real_x: 290, real_y: -990 },
+			CONFIG: { bossEvents: { leaderName: 'Dexon' }, party: { groupMembers: ['Dexon', 'FatherToken', 'MageofOz', 'Meltymerch'] } } });
+		w.calls = []; w.sent = []; w.towns = 0;
+		w.rageCfg = () => ({ enabled: true, margin: 4 });
+		w.rageBoxes = () => [{ r: [-124, -1631, 614, -1130] }];
+		w.rageClips = () => true;
+		w.rageStaging = () => o.stage === undefined ? { x: 0, y: 0 } : o.stage;
+		w.rageWalk = async (map, p) => { w.calls.push(Math.round(p.x) + ',' + Math.round(p.y)); const ok = (o.walk || (() => false))(p); if (ok) { w.character.x = p.x; w.character.y = p.y; } return ok; };
+		w.smart_move = async () => true;
+		w.rageLog = (m) => w.calls.push('log:' + m);
+		w.rageAttackersOnMe = () => o.attackers || 0;
+		w.plSend = (to, d) => w.sent.push(to + ':' + d.message);
+		w.use_skill = async (n) => { if (n === 'use_town') w.towns++; return {}; };
+		lift(w, RANGER, ['bossIsLeader', 'safeSmartMove', 'RAGE_BLOCK', 'rageBlockKey', 'rageViaStaging', 'rageStuckTown', 'rageTownOnCall']);
+		w.rageBlocked = {}; w.rageTownAt = 0;
+		return w;
+	};
+	const MRGREEN = { map: 'spookytown', x: 568, y: 920 };
+	let w = mk({ walk: (p) => p.x === 0 || p.x === 568 && w.character.x === 0 });
+	return w.safeSmartMove(MRGREEN).then((r) => {
+		t.eq('direct fails, via the spawn succeeds', r, true);
+		t.eq('the legs were direct, spawn, then mrgreen', w.calls.filter((c) => c.indexOf('log:') < 0), ['568,920', '0,0', '568,920']);
+		t.eq('and a success leaves no memo', Object.keys(w.rageBlocked).length, 0);
+		w = mk({ walk: () => false });
+		return w.safeSmartMove(MRGREEN).then(() => null, (e) => e.message);
+	}).then((why) => {
+		t.eq('nothing works: refused', why, 'rage_route_blocked');
+		const n = w.calls.length;
+		return w.safeSmartMove(MRGREEN).then(() => null, (e) => e.message).then((why2) => {
+			t.eq('asked again inside retryMs: refused without planning', [why2, w.calls.length === n].join(), 'rage_route_blocked,true');
+			t.eq('one refusal is not stuck', w.towns, 0);
+			for (const k in w.rageBlocked) w.rageBlocked[k].at = 0;
+			return w.safeSmartMove(MRGREEN).then(() => null, () => null);
+		});
+	}).then(() => {
+		t.eq('the second refusal in a row uses town', w.towns, 1);
+		t.eq('and the leader takes the other two, never the merchant', w.sent.sort(), ['FatherToken:ragetown', 'MageofOz:ragetown']);
+		t.ok('and says it once', w.calls.some((c) => /stuck - using town/.test(c)));
+		for (const k in w.rageBlocked) w.rageBlocked[k].at = 0;
+		return w.safeSmartMove(MRGREEN).then(() => null, () => null);
+	}).then(() => {
+		t.eq('not again inside townGapMs', w.towns, 1);
+		w = mk({ walk: () => false, attackers: 2 });
+		w.rageBlocked[w.rageBlockKey('spookytown', MRGREEN)] = { at: 0, n: 1, logged: 0 };
+		return w.safeSmartMove(MRGREEN).then(() => null, () => null);
+	}).then(() => {
+		t.eq('not while something is on me', w.towns, 0);
+		w = mk({ me: 'MageofOz' });
+		w.rageTownOnCall('Dexon', { map: 'spookytown' });
+		return Promise.resolve().then(() => Promise.resolve());
+	}).then(() => {
+		t.eq('a follower towns on the leader’s word', w.towns, 1);
+		t.eq('and does not relay it', w.sent.length, 0);
+		w = mk({ me: 'MageofOz' });
+		w.rageTownOnCall('FatherToken', { map: 'spookytown' });
+		w.rageTownOnCall('Dexon', { map: 'halloween' });
+		return Promise.resolve().then(() => Promise.resolve());
+	}).then(() => {
+		t.eq('only the leader’s word counts, and only on my map', w.towns, 0);
+	});
+} },
+
+{ name: 'v140 smaller log fixes: the boot achv tick, the priest loot line, the merchant merge line', fn(t) {
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT;
+	const r = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
+	t.ok('PRECONDITION: mhToggle is declared below the boot call', r.indexOf('let mhToggle = null;') > r.indexOf('setTimeout(achvTickRun, 0);'));
+	t.eq('so the boot tick is deferred, not inline', /^achvTickRun\(\);$/m.test(r), false);
+	const p = fs.readFileSync(path.join(ROOT, 'Party/Priest.js'), 'utf8');
+	t.ok('the priest loot line needs its fields', /if \(data\.opener !== undefined && data\.goldm !== undefined\) \{\n\t\t\tconsole\.log/.test(p));
+	const m = fs.readFileSync(path.join(ROOT, 'Party/Merchant.js'), 'utf8');
+	t.ok('the merge line is throttled', /if \(Date\.now\(\) - arbMergeSaidAt >= 600000\) \{ arbMergeSaidAt = Date\.now\(\); pLog\(m\.rows\.length/.test(m));
 } },
 ];

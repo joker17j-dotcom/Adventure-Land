@@ -1,4 +1,9 @@
 
+## v128
+
+**THE MARKET MERGE LINE IS SAID ONCE EVERY 10 MINUTES** - 1,951 identical
+lines in the 2026-10-24 game log.
+
 ## v127
 
 **SNAKEOIL IS KEPT AND BANKED** - added to `CONFIG.materials.keepAndBank` on

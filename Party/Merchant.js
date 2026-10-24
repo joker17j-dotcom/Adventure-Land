@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v127
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v128
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -9009,6 +9009,7 @@ const PROBE = {
 	log: [],
 };
 
+let arbMergeSaidAt = 0;
 function pLog(msg, color) {
 	const line = '[probe] ' + msg;
 	PROBE.log.push({ at: new Date().toISOString(), msg: msg });
@@ -9216,9 +9217,10 @@ async function arbProbeMarketRows() {
 	}
 
 	const m = arbMergeMarketRows(aldataRows, bridgeRows, gameRows);
-	pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
+	/* Once every 10 minutes - 1,951 lines on 2026-10-24 said the same thing. */
+	if (Date.now() - arbMergeSaidAt >= 600000) { arbMergeSaidAt = Date.now(); pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
 		+ m.fromBridge + ' bridge, ' + m.fromGame + ' game; bridge fresher on '
-		+ m.bridgeWins + ', game fresher on ' + m.gameWins + ')');
+		+ m.bridgeWins + ', game fresher on ' + m.gameWins + ')'); }
 	return { rows: m.rows, source: 'merged', merge: m, errors: errors };
 }
 

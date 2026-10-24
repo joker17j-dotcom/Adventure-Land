@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v139
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v140
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2975,13 +2975,73 @@ async function safeSmartMove(dest) {
 	}
 	if (character.map !== map || typeof dest.x !== 'number') return true;
 	if (!rageClips(map, character.x, character.y, dest.x, dest.y, cfg.margin)) return smart_move(dest);
-	const ok = await rageWalk(map, { x: dest.x, y: dest.y }, cfg.margin);
-	if (!ok) {
+	/* A REFUSED DESTINATION IS REMEMBERED FOR retryMs, so a caller asking every
+	   tick does not re-plan and re-log every tick - 26% of the 2026-10-24 game
+	   log was this refusal and its echo. */
+	const key = rageBlockKey(map, dest), blk = rageBlocked[key];
+	if (blk && Date.now() - blk.at < RAGE_BLOCK.retryMs) throw new Error('rage_route_blocked');
+	let ok = await rageWalk(map, { x: dest.x, y: dest.y }, cfg.margin);
+	if (!ok) ok = await rageViaStaging(map, dest, cfg.margin);
+	if (ok) { delete rageBlocked[key]; return true; }
+	const b = rageBlocked[key] = { at: Date.now(), n: (blk ? blk.n : 0) + 1, logged: blk ? blk.logged : 0 };
+	if (!b.logged || Date.now() - b.logged >= RAGE_BLOCK.logMs) {
+		b.logged = Date.now();
 		rageLog('no safe route to ' + Math.round(dest.x) + ',' + Math.round(dest.y) + ' on ' + map
-			+ ' - refusing to let the pathfinder cut through a rage box', 'red');
-		throw new Error('rage_route_blocked');
+			+ ' - refusing to let the pathfinder cut through a rage box' + (b.n > 1 ? ' (x' + b.n + ')' : ''), 'red');
 	}
+	if (b.n >= RAGE_BLOCK.townAfter) await rageStuckTown(map);
+	throw new Error('rage_route_blocked');
+}
+
+/* THE REFUSAL MEMO AND ITS THRESHOLDS - Ranger v140 / Priest v75 / Mage v98.
+   townAfter is the operator's ruling of 2026-10-24: two refusals of the same
+   destination in a row means stuck, and stuck means town. */
+const RAGE_BLOCK = { retryMs: 20000, logMs: 60000, townAfter: 2, townGapMs: 120000 };
+const rageBlocked = {};
+function rageBlockKey(map, d) { return map + ':' + Math.round(d.x / 10) * 10 + ',' + Math.round(d.y / 10) * 10; }
+
+/* TWO LEGS VIA THE MAP'S SPAWN WHEN ONE LEG HAS NO ROUTE. rageRoute's grid spans
+   from, to, every rectangle and a pad, and doubles its step past maxCells - so a
+   long trip loses the 14-18 unit pinch beside the spookytown farm spot that
+   only step 5 resolves. Measured 2026-10-24 on Dexon, planning only: park
+   (290,-990) to mrgreen (568,920) NULL, park to the spawn (0,0) OK, spawn to
+   mrgreen OK. Each leg's grid is small enough to stay at step 5. */
+async function rageViaStaging(map, dest, margin) {
+	const s = rageStaging(map);
+	if (!s) return false;
+	if (Math.hypot(s.x - character.x, s.y - character.y) < 30 || Math.hypot(s.x - dest.x, s.y - dest.y) < 30) return false;
+	const leg = async (p) => {
+		if (rageClips(map, character.x, character.y, p.x, p.y, margin)) return rageWalk(map, { x: p.x, y: p.y }, margin);
+		try { await smart_move({ map: map, x: p.x, y: p.y }); return true; } catch (e) { return false; }
+	};
+	if (!(await leg(s))) return false;
+	return leg(dest);
+}
+
+/* STUCK - USE TOWN, the operator's ruling of 2026-10-24. Not while anything is
+   on us, and not more than once per townGapMs. The leader also tells the other
+   two, who town with it if they are on the same map and free. */
+let rageTownAt = 0;
+async function rageStuckTown(map, heard) {
+	if (Date.now() - rageTownAt < RAGE_BLOCK.townGapMs) return false;
+	if (character.map !== map) return false;
+	if (rageAttackersOnMe() > 0) { rageLog('stuck, but something is on me - not using town', 'orange'); return false; }
+	rageTownAt = Date.now();
+	rageLog('stuck - using town' + (heard ? ' with the leader' : ''), '#FFD700');
+	if (!heard && bossIsLeader()) {
+		const members = (CONFIG.party && CONFIG.party.groupMembers) || [];
+		for (const m of members) {
+			if (m === character.name || m === 'Meltymerch') continue;
+			try { plSend(m, { message: 'ragetown', map: map }); } catch (e) { }
+		}
+	}
+	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
+	catch (e) { rageLog('town refused: ' + ((e && (e.reason || e.message)) || e), 'orange'); return false; }
 	return true;
+}
+function rageTownOnCall(from, data) {
+	if (from !== CONFIG.bossEvents.leaderName || !data || !data.map) return;
+	rageStuckTown(data.map, true).catch(() => { });
 }
 
 /* SCOPED BY CHARACTER, BECAUSE `set`/`get` ARE NOT. Read from the client at
@@ -3051,7 +3111,36 @@ function bossSave() {
 function bossLog(m, c) { try { game_log('[boss] ' + m, c || '#FFD700'); } catch (e) { } console.log('[boss] ' + m); }
 /* Said once per distinct message: approach runs every tick and would otherwise
    be the loudest thing in the log. */
-function bossNote(m) { if (bossState.lastNote !== m) { bossState.lastNote = m; bossLog(m, '#8b98ab'); } }
+/* ONCE PER MESSAGE PER TRIP, NOT "UNTIL A DIFFERENT ONE" - Ranger v140 / Priest
+   v75 / Mage v98. Two notes alternating every tick defeat a last-message test:
+   on a graveyard trip "publishes a position inside a rage box" and "joining
+   graveyard" took turns and wrote ~49,000 lines into the 2026-10-24 game log,
+   42% of its bytes. Keyed by the trip's start, so a new trip says it again, and
+   repeated after BOSS_NOTE_MS so a long trip still shows it is alive. */
+const BOSS_NOTE_MS = 120000;
+const bossNoteSeen = new Map();
+function bossNote(m) {
+	const now = Date.now();
+	const key = ((bossState.trip && bossState.trip.startedAt) || 0) + '|' + m;
+	const last = bossNoteSeen.get(key);
+	if (last && now - last < BOSS_NOTE_MS) return;
+	if (bossNoteSeen.size > 200) bossNoteSeen.clear();
+	bossNoteSeen.set(key, now);
+	bossState.lastNote = m;
+	bossLog(m, '#8b98ab');
+}
+/* A rejection is usually an object with `reason`, which "tick threw: [object
+   Object]" hid 548 times on 2026-10-24 - each one a smart_move "Path not
+   found". Said once a minute per reason. */
+const bossThrewSeen = new Map();
+function bossThrew(e) {
+	const why = (e && (e.message || e.reason)) || (function () { try { return JSON.stringify(e); } catch (x) { return String(e); } })();
+	const now = Date.now(), last = bossThrewSeen.get(why);
+	if (last && now - last < 60000) return;
+	if (bossThrewSeen.size > 50) bossThrewSeen.clear();
+	bossThrewSeen.set(why, now);
+	bossLog('tick threw: ' + why, 'red');
+}
 function bossIsLeader() { return character.name === CONFIG.bossEvents.leaderName; }
 /* THE TRUST WINDOW NEEDS A HEARTBEAT, OR IT IS A TIMER THAT ALWAYS EXPIRES.
    `bossBroadcast(pick.name)` fires only where the trip STARTS or CHANGES, and
@@ -3082,6 +3171,23 @@ function bossRecast() {
 	bossState.lastCast = now;
 	bossBroadcast(t.name);
 }
+
+/* THE BEAT RUNS ON ITS OWN TIMER - Ranger v140, kept byte-identical in all
+   three and a no-op on a follower. bossRecast() used to be called only from
+   bossTick(), which runs only when mainLoop reaches handleEvents() - and
+   mainLoop returns early while the rage pull is busy, which at a graveyard is
+   most of the time. Measured 2026-10-24 12:30 EDT: the leader's first word
+   reached both followers in 0.1s, nothing followed for 63-86s, and both
+   dropped the trust at exactly leaderTrustMs and went to mrpumpkin. The rage
+   entry decision rides the same beat, because rageEntryTick sat behind the
+   same gate and the followers fall out on its silence too. */
+const BOSS_BEAT_MS = 2000;
+function bossBeat() {
+	if (!bossIsLeader() || !bossState.trip) return;
+	try { bossRecast(); } catch (e) { }
+	try { rageEntryBroadcast(rageEntryActive); } catch (e) { }
+}
+setInterval(bossBeat, BOSS_BEAT_MS);
 
 function bossCooperative(name) {
 	const g = (typeof parent !== 'undefined' && parent.G) ? parent.G : (typeof G !== 'undefined' ? G : null);
@@ -3423,7 +3529,7 @@ async function bossApproach(name) {
 	if (!where) { bossNote('no position known for ' + name + ' - cannot travel'); return; }
 	bossNote('walking to ' + name + ' on ' + where.map);
 	safeSmartMove({ map: where.map, x: where.x, y: where.y })
-		.catch(e => rageLog('boss approach blocked: ' + (e && e.message || e), 'orange'));
+		.catch(e => { const why = (e && (e.message || e.reason)) || e; if (why !== 'rage_route_blocked') bossNote('boss approach blocked: ' + why); });
 }
 
 /* forced marks an operator command, which outranks the gate on every character
@@ -3695,7 +3801,7 @@ function handleEvents() {
 	   kept farming, boss-side with no healer. bossTick owns the decision now,
 	   the leader broadcasts it, and the gate decides whether it is worth taking
 	   at all. -> BOSS EVENTS */
-	bossTick().catch(e => bossLog('tick threw: ' + (e && e.message || e), 'red'));
+	bossTick().catch(bossThrew);
 }
 
 
@@ -7243,7 +7349,10 @@ function achvTickRun() {
 		.catch((e) => achvLog('tick threw: ' + ((e && e.message) || e), 'red'))
 		.finally(() => { farmBootAchvTick = true; });
 }
-achvTickRun();
+/* NEXT TURN, NOT INLINE - v140. Called inline it ran before `let mhToggle`
+   further down this file had been initialised, and threw "Cannot access
+   'mhToggle' before initialization" once per page load. */
+setTimeout(achvTickRun, 0);
 setInterval(achvTickRun, (CONFIG.achievements && CONFIG.achievements.reassertMs) || 30000);
 
 setInterval(() => {
@@ -8430,6 +8539,7 @@ function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (data.message === 'boss') { bossOnCall(name, data); return; }
 	if (data.message === 'rageentry') { rageEntryOnCall(name, data); return; }
+	if (data.message === 'ragetown') { rageTownOnCall(name, data); return; }
 	if (data.message === 'mh_report' && (name === 'FatherToken' || name === 'MageofOz')) { mhOnReport(name, data); return; }
 	if (data.message === 'dps_report' && partyDpsReports[name]) {
 		partyDpsReports[name] = { type: data.damageType, dps: data.dps, maxHp: data.maxHp, level: data.level, receivedAt: Date.now() };

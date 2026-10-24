@@ -938,8 +938,8 @@ the followers carry a byte-identical copy of `BOSS_RANK`, `bossRank` and
 at the 12:30 EDT 2026-10-24 graveyard (Dexon on it, both followers on a damaged
 mrpumpkin for 40-65s). `Tests/suite_bosshop.js` fails if the copies drift, and
 `Codex/boss_timers.html` is a fourth copy with its own test. Edit them
-together. Why the leader's word took 40-65s to land is NOT established; the
-relay polls every 2s and the leader re-sends every 8s. This line
+together. Why the leader's word stopped is ANSWERED in Ranger v140 - see the
+heartbeat-starvation bullet under "Movement ownership". This line
 said "live in Ranger v95" and was wrong twice over: it landed in v95 but ships
 in v97, and it had never EXECUTED at all, because Dexon was running
 `Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
@@ -1427,6 +1427,18 @@ this ranking until a Ranger build is actually running on him.
   bodies ignores the dwell. Gargoyle woke ~373s, died 12:40:15, no deaths,
   lowest hp Dexon 67%. **PROBE `rageCrowdSoak(character.map)` - the map
   argument is required.**
+- **THE FARM SPOT HAD NO ROUTE TO MRGREEN, AND IT WAS THE GRID, NOT THE
+  GEOMETRY.** Measured 2026-10-24 by the browser session, planning only on
+  Dexon: park (290,-990) to mrgreen (568,920) NULL, park to the spawn (0,0) OK,
+  spawn to mrgreen OK. `rageRoute`'s grid spans from, to, EVERY rectangle and a
+  280 pad, and doubles its step past `maxCells` 200,000 - the park-to-mrgreen
+  box is ~250k cells at step 5, so step 10, and the 14-18 unit pinch by the
+  farm spot vanishes. The comment's "spookytown at step 5 is ~131,000 cells" is
+  true of SOME bounding boxes only. Ranger v140 / Priest v75 / Mage v98 retry a
+  failed route in two legs via `rageStaging()`, remember a refused destination
+  for 20s, and cast town after two refusals in a row - the operator's ruling,
+  the leader taking the other two. **WHERE TOWN LANDS ON spookytown, AND THAT
+  `use_skill('use_town')` IS THE CALL, ARE UNMEASURED.**
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
@@ -3856,6 +3868,18 @@ reading.
   The EXPIRY is correct and unchanged: a leader that has stopped ticking must
   release the followers, which is pinned through `bossPick`'s `src` crossing
   from `leader` to `own` at the boundary.
+  **AND THE HEARTBEAT ITSELF WAS STARVED BY A GATE ABOVE IT - fixed in Ranger
+  v140 / Priest v75 / Mage v98.** The browser session's pull of the game-log
+  file, 12:30 EDT 2026-10-24: the first word reached both followers in 0.1s,
+  nothing followed for 63-86s, and both dropped the trust at EXACTLY
+  `leaderTrustMs`. `bossRecast()` ran only inside `bossTick()`, which runs only
+  when `mainLoop` reaches `handleEvents()`, and `mainLoop` returns early while
+  `ragePull.busy || rageNav.busy` - most of a graveyard. The rage-entry
+  broadcast sat behind the same gate. `bossBeat()` now sends both from a timer
+  of its own. **A HEARTBEAT INSIDE A LOOP IS ONLY AS REGULAR AS EVERY EARLY
+  RETURN ABOVE IT** - the v118 fix added the beat and did not ask what could
+  stop the loop carrying it. Source-read cause matching the measurement; the
+  first live graveyard on v140 confirms or refutes it.
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from
@@ -5411,6 +5435,14 @@ scrolling away.
   party script to CaveRun without a page reload leaves the party script's
   listener attached, now a closure from a destroyed iframe. Whether that still
   delivers is unmeasured.
+- **THE FIRST REVIEW, 2026-10-24 10:20-13:25 EDT: 119,052 rows, 31.0 MB, about
+  10 MB an hour, 0 unparsable.** About three quarters of the bytes were four
+  repeats, cut in Ranger v140 / Priest v75 / Mage v98 / Merchant v128: the two
+  alternating graveyard notes (42%), the rage no-route refusal and its echo
+  (26%), "undefined looted chest" on the priest, and the merchant's merge line.
+  The game's own "Get closer" (8%, Dexon and FatherToken, attacks out of range)
+  and the pathfinder's "Searching for a path" lines are not ours to cut and are
+  still open as a question.
 - **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
   The wrapper and buffer are built with the PAGE's `Function`, so they outlive
   the CODE iframe. A failed POST leaves its lines in the buffer, and a hop

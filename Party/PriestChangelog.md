@@ -21,6 +21,35 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v75
+
+**THE LEADER'S BEAT RUNS ON ITS OWN TIMER.** The browser session's pull of
+the game-log file, 12:30 EDT 2026-10-24: the leader's first word reached both
+followers in 0.1s, nothing followed for 63-86s, and both dropped the trust at
+exactly `leaderTrustMs` and went to mrpumpkin. `bossRecast()` ran only inside
+`bossTick()`, which runs only when `mainLoop` reaches `handleEvents()` - and
+`mainLoop` returns early while the rage pull is busy, which at a graveyard is
+most of the time. `bossBeat()` now re-sends the trip and the rage-entry state
+every `BOSS_BEAT_MS` from a timer of its own; a no-op on a follower.
+
+**STUCK NO LONGER LOOPS.** A destination `safeSmartMove` refuses is remembered
+for `RAGE_BLOCK.retryMs` instead of being re-planned and re-logged every tick
+(26% of that morning's log). A direct route that fails is retried in two legs
+via the map's spawn - the farm spot to mrgreen had no route because
+`rageRoute`'s grid spanned the whole map and doubled its step past `maxCells`,
+losing the 14-18 unit pinch; each leg stays at step 5. Two refusals of the same
+destination in a row cast town, on the operator's ruling; the leader tells the
+other two, who town with it if they are on the same map and nothing is on
+them.
+
+**LOG VOLUME.** `bossNote` says each message once per trip (and again after
+two minutes), where alternating notes used to defeat its last-message test -
+42% of the log. A boss tick's rejection is logged by its `reason`, once a
+minute, where it read "[object Object]".
+
+And the loot line logs only when the event carries `opener` and `goldm` - 238
+lines read "undefined looted chest goldm: undefined".
+
 ## v74
 
 **RAGE ENTRY HAS TWO LINES AND A DWELL, BECAUSE ONE LINE FLAPPED.** Measured
