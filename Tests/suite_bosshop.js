@@ -2398,6 +2398,14 @@ module.exports = [
 	w.parent.S.goobrawl = { end: NOW + 100000 };
 	t.eq('goobrawl by PRESENCE, as bossEntryLive reads it -> 3', w.bossHop.holdRank('USII', null), 3);
 	t.eq('a trip on another shard does not hold this one', w.bossHop.holdRank('EUI', null), null);
+	/* v132/v133 held on a bossHop TARGET's trip too, which blocked the
+	   equal-ranked hop to the same boss elsewhere - the horseman chain. */
+	w.CONFIG.bossHop.targets.push({ mtype: 'horseman', kills_to_rung: 70 });
+	w.bossState.trip = { name: 'horseman', shard: 'USII' };
+	w.parent.S.horseman = { live: true };
+	t.eq('a trip on a bossHop target does not hold - FIGHTING/localTarget own it', w.bossHop.holdRank('USII', null), null);
+	w.CONFIG.bossHop.targets.pop();
+	t.eq('precondition: the same trip, horseman not a target, does', w.bossHop.holdRank('USII', null), 4);
 } },
 
 { name: 'goHomeIfIdle: an event fight here is not "nothing eligible"', fn(t) {

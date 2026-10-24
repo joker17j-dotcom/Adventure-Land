@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v123
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v124
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6087,6 +6087,9 @@ async function totWalk(d) {
 		else if (Date.now() - onMapAt > ms) break;
 	}
 	totStandForget(d);
+	/* ON THE DOOR, so the route summary carries it: totLog is the game log
+	   only, and that had scrolled the first time this mattered. */
+	d.why = (why || 'arrived out of reach') + (character.map !== d.map ? ' on ' + character.map : '') + ' after ' + tried;
 	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
 	return false;
 }
@@ -6102,7 +6105,7 @@ async function totRoute() {
 	try {
 		for (const d of doors) {
 			if (character.rip) { sum.stopped = 'died'; break; }
-			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached'); continue; }
+			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached' + (d.why ? ':' + d.why : '')); continue; }
 			const res = await totKnock(d.i);
 			if (res && res.success) {
 				sum.knocked++;

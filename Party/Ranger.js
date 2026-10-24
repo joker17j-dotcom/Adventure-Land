@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v133
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v134
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4071,7 +4071,12 @@ const bossHop = {
 		let r = null;
 		if (prep && prep.shard === cur) r = prep.rank;
 		const trip = bossState.trip;
-		if (trip && trip.name && (!trip.shard || trip.shard === cur)
+		/* NOT for a bossHop target. Those have localTarget() and FIGHTING, and
+		   when localTarget() has declined one here - its share unreachable -
+		   the right move is a hop to the same boss on a shard where it is
+		   reachable. Holding on the trip blocked that equal-ranked hop in v132
+		   and v133, which is the cross-shard horseman chain itself. */
+		if (trip && trip.name && !this.targetCfg(trip.name) && (!trip.shard || trip.shard === cur)
 			&& bossEntryLive(trip.name, (parent.S || {})[trip.name])) {
 			const tr = bossRank(trip.name);
 			if (r === null || tr < r) r = tr;
@@ -7461,6 +7466,9 @@ async function totWalk(d) {
 		else if (Date.now() - onMapAt > CONFIG.trickOrTreat.moveMs) break;
 	}
 	totStandForget(d);
+	/* ON THE DOOR, so the route summary carries it: totLog is the game log
+	   only, and that had scrolled the first time this mattered. */
+	d.why = (why || 'arrived out of reach') + (character.map !== d.map ? ' on ' + character.map : '') + ' after ' + tried;
 	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
 	return false;
 }
@@ -7475,7 +7483,7 @@ async function totRoute() {
 		for (const d of doors) {
 			if (shouldHandleEvents()) { sum.stopped = 'a boss or event came on'; break; }
 			if (character.rip) { sum.stopped = 'died'; break; }
-			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached'); continue; }
+			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached' + (d.why ? ':' + d.why : '')); continue; }
 			const swapped = await totCostumeOn();
 			let res;
 			try { res = await totKnock(d.i); }

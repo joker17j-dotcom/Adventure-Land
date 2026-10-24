@@ -21,6 +21,23 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v134
+
+**v132's EVENT-TRIP HOLD BLOCKED THE CROSS-SHARD CHAIN, AND IS NOW LIMITED TO
+EVENTS bossHop DOES NOT HUNT.** holdRank() treated any live boss-event trip
+here as a reason to admit only a strictly better hop - including a trip on a
+bossHop target. When localTarget() declines the horseman here (its share
+unreachable), the right move is the equal-ranked hop to a horseman elsewhere,
+and the hold refused exactly that. Found by reading the browser session's
+kill-order data, which was the first time the chain was looked at since v132.
+A trip on a target is now left to localTarget()/FIGHTING; graveyard, goobrawl
+and mrgreen still hold.
+
+**AN UNREACHED DOOR NOW CARRIES ITS REASON** into `totStatus().last.failed`, as
+`<door>:unreached:<last error>[ on <map>] after <n>`. The first spookytown
+route's reason was lost because totLog writes the game log only, and that had
+scrolled. Same as Merchant v124.
+
 ## v133
 
 **PREPOSITIONING IS NARROWED TO JOIN-ONLY EVENTS, ON THE OPERATOR'S RULING.**

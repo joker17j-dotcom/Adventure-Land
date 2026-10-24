@@ -1,4 +1,19 @@
 
+## v124
+
+**AN UNREACHED DOOR NOW CARRIES ITS REASON** into `totStatus().last.failed`, as
+`<door>:unreached:<last error>[ on <map>] after <n>`. The first spookytown
+route's reason was lost because totLog writes the game log only, and that had
+scrolled. Same as Ranger v134.
+
+**ASKED FOR AND NOT BUILT: GATING THE SECOND KNOCKER ON THE FIRST ONE'S COUNT.**
+The browser session reported that with two knockers `doors_left` can overstate,
+because its account term comes from a per-process cache. True, and it cannot
+matter with two: `doors_left = min(7 - own, 14 - own - other)` and `other` is at
+most 7, so the account term is never below the character's own term, and the
+own term comes from its own record and is exact. Fourteen across two knockers
+is exactly seven each. The gate starts to matter at a third knocker.
+
 ## v123
 
 **THE dexbelt+2 CEILING.** Operator's ruling 2026-10-23, asked for again on

@@ -501,6 +501,26 @@ module.exports = [
 	}
 } },
 
+{ name: 'Both: an unreached door carries its reason into the route summary', async fn(t) {
+	/* The first spookytown route's reason was lost: totLog is the game log
+	   only and it had scrolled. The browser session's ask, 2026-10-24. */
+	for (const [who, mk] of [['ranger', rangerWorld], ['merchant', merchantWorld]]) {
+		const w = mk({ pathable: () => false });
+		const d = { map: 'spookytown', x: -130, y: -60, i: 2 };
+		await w.totWalk(d);
+		t.eq(who + ': the reason is on the door (the door and 16 ring points)', d.why, 'failed after 17');
+		const r = mk({ reachMap: false });
+		const e = { map: 'spookytown', x: -130, y: -60, i: 2 };
+		await r.totWalk(e);
+		t.eq(who + ': and says where it stopped when the trip never arrived', e.why, 'failed on main after 1');
+		const route = mk({ pathable: (p) => p.map !== 'spookytown' });
+		const sum = await route.totRoute();
+		t.ok(who + ': precondition - some door was unreached', sum.failed.length > 0);
+		t.eq(who + ': every unreached entry carries its reason',
+			sum.failed.every((f) => /^\d+:unreached:failed after \d+$/.test(f)), true);
+	}
+} },
+
 { name: 'Merchant: a held move lock ends the probing, and the route never calls travelTo', async fn(t) {
 	const w = merchantWorld();
 	w.character.map = 'spookytown';

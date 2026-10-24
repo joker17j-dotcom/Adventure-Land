@@ -1014,9 +1014,23 @@ this ranking until a Ranger build is actually running on him.
   yet been seen working live; and bossHop's scanner cannot see a gargoyle at
   all, because it is published inside `S.graveyard` rather than as its own
   key. The operator asked about it 2026-10-24, citing ordering data from the
-  browser session that this session could not find in the repo or the
-  transcript. Per-shard gargoyle wake and death times from the bridge log
-  are the input it needs.
+  browser session; that message (sent ~07:40 EDT) had never been relayed, and
+  arrived later the same morning. It is below.
+  **KILL ORDER PER EVENT WINDOW, the browser session's analysis of `/boss_events`
+  2026-10-24.** Windows keyed by spawn time, kills ranked by `death_hi`, "chain"
+  = kills one party can attend at G seconds between kills, greedy:
+  horseman 8 windows, 29 deaths, 0 unkilled, chain 3.25 / 2.50 / 2.00 at
+  G=90/180/300; gargoyle 52 windows, 241 deaths, 87 unkilled, 2.81 / 1.96 /
+  1.60; crabxx 0.94 / 0.92 / 0.86; franky 0.74 / 0.68 / 0.68. **HORSEMAN IS THE
+  CASE**: every shard of the region killed it every window, median spread 9.4
+  min, pair agreement 0.79 over 53 head-to-heads; median ttk US I 3.9 min
+  (first in all 3 of its windows) through US II 24.7, which is OUR HOME and
+  nearly the last to die. crabxx and franky have no order to use - a median of
+  one kill per window. Eight horseman windows: a prior, not a schedule. NOT
+  BUILT YET. The reactive pickTarget already chains greedily after a kill; what
+  defeats it on the US window is the party committing FIGHTING at home at spawn,
+  to the boss that dies nearly last. v132/v133 also blocked the chain - see
+  Ranger v134.
 - **THE NINE BASE WINDOWS NEVER OVERLAP, AND THAT HELD UP EXACTLY - BUT THE
   "NOT A CONTENTION PROBLEM" HALF IS FALSE DURING A SEASON.** The base
   arithmetic is CONFIRMED against upstream `43b2c8fc`: dailies at realm hours 13
@@ -5358,6 +5372,12 @@ for it in any script before Ranger v121 / Merchant v115.
   account counts are cached per server process while the cap is enforced in
   Mongo at knock time. So a route reads `doors_left` to decide whether to set
   off and stops on the `trickortreat_limit` rejection.
+  **WITH TWO KNOCKERS THE OVERSTATEMENT CANNOT COST ANYTHING, AND THAT IS
+  ARITHMETIC.** `min(7 - own, 14 - own - other)` with `other` at most 7, so the
+  account term never undercuts the knocker's own exact term. Fourteen across two
+  knockers is seven each. It starts to matter at a THIRD knocker. A gate on the
+  second knocker was asked for 2026-10-24, built, and reverted before commit on
+  this reasoning.
   **OPENGIFTS SELLS SPARE COSTUMES.** Its `autoSell` is a KEEP COUNT listing
   phelmet:0 and gphelmet:0, and `sellChaff` sells every UNLOCKED copy on a
   stall; it took the browser session's first test subject between two reads.
