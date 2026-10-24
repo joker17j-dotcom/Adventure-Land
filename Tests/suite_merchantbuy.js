@@ -261,7 +261,10 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 				items: over.items || [],
 				bank: over.bank === undefined ? { items0: over.pack0 || [] } : over.bank,
 			},
-			CONFIG: { bank: { map: 'bank' }, craftInputCaps: { dexbelt: 2 } },
+			CONFIG: { bank: { map: 'bank' }, craftInputCaps: { dexbelt: 2 },
+				craftInputCeilings: { dexbelt: { level: 2, stopBuyAt: 21, fullAt: 28 } } },
+			ceilBank: { at: 0, counts: null, loading: null, said: {}, sellPauseUntil: 0 },
+			CEILING_BANK_TTL_MS: 600000, CEILING_BANK_MAX_AGE_MS: 1800000,
 			/* BARE `G`, NOT `parent.G`, and the difference cost four failures in
 			   this test's first run. isCompoundableItem() reads `G.items`
 			   directly - `typeof G !== 'undefined' && G.items` - while most of
@@ -287,7 +290,8 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 			GEAR_PROGRESSION: {},
 		});
 		lift(w, MERCHANT, ['COMPOUND_RETRIEVE_HEADROOM', 'craftInputCap',
-			'compoundWouldOvershootCap', 'isCompoundableItem', 'retrieveCompoundTriples']);
+			'compoundWouldOvershootCap', 'isCompoundableItem', 'retrieveCompoundTriples',
+			'ceilingCfg', 'ceilingLog', 'ceilingNoteBank', 'ceilingCount', 'ceilingState']);
 		return w;
 	}
 	const belts = (n, lvl) => Array.from({ length: n }, () => ({ name: 'dexbelt', level: lvl }));
@@ -384,3 +388,184 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 }
 
 }];
+
+/* THE dexbelt+2 CEILING - operator's ruling 2026-10-23, built in Merchant v123.
+   Counted in bank slots of dexbelt+2 against one 42-slot pack, bank plus bag:
+   at 21 the Ponty buy stops; at 28 compounding stops and a +0 that reaches the
+   bag is sold. */
+function ceilWorld(over) {
+	over = over || {};
+	const calls = { sold: [], traded: [], bought: [], logs: [] };
+	const w = world({
+		character: {
+			name: 'Meltymerch', map: over.map || 'main', x: 0, y: 0, real_x: 0, real_y: 0,
+			gold: 1e9, items: over.items || [], bank: over.charBank || null,
+		},
+		CONFIG: {
+			bank: { map: 'bank' }, craftInputCaps: { dexbelt: 2 },
+			craftInputCeilings: { dexbelt: { level: 2, stopBuyAt: 21, fullAt: 28 } },
+			arbitrage: { approachUnits: 350 },
+			pontyBuy: { enabled: true, capAtOneStack: false, maxPrice: {}, maxLevel: { dexbelt: 2 } },
+		},
+		ceilBank: { at: 0, counts: null, loading: null, said: {}, sellPauseUntil: 0 },
+		CEILING_BANK_TTL_MS: 600000, CEILING_BANK_MAX_AGE_MS: 1800000,
+		G: { items: { dexbelt: { compound: true }, ringsj: { compound: true } } },
+		parent: {
+			G: { items: {} }, entities: over.ents || {},
+			calculate_item_value: () => 30000,
+		},
+		game_log: (m) => calls.logs.push(m),
+		api_call: over.api_call || (async () => ({ packs: over.bankPacks || { items0: [] } })),
+		atTownSpot: () => over.atTown !== false,
+		sell: async (i) => { if (over.sellFails) throw new Error('too_far'); calls.sold.push(i); },
+		trade_sell: async (e, slot, q) => { calls.traded.push(e.name + ':' + slot + ':' + q); },
+		arbTaxRate: () => 0.05,
+		pontyWanted: () => new Set(['dexbelt', 'leather']),
+		pontyLog: () => {}, pontyFmt: (n) => String(n), pontyFreeSlots: () => 20,
+		pontyBankQty: async () => null, pontyStackCap: () => null,
+		pontyBuyGate: () => ({ ok: true }), pontyRemember: () => {}, mShardKey: () => 'EUI',
+		pontyBuyOne: async (r) => { calls.bought.push(r.name + '+' + r.level); return { ok: true, spent: 1 }; },
+		PARTY_CLASSES: [], GEAR_PROGRESSION: {},
+		calls,
+	});
+	lift(w, MERCHANT, ['ceilingCfg', 'ceilingLog', 'ceilingNoteBank', 'ceilingRefresh',
+		'ceilingCount', 'ceilingState', 'ceilingSellPass', 'ceilingBuyer', 'arbNetFromSale',
+		'pDist', 'pWhere', 'craftInputCap', 'compoundWouldOvershootCap', 'isCompoundableItem',
+		'findBaseDuplicateGroup', 'pontyBuyPass']);
+	return w;
+}
+const belt = (lvl, extra) => Object.assign({ name: 'dexbelt', level: lvl }, extra || {});
+const plus2 = (n) => Array.from({ length: n }, () => belt(2));
+
+module.exports.push(
+{ name: 'ceiling: the count is the bank plus the bag, at the ceiling level only', async fn(t) {
+	const s = text();
+	t.ok('module state: ceilBank starts unread', /^let ceilBank = \{ at: 0, counts: null,/m.test(s));
+	t.ok('TTL is 10 minutes', /^const CEILING_BANK_TTL_MS = 10 \* 60 \* 1000;/m.test(s));
+	t.ok('a reading older than 30 minutes is unknown', /^const CEILING_BANK_MAX_AGE_MS = 30 \* 60 \* 1000;/m.test(s));
+	t.ok('the shipped thresholds are the ruling: +2, 21 and 28',
+		/dexbelt: \{ level: 2, stopBuyAt: 21, fullAt: 28 \}/.test(s));
+
+	let w = ceilWorld({ items: [belt(2), belt(0), belt(2, { q: undefined })] });
+	t.eq('before any bank read the count is unknown', w.ceilingCount('dexbelt'), null);
+	const st0 = w.ceilingState('dexbelt');
+	t.eq('and an unknown count stops nothing', st0.stopBuy || st0.full, false);
+	w.ceilingNoteBank({ gold: 5, items0: [belt(2), belt(2), belt(0), belt(1), { name: 'leather', q: 50 }],
+		items1: [belt(2), null] });
+	t.eq('bank +2s (3) plus bag +2s (2)', w.ceilingCount('dexbelt'), 5);
+	t.eq('an unconfigured item has no count', w.ceilingCount('leather'), null);
+	w.ceilBank.at = Date.now() - 31 * 60000;
+	t.eq('a stale bank reading makes the count unknown again', w.ceilingCount('dexbelt'), null);
+
+	w = ceilWorld({ bankPacks: { items0: plus2(19) }, items: [belt(2)] });
+	await w.ceilingRefresh();
+	t.eq('load_bank feeds the count from anywhere', w.ceilingCount('dexbelt'), 20);
+	w = ceilWorld({ map: 'bank', charBank: { items0: plus2(4) },
+		api_call: async () => { throw new Error('must not be called in the bank'); } });
+	await w.ceilingRefresh();
+	t.eq('standing in the bank it reads character.bank instead', w.ceilingCount('dexbelt'), 4);
+	w = ceilWorld({ api_call: async () => { throw new Error('socket gone'); } });
+	await w.ceilingRefresh();
+	t.eq('a failed read leaves the count unknown, not zero', w.ceilingCount('dexbelt'), null);
+	t.ok('and says so', w.calls.logs.some((m) => /load_bank failed/.test(m)));
+} },
+
+{ name: 'ceiling: 21 stops the buy, 28 is full', fn(t) {
+	const at = (n) => { const w = ceilWorld(); w.ceilingNoteBank({ items0: plus2(n) }); return w.ceilingState('dexbelt'); };
+	t.eq('20: under', JSON.stringify(at(20)), JSON.stringify({ count: 20, stopBuy: false, full: false }));
+	t.eq('21: buying stops', JSON.stringify(at(21)), JSON.stringify({ count: 21, stopBuy: true, full: false }));
+	t.eq('27: still only the buy', at(27).full, false);
+	t.eq('28: full', JSON.stringify(at(28)), JSON.stringify({ count: 28, stopBuy: true, full: true }));
+	const w = ceilWorld(); w.ceilingNoteBank({ items0: plus2(28) });
+	w.ceilingState('dexbelt'); w.ceilingState('dexbelt');
+	t.eq('the flip is logged once, not every tick', w.calls.logs.filter((m) => /FULL/.test(m)).length, 1);
+} },
+
+{ name: 'ceiling: the Ponty buy skips dexbelt from 21, and only dexbelt', async fn(t) {
+	const rows = [{ rid: 'a', name: 'dexbelt', level: 0, price: 60000 }, { rid: 'b', name: 'leather', level: 0, price: 10 }];
+	let w = ceilWorld({ bankPacks: { items0: plus2(20) } });
+	await w.pontyBuyPass(rows);
+	t.eq('under the ceiling dexbelt is bought', w.calls.bought.join(','), 'leather+0,dexbelt+0');
+	w = ceilWorld({ bankPacks: { items0: plus2(21) } });
+	await w.pontyBuyPass(rows);
+	t.eq('at 21 the dexbelt row is skipped and the rest still buy', w.calls.bought.join(','), 'leather+0');
+	w = ceilWorld({ api_call: async () => { throw new Error('down'); } });
+	await w.pontyBuyPass(rows);
+	t.eq('an unknown count does not stop the buy', w.calls.bought.indexOf('dexbelt+0') >= 0, true);
+} },
+
+{ name: 'ceiling: at 28 dexbelts stop being compounded or retrieved for it', fn(t) {
+	const three = [belt(0), belt(0), belt(0), { name: 'ringsj', level: 0 }, { name: 'ringsj', level: 0 }, { name: 'ringsj', level: 0 }];
+	let w = ceilWorld({ items: three.slice() });
+	w.ceilingNoteBank({ items0: plus2(27) });
+	const g = w.findBaseDuplicateGroup();
+	t.eq('under full the dexbelt triple is still the group', g && g.name, 'dexbelt');
+	w = ceilWorld({ items: three.slice() });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	const g2 = w.findBaseDuplicateGroup();
+	t.eq('at full the dexbelts are left alone and the next item is taken', g2 && g2.name, 'ringsj');
+	const s = text();
+	t.ok('retrieveCompoundTriples counts from character.bank before planning',
+		/ceilingNoteBank\(character\.bank\);[\s\S]{0,200}const groups = new Map\(\);/.test(s));
+	t.ok('and skips a full item', /if \(ceilingState\(it\.name\)\.full\) continue;/.test(s));
+} },
+
+{ name: 'ceiling: at 28 a +0 is sold - to a buying stand above the NPC, else the NPC', async fn(t) {
+	const bag = () => [belt(1), belt(0, { l: 'l' }), belt(0), belt(2)];
+	const stand = (price, x) => ({ Buyer: { type: 'character', name: 'Buyer', stand: true, map: 'main',
+		x: x || 100, y: 0, real_x: x || 100, real_y: 0,
+		slots: { trade3: { b: true, name: 'dexbelt', level: 0, price: price, q: 5 } } } });
+	let w = ceilWorld({ items: bag() });
+	w.ceilingNoteBank({ items0: plus2(26) });
+	t.eq('PRECONDITION: the bag +2 counts, so 26 banked is 27', w.ceilingCount('dexbelt'), 27);
+	await w.ceilingSellPass();
+	t.eq('under full nothing is sold', w.calls.sold.length + w.calls.traded.length, 0);
+
+	w = ceilWorld({ items: bag() });
+	await w.ceilingSellPass();
+	t.eq('an unknown count sells nothing', w.calls.sold.length + w.calls.traded.length, 0);
+
+	w = ceilWorld({ items: bag() });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.eq('full, no buyer, at town: the NPC gets the unlocked +0 and nothing else', w.calls.sold.join(','), '2');
+	t.eq('one per pass', w.calls.sold.length, 1);
+
+	w = ceilWorld({ items: bag(), atTown: false });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.eq('away from the town spot the NPC sale waits', w.calls.sold.length, 0);
+
+	w = ceilWorld({ items: bag(), ents: stand(50000) });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.eq('a stand buying above the NPC in reach gets it', w.calls.traded.join(','), 'Buyer:trade3:1');
+	t.eq('and the NPC does not', w.calls.sold.length, 0);
+
+	w = ceilWorld({ items: bag(), ents: stand(30000) });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.eq('a stand that nets less than the NPC after tax loses to the NPC', w.calls.sold.join(','), '2');
+
+	w = ceilWorld({ items: bag(), ents: stand(50000, 900) });
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.eq('a stand out of reach is not walked to', w.calls.traded.length, 0);
+
+	const failing = { items: bag(), sellFails: true };
+	w = ceilWorld(failing);
+	w.ceilingNoteBank({ items0: plus2(28) });
+	await w.ceilingSellPass();
+	t.ok('a refused sale backs off', w.ceilBank.sellPauseUntil > Date.now());
+	failing.sellFails = false;   // the NPC would take it now - only the back-off can stop it
+	await w.ceilingSellPass();
+	t.eq('and the next tick does not retry', w.calls.sold.length, 0);
+	w.ceilBank.sellPauseUntil = 0;
+	await w.ceilingSellPass();
+	t.eq('once the minute is up it sells', w.calls.sold.join(','), '2');
+
+	const s = text();
+	t.ok('the never-sell set still names dexbelt - the exception is carved, not widened',
+		/const PROTECTED_ITEM_NAMES = new Set\(\[[\s\S]*?'dexbelt', 'intbelt',/.test(s));
+} },
+);

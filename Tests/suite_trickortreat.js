@@ -24,9 +24,11 @@ const RULES = { doors: DOORS, costumes: ['phelmet', 'gphelmet', 'horsemanpumpkin
 
 const RANGER_FNS = ['totLog', 'totG', 'totRules', 'totUtcDay', 'totSeasonOpen', 'totRemainingDoors',
 	'totBossSoon', 'totBlocked', 'totCostumeIdx', 'totWearing', 'totKnock', 'totCostumeOn',
-	'totCostumeOff', 'totNear', 'totStandPoints', 'totWalk', 'totRoute', 'totStatus', 'BOSS_RANK', 'bossRank'];
+	'totCostumeOff', 'totNear', 'totStandPoints', 'totStandLoad', 'totStandSave', 'totStandKeep', 'totStandForget',
+	'totWalk', 'totRoute', 'totStatus', 'BOSS_RANK', 'bossRank'];
 const MERCHANT_FNS = ['totLog', 'totRules', 'totUtcDay', 'totSeasonOpen', 'totRemainingDoors',
-	'totArbClear', 'totBlocked', 'totKnock', 'totNear', 'totStandPoints', 'totWalk', 'totRoute', 'totStatus'];
+	'totArbClear', 'totBlocked', 'totKnock', 'totNear', 'totStandPoints', 'totStandLoad', 'totStandSave',
+	'totStandKeep', 'totStandForget', 'totWalk', 'totRoute', 'totStatus'];
 
 /* `let x = <non-brace>` is not liftable (CLAUDE.md "Testing"), so the module
    state is supplied here and its committed initial values are pinned below. */
@@ -67,6 +69,9 @@ function rangerWorld(over = {}) {
 		bossHop: { state: 'IDLE', hopping: false },
 		travelState: { inFlight: false, attemptId: 0 },
 		totBusy: false, totPauseUntil: 0, totDoneDay: null, totLast: null, totStand: {},
+		TOT_STAND_KEY: 'tot_stand', store: over.store || {},
+		get: (k) => { const st = over.store || {}; return st[k] === undefined ? null : JSON.parse(JSON.stringify(st[k])); },
+		set: (k, v) => { if (over.store) over.store[k] = JSON.parse(JSON.stringify(v)); },
 		is_disabled: () => false,
 		noHang: (p) => p,
 		shouldHandleEvents: over.shouldHandleEvents || (() => false),
@@ -121,6 +126,9 @@ function merchantWorld(over = {}) {
 		arbOldestJobAgeMs: () => null,
 		moveLockHeld: () => false,
 		totPauseUntil: 0, totDoneDay: null, totLast: null, totBusy: false, totStand: {},
+		TOT_STAND_KEY: 'tot_stand',
+		get: (k) => { const st = over.store || {}; return st[k] === undefined ? null : JSON.parse(JSON.stringify(st[k])); },
+		set: (k, v) => { if (over.store) over.store[k] = JSON.parse(JSON.stringify(v)); },
 		moveTo: (d) => walkStub(box, calls, over, d),
 		arbNoHang: (p) => p,
 		travelTo: async () => { throw new Error('the route must not use travelTo - its town() fallback recalls on every refused probe'); },
@@ -474,12 +482,12 @@ module.exports = [
 		const w = mk({ pathable: () => false });
 		const logs = [];
 		w.totLog = (m) => logs.push(m);
-		w.totStand[2] = { x: 1, y: 1 };
+		w.totStand[2] = { x: -100, y: -40 };   // in reach of the door, so it is tried first
 		const d = { map: 'spookytown', x: -130, y: -60, i: 2 };
 		t.eq(who + ': not reached', await w.totWalk(d), false);
 		t.eq(who + ': cached point, the door and 16 ring points tried', w.calls.walks.length, 18);
 		t.eq(who + ': every candidate is within reach of the door',
-			w.calls.walks.every((k) => { const [x, y] = k.split('@')[1].split(',').map(Number); return k === 'spookytown@1,1' || Math.hypot(x - d.x, y - d.y) <= 80; }), true);
+			w.calls.walks.every((k) => { const [x, y] = k.split('@')[1].split(',').map(Number); return Math.hypot(x - d.x, y - d.y) <= 80; }), true);
 		t.eq(who + ': the stale cache entry is dropped', w.totStand[2], undefined);
 		t.eq(who + ': one log line for the door, not one per probe', logs.filter((m) => /door 2: no stand point/.test(m)).length, 1);
 	}
@@ -511,6 +519,36 @@ module.exports = [
 		const a = body('Party/Ranger.js', decl), b = body('Party/Merchant.js', decl);
 		t.ok(decl + ' present', a.length > 0);
 		t.eq(decl + ' identical', a, b);
+	}
+} },
+
+{ name: 'Both: stand points survive a reload through the shared store', async fn(t) {
+	for (const [who, mk, f] of [['ranger', rangerWorld, 'Party/Ranger.js'], ['merchant', merchantWorld, 'Party/Merchant.js']]) {
+		t.ok(who + ': the key is tot_stand', /^const TOT_STAND_KEY = 'tot_stand';/m.test(text(f)));
+		const store = {};
+		let w = mk({ pathable: SPOOKY_DOORS_REFUSED, store: store });
+		await w.totRoute();
+		const saved = store.tot_stand || {};
+		t.eq(who + ': every spookytown door is in the store', [2, 3, 4, 5, 6].every((i) => !!saved[i]), true);
+		/* A fresh page: empty memory, same store. */
+		w = mk({ pathable: SPOOKY_DOORS_REFUSED, store: store });
+		await w.totRoute();
+		const spooky = w.calls.walks.filter((k) => k.indexOf('spookytown@') === 0);
+		t.eq(who + ': the next route walks each spookytown door once, from the stored point', spooky.length, 5);
+		t.eq(who + ': and never re-probes a refused door point',
+			spooky.some((k) => DOORS.some((D) => k === D[0] + '@' + D[1] + ',' + D[2])), false);
+		/* A bad value in the shared store costs a probe, nothing more. */
+		const bad = { tot_stand: { 2: { x: 'a', y: 5 }, 3: { x: 5000, y: 5000 } } };
+		w = mk({ pathable: SPOOKY_DOORS_REFUSED, store: bad });
+		w.character.map = 'spookytown';
+		t.eq(who + ': a garbage point is ignored', await w.totWalk({ map: 'spookytown', x: -130, y: -60, i: 2 }), true);
+		t.eq(who + ': and an out-of-reach one is not walked to',
+			w.calls.walks.indexOf('spookytown@5000,5000'), -1);
+	}
+	for (const decl of ['function totStandLoad()', 'function totStandSave()', 'function totStandKeep(d, p)', 'function totStandForget(d)']) {
+		const a = body('Party/Ranger.js', decl), b = body('Party/Merchant.js', decl);
+		t.ok(decl + ' present', a.length > 0);
+		t.eq(decl + ' identical in both scripts', a, b);
 	}
 } },
 

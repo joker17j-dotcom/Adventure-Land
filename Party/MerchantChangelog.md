@@ -1,4 +1,50 @@
 
+## v123
+
+**THE dexbelt+2 CEILING.** Operator's ruling 2026-10-23, asked for again on
+2026-10-24 because the bank is close to full: +2s pile up faster than windbelt
+can use them, since essenceofether arrives far slower than dexbelts.
+`CONFIG.craftInputCeilings.dexbelt` is `{ level: 2, stopBuyAt: 21, fullAt: 28 }`
+- half and two thirds of a 42-slot pack, counted as dexbelt+2 in the bank plus
+this bag.
+
+- **The count.** The bank half comes from `load_bank` from anywhere, or straight
+  off `character.bank` when standing in the bank (and it is re-read there
+  before every compound retrieval). It is re-read every 10 minutes and treated
+  as UNKNOWN past 30, or after a failed read. The bag half is read live, so a
+  purchase or a compound moves it at once. **An unknown count stops nothing and
+  sells nothing** - selling is the irreversible action, so it is the one that
+  needs a known number.
+- **At 21 the Ponty buy of dexbelt stops.** Every other buy-list id still buys.
+- **At 28 compounding stops** - neither the bag compounder nor the bank
+  retrieval touches dexbelts - **and a dexbelt+0 that reaches the bag is sold**,
+  one per maintenance tick: to a player stand within trade reach that is
+  BUYING it for more than an NPC pays after tax, otherwise to the NPC once he
+  is at the town spot. Never listed on our own stand (`ssVendorBound` already
+  refuses every protected name). Locked items are never sold. A refused sale
+  backs off for a minute.
+- **The exception is carved, not widened.** `PROTECTED_ITEM_NAMES` still names
+  dexbelt and every other sell path still refuses it; `ceilingSellPass()` is
+  the only code that sells one, +0 only, above the ceiling only.
+- **Not done: the 77 dexbelt+0 already in the bank.** The ruling sells only
+  what enters the bag; above 28 the banked +0s stay where they are, and below
+  28 they keep being retrieved and compounded as before.
+
+**DOOR STAND POINTS ARE KEPT ACROSS A RELOAD, IN A STORE SHARED WITH THE
+OTHER KNOCKER.** The browser session's finding on the v122 route, 2026-10-24:
+every spookytown door point was refused once per door and then knocked from a
+ring point, exactly as designed - and the cache of those ring points was lost
+to the hop that followed, so the next route would pay the same five dead
+probes. `TOT_STAND_KEY` (`tot_stand`) now mirrors the in-memory map, read at
+the start of every walk and written when a new point is learned or a stale one
+dropped. It is SHARED on purpose: a stand point is a fact about the map, and
+the ranger and the merchant knock the same doors. A stored point is used only
+if it is finite and still within reach of its door, so a bad value costs one
+probe. A newly learned point is logged once as its offset from the door.
+
+Fourteen ceiling mutations and six stand-point mutations, each caught in
+`Tests/suite_merchantbuy.js` and `Tests/suite_trickortreat.js`.
+
 ## v122
 
 **THE SPOOKYTOWN DOORS ARE KNOCKED FROM A STAND POINT, BECAUSE THE DOOR

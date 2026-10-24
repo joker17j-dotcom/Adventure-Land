@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v122
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v123
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -815,6 +815,23 @@ const CONFIG = {
 	   a +2 into a +3". Remove a line to uncap that item. */
 	craftInputCaps: {
 		dexbelt: 2,
+	},
+
+	/* CEILINGS ON A CRAFT INPUT - operator's ruling 2026-10-23. Compounding
+	   dexbelts to +2 does not free enough bank space, and essenceofether arrives
+	   far slower than dexbelts, so +2s pile up faster than windbelt can use them.
+	   `level` is the level being counted, and the count is the BANK PLUS THIS
+	   BAG at that level only. At `stopBuyAt` the Ponty buy of that item stops.
+	   At `fullAt` compounding it stops too, and a +0 that reaches the bag is
+	   SOLD - to a player stand on this shard buying above what an NPC pays,
+	   otherwise to the NPC, and never listed on our own stand. That sale is a
+	   deliberate exception to the never-sell rule for dexbelt: +0 only, above
+	   the ceiling only, in ceilingSellPass() alone. PROTECTED_ITEM_NAMES is not
+	   touched. An unknown count (no bank read yet, or a stale one) stops
+	   nothing and sells nothing. The numbers are slots of a 42-slot pack: half
+	   and two thirds. */
+	craftInputCeilings: {
+		dexbelt: { level: 2, stopBuyAt: 21, fullAt: 28 },
 	},
 
 	/* PONTY BUY LIST - the tier-3 gear the operator wants picked up whenever it
@@ -3825,6 +3842,8 @@ async function maintenanceLoop() {
 		if (!PROBE.hold) {
 			sellTrash();
 			sellAggressivelyIfLowOnSpace();
+			try { await ceilingRefresh(); await ceilingSellPass(); }
+			catch (e) { ceilingLog('sell pass threw: ' + ((e && e.message) || e), 'red'); }
 		}
 		if (character.rip) respawn();
 		/* Containment. The merchant has no mainLoop, and this is the housekeeping
@@ -4790,6 +4809,7 @@ async function retrieveCompoundTriples() {
 	if (budget < 3) return 0;
 
 	const held = arbHeldNames();
+	ceilingNoteBank(character.bank);   // standing in it, so the count is exact
 	const groups = new Map();
 	for (const pack in character.bank) {
 		if (!/^items/.test(pack)) continue;
@@ -4801,6 +4821,7 @@ async function retrieveCompoundTriples() {
 			if (lvl !== 0 && lvl !== 1) continue;
 			if (!isCompoundableItem(it.name)) continue;
 			if (compoundWouldOvershootCap(it.name, lvl)) continue;
+			if (ceilingState(it.name).full) continue;   // -> CONFIG.craftInputCeilings
 			if (held[it.name]) continue;          // arbitrage owns this exit
 			const key = it.name + '|' + lvl;
 			if (!groups.has(key)) groups.set(key, []);
@@ -4990,6 +5011,149 @@ function isCompoundableItem(itemName) {
 	return true; // unknown item, no G data - assume compoundable rather than silently skipping real junk
 }
 
+/* ============================================================================
+   CRAFT-INPUT CEILINGS -> CONFIG.craftInputCeilings
+   ============================================================================
+   The bank half of the count is read with load_bank from anywhere, or straight
+   off character.bank when we are standing in the bank. The bag half is read
+   live every time, so a purchase or a compound moves the count at once. */
+const CEILING_BANK_TTL_MS = 10 * 60 * 1000;      // re-read the bank this often
+const CEILING_BANK_MAX_AGE_MS = 30 * 60 * 1000;  // past this the count is unknown
+let ceilBank = { at: 0, counts: null, loading: null, said: {}, sellPauseUntil: 0 };
+
+function ceilingCfg(name) {
+	const all = (typeof CONFIG !== 'undefined' && CONFIG.craftInputCeilings) || {};
+	const c = all[name];
+	return (c && typeof c.level === 'number') ? c : null;
+}
+
+function ceilingLog(msg, color) { game_log('[ceiling] ' + msg, color || '#F5A05B'); }
+
+/* Bank counts for every configured name, at its own level. `packs` is either
+   character.bank or load_bank's `packs`; both are items0..itemsN arrays. */
+function ceilingNoteBank(packs) {
+	const all = (typeof CONFIG !== 'undefined' && CONFIG.craftInputCeilings) || {};
+	const counts = {};
+	for (const name in all) counts[name] = 0;
+	for (const pack in (packs || {})) {
+		if (!/^items/.test(pack)) continue;
+		for (const it of (packs[pack] || [])) {
+			if (!it || !it.name || !(it.name in counts)) continue;
+			if ((Number(it.level) || 0) !== all[it.name].level) continue;
+			counts[it.name] += (it.q || 1);
+		}
+	}
+	ceilBank.counts = counts;
+	ceilBank.at = Date.now();
+}
+
+async function ceilingRefresh(force) {
+	if (!force && ceilBank.counts && Date.now() - ceilBank.at < CEILING_BANK_TTL_MS) return;
+	if (character.map === CONFIG.bank.map && character.bank) { ceilingNoteBank(character.bank); return; }
+	if (ceilBank.loading) return ceilBank.loading;
+	ceilBank.loading = (async () => {
+		try {
+			const d = await api_call('load_bank', {}, { timeout: 10000 });
+			if (d && d.packs) ceilingNoteBank(d.packs);
+			else ceilingLog('load_bank returned no packs - the count keeps its last reading', 'orange');
+		} catch (e) {
+			ceilingLog('load_bank failed (' + ((e && e.message) || e) + ') - the count keeps its last reading', 'orange');
+		} finally { ceilBank.loading = null; }
+	})();
+	return ceilBank.loading;
+}
+
+/* Bank plus bag at the ceiling level, or null when the bank half is unknown. */
+function ceilingCount(name) {
+	const cfg = ceilingCfg(name);
+	if (!cfg || !ceilBank.counts || Date.now() - ceilBank.at > CEILING_BANK_MAX_AGE_MS) return null;
+	let bag = 0;
+	for (const it of character.items) {
+		if (it && it.name === name && (Number(it.level) || 0) === cfg.level) bag += (it.q || 1);
+	}
+	return (ceilBank.counts[name] || 0) + bag;
+}
+
+/* What the ceiling says about `name` right now. Logs each flip once. */
+function ceilingState(name) {
+	const cfg = ceilingCfg(name);
+	const count = cfg ? ceilingCount(name) : null;
+	const out = {
+		count: count,
+		stopBuy: count != null && count >= cfg.stopBuyAt,
+		full: count != null && count >= cfg.fullAt,
+	};
+	if (cfg && count != null) {
+		const key = out.full ? 'full' : out.stopBuy ? 'stopBuy' : 'under';
+		if (ceilBank.said[name] !== key) {
+			ceilBank.said[name] = key;
+			ceilingLog(name + '+' + cfg.level + ': ' + count + ' held - '
+				+ (out.full ? 'FULL: no buying, no compounding, selling +0'
+					: out.stopBuy ? 'buying stopped' : 'under the ceiling'), out.stopBuy ? '#FFD700' : '#7FD98A');
+		}
+	}
+	return out;
+}
+
+/* THE ONE PLACE A DEXBELT IS SOLD. +0 only, and only while its ceiling is full.
+   A player stand in trade reach that is BUYING it above what an NPC pays gets
+   it; otherwise the NPC does, and that waits until we are at the town spot
+   where sellTrash sells too. A failed sale backs off for a minute rather than
+   retrying every maintenance tick. */
+async function ceilingSellPass() {
+	if (Date.now() < (ceilBank.sellPauseUntil || 0)) return;
+	const all = (typeof CONFIG !== 'undefined' && CONFIG.craftInputCeilings) || {};
+	for (const name in all) {
+		if (!ceilingState(name).full) continue;
+		for (let i = 0; i < character.items.length; i++) {
+			const it = character.items[i];
+			if (!it || it.name !== name || (Number(it.level) || 0) !== 0) continue;
+			if (it.l || it.p !== undefined) continue;
+			let npcv = null;
+			try { npcv = parent.calculate_item_value({ name: name, level: 0 }); } catch (e) { }
+			const buyer = ceilingBuyer(name, npcv);
+			if (!buyer && !atTownSpot()) return;
+			try {
+				if (buyer) {
+					await trade_sell(buyer.entity, buyer.slot, 1);
+					ceilingLog('sold ' + name + '+0 to ' + buyer.entity.name + ' for ' + buyer.price, '#7FD98A');
+				} else {
+					await sell(i);
+					ceilingLog('sold ' + name + '+0 to the NPC' + (npcv != null ? ' for ' + npcv : ''), '#7FD98A');
+				}
+			} catch (e) {
+				ceilBank.sellPauseUntil = Date.now() + 60000;
+				ceilingLog('could not sell ' + name + '+0: ' + ((e && (e.reason || e.message)) || e)
+					+ ' - trying again in a minute', 'orange');
+			}
+			return;   // one per tick; the next tick re-reads the bag and the ceiling
+		}
+	}
+}
+
+/* A visible stand, in trade reach, with a buy order for name+0 that nets more
+   after tax than the NPC pays. */
+function ceilingBuyer(name, npcv) {
+	const reach = (CONFIG.arbitrage && CONFIG.arbitrage.approachUnits) || 0;
+	const me = pWhere(character);
+	let best = null;
+	const E = (typeof parent !== 'undefined' && parent.entities) || {};
+	for (const id in E) {
+		const e = E[id];
+		if (!e || e.type !== 'character' || !e.stand || !e.slots || e.name === character.name) continue;
+		const at = pWhere(e);
+		if (at.map !== me.map || pDist(me.x, me.y, at.x, at.y) > reach) continue;
+		for (const k in e.slots) {
+			const sl = e.slots[k];
+			if (!sl || !sl.b || sl.name !== name || (Number(sl.level) || 0) !== 0) continue;
+			const dec = arbNetFromSale(sl.price, npcv);
+			if (!dec || dec.to !== 'player') continue;
+			if (!best || sl.price > best.price) best = { entity: e, slot: k, price: sl.price };
+		}
+	}
+	return best;
+}
+
 // Finds the first group of 3+ identical (name, level) items at level 0/1,
 // -> MerchantComments.md#findBaseDuplicateGroup
 function findBaseDuplicateGroup() {
@@ -5001,6 +5165,7 @@ function findBaseDuplicateGroup() {
 		/* A recipe wants this one at a fixed level, so merging past it spends
 		   the input instead of improving it. -> CONFIG.craftInputCaps */
 		if (compoundWouldOvershootCap(item.name, item.level)) return;
+		if (ceilingState(item.name).full) return;   // -> CONFIG.craftInputCeilings
 		const key = `${item.name}|${item.level}`;
 		if (!groups.has(key)) groups.set(key, []);
 		groups.get(key).push(idx);
@@ -5743,9 +5908,8 @@ async function anniversaryKissLoop() {
 let totPauseUntil = 0;     // after a season refusal or a route that left doors open
 let totDoneDay = null;     // UTC day the account limit was hit
 let totLast = null;        // last route summary, for totStatus()
-/* Door index -> the stand point a walk last reached it from. Memory only: a
-   lost cache costs a few 2s probes, and the points are map facts that a
-   shared store would add nothing to. */
+/* Door index -> the stand point a walk last reached it from. Mirrored to the
+   shared TOT_STAND_KEY store - see totStandLoad. */
 let totStand = {};
 /* True for the whole route. state.busy alone did not hold: arbLoop used to
    release it on every tick with no trade in flight, and scoutLoop then hopped
@@ -5852,7 +6016,10 @@ function totNear(d) {
 function totStandPoints(d) {
 	const out = [];
 	const known = totStand[d.i];
-	if (known) out.push({ x: known.x, y: known.y });
+	if (known && isFinite(known.x) && isFinite(known.y)
+		&& Math.hypot(known.x - d.x, known.y - d.y) <= (CONFIG.trickOrTreat.reach || 80)) {
+		out.push({ x: known.x, y: known.y });
+	}
 	out.push({ x: d.x, y: d.y });
 	const dirs = [[0, 1], [-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [0, -1]];
 	for (const r of [40, 65]) {
@@ -5864,6 +6031,37 @@ function totStandPoints(d) {
 	return out;
 }
 
+/* Persisted, and deliberately SHARED between characters: a stand point is a
+   fact about the map, not about whoever found it, and the merchant reloads on
+   every hop. Measured 2026-10-24: every spookytown door point is refused, so
+   an in-memory cache lost to a reload cost one dead probe per door per route.
+   totStandPoints only uses a stored point that is still in reach of its door,
+   so a bad value in the shared store costs a probe and nothing else. */
+const TOT_STAND_KEY = 'tot_stand';
+function totStandLoad() {
+	try {
+		const v = get(TOT_STAND_KEY);
+		if (v && typeof v === 'object') totStand = Object.assign({}, v, totStand);
+	} catch (e) { totLog('stand points not loaded: ' + ((e && e.message) || e), 'orange'); }
+}
+function totStandSave() {
+	try { set(TOT_STAND_KEY, totStand); }
+	catch (e) { totLog('stand points not saved: ' + ((e && e.message) || e), 'orange'); }
+}
+/* A walk ended in reach from p. Saved, and logged once, only when it is new. */
+function totStandKeep(d, p) {
+	const was = totStand[d.i];
+	if (was && was.x === p.x && was.y === p.y) return;
+	totStand[d.i] = { x: p.x, y: p.y };
+	totStandSave();
+	if (p.x !== d.x || p.y !== d.y) totLog('door ' + d.i + ': stand point ' + (p.x - d.x) + ',' + (p.y - d.y) + ' from the door, kept');
+}
+function totStandForget(d) {
+	if (!totStand[d.i]) return;
+	delete totStand[d.i];
+	totStandSave();
+}
+
 /* Walk into reach of a door, trying stand points until one is reached. A
    failure that leaves us OFF the door's map is the trip failing, not the last
    leg, so a nearer point would not help and the door is given up. moveTo and
@@ -5871,6 +6069,7 @@ function totStandPoints(d) {
    every refused probe. arbNoHang bounds each walk, because a hang here would
    hold totBusy - and with it scouting and arbitrage - for good. */
 async function totWalk(d) {
+	totStandLoad();
 	if (totNear(d)) return true;
 	const ms = CONFIG.trickOrTreat.moveMs || 120000;
 	let tried = 0, why = null, onMapAt = null;
@@ -5882,12 +6081,12 @@ async function totWalk(d) {
 			why = (e && (e.reason || e.message)) || String(e);
 			if (e && e.moveBusy) break;     // another mover holds the lock; not a door problem
 		}
-		if (totNear(d)) { totStand[d.i] = { x: p.x, y: p.y }; return true; }
+		if (totNear(d)) { totStandKeep(d, p); return true; }
 		if (character.map !== d.map) break;
 		if (onMapAt === null) onMapAt = Date.now();
 		else if (Date.now() - onMapAt > ms) break;
 	}
-	delete totStand[d.i];
+	totStandForget(d);
 	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
 	return false;
 }
@@ -6463,6 +6662,7 @@ async function pontyBuyPass(rows) {
 	   Purchases made inside this pass are counted locally, so a second copy of
 	   the same id cannot slip through against a number read before it. */
 	const bankQty = cfg.capAtOneStack ? await pontyBankQty() : null;
+	if (hits.some((h) => ceilingCfg(h.name))) await ceilingRefresh();
 	const boughtThisPass = {};
 	const bought = [];
 	for (const r of hits) {
@@ -6474,6 +6674,10 @@ async function pontyBuyPass(rows) {
 		/* Level ceiling, independent of the price one - see CONFIG.pontyBuy
 		   .maxLevel for why both exist. An absent `level` is a non-upgradeable
 		   item and reads as 0, so it is never refused by this. */
+		if (ceilingState(r.name).stopBuy) {
+			pontyLog('skipping ' + r.name + '+' + r.level + ' - its craft-input ceiling is reached', '#8b98ab');
+			continue;
+		}
 		const lvlCap = (cfg.maxLevel || {})[r.name];
 		if (typeof lvlCap === 'number' && (r.level || 0) > lvlCap) {
 			pontyLog('skipping ' + r.name + '+' + r.level + ' - over its +' + lvlCap + ' level cap', '#8b98ab');

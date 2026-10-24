@@ -4297,12 +4297,18 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   level then entering the merchant's bag. The count is bank PLUS merchant bag,
   for dexbelt+2 only. Selling means: a player-run stand BUYING on the current
   shard above NPC price gets it, otherwise the NPC; never listed on our own
-  stand. NOT BUILT. Selling a dexbelt contradicts rule (a) above, so the build
+  stand. BUILT IN Merchant v123 as `CONFIG.craftInputCeilings` and
+  `ceilingSellPass()`; the "NOT BUILT" this read until then is kept as the
+  instance. Selling a dexbelt contradicts rule (a) above, so the build
   carves the exception explicitly - +0 only, above the threshold only - rather
   than weakening `SCARCE_ITEM_NAMES` or `PROTECTED_ITEM_NAMES`, and the
   assertions pinning those sets will object to any wider change, which is
   correct. (First recorded as "sell +2 at 28"; corrected the same day by the
-  operator.)
+  operator.) **AN UNKNOWN COUNT STOPS NOTHING AND SELLS NOTHING**, so a failed
+  or stale bank read degrades to the pre-v123 behaviour rather than to a sale.
+  **THE CEILING DOES NOT TOUCH THE BANKED +0s**: the ruling sells only what
+  enters the bag, so whether the existing pile gets sold down is the
+  operator's call and was not made.
 - **OPERATOR'S RULING 2026-10-23: THE FOUR WITCH'S CIPHER INGREDIENTS ARE NEVER
   SOLD** - verdantspore, frostscale, embercoal, gloomfeather - and may go on the
   Ponty buy list up to the "enough" quantity, which is still to be derived from
@@ -5277,6 +5283,13 @@ for it in any script before Ranger v121 / Merchant v115.
   **A COORDINATE THAT NAMES A THING IS NOT A PLACE TO STAND** - the graveyard's
   published point was the same lesson, recorded as "a published position is
   the monster's"; this is it for an object on a wall.
+- **v120 AND v122 BOTH PASSED LIVE, 2026-10-24, ON ONE MERCHANT ROUTE.** One
+  shard throughout, `busy` true from setting off to route done, and each
+  spookytown door gave exactly one "Path not found!" and then a knock from a
+  ring point. The ring points were then lost to the hop that followed, which
+  is why Ranger v131 / Merchant v123 keep them in the shared `tot_stand` store.
+  The merchant reaches spookytown UNDERGROUND (mtunnel, level1, level2) in about
+  38s; Dexon's route went via desertland.
 - **THE SWAP AND THE KNOCK, MEASURED LIVE 2026-10-23 BY THE BROWSER SESSION**
   (no knocks spent; server reads at upstream `16881a27`). This SUPERSEDES the
   two open questions in the bullet below, which are kept as the instance.

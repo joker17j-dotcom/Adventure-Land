@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v130
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v131
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -7015,9 +7015,8 @@ let totBusy = false;       // a knock route owns movement; mainLoop stands down
 let totPauseUntil = 0;     // after a season refusal or a route that left doors open
 let totDoneDay = null;     // UTC day the account limit was hit - nothing more today
 let totLast = null;        // last route summary, for totStatus()
-/* Door index -> the stand point a walk last reached it from. Memory only: a
-   lost cache costs a few 2s probes, and the points are map facts that a
-   shared store would add nothing to. */
+/* Door index -> the stand point a walk last reached it from. Mirrored to the
+   shared TOT_STAND_KEY store - see totStandLoad. */
 let totStand = {};
 
 function totLog(msg, color) { game_log('[tot] ' + msg, color || '#F5A05B'); }
@@ -7174,7 +7173,10 @@ function totNear(d) {
 function totStandPoints(d) {
 	const out = [];
 	const known = totStand[d.i];
-	if (known) out.push({ x: known.x, y: known.y });
+	if (known && isFinite(known.x) && isFinite(known.y)
+		&& Math.hypot(known.x - d.x, known.y - d.y) <= (CONFIG.trickOrTreat.reach || 80)) {
+		out.push({ x: known.x, y: known.y });
+	}
 	out.push({ x: d.x, y: d.y });
 	const dirs = [[0, 1], [-1, 1], [1, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [0, -1]];
 	for (const r of [40, 65]) {
@@ -7184,6 +7186,37 @@ function totStandPoints(d) {
 		}
 	}
 	return out;
+}
+
+/* Persisted, and deliberately SHARED between characters: a stand point is a
+   fact about the map, not about whoever found it, and the merchant reloads on
+   every hop. Measured 2026-10-24: every spookytown door point is refused, so
+   an in-memory cache lost to a reload cost one dead probe per door per route.
+   totStandPoints only uses a stored point that is still in reach of its door,
+   so a bad value in the shared store costs a probe and nothing else. */
+const TOT_STAND_KEY = 'tot_stand';
+function totStandLoad() {
+	try {
+		const v = get(TOT_STAND_KEY);
+		if (v && typeof v === 'object') totStand = Object.assign({}, v, totStand);
+	} catch (e) { totLog('stand points not loaded: ' + ((e && e.message) || e), 'orange'); }
+}
+function totStandSave() {
+	try { set(TOT_STAND_KEY, totStand); }
+	catch (e) { totLog('stand points not saved: ' + ((e && e.message) || e), 'orange'); }
+}
+/* A walk ended in reach from p. Saved, and logged once, only when it is new. */
+function totStandKeep(d, p) {
+	const was = totStand[d.i];
+	if (was && was.x === p.x && was.y === p.y) return;
+	totStand[d.i] = { x: p.x, y: p.y };
+	totStandSave();
+	if (p.x !== d.x || p.y !== d.y) totLog('door ' + d.i + ': stand point ' + (p.x - d.x) + ',' + (p.y - d.y) + ' from the door, kept');
+}
+function totStandForget(d) {
+	if (!totStand[d.i]) return;
+	delete totStand[d.i];
+	totStandSave();
 }
 
 /* Walk into reach of a door, trying stand points until one is reached. A
@@ -7197,6 +7230,7 @@ async function totWalk(d) {
 		travelState.attemptId++;
 		travelState.inFlight = false;
 	}
+	totStandLoad();
 	if (totNear(d)) return true;
 	let tried = 0, why = null, onMapAt = null;
 	for (const p of totStandPoints(d)) {
@@ -7204,12 +7238,12 @@ async function totWalk(d) {
 		tried++;
 		try { await noHang(safeSmartMove({ map: d.map, x: p.x, y: p.y }), 'tot walk', CONFIG.trickOrTreat.moveMs); }
 		catch (e) { why = (e && (e.reason || e.message)) || String(e); }
-		if (totNear(d)) { totStand[d.i] = { x: p.x, y: p.y }; return true; }
+		if (totNear(d)) { totStandKeep(d, p); return true; }
 		if (character.map !== d.map) break;
 		if (onMapAt === null) onMapAt = Date.now();
 		else if (Date.now() - onMapAt > CONFIG.trickOrTreat.moveMs) break;
 	}
-	delete totStand[d.i];
+	totStandForget(d);
 	totLog('door ' + d.i + ': no stand point reached (' + tried + ' tried, last: ' + why + ')', 'orange');
 	return false;
 }

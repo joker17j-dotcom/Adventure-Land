@@ -21,6 +21,24 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v131
+
+**DOOR STAND POINTS ARE KEPT ACROSS A RELOAD, IN A STORE SHARED WITH THE
+OTHER KNOCKER.** The browser session's finding on the v122 route, 2026-10-24:
+every spookytown door point was refused once per door and then knocked from a
+ring point, exactly as designed - and the cache of those ring points was lost
+to the hop that followed, so the next route would pay the same five dead
+probes. `TOT_STAND_KEY` (`tot_stand`) now mirrors the in-memory map, read at
+the start of every walk and written when a new point is learned or a stale one
+dropped. It is SHARED on purpose: a stand point is a fact about the map, and
+the ranger and the merchant knock the same doors. A stored point is used only
+if it is finite and still within reach of its door, so a bad value costs one
+probe. A newly learned point is logged once as its offset from the door.
+
+Same change as Merchant v123. Six mutations across the two scripts, each
+caught in `Tests/suite_trickortreat.js`; the key is classified shared in
+`Tests/suite_bosshop.js`.
+
 ## v130
 
 **THE PARTY ENTERS THE RAGE BOX FOR THE GARGOYLE.** Operator, 2026-10-24:

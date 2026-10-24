@@ -1999,7 +1999,9 @@ module.exports = [
     'Party/Ranger.js': {
       scoped: ['PL_ACTED_KEY', 'TAXI_PROBE_KEY', 'BOSS_KEY', 'CRABXX_KEY',
         'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY'],
-      shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY'],
+      /* TOT_STAND_KEY is shared ON PURPOSE: a door's stand point is a fact
+         about the map, and the merchant and the ranger knock the same doors. */
+      shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY', 'TOT_STAND_KEY'],
     },
     /* PL_HOP_PENDING_KEY was NOT on the first draft of this list and the
        derivation is what found it - a pending-hop record shared by the two
