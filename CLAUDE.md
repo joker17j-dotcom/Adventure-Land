@@ -5308,6 +5308,19 @@ for it in any script before Ranger v121 / Merchant v115.
   Ponty. The cheaper scripted route is to exclude, on the KNOCKER only, whatever
   live `G.events.trickortreat.costumes` names from its own muling - derived from
   `G`, so no hand list returns. The operator's call between the two.
+  **SEALED AND UNSEALING ITEMS ARE SAFE FROM VENDORING TOO, AND THE CLIENT
+  FILTERS ARE NARROWER THAN THE SERVER'S.** `item.l` has three truthy states -
+  `l` locked, `s` sealed, `u` unsealing - and the server's `socket.on("sell")`
+  opens `if (item.l) return fail_response("item_locked")` before even the
+  distance check (the browser session's read of upstream `16881a27`, not
+  measured live). Merchant `sellTrash()` and Ranger `reliefSellable()` test
+  `=== 'l'`, so an `s`/`u` item reaches the server and is refused there.
+  Checked this side: neither path keeps a failure counter that a refusal could
+  trip - `sellTrash()` fires and forgets, relief catches per item and logs
+  `sell failed ... item_locked` in orange and moves on - so the whole cost is
+  one refused call per pass plus that log line. Muling's `!item.l` already
+  skips all three. Nothing to build; widening the client tests to `item.l`
+  would only silence the log.
 - **STILL OPEN, AND BOTH ARE THE BROWSER SESSION'S**: whether equip/unequip
   round-trips cleanly mid-route, and what a ghost landing between the two does
   to the swap.
