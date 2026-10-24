@@ -21,6 +21,44 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v127
+
+**TRICK OR TREAT: DEXON KNOCKS HIS SEVEN DOORS.** The operator's spec of
+2026-10-23, built on the browser session's live test of 2026-10-24. The
+account gets fourteen knocks a day and each character seven, so Dexon and
+Meltymerch between them take the lot. `totTick()` every 20s starts a route when
+the season is open, `character.trickortreat.doors_left` is above zero, no boss
+or event is on (`shouldHandleEvents()`), bossHop is IDLE, nothing else owns
+movement, and no RANKED event opens on this shard within `leadMs` (5 min).
+**graveyard is excluded from that lead check on purpose**: the route ends in
+spookytown, which is where the graveyard is, so a run just before one is the
+operator's "on the way to a graveyard trip". Unranked events (abtesting,
+icegolem at the default rank) do not hold a route back.
+
+**The route owns movement like the Daisy trip** - `totBusy` stands mainLoop
+down, and it takes the wheel from a farm trip already in flight. It re-checks
+`shouldHandleEvents()` before every door and stops the moment a boss or event
+wants the party, so bossHop never waits longer than one door. Doors are walked
+current map first, then halloween, then spookytown, nearest-first.
+
+**The costume goes on at the door and comes off after the knock SETTLES**,
+through `equip(idx)` both ways, in a `finally` so a knock that throws still
+gets the ordinary helmet back. No costume in the bag means a bare knock (70%
+rather than 85%); one already worn means no swap. While a route runs, muling,
+`sellItems()` and relief all stand clear, because the swapped-out helmet sits
+in the bag for a moment.
+
+**`doors_left` only decides whether to set off.** It can overstate on a shard
+that did not see the account's knocks (measured: the merchant on another shard
+was not updated), so `trickortreat_limit` is what stops a route, and it holds
+for the UTC day. `trickortreat_knocked` skips the door; `trickortreat_season`
+pauses an hour; `cant_in_bank` stops. A route that ended with FAILED doors
+retries after `retryMs` (10 min).
+
+`totStatus()` from the console says what the tick sees and how the last route
+went; it is on `PARTY_BUILD`. `Tests/suite_trickortreat.js`, eleven mutations
+named, each caught.
+
 ## v126
 
 **COMMENT ONLY - NO BEHAVIOUR CHANGE, REDEPLOY WHEN CONVENIENT.** The block

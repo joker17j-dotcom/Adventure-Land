@@ -5225,7 +5225,14 @@ for it in any script before Ranger v121 / Merchant v115.
   `oxhelmet` against a `sellItems()` with no level check, that whitelist is the
   operator's and CLOSED, and the right guard is on what came OFF - state the
   equip code owns and the equip code does not exist yet.
-- **OPERATOR'S SPEC FOR THE ROUTE, 2026-10-23. NOT BUILT.** Knock when NOT on a
+- **OPERATOR'S SPEC FOR THE ROUTE, 2026-10-23. BUILT 2026-10-24 in Ranger v127 /
+  Merchant v119 - see their changelogs; the "NOT BUILT" that follows is kept
+  as the instance.** One reading is recorded there rather than settled: "one
+  combat character knocks on the way to a graveyard trip" was taken as the
+  ranger's lead check SKIPPING graveyard (the route ends in spookytown, where
+  the graveyard is), not as knocking DURING one - the operator's other rule is
+  "knock when NOT on a boss". The operator can widen it.
+  NOT BUILT AS OF 2026-10-23: Knock when NOT on a
   boss. Read the knocks left from the game rather than counting, because the
   first run of the script may land before the 00:00Z reset; take the first knock
   at the soonest moment outside a boss window. The MERCHANT ignores boss

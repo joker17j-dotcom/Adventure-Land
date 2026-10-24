@@ -73,6 +73,7 @@ that passes for the wrong reason is worse than one that fails.
 | `suite_relay.js` | the party-link relay across **all three** combat scripts, the durable acted-list, storage failures, and that the relay block and `bossHopFollow` have not diverged |
 | `suite_bosshop.js` | the taxi-join predicate, the three gates it feeds, hop-sickness remaining-ms, the walk-in-sick probe, `goHomeIfIdle`, and the hop lock that stops a burst of `boss_hop` |
 | `suite_bosstimers.js` | the Schedule tab of `Codex/boss_timers.html`: one row per start time, rank order within a row, the filter, live and ended windows, that its rank table matches `Party/Ranger.js`, and that the fields it reads are the ones `published_schedule()` emits |
+| `suite_trickortreat.js` | the knock route in `Party/Ranger.js` and `Party/Merchant.js`: door order, the ranked-event lead check and its graveyard exception, every start gate, the costume worn at each knock and the ordinary helmet back after (including when a knock throws), stopping on a boss and on the account limit, the merchant's arbitrage-first gate, and that movement, muling and selling stand clear during a route |
 | `suite_opengifts.js` | merchant buff skills and their level gating, the MP reserve, the overlap of the three server queues, and the bow ladder making fodder |
 
 The divergence checks in `suite_relay.js` are the ones most likely to earn

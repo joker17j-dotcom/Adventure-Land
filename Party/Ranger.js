@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v126
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v127
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -117,6 +117,7 @@ const PARTY_FEATURE_PROBE = {
 	addToBlacklist: typeof addToBlacklist,
 	checkFarmEconomics: typeof checkFarmEconomics,
 	combineItems: typeof combineItems,
+	totStatus: typeof totStatus,
 };
 
 function publishPartyBuild() {
@@ -520,6 +521,7 @@ const TOGGLES = {
 	rageEntry:                       false,  // CONFIG.bossEvents.rageEntry.enabled
 	achievementsPullRespectCourage:  true,   // CONFIG.achievements.pull.respectCourage
 	muling:                          true,   // CONFIG.muling.enabled
+	trickOrTreat:                    true,   // CONFIG.trickOrTreat.enabled
 };
 
 const CONFIG = {
@@ -1045,6 +1047,21 @@ const CONFIG = {
 		goldReserve: 500000,
 		excludeItems: new Set(['hpot1', 'mpot1', 'tracker', 'luckbooster', 'xpbooster', 'pumpkinspice', 'xptome']),
 	},
+
+	/* Trick or Treat knock route. The operator's spec, 2026-10-23: knock when
+	   no boss is on, read the knocks left from the game rather than counting,
+	   and take the first knock at the soonest moment outside a boss window.
+	   -> TRICK OR TREAT */
+	trickOrTreat: {
+		enabled: TOGGLES.trickOrTreat,
+		tickMs: 20000,
+		/* Do not START a route when a ranked event opens on this shard within
+		   this long. graveyard is the exception - see totBossSoon(). */
+		leadMs: 5 * 60 * 1000,
+		retryMs: 10 * 60 * 1000,    // after a route that ended with doors still open
+		moveMs: 120000,             // noHang bound on one walk to a door
+		reach: 80,                  // the server's own door radius
+	},
 };
 
 const TICK_RATE = { main: 100, action: 15, mark: 40, equipment: 25, maintenance: 2000 };
@@ -1355,6 +1372,8 @@ async function mainLoop() {
 		/* A Daisy trip owns movement. Same shape as the merchant wait: stand down
 		   until it finishes, and it always finishes - mhGoDaisy is noHang-bounded. */
 		if (mhBusy) return setTimeout(mainLoop, 250);
+		/* A knock route owns movement the same way. */
+		if (totBusy) return setTimeout(mainLoop, 250);
 		if (state.waitingForMerchant) {
 			if (Date.now() - state.waitingForMerchantSince > MERCHANT_WAIT_TIMEOUT_MS) {
 				state.waitingForMerchant = false;
@@ -5091,6 +5110,9 @@ setInterval(lootInterval, 250);
 
 const clearInventory = () => {
 	const cfg = CONFIG.muling;
+	/* Mid-knock the ordinary helmet sits in the bag for a moment, unlocked
+	   unless the operator locked it. -> TRICK OR TREAT */
+	if (totBusy) return;
 	const mule = get_player(cfg.muleName);
 	if (!mule) return;
 
@@ -5646,6 +5668,7 @@ function freeSlots() {
 async function runInventoryRelief() {
 	const cfg = CONFIG.inventoryRelief;
 	if (reliefRunning) return;
+	if (totBusy) return;   // a knock route owns movement -> TRICK OR TREAT
 	reliefRunning = true;
 	state.sellingOff = true;
 	try {
@@ -5775,6 +5798,7 @@ setInterval(sendLocationUpdate, CONFIG.locationBroadcast.checkInterval);
 const SELL_WHITELIST = new Set(CONFIG.selling.whitelist);
 function sellItems() {
 	if (!CONFIG.selling.enabled) return;
+	if (totBusy) return;   // the swapped-out helmet is in the bag -> TRICK OR TREAT
 	for (let i = 0; i < character.items.length; i++) {
 		const item = character.items[i];
 		if (!item || !SELL_WHITELIST.has(item.name)) continue;
@@ -6930,6 +6954,256 @@ setInterval(achvTickRun, (CONFIG.achievements && CONFIG.achievements.reassertMs)
 setInterval(() => {
 	mhTick().catch((e) => mhLog('tick threw: ' + ((e && e.message) || e), 'red'));
 }, (CONFIG.monsterHunt && CONFIG.monsterHunt.tickMs) || 5000);
+
+/* ============================================================================
+   TRICK OR TREAT - the knock route.  -> CLAUDE.md "Trick or Treat"
+
+   Seven doors, each knockable once per character per UTC day, 14 knocks per
+   ACCOUNT. Dexon takes seven and Meltymerch the other seven; nobody else runs
+   a route. Everything below rests on facts measured live 2026-10-24 or read
+   from the server at upstream 16881a27:
+
+   * `character.trickortreat` is {doors, doors_left, stamps}. `doors` is what
+     THIS character knocked today; `doors_left` is min(7 - mine, account left)
+     but the account half is cached per server process, so on a shard where
+     the knocks were not taken it OVERSTATES. It decides whether to set off;
+     the `trickortreat_limit` refusal is what stops the route.
+   * The costume must be WORN when the knock settles, not merely when it is
+     sent. `equip(idx)` swaps the bag item with the worn one in one call, needs
+     no free slot, keeps a lock on both items, and does not stop a walk.
+   * The door radius is 80 units on the character's own map.
+   * A full bag loses nothing: the server's add_item appends past the end.
+
+   Not on a boss, ever: mainLoop stands down while this runs (totBusy), so the
+   route itself re-checks shouldHandleEvents() before every door and stops the
+   moment a boss or event wants the party. bossHop cannot tick while we hold
+   movement either, which is why a route never STARTS within leadMs of a
+   ranked event on this shard.
+   ============================================================================ */
+let totBusy = false;       // a knock route owns movement; mainLoop stands down
+let totPauseUntil = 0;     // after a season refusal or a route that left doors open
+let totDoneDay = null;     // UTC day the account limit was hit - nothing more today
+let totLast = null;        // last route summary, for totStatus()
+
+function totLog(msg, color) { game_log('[tot] ' + msg, color || '#F5A05B'); }
+function totG() { return (typeof parent !== 'undefined' && parent.G) || (typeof G !== 'undefined' ? G : null); }
+function totRules() { const g = totG(); return (g && g.events && g.events.trickortreat) || null; }
+function totUtcDay(ms) { return new Date(ms).toISOString().slice(0, 10); }
+
+/* The season is open when the server says so. S.halloween is the live flag the
+   game's own event panel reads; the rules come from live G, never from the
+   source's field names (the cipher payload taught that). */
+function totSeasonOpen() {
+	const S = (typeof parent !== 'undefined') ? parent.S : null;
+	const r = totRules();
+	return !!(S && S.halloween && r && Array.isArray(r.doors) && r.doors.length);
+}
+
+/* Door indices this character has NOT knocked today, ordered for one walk:
+   the map we are on first, then halloween before spookytown - spookytown is
+   reached through halloween and holds five of the seven doors, so the route
+   ends where the graveyard is. Nearest-neighbour inside each map. */
+function totRemainingDoors() {
+	const r = totRules();
+	const t = character.trickortreat;
+	if (!r || !t) return [];
+	const done = new Set(Array.isArray(t.doors) ? t.doors : []);
+	const left = [];
+	r.doors.forEach((d, i) => { if (!done.has(i) && Array.isArray(d)) left.push({ i, map: d[0], x: d[1], y: d[2] }); });
+	const mapOrder = [character.map, 'halloween', 'spookytown'];
+	const maps = [...new Set(mapOrder.concat(left.map((d) => d.map)))];
+	const out = [];
+	let px = character.real_x != null ? character.real_x : character.x;
+	let py = character.real_y != null ? character.real_y : character.y;
+	let pmap = character.map;
+	for (const m of maps) {
+		const pool = left.filter((d) => d.map === m);
+		while (pool.length) {
+			let best = 0, bd = Infinity;
+			pool.forEach((d, k) => {
+				const dd = (m === pmap) ? Math.hypot(d.x - px, d.y - py) : 0;
+				if (dd < bd) { bd = dd; best = k; }
+			});
+			const d = pool.splice(best, 1)[0];
+			out.push(d);
+			px = d.x; py = d.y; pmap = m;
+		}
+	}
+	return out;
+}
+
+/* Milliseconds until the soonest RANKED event opens on this shard, read from
+   the published lineup. graveyard is skipped: it opens in spookytown, which is
+   where this route ends, so a knock run just before it is "on the way to a
+   graveyard trip" in the operator's words. Both arrays are read, because a
+   repeat slot (graveyard) appears ONLY in `repeats`. */
+function totBossSoon(now) {
+	const sch = (typeof parent !== 'undefined' && parent.S && parent.S.schedule) || null;
+	if (!sch) return Infinity;
+	const ranked = (name) => !!name && name !== 'graveyard' && bossRank(name) < BOSS_RANK_DEFAULT;
+	let soon = Infinity;
+	for (const o of (Array.isArray(sch.events) ? sch.events : [])) {
+		if (!o || !ranked(o.event) || typeof o.at !== 'number') continue;
+		if (o.at >= now && o.at - now < soon) soon = o.at - now;
+	}
+	for (const raw of (Array.isArray(sch.repeats) ? sch.repeats : [])) {
+		const o = Array.isArray(raw) ? { event: raw[0], at: raw[1], every: raw[2] } : raw;
+		if (!o || !ranked(o.event) || typeof o.at !== 'number') continue;
+		let at = o.at;
+		if (typeof o.every === 'number' && o.every > 0 && at < now) at += Math.ceil((now - at) / o.every) * o.every;
+		if (at >= now && at - now < soon) soon = at - now;
+	}
+	return soon;
+}
+
+/* Why a route may not start right now, or null when it may. One predicate,
+   read by the tick and by totStatus(), so the status says what the tick saw. */
+function totBlocked(now) {
+	const cfg = CONFIG.trickOrTreat || {};
+	if (!cfg.enabled) return 'disabled';
+	if (totBusy) return 'running';
+	if (now < totPauseUntil) return 'paused';
+	if (totDoneDay === totUtcDay(now)) return 'account limit reached today';
+	if (!totSeasonOpen()) return 'season closed';
+	const t = character.trickortreat;
+	if (!t || typeof t.doors_left !== 'number') return 'no trickortreat status';
+	if (t.doors_left <= 0) return 'no doors left';
+	if (!totRemainingDoors().length) return 'all doors knocked';
+	if (character.rip || character.map === 'jail' || is_disabled(character)) return 'not able to move';
+	if (state.sellingOff || mhBusy || state.waitingForMerchant || ragePull.busy || rageNav.busy || reliefRunning) return 'movement is busy';
+	if (bossHop.state !== 'IDLE' || bossHop.hopping) return 'boss hop ' + bossHop.state;
+	if (shouldHandleEvents()) return 'a boss or event is on';
+	if (totBossSoon(now) < (cfg.leadMs || 0)) return 'a ranked event opens soon';
+	return null;
+}
+
+function totCostumeIdx() {
+	const r = totRules();
+	const names = (r && Array.isArray(r.costumes)) ? r.costumes : [];
+	for (let i = 0; i < character.items.length; i++) {
+		const it = character.items[i];
+		if (it && names.includes(it.name)) return i;
+	}
+	return -1;
+}
+function totWearing() {
+	const r = totRules();
+	const h = character.slots && character.slots.helmet;
+	return !!(h && r && Array.isArray(r.costumes) && r.costumes.includes(h.name));
+}
+
+async function totKnock(i) {
+	const fn = (typeof knock === 'function') ? knock
+		: (typeof parent !== 'undefined' && typeof parent.knock_request === 'function') ? parent.knock_request : null;
+	if (!fn) return { failed: true, reason: 'no knock function' };
+	try { return await noHang(Promise.resolve(fn(i)), 'knock', 15000); }
+	catch (e) { return (e && e.reason) ? e : { failed: true, reason: (e && e.message) || String(e) }; }
+}
+
+/* Put the costume on for one knock and take it off again after the knock has
+   SETTLED. Returns the bag index to swap back through, or -1 when no swap
+   happened (already wearing one, or none in the bag - a bare knock is 70%
+   rather than 85%, still worth taking). */
+async function totCostumeOn() {
+	if (totWearing()) return -1;
+	const idx = totCostumeIdx();
+	if (idx < 0) return -1;
+	try { await noHang(Promise.resolve(equip(idx)), 'tot equip', 5000); } catch (e) { totLog('costume swap failed: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
+	return totWearing() ? idx : -1;
+}
+async function totCostumeOff(idx) {
+	if (idx < 0) return;
+	const back = character.items[idx];
+	try {
+		if (back) await noHang(Promise.resolve(equip(idx)), 'tot equip back', 5000);
+		else await noHang(Promise.resolve(unequip('helmet')), 'tot unequip', 5000);   // no helmet was worn before
+	} catch (e) { totLog('swap back failed: ' + ((e && (e.reason || e.message)) || e), 'red'); }
+	if (totWearing()) totLog('still wearing the costume after the swap back - check the helmet slot', 'red');
+}
+
+async function totWalk(d) {
+	/* Take the wheel from a farm trip already in flight, exactly as the Daisy
+	   trip does - standing mainLoop down stops NEW movement only. */
+	if (typeof travelState !== 'undefined' && travelState.inFlight) {
+		travelState.attemptId++;
+		travelState.inFlight = false;
+	}
+	try { await noHang(safeSmartMove({ map: d.map, x: d.x, y: d.y }), 'tot walk', CONFIG.trickOrTreat.moveMs); }
+	catch (e) { totLog('walk to door ' + d.i + ' failed: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
+	const x = character.real_x != null ? character.real_x : character.x;
+	const y = character.real_y != null ? character.real_y : character.y;
+	return character.map === d.map && Math.hypot(d.x - x, d.y - y) <= (CONFIG.trickOrTreat.reach || 80);
+}
+
+/* One route. Every exit leaves totBusy false and the ordinary helmet back on. */
+async function totRoute() {
+	const doors = totRemainingDoors();
+	const sum = { at: Date.now(), knocked: 0, treats: [], tricks: 0, stopped: null, failed: [] };
+	totLog('setting off: ' + doors.length + ' door(s), ' + character.trickortreat.doors_left + ' knock(s) left');
+	totBusy = true;
+	try {
+		for (const d of doors) {
+			if (shouldHandleEvents()) { sum.stopped = 'a boss or event came on'; break; }
+			if (character.rip) { sum.stopped = 'died'; break; }
+			if (!(await totWalk(d))) { sum.failed.push(d.i + ':unreached'); continue; }
+			const swapped = await totCostumeOn();
+			let res;
+			try { res = await totKnock(d.i); }
+			finally { await totCostumeOff(swapped); }
+			if (res && res.success) {
+				sum.knocked++;
+				if (res.treat) sum.treats.push(res.treat.name + ' x' + (res.treat.q || 1));
+				if (res.trick) sum.tricks++;
+				totLog('door ' + d.i + ': ' + (res.treat ? res.treat.name + ' x' + (res.treat.q || 1) : 'trick (' + res.trick + ')')
+					+ ', stamps ' + res.stamps, res.treat ? '#7FD98A' : '#AD91DC');
+				continue;
+			}
+			const why = (res && res.reason) || 'unknown';
+			if (why === 'trickortreat_knocked') continue;
+			if (why === 'trickortreat_limit') { totDoneDay = totUtcDay(Date.now()); sum.stopped = 'account limit'; break; }
+			if (why === 'trickortreat_season') { totPauseUntil = Date.now() + 60 * 60 * 1000; sum.stopped = 'season closed'; break; }
+			if (why === 'cant_in_bank') { sum.stopped = 'in the bank'; break; }
+			sum.failed.push(d.i + ':' + why);
+		}
+	} finally {
+		totBusy = false;
+	}
+	/* Retry later only for doors that FAILED this route. Not "doors still listed
+	   as open": the game refreshes character.trickortreat about a second after
+	   each knock (measured 2026-10-24), so the last door can still read open
+	   when a fully successful route ends. */
+	if (!sum.stopped && sum.failed.length) totPauseUntil = Date.now() + (CONFIG.trickOrTreat.retryMs || 0);
+	totLast = sum;
+	totLog('route done: ' + sum.knocked + ' knocked' + (sum.treats.length ? ' (' + sum.treats.join(', ') + ')' : '')
+		+ (sum.stopped ? ' - stopped: ' + sum.stopped : '') + (sum.failed.length ? ' - failed ' + sum.failed.join(' ') : ''),
+		sum.failed.length ? 'orange' : '#7FD98A');
+	return sum;
+}
+
+async function totTick() {
+	if (totBlocked(Date.now())) return;
+	await totRoute();
+}
+
+/* Console: why a route is or is not running, and how the last one went. */
+function totStatus() {
+	const now = Date.now();
+	const t = character.trickortreat || null;
+	const out = {
+		blocked: totBlocked(now), busy: totBusy, season: totSeasonOpen(),
+		doors: t ? t.doors : null, doorsLeft: t ? t.doors_left : null, stamps: t ? t.stamps : null,
+		next: totRemainingDoors().map((d) => d.map + '#' + d.i),
+		wearingCostume: totWearing(), costumeInBag: totCostumeIdx() >= 0,
+		rankedEventInMin: Math.round(totBossSoon(now) / 60000), pausedForSec: Math.max(0, Math.round((totPauseUntil - now) / 1000)),
+		last: totLast,
+	};
+	totLog(JSON.stringify(out), '#8b98ab');
+	return out;
+}
+
+setInterval(() => {
+	totTick().catch((e) => { totBusy = false; totLog('tick threw: ' + ((e && e.message) || e), 'red'); });
+}, (CONFIG.trickOrTreat && CONFIG.trickOrTreat.tickMs) || 20000);
 
 /* The toolbar is static markup in the game's index.html, so it is normally
    there long before any CODE runs and the dock succeeds first time. If it

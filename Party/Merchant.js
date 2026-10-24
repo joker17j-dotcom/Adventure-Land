@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v118
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v119
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -364,6 +364,7 @@ const TOGGLES = {
 	stockRecovery:            true,   // CONFIG.arbitrage.stockRecovery.enabled
 	town:                     true,   // CONFIG.town.enabled
 	standBuyDryRun:           false,  // CONFIG.standBuy.dryRun
+	trickOrTreat:             true,   // CONFIG.trickOrTreat.enabled
 };
 
 const CONFIG = {
@@ -1047,6 +1048,17 @@ const CONFIG = {
 		// that is established, so the merchant is actually present and reachable
 		// for the people travelling to it. Everything else carries on as normal.
 		selfFeaturedHoldMs: 5 * 60 * 1000,
+	},
+
+	/* Trick or Treat knock route - the merchant's seven of the account's
+	   fourteen. Operator, 2026-10-23: the merchant ignores boss windows, never
+	   swaps a helmet (he wears a costume for the season), and an arbitrage he
+	   has found goes first. -> TRICK OR TREAT */
+	trickOrTreat: {
+		enabled: TOGGLES.trickOrTreat,
+		checkIntervalMs: 20000,
+		retryMs: 10 * 60 * 1000,    // after a route that ended with doors still open
+		reach: 80,                  // the server's own door radius
 	},
 
 	// The Bank is its own map, reached via a door off 'main' - confirmed via
@@ -5716,6 +5728,174 @@ async function anniversaryKissLoop() {
 	setTimeout(anniversaryKissLoop, CONFIG.anniversaryKiss.checkIntervalMs);
 }
 
+// ============================================================================
+// TRICK OR TREAT - the merchant's knock route.  -> CLAUDE.md "Trick or Treat"
+//
+// The ranger takes seven of the account's fourteen knocks and this takes the
+// other seven. Measured live 2026-10-24: `character.trickortreat` is
+// {doors, doors_left, stamps}; `doors` is this character's own knocks today
+// and `doors_left` can OVERSTATE on a shard where the knocks were not taken,
+// so it only decides whether to set off and the `trickortreat_limit` refusal
+// is what stops the route. The door radius is 80 units. No costume swap here:
+// the operator dresses Meltymerch by hand for the season.
+// ============================================================================
+let totPauseUntil = 0;     // after a season refusal or a route that left doors open
+let totDoneDay = null;     // UTC day the account limit was hit
+let totLast = null;        // last route summary, for totStatus()
+
+function totLog(msg, color) { game_log('[tot] ' + msg, color || '#F5A05B'); }
+function totRules() { const g = (typeof parent !== 'undefined' && parent.G) || null; return (g && g.events && g.events.trickortreat) || null; }
+function totUtcDay(ms) { return new Date(ms).toISOString().slice(0, 10); }
+function totSeasonOpen() {
+	const S = (typeof parent !== 'undefined') ? parent.S : null;
+	const r = totRules();
+	return !!(S && S.halloween && r && Array.isArray(r.doors) && r.doors.length);
+}
+
+/* Doors not knocked today, ordered for one walk: the current map first, then
+   halloween before spookytown (spookytown is reached through halloween), and
+   nearest-neighbour inside each map. Same ordering as the ranger's. */
+function totRemainingDoors() {
+	const r = totRules();
+	const t = character.trickortreat;
+	if (!r || !t) return [];
+	const done = new Set(Array.isArray(t.doors) ? t.doors : []);
+	const left = [];
+	r.doors.forEach((d, i) => { if (!done.has(i) && Array.isArray(d)) left.push({ i, map: d[0], x: d[1], y: d[2] }); });
+	const maps = [...new Set([character.map, 'halloween', 'spookytown'].concat(left.map((d) => d.map)))];
+	const out = [];
+	let px = character.real_x != null ? character.real_x : character.x;
+	let py = character.real_y != null ? character.real_y : character.y;
+	let pmap = character.map;
+	for (const m of maps) {
+		const pool = left.filter((d) => d.map === m);
+		while (pool.length) {
+			let best = 0, bd = Infinity;
+			pool.forEach((d, k) => {
+				const dd = (m === pmap) ? Math.hypot(d.x - px, d.y - py) : 0;
+				if (dd < bd) { bd = dd; best = k; }
+			});
+			const d = pool.splice(best, 1)[0];
+			out.push(d);
+			px = d.x; py = d.y; pmap = m;
+		}
+	}
+	return out;
+}
+
+/* ARBITRAGE GOES FIRST, and "first" has to mean more than "not mid-trade".
+   arbLookForWork only looks every lookEveryMs, so a knock route started in the
+   gap would hold state.busy through the next look and push a trade back by the
+   length of the route. So: if arbitrage could start a trade right now, wait
+   until a look has run in the last lookEveryMs and found nothing - ARB.cur is
+   still null after it. If arbitrage could not start anyway (disabled, halted,
+   gold floor, no tax rate), it is not waiting for the knock and the knock goes. */
+function totArbClear(now) {
+	if (ARB.cur || ARB.busy) return false;
+	const could = arbCanStart({ trade: null, busy: false, probeHold: PROBE.hold,
+		gold: character.gold, oldestJobAgeMs: arbOldestJobAgeMs() });
+	if (!could.ok) return true;
+	return now - ARB.lastLookAt < CONFIG.arbitrage.lookEveryMs;
+}
+
+function totBlocked(now) {
+	const cfg = CONFIG.trickOrTreat || {};
+	if (!cfg.enabled) return 'disabled';
+	if (now < totPauseUntil) return 'paused';
+	if (totDoneDay === totUtcDay(now)) return 'account limit reached today';
+	if (!totSeasonOpen()) return 'season closed';
+	const t = character.trickortreat;
+	if (!t || typeof t.doors_left !== 'number') return 'no trickortreat status';
+	if (t.doors_left <= 0) return 'no doors left';
+	if (!totRemainingDoors().length) return 'all doors knocked';
+	if (character.rip || character.map === 'jail' || character.map === 'bank') return 'not able to knock from here';
+	if (PROBE.hold) return 'probe hold';
+	if (state.busy || state.queue.length || moveLockHeld()) return 'merchant busy';
+	if (!totArbClear(now)) return 'arbitrage first';
+	return null;
+}
+
+async function totKnock(i) {
+	const fn = (typeof knock === 'function') ? knock
+		: (typeof parent !== 'undefined' && typeof parent.knock_request === 'function') ? parent.knock_request : null;
+	if (!fn) return { failed: true, reason: 'no knock function' };
+	try { return await fn(i); }
+	catch (e) { return (e && e.reason) ? e : { failed: true, reason: (e && e.message) || String(e) }; }
+}
+
+function totNear(d) {
+	const x = character.real_x != null ? character.real_x : character.x;
+	const y = character.real_y != null ? character.real_y : character.y;
+	return character.map === d.map && Math.hypot(d.x - x, d.y - y) <= (CONFIG.trickOrTreat.reach || 80);
+}
+
+/* One route, holding state.busy so scouting, kisses and new trades stand
+   clear. travelTo closes the stand and takes the move lock itself. */
+async function totRoute() {
+	const doors = totRemainingDoors();
+	const sum = { at: Date.now(), knocked: 0, treats: [], tricks: 0, stopped: null, failed: [] };
+	totLog('setting off: ' + doors.length + ' door(s), ' + character.trickortreat.doors_left + ' knock(s) left');
+	state.busy = true;
+	try {
+		for (const d of doors) {
+			if (character.rip) { sum.stopped = 'died'; break; }
+			if (!totNear(d)) await travelTo(d.map, d.x, d.y);
+			if (!totNear(d)) { sum.failed.push(d.i + ':unreached'); continue; }
+			const res = await totKnock(d.i);
+			if (res && res.success) {
+				sum.knocked++;
+				if (res.treat) sum.treats.push(res.treat.name + ' x' + (res.treat.q || 1));
+				if (res.trick) sum.tricks++;
+				totLog('door ' + d.i + ': ' + (res.treat ? res.treat.name + ' x' + (res.treat.q || 1) : 'trick (' + res.trick + ')')
+					+ ', stamps ' + res.stamps, res.treat ? '#7FD98A' : '#AD91DC');
+				continue;
+			}
+			const why = (res && res.reason) || 'unknown';
+			if (why === 'trickortreat_knocked') continue;
+			if (why === 'trickortreat_limit') { totDoneDay = totUtcDay(Date.now()); sum.stopped = 'account limit'; break; }
+			if (why === 'trickortreat_season') { totPauseUntil = Date.now() + 60 * 60 * 1000; sum.stopped = 'season closed'; break; }
+			if (why === 'cant_in_bank') { sum.stopped = 'in the bank'; break; }
+			sum.failed.push(d.i + ':' + why);
+		}
+	} finally {
+		state.busy = false;
+	}
+	/* Retry later only for doors that FAILED this route. Not "doors still listed
+	   as open": the game refreshes character.trickortreat about a second after
+	   each knock (measured 2026-10-24), so the last door can still read open
+	   when a fully successful route ends. */
+	if (!sum.stopped && sum.failed.length) totPauseUntil = Date.now() + (CONFIG.trickOrTreat.retryMs || 0);
+	totLast = sum;
+	totLog('route done: ' + sum.knocked + ' knocked' + (sum.treats.length ? ' (' + sum.treats.join(', ') + ')' : '')
+		+ (sum.stopped ? ' - stopped: ' + sum.stopped : '') + (sum.failed.length ? ' - failed ' + sum.failed.join(' ') : ''),
+		sum.failed.length ? 'orange' : '#7FD98A');
+	return sum;
+}
+
+async function totLoop() {
+	try {
+		if (!totBlocked(Date.now())) await totRoute();
+	} catch (e) {
+		console.error('totLoop error:', e);
+		state.busy = false;
+	}
+	setTimeout(totLoop, (CONFIG.trickOrTreat && CONFIG.trickOrTreat.checkIntervalMs) || 20000);
+}
+
+/* Console: why a route is or is not running, and how the last one went. */
+function totStatus() {
+	const now = Date.now();
+	const t = character.trickortreat || null;
+	const out = {
+		blocked: totBlocked(now), season: totSeasonOpen(),
+		doors: t ? t.doors : null, doorsLeft: t ? t.doors_left : null, stamps: t ? t.stamps : null,
+		next: totRemainingDoors().map((d) => d.map + '#' + d.i),
+		pausedForSec: Math.max(0, Math.round((totPauseUntil - now) / 1000)), last: totLast,
+	};
+	totLog(JSON.stringify(out), '#8b98ab');
+	return out;
+}
+
 // NOT called here. It now reads PROBE.hold, and PROBE is a const declared in
 // -> MerchantComments.md#not-called-here-it-now-2
 
@@ -10138,6 +10318,7 @@ gearProgressionLoop();
 maintenanceLoop();
 anniversaryKissLoop();
 arbLoop();
+totLoop();
 /* Phase 0 only announces itself. Nothing in the probe section runs unless the
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {

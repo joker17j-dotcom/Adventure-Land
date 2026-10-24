@@ -1,4 +1,27 @@
 
+## v119
+
+**TRICK OR TREAT: MELTYMERCH KNOCKS THE OTHER SEVEN DOORS.** The ranger takes
+seven of the account's fourteen and this takes the rest. Operator's rules,
+2026-10-23: the merchant ignores boss windows, never swaps a helmet (he wears
+a costume for the season by hand), and an arbitrage he has found goes first.
+
+**"Arbitrage first" is enforced, not hoped for.** `totLoop()` every 20s needs
+`state.busy`, `ARB.cur` and `ARB.busy` clear, no queued deliveries and no
+move lock - and if arbitrage COULD start a trade right now (`arbCanStart`
+with the busy flag ignored), it also needs a look in the last `lookEveryMs`
+that came up empty. Otherwise the route would hold `state.busy` through the
+next look and push a trade back by the length of the route. If arbitrage
+could not start anyway (disabled, halted, gold floor, no tax rate), it is not
+waiting and the knock goes.
+
+The route holds `state.busy` so scouting, kisses and new trades stand clear,
+and walks through `travelTo`, which closes the stand and takes the move lock.
+Doors are ordered as the ranger orders them. `trickortreat_limit` stops it for
+the UTC day, `trickortreat_knocked` skips the door, `trickortreat_season`
+pauses an hour, `cant_in_bank` stops; a route that ended with FAILED doors
+retries after `retryMs`. `totStatus()` from the console.
+
 ## v118
 
 **THE FOUR WITCH'S CIPHER INGREDIENTS ARE ON THE PONTY BUY LIST** -
