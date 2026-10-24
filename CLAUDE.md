@@ -554,6 +554,11 @@ character tab, with the operator's go-ahead for a disruptive test hop.
   Sickness - measured 11.9 minutes on EU III. So merchant arbitrage costs the
   combat party nothing, and costs the merchant only his own luck/gold while
   away, which arbitrage profit does not depend on.
+- **A HOP KEEPS THE MAP AND THE EXACT COORDINATES.** One sample, 2026-10-24:
+  ASIA II main (-179,-72) to EU I main (-179,-72), about 14s from the hop to
+  the new page starting. So a hop does not reset position. The walk after
+  landing starts from wherever the character stood, and that walk is the
+  variable cost of a cross-shard trip.
 - **So Realm Fatigue is the cheap half.** It blocks home bonuses and kiss
   rewards only, the home bonus does not apply off-home anyway, and it does not
   scale with how many shards get visited - its whole cost is delaying the home
@@ -2922,6 +2927,17 @@ itself.
 - **Closing the keeper is the hazard; navigating it is not.** Operator's
   correction 2026-10-17: "You can navigate the keeper just not close the
   keeper." Moving it to another page and back is fine when a task needs it.
+- **A TAB WHOSE URL READS `/docs/...` IS STILL THE LIVE CHARACTER.** In-game
+  docs links are not a navigation: `show_modal(..., {url})` rewrites the
+  address bar with `history.replaceState`, and `hide_modal` restores the
+  character URL. Measured 2026-10-24 on MageofOz with
+  `open_guide('jackowalker', get_guide_url(...))` then `hide_modal()`. A hop
+  can leave the tab on `/docs/guide/events-and-home` the same way, with page
+  age still counting and CODE up. **`document.title` is the free connection
+  check**: it stays the character's name throughout, and "Adventure Land - The
+  Code MMORPG" means loading, mid-hop or the character picker. The browser
+  session misreported Dexon as disconnected on 2026-10-23 from exactly that
+  URL.
 - **ALWAYS pass an explicit `tabId` to `navigate`.** Without one it takes the
   group's FIRST tab, which is not necessarily the keeper - that is how a live
   Meltymerch tab was sent to GitHub mid-session and disconnected him. The
@@ -3855,6 +3871,11 @@ reading.
   At top level `window === parent`, so checking there returns `undefined` for
   everything and looks exactly like a silent load failure. v43 was wrongly
   called dead on that basis.
+- **THE TOP WINDOW'S `parent.character` CAN CARRY STALE x/y.** The CODE
+  context's `character` is a different object, and its x/y match
+  `real_x`/`real_y`. Measured 2026-10-24 by the browser session after reading a
+  stale position off the top window. Read positions from the CODE context,
+  never the top window.
 - **`const state`, `CONFIG`, `fleetState` are block-scoped and not on
   `window`.** Reach them with `frame.contentWindow.eval('...')`.
 - **COLUMN POSITION AND BRACE DEPTH ANSWER DIFFERENT QUESTIONS, AND BOTH
@@ -4457,9 +4478,17 @@ and the ranger. Analysis by the browser session; the figures were measured live.
 CaveRun v16, 2026-10-21. Cave is roughly one run per day, so a lost dump costs
 a day.
 
-- **FATHERTOKEN IS THE PARTY LEADER, not Dexon.** Nothing in this file said so
-  until now, and every mental model either session has brought to the cave
-  assumed the ranger leads. It does not.
+- **FATHERTOKEN IS THE CAVE LEADER; DEXON IS THE IN-GAME PARTY LEADER. They are
+  two different things and this bullet used to call the first "the party
+  leader".** In-game `character.party` reads "Dexon" on all three (measured
+  2026-10-24). The CAVE leader is whoever `leaderName()` in `CaveRun.js`
+  returns, which every cave mode reads. FatherToken had been leading only
+  because the shared `cave_leader` key was set by hand, so clearing site data
+  reverted the party to Dexon. **Operator's ruling 2026-10-24: "defaults for
+  cave going forward should be FatherToken as the leader. This should apply to
+  all modes. He is middle in speed and the tankiest character so best to first
+  engage."** `DEFAULT_LEADER` is FatherToken as of CaveRun v23, and
+  `caveLead(name)` still overrides it.
 - **`character.speed` IS A LIVE BUFFED VALUE AND NOT A STAT, SO THE "PARTY
   SPEEDS" FILED HERE ON 2026-10-21 WERE SNAPSHOTS AND ARE RETRACTED.** They read
   FatherToken 63, Dexon 67, MageofOz 58, and the browser session then read Dexon

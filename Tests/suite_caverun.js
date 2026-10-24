@@ -614,4 +614,28 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		x.MOVE.stationaryReleaseAt + x.MOVE.kiteStep, 85);
 }
 
+},
+
+{ name: 'FatherToken is the default cave leader, and the shared key still overrides it', fn(t) {
+	/* Operator, 2026-10-24: "defaults for cave going forward should be
+	   FatherToken as the leader. This should apply to all modes." He led only
+	   because cave_leader had been set by hand, so clearing site data put Dexon
+	   back. TEAM and DEFAULT_LEADER are non-brace initialisers, so they are
+	   supplied here and pinned from the source below. */
+	const s = src();
+	t.ok('the committed default is FatherToken', /^const DEFAULT_LEADER = 'FatherToken';$/m.test(s));
+	t.ok('the committed key is cave_leader', /^const LEADER_KEY = 'cave_leader';$/m.test(s));
+	const mk = (stored) => {
+		const w = world({ TEAM: ['Dexon', 'FatherToken', 'MageofOz'], LEADER_KEY: 'cave_leader', DEFAULT_LEADER: 'FatherToken' });
+		w.parent.localStorage = { getItem: (k) => (k === 'cave_leader' ? stored : null) };
+		lift(w, 'CaveRun.js', ['leaderName']);
+		return w;
+	};
+	t.eq('no key -> FatherToken', mk(null).leaderName(), 'FatherToken');
+	t.eq('a key naming Dexon still wins', mk('Dexon').leaderName(), 'Dexon');
+	t.eq('a key naming nobody in the team falls back to the default', mk('Meltymerch').leaderName(), 'FatherToken');
+	t.eq('leaderName is the only reader of the default',
+		(s.match(/DEFAULT_LEADER/g) || []).length, 2);
+}
+
 }];

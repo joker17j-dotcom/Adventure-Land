@@ -1,4 +1,13 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v22 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v23 (TEST BUILD)
+// v23 2026-10-24 FATHERTOKEN IS THE DEFAULT CAVE LEADER, ON THE OPERATOR'S RULING:
+//                "defaults for cave going forward should be FatherToken as the
+//                leader. This should apply to all modes. He is middle in speed
+//                and the tankiest character so best to first engage." He has
+//                led only because the shared cave_leader key was set by hand,
+//                so clearing site data reverted the party to Dexon. One
+//                constant: leaderName() is the only reader, and every mode -
+//                travel, combat, crypt, dry run - asks it. caveLead() still
+//                overrides it per browser.
 // v22 2026-10-22 LEADER MOTION PICKS THE DISTANCES, THE BAND'S OWN GEOMETRY
 //                PICKS THE KITE RULE - item 1, with the decoupling the handoff
 //                asked for and one correction it did not anticipate.
@@ -263,12 +272,15 @@ function alive() { try { return window.__caveGen === MY_GEN; } catch (e) { retur
 
 const TEAM = ['Dexon', 'FatherToken', 'MageofOz'];
 const LEADER_KEY = 'cave_leader';
-const DEFAULT_LEADER = 'Dexon';
+const DEFAULT_LEADER = 'FatherToken';
 
 /* LEADER IS READ, NEVER CAPTURED. v6 held it in a const inside this IIFE,
    which made it unreachable from outside and forced an edit-and-redeploy to
    change who drives. localStorage is shared across every adventure.land tab,
-   so one caveLead() retargets all three at once. */
+   so one caveLead() retargets all three at once. With no key set the default
+   applies, which is the operator's ruling of 2026-10-24 for every mode: the
+   priest, middle in speed and the tankiest, so the right one to engage
+   first. */
 function leaderName() {
 	try { const v = parent.localStorage.getItem(LEADER_KEY); if (v && TEAM.indexOf(v) >= 0) return v; } catch (e) {}
 	return DEFAULT_LEADER;
