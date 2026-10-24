@@ -1,4 +1,32 @@
 
+## v120
+
+**THE KNOCK ROUTE NO LONGER GETS HOPPED OFF THE SHARD.** Operator, 2026-10-24:
+"he keeps setting off and immediately hopping server resetting him." The route
+held only `state.busy`, and `arbLoop`'s finally ran
+`if (!ARB.cur) state.busy = false` on EVERY tick - so with no trade in flight it
+released whatever anyone else was holding, within one arbitrage tick of the
+route setting off. `scoutLoop` then saw a free merchant and ran
+`scoutVisitNextShard()`, the hop reloaded the page, and the next `totLoop`
+started the route again: a loop.
+
+- **`arbLoop` releases only a hold it took.** `ARB.heldBusy` marks that it took
+  `state.busy` for a trade; the finally clears `state.busy` only when that mark
+  is set and the trade is gone. The old line's one real job - healing a hold
+  left by a trade cleared outside the loop (`arbClearTrade`) - survives,
+  because the mark outlives the trade.
+- **`totBusy` for the whole route**, read by the two loops that can hop.
+  `scoutLoop` returns before its try while it is set, so no scan, no hop, no
+  trip home for queued jobs, and neither its stuck-cycle release nor its catch
+  can drop the route's hold. `arbLoop` skips the look and the idle restock.
+  Belt and braces on purpose: the route should not depend on every other
+  `state.busy` writer being careful.
+- **The same unconditional clear was also releasing every other holder** -
+  deliveries, gear progression, the anniversary kiss - so this fixes a wider
+  class than the one reported. Not separately measured.
+
+Tests: `Tests/suite_trickortreat.js`, seven mutations named, each caught.
+
 ## v119
 
 **TRICK OR TREAT: MELTYMERCH KNOCKS THE OTHER SEVEN DOORS.** The ranger takes

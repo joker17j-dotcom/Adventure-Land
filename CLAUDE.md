@@ -5240,6 +5240,19 @@ for it in any script before Ranger v121 / Merchant v115.
   follows it. One COMBAT character knocks on the way to a graveyard trip. The
   costume swap is to be tested live by the browser session BEFORE the route is
   built, so the design starts from the answer.
+- **THE MERCHANT ROUTE WAS HOPPED OFF ITS SHARD ON ITS FIRST LIVE RUN, AND THE
+  CAUSE WAS A RELEASE WRITTEN FOR ONE HOLDER THAT RAN AGAINST ALL OF THEM.**
+  Operator, 2026-10-24: he set off and immediately hopped. `arbLoop`'s finally
+  did `if (!ARB.cur) state.busy = false` on every tick, so with no trade in
+  flight it dropped whoever held the merchant - the route within one arbitrage
+  tick - and `scoutLoop` hopped the now-free merchant; the reload restarted the
+  route, a loop. Fixed in Merchant v120: arbitrage releases only a hold it
+  marked as its own (`ARB.heldBusy`), and the route carries `totBusy`, which
+  `scoutLoop` and `arbLoop` stand down on. **A SHARED MUTEX IS ONLY AS GOOD AS
+  ITS WORST RELEASER**, and the suite could not see it: every test of the route
+  ran the route alone, so the assertion that `state.busy` was held while
+  knocking was true in a world where nothing else ticked. The same clear had
+  been releasing deliveries, gear progression and the kiss all along.
 - **THE SWAP AND THE KNOCK, MEASURED LIVE 2026-10-23 BY THE BROWSER SESSION**
   (no knocks spent; server reads at upstream `16881a27`). This SUPERSEDES the
   two open questions in the bullet below, which are kept as the instance.

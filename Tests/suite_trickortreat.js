@@ -106,7 +106,7 @@ function merchantWorld(over = {}) {
 		arbCanStart: over.arbCanStart || (() => ({ ok: true })),
 		arbOldestJobAgeMs: () => null,
 		moveLockHeld: () => false,
-		totPauseUntil: 0, totDoneDay: null, totLast: null,
+		totPauseUntil: 0, totDoneDay: null, totLast: null, totBusy: false,
 		travelTo: async (map, x, y) => { const ch = box.ch; calls.travel.push(map); ch.map = map; ch.real_x = x; ch.real_y = y; return true; },
 		equip: () => { throw new Error('the merchant must never swap'); },
 		knock: over.knock || (async (i) => ({ success: true, door: i, stamps: 1, treat: { name: 'candy1', q: 3 } })),
@@ -127,6 +127,51 @@ function body(file, decl) {
 	if (at < 0) return '';
 	const { matchBraces } = require('./lift');
 	return s.slice(at, matchBraces(s, s.indexOf('{', at)));
+}
+
+/* The 2026-10-24 report: "he keeps setting off and immediately hopping server".
+   arbLoop released state.busy on every tick with no trade in flight, so the
+   route's hold lasted one arbitrage tick and scoutLoop then hopped. */
+function arbLoopWorld(over = {}) {
+	const calls = { look: 0, advance: 0, restock: 0 };
+	const w = world({
+		CONFIG: { arbitrage: { enabled: true, tickMs: 5000 } },
+		PROBE: { hold: false },
+		state: Object.assign({ busy: false, queue: [] }, over.state || {}),
+		ARB: Object.assign({ cur: null, busy: false, heldBusy: false }, over.ARB || {}),
+		totBusy: !!over.totBusy,
+		arbFlushLedger: async () => {},
+		arbLookForWork: async () => { calls.look++; },
+		arbAdvance: async () => { calls.advance++; },
+		idleRestock: async () => { calls.restock++; },
+		ssTick: async () => {},
+		setTimeout: () => 0,
+		calls,
+	});
+	lift(w, 'Party/Merchant.js', ['arbLoop']);
+	return w;
+}
+
+function scoutLoopWorld(over = {}) {
+	const calls = { visit: 0, home: 0, timer: 0 };
+	const w = world({
+		CONFIG: { scout: { enabled: false, tickMs: 5000, reprobeMs: 1e9, maxCycleMs: 1 } },
+		scout: Object.assign({ probedAt: Date.now(), cycleStartedAt: 0 }, over.scout || {}),
+		state: Object.assign({ busy: false, queue: [], standOpen: true }, over.state || {}),
+		ARB: { cur: null },
+		PROBE: { hold: false },
+		totBusy: !!over.totBusy,
+		scoutLog: () => {},
+		scoutCanRun: () => true,
+		scoutKissHoldsUsHome: () => false,
+		scoutVisitNextShard: async () => { calls.visit++; },
+		scoutGoHome: async () => { calls.home++; },
+		scoutHeldScan: async () => {},
+		setTimeout: () => { calls.timer++; return 0; },
+		calls,
+	});
+	lift(w, 'Party/Merchant.js', ['scoutLoop']);
+	return w;
 }
 
 module.exports = [
@@ -258,6 +303,7 @@ module.exports = [
 	const s = text('Party/Merchant.js');
 	t.ok('let totPauseUntil = 0', /^let totPauseUntil = 0;/m.test(s));
 	t.ok('let totDoneDay = null', /^let totDoneDay = null;/m.test(s));
+	t.ok('let totBusy = false', /^let totBusy = false;/m.test(s));
 	t.ok('toggle feeds the config', /trickOrTreat:\s+true,\s+\/\/ CONFIG\.trickOrTreat\.enabled/.test(s) && /enabled: TOGGLES\.trickOrTreat/.test(s));
 	t.ok('totLoop is started at boot, after arbLoop', /^arbLoop\(\);\ntotLoop\(\);/m.test(s));
 	t.eq('the merchant route never calls equip', /equip\(/.test(body('Party/Merchant.js', 'async function totRoute()')), false);
@@ -275,12 +321,14 @@ module.exports = [
 } },
 
 { name: 'Merchant: a route knocks all seven, holding and releasing state.busy', async fn(t) {
-	let seenBusy = null;
-	const w = merchantWorld({ knock: async (i) => { seenBusy = w.state.busy; return { success: true, door: i, stamps: 1 + i, treat: { name: 'candy1', q: 3 } }; } });
+	let seenBusy = null, seenTot = null;
+	const w = merchantWorld({ knock: async (i) => { seenBusy = w.state.busy; seenTot = w.totBusy; return { success: true, door: i, stamps: 1 + i, treat: { name: 'candy1', q: 3 } }; } });
 	const sum = await w.totRoute();
 	t.eq('seven knocks', w.calls.knock.length, 7);
 	t.eq('state.busy held while knocking', seenBusy, true);
 	t.eq('and released after', w.state.busy, false);
+	t.eq('totBusy held while knocking', seenTot, true);
+	t.eq('totBusy released after', w.totBusy, false);
 	t.eq('nothing stopped it', sum.stopped, null);
 	t.eq('no retry pause when every door is done', w.totPauseUntil, 0);
 } },
@@ -298,6 +346,57 @@ module.exports = [
 	t.eq('one success counted', sum.knocked, 1);
 	t.eq('stopped on the limit', sum.stopped, 'account limit');
 	t.eq('state.busy released', w.state.busy, false);
+} },
+
+{ name: 'Merchant: arbLoop releases only a state.busy it took', async fn(t) {
+	const other = arbLoopWorld({ state: { busy: true } });
+	await other.arbLoop();
+	t.eq('precondition: the look path ran', other.calls.look, 1);
+	t.eq("someone else's hold survives an idle arbitrage tick", other.state.busy, true);
+
+	const trade = arbLoopWorld({ ARB: { cur: { item: 'x' } } });
+	trade.arbAdvance = async () => { trade.calls.advance++; trade.ARB.cur = null; };
+	await trade.arbLoop();
+	t.eq('precondition: the trade advanced', trade.calls.advance, 1);
+	t.eq('a trade that finished releases its hold', trade.state.busy, false);
+	t.eq('and the ownership mark', trade.ARB.heldBusy, false);
+
+	const mid = arbLoopWorld({ ARB: { cur: { item: 'x' } } });
+	await mid.arbLoop();
+	t.eq('a trade still in flight keeps the hold', mid.state.busy, true);
+	t.eq('and owns it', mid.ARB.heldBusy, true);
+
+	const cleared = arbLoopWorld({ state: { busy: true }, ARB: { heldBusy: true } });
+	await cleared.arbLoop();
+	t.eq('a trade cleared outside the loop still self-heals', cleared.state.busy, false);
+} },
+
+{ name: 'Merchant: a knock route stands arbitrage down', async fn(t) {
+	const w = arbLoopWorld({ totBusy: true, state: { busy: true } });
+	await w.arbLoop();
+	t.eq('no look while a route runs', w.calls.look, 0);
+	t.eq('no idle restock either', w.calls.restock, 0);
+	t.eq('the route keeps state.busy', w.state.busy, true);
+} },
+
+{ name: 'Merchant: scoutLoop never hops under a knock route', async fn(t) {
+	const free = scoutLoopWorld();
+	await free.scoutLoop();
+	t.eq('precondition: with no route the stubs reach the hop', free.calls.visit, 1);
+
+	const w = scoutLoopWorld({ totBusy: true });
+	await w.scoutLoop();
+	t.eq('no shard visit while a route runs', w.calls.visit, 0);
+	t.eq('no trip home either', w.calls.home, 0);
+	t.eq('and the loop keeps ticking', w.calls.timer, 1);
+
+	const stuck = scoutLoopWorld({ totBusy: true, state: { busy: true }, scout: { cycleStartedAt: 1 } });
+	await stuck.scoutLoop();
+	t.eq("the stuck-cycle release cannot drop the route's hold", stuck.state.busy, true);
+
+	const queued = scoutLoopWorld({ totBusy: true, state: { queue: [{ type: 'mluck' }] } });
+	await queued.scoutLoop();
+	t.eq('queued jobs do not send him home mid-route', queued.calls.home, 0);
 } },
 
 ];

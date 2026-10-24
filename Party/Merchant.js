@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v119
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v120
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5742,6 +5742,12 @@ async function anniversaryKissLoop() {
 let totPauseUntil = 0;     // after a season refusal or a route that left doors open
 let totDoneDay = null;     // UTC day the account limit was hit
 let totLast = null;        // last route summary, for totStatus()
+/* True for the whole route. state.busy alone did not hold: arbLoop used to
+   release it on every tick with no trade in flight, and scoutLoop then hopped
+   the merchant off the shard he had just set off across. The loops that can
+   hop read this as well, so the route does not depend on every other
+   state.busy writer being careful. */
+let totBusy = false;
 
 function totLog(msg, color) { game_log('[tot] ' + msg, color || '#F5A05B'); }
 function totRules() { const g = (typeof parent !== 'undefined' && parent.G) || null; return (g && g.events && g.events.trickortreat) || null; }
@@ -5835,6 +5841,7 @@ async function totRoute() {
 	const doors = totRemainingDoors();
 	const sum = { at: Date.now(), knocked: 0, treats: [], tricks: 0, stopped: null, failed: [] };
 	totLog('setting off: ' + doors.length + ' door(s), ' + character.trickortreat.doors_left + ' knock(s) left');
+	totBusy = true;
 	state.busy = true;
 	try {
 		for (const d of doors) {
@@ -5858,6 +5865,7 @@ async function totRoute() {
 			sum.failed.push(d.i + ':' + why);
 		}
 	} finally {
+		totBusy = false;
 		state.busy = false;
 	}
 	/* Retry later only for doors that FAILED this route. Not "doors still listed
@@ -5877,6 +5885,7 @@ async function totLoop() {
 		if (!totBlocked(Date.now())) await totRoute();
 	} catch (e) {
 		console.error('totLoop error:', e);
+		totBusy = false;
 		state.busy = false;
 	}
 	setTimeout(totLoop, (CONFIG.trickOrTreat && CONFIG.trickOrTreat.checkIntervalMs) || 20000);
@@ -7281,6 +7290,9 @@ async function scoutVisitNextShard() {
 }
 
 async function scoutLoop() {
+	// A knock route owns the merchant: no scan, no hop, no trip home, and no
+	// stuck-cycle or error release of state.busy underneath it.
+	if (totBusy) return setTimeout(scoutLoop, CONFIG.scout.tickMs);
 	try {
 		// Gated on `enabled`, not just spaced out. Without this the probe kept
 		// -> MerchantComments.md#gated-on-enabled-not-just
@@ -7343,6 +7355,7 @@ const ARB = {
 	buffer: [],         // ledger events the bridge has not acknowledged
 	lastLookAt: 0,
 	busy: false,
+	heldBusy: false,    // arbLoop took state.busy for a trade and has not let it go
 };
 
 const ARB_KEY = 'arb_trade';
@@ -8589,15 +8602,20 @@ async function ssTick(reason) {
 async function arbLoop() {
 	try {
 		await arbFlushLedger();
-		if (CONFIG.arbitrage.enabled && !PROBE.hold) {
+		if (CONFIG.arbitrage.enabled && !PROBE.hold && !totBusy) {
 			if (!ARB.busy) {
 				ARB.busy = true;
 				try {
-					if (ARB.cur) { state.busy = true; await arbAdvance(); }
+					if (ARB.cur) { state.busy = true; ARB.heldBusy = true; await arbAdvance(); }
 					else await arbLookForWork();
 				} finally {
 					ARB.busy = false;
-					if (!ARB.cur) state.busy = false;
+					/* Release only a hold this loop took. Clearing state.busy
+					   whenever no trade was in flight released every OTHER holder
+					   on every tick - a knock route lost it within one tick and
+					   scoutLoop hopped him off mid-walk. heldBusy keeps the old
+					   self-heal for a trade cleared outside this loop (arbClearTrade). */
+					if (!ARB.cur && ARB.heldBusy) { state.busy = false; ARB.heldBusy = false; }
 				}
 			}
 		}
