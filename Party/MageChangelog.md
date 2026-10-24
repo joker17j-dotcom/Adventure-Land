@@ -21,6 +21,28 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v97
+
+**RAGE ENTRY HAS TWO LINES AND A DWELL, BECAUSE ONE LINE FLAPPED.** Measured
+live by the browser session 2026-10-24 12:30 EDT on US II: entry opened from
+wave 1 as v137 intended, then the party walked in and out of the box with the
+20s average sitting right at `minSoaked` while the raw count swung 0-17 -
+inside for 2s, 16s, 24s, 4s, then 106s, about a quarter of the window. Now the
+leader enters at an average of `minSoaked`, stays until it falls below
+`leaveSoaked`, and stays at least `minInsideMs` either way. The retreat on
+`retreatAtAttackers` bodies is not subject to the dwell. Identical in all
+three scripts; the gate's values are in `CONFIG.bossEvents.rageEntry`.
+
+**A FOLLOWER'S OWN BOSS PICK IS THE LEADER'S RULE.** Same 12:30 graveyard:
+Dexon took it at once while FatherToken and MageofOz spent 40-65s on an
+mrpumpkin trip. Without fresh word from the leader a follower ordered by
+lowest hp ratio, where the ranger ranks first, so a damaged mrpumpkin beat an
+untouched graveyard. `bossPick`, `BOSS_RANK`, `BOSS_RANK_DEFAULT` and
+`bossRank` are now copied from Party/Ranger.js, and
+`Tests/suite_bosshop.js` holds the copies byte-identical. Why the leader's
+word took that long to land is not established - the relay polls every 2s and
+the leader re-sends every 8s.
+
 ## v96
 
 **GRAVEYARD RAGE ENTRY OPENS FROM WAVE 1, AND THE CROWD GATE IS AN AVERAGE.**

@@ -21,6 +21,21 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v139
+
+**RAGE ENTRY HAS TWO LINES AND A DWELL, BECAUSE ONE LINE FLAPPED.** Measured
+live by the browser session 2026-10-24 12:30 EDT on US II: entry opened from
+wave 1 as v137 intended, then the party walked in and out of the box with the
+20s average sitting right at `minSoaked` while the raw count swung 0-17 -
+inside for 2s, 16s, 24s, 4s, then 106s, about a quarter of the window. Now the
+leader enters at an average of `minSoaked`, stays until it falls below
+`leaveSoaked`, and stays at least `minInsideMs` either way. The retreat on
+`retreatAtAttackers` bodies is not subject to the dwell. Identical in all
+three scripts; the gate's values are in `CONFIG.bossEvents.rageEntry`.
+
+The followers' half of the same build, Priest v74 / Mage v97, gives them the
+ranger's ranked `bossPick` - see their changelogs.
+
 ## v138
 
 **SNAKEOIL IS NEVER SOLD** - added to `SCARCE_ITEM_NAMES` on the browser

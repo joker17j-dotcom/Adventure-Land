@@ -932,7 +932,14 @@ summary of it.
 ## Boss priority and the event schedule
 
 **Both sessions.** The ranking is the operator's, given 2026-10-18. It is
-declared in `Party/Ranger.js` as `bossRank()` and in no other script. This line
+declared in `Party/Ranger.js` as `bossRank()`, and AS OF Priest v74 / Mage v97
+the followers carry a byte-identical copy of `BOSS_RANK`, `bossRank` and
+`bossPick` - their own pick used to be lowest hp ratio, which split the party
+at the 12:30 EDT 2026-10-24 graveyard (Dexon on it, both followers on a damaged
+mrpumpkin for 40-65s). `Tests/suite_bosshop.js` fails if the copies drift, and
+`Codex/boss_timers.html` is a fourth copy with its own test. Edit them
+together. Why the leader's word took 40-65s to land is NOT established; the
+relay polls every 2s and the leader re-sends every 8s. This line
 said "live in Ranger v95" and was wrong twice over: it landed in v95 but ships
 in v97, and it had never EXECUTED at all, because Dexon was running
 `Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
@@ -1057,6 +1064,10 @@ this ranking until a Ranger build is actually running on him.
   defeats it on the US window is the party committing FIGHTING at home at spawn,
   to the boss that dies nearly last. v132/v133 also blocked the chain - see
   Ranger v134.
+  **ONE CROWD SAMPLE**, ASIA I 13:21:49 EDT 2026-10-24, 21.8 min into the window:
+  9 other players in view (levels 72-96), 5 of them on the horseman, which was
+  at 55% - slower than ASIA I's 22.6 min median ttk. One sample, not a
+  distribution; the EU 19:00 and US 01:00 EDT windows are the next chances.
 - **THE NINE BASE WINDOWS NEVER OVERLAP, AND THAT HELD UP EXACTLY - BUT THE
   "NOT A CONTENTION PROBLEM" HALF IS FALSE DURING A SEASON.** The base
   arithmetic is CONFIRMED against upstream `43b2c8fc`: dailies at realm hours 13
@@ -1407,6 +1418,15 @@ this ranking until a Ranger build is actually running on him.
   other players, so the corridor does see into the box, and a 20s CONSECUTIVE
   hold of >= 6 could never open on a count that noisy. The gate is now the
   AVERAGE over `holdMs` against `minSoaked` 5 (that series averages 5.4).
+  **AND ONE LINE FLAPPED, SO THERE ARE TWO PLUS A DWELL** (Ranger v139 / Priest
+  v74 / Mage v97). Measured 12:30 EDT 2026-10-24 on US II: entry fired from wave
+  1 on all three within 2s, then the average sat at the line while the raw count
+  swung 0-17 - inside 2s, 16s, 24s, 4s, then 106s through the gargoyle, about a
+  quarter of the window, every crossing a walk in or out. Now in at 5, out only
+  below `leaveSoaked` 3.5, and never inside `minInsideMs` 30s; the retreat on
+  bodies ignores the dwell. Gargoyle woke ~373s, died 12:40:15, no deaths,
+  lowest hp Dexon 67%. **PROBE `rageCrowdSoak(character.map)` - the map
+  argument is required.**
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
@@ -4965,6 +4985,12 @@ a day.
   said it did; it reads the event flag, home, party and combat only. Leaving the
   cave writes a CAVE DUMP row to the game log and runs `load_code(character.name)`,
   which the browser session measured resolving the character slot by name.
+  **THE `info` ANSWER, MEASURED 2026-10-24 13:21 EDT on all three:** keys
+  `response`, `place`, `interaction`, `request_id`, `success`, `visit`, with
+  `visit = {available, resets, home, server_time}` - `resets` is the next
+  05:00 UTC, and there is NO `resume` key while nothing is pending. Only the
+  OPEN shape has been seen; the SPENT shape (after a run) is unobserved, so the
+  launcher's hand-back branch rests on source until it is.
   The client's `G` carries `G.events.dreams.encounters` with every effect (G
   version 18183), and v26 votes from it when present.
 - **THE CAVE LEADER DRIVES ITSELF AS OF CaveRun v27** - operator's ruling

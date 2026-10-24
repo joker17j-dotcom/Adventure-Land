@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v138
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v139
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -905,6 +905,8 @@ const CONFIG = {
 		enabled: TOGGLES.rageEntry,
 		minSoaked: 5,            // AVERAGE monsters in the box held by non-party players
 		holdMs: 20000,           // averaged over this long before we go in
+		leaveSoaked: 3.5,        // once in, the average must fall BELOW this to bring us out
+		minInsideMs: 30000,      // and not before we have been in this long
 		retreatAtAttackers: 3,   // on THIS character - meant to sit below courage
 		trustMs: 15000,          // a follower falls out after this much silence
 	},
@@ -2131,6 +2133,7 @@ let ragePullShared = null;
    real widening and not a scoped one. */
 let rageEntryActive = false;
 let rageEntryOkSince = 0;
+let rageEntryInSince = 0;
 let rageEntryWindow = [];
 let rageEntryHeard = null;
 
@@ -2704,6 +2707,7 @@ function rageAttackersOnMe() {
 function rageEntrySet(on, why) {
 	if (!!rageEntryActive === !!on) return;
 	rageEntryActive = !!on;
+	rageEntryInSince = on ? Date.now() : 0;
 	rageLog((on ? 'ENTERING the rage box - ' : 'leaving the rage box - ') + why,
 		on ? '#FFD700' : '#7FD98A');
 }
@@ -2795,7 +2799,21 @@ function rageEntryTick(map) {
 	let sum = 0;
 	for (const x of rageEntryWindow) sum += x[1];
 	const mean = sum / rageEntryWindow.length;
-	if (mean < need) {
+	/* TWO THRESHOLDS AND A DWELL, because one threshold flapped. Measured live
+	   2026-10-24 12:30 EDT on US II: the 20s average sat right at minSoaked
+	   while the raw count swung 0-17 per 2s sample, so the gate crossed both
+	   ways again and again - inside for 2s, 16s, 24s, 4s, then 106s, about a
+	   quarter of the window, and every crossing a walk in or out during the
+	   waves. Once in, the party stays until the average falls below
+	   `leaveSoaked`, and not before `minInsideMs`. The retreat on bodies above
+	   is not subject to either. */
+	const leave = typeof cfg.leaveSoaked === 'number' ? cfg.leaveSoaked : need;
+	const dwell = cfg.minInsideMs || 0;
+	if (rageEntryActive) {
+		if (mean < leave && now - rageEntryInSince >= dwell) {
+			rageEntrySet(false, 'crowd averaging ' + mean.toFixed(1) + ', under ' + leave + ' to stay in (' + soak.soaked + ' of ' + soak.boxed + ' now)');
+		}
+	} else if (mean < need) {
 		rageEntrySet(false, 'crowd averaging ' + mean.toFixed(1) + ' of ' + need + ' (' + soak.soaked + ' of ' + soak.boxed + ' now)');
 	} else if (now - rageEntryOkSince >= holdMs) {
 		rageEntrySet(true, 'crowd averaging ' + mean.toFixed(1) + ' held by others over ' + Math.round(holdMs / 1000) + 's');

@@ -383,6 +383,7 @@ module.exports = [
       ragePullShared: null,
       rageEntryActive: !!over.active,
       rageEntryOkSince: over.okSince || 0,
+      rageEntryInSince: over.inSince || 0,
       rageEntryWindow: over.window || [],
       rageEntryHeard: over.heard || null,
     });
@@ -494,6 +495,45 @@ module.exports = [
   w = mk({ ents: IN(5, 'Stranger'), active: true, okSince: Date.now() - 60000 });
   w.rageEntryTick('spookytown');
   t.eq('the crowd thinning puts us straight back out', w.rageEntryActive, false);
+
+  /* --- HYSTERESIS AND A DWELL - Ranger v139 / Priest v74 / Mage v97 -------
+     Measured 12:30 EDT 2026-10-24 on US II: one threshold at 5 flapped - in
+     for 2s, 16s, 24s, 4s, then 106s - while the raw count swung 0-17. The
+     samples taken while inside read 4,4,1,9,7,6,2,6; the replay adds a
+     current count of 2, which puts the average between the two lines. */
+  const HYS = { minSoaked: 5, leaveSoaked: 3.5, minInsideMs: 30000 };
+  const INSIDE = [4, 4, 1, 9, 7, 6, 2, 6];
+  const inWin = INSIDE.map((v, i) => [Date.now() - (INSIDE.length - i) * 2000, v]);
+  const inMean = (INSIDE.reduce((a, b) => a + b, 0) + 2) / (INSIDE.length + 1);   // the tick adds the current count, 2
+  t.ok('PRECONDITION: the measured inside series averages under the entry line', inMean < 5);
+  t.ok('PRECONDITION: and over the leave line', inMean >= 3.5);
+  w = mk({ cfg: HYS, ents: IN(2, 'Stranger'), active: true, inSince: Date.now() - 60000, okSince: Date.now() - 60000, window: inWin });
+  w.rageEntryTick('spookytown');
+  t.eq('the measured flap: in between the two lines the party stays in', w.rageEntryActive, true);
+  w = mk({ cfg: { minSoaked: 5 }, ents: IN(2, 'Stranger'), active: true, inSince: Date.now() - 60000, okSince: Date.now() - 60000, window: inWin });
+  w.rageEntryTick('spookytown');
+  t.eq('...where one threshold would have walked it out', w.rageEntryActive, false);
+  const lowWin = [2, 1, 3, 2, 0, 3].map((v, i) => [Date.now() - (6 - i) * 2000, v]);
+  w = mk({ cfg: HYS, ents: IN(2, 'Stranger'), active: true, inSince: Date.now() - 60000, okSince: Date.now() - 60000, window: lowWin });
+  w.rageEntryTick('spookytown');
+  t.eq('under the leave line, past the dwell: out', w.rageEntryActive, false);
+  w = mk({ cfg: HYS, ents: IN(2, 'Stranger'), active: true, inSince: Date.now() - 10000, okSince: Date.now() - 60000, window: lowWin });
+  w.rageEntryTick('spookytown');
+  t.eq('under the leave line inside the dwell: still in', w.rageEntryActive, true);
+  const onMeHys = Object.assign({}, IN(8, 'Stranger'), IN(3, 'FatherToken'));
+  w = mk({ cfg: HYS, ents: onMeHys, active: true, inSince: Date.now() - 5000, okSince: Date.now() - 60000, window: inWin });
+  w.rageEntryTick('spookytown');
+  t.eq('three on me is out at once - the retreat ignores the dwell', w.rageEntryActive, false);
+  w = mk({ cfg: HYS, ents: IN(2, 'Stranger'), okSince: Date.now() - 60000, window: inWin });
+  w.rageEntryTick('spookytown');
+  t.eq('OUTSIDE, the same in-between crowd does not open it - entry is still 5', w.rageEntryActive, false);
+  w = mk({ cfg: HYS, ents: IN(9, 'Stranger'), okSince: Date.now() - 21000 });
+  w.rageEntryTick('spookytown');
+  t.ok('entering stamps the dwell clock', w.rageEntryInSince > 0);
+  for (const f of ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js']) {
+    const rs = require('fs').readFileSync(require('path').join(require('./lift').ROOT, f), 'utf8');
+    t.ok(f + ': leaveSoaked 3.5 and minInsideMs 30000 ship', /leaveSoaked: 3\.5,[^\n]*\n\t\tminInsideMs: 30000,/.test(rs));
+  }
 
   /* --- followers obey, and fall out on silence --------------------------- */
   w = mk({ me: 'Dexon', ents: IN(20, 'Stranger') });
@@ -1983,13 +2023,39 @@ module.exports = [
       bossLog: () => {},
     });
     lift(w2, 'Party/Mage.js', ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
-      'bossState', 'bossIsLeader', 'bossPick']);
+      'bossState', 'bossIsLeader', 'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'bossPick']);
     w2.bossState.fromLeader = { name: 'graveyard', at: Date.now() - ageMs };
     return w2;
   };
   t.eq('a fresh call is followed', pw(1000).bossPick().src, 'leader');
   t.eq('and a stale one falls through to the follower\'s own rule',
     pw(25000).bossPick().src, 'own');
+
+  /* A FOLLOWER'S OWN RULE IS NOW THE LEADER'S - Priest v74 / Mage v97.
+     12:30 EDT 2026-10-24: the graveyard opened with Dexon on it and the two
+     followers on a damaged mrpumpkin for 40-65s, because their own pick led on
+     hp ratio and the leader's on rank. */
+  for (const f of ['Party/Priest.js', 'Party/Mage.js']) {
+    const w3 = world({
+      character: { name: 'MageofOz' },
+      CONFIG: { bossEvents: { leaderName: 'Dexon', leaderTrustMs: 20000 } },
+      parent: { S: { graveyard: { live: true }, mrpumpkin: { live: true, hp: 14000000, max_hp: 36000000 } } },
+      bossEligible: () => ({ ok: true }),
+      bossLog: () => {},
+    });
+    lift(w3, f, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames',
+      'bossState', 'bossIsLeader', 'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank', 'bossPick']);
+    t.ok(f + ': PRECONDITION: mrpumpkin is nearer dead, so hp ratio alone would take it',
+      w3.parent.S.mrpumpkin.hp / w3.parent.S.mrpumpkin.max_hp < 1);
+    const p3 = w3.bossPick();
+    t.eq(f + ': with no word from the leader, the follower still takes the graveyard', [p3.name, p3.src].join(), 'graveyard,own');
+  }
+  const { extract } = require('./lift');
+  for (const n of ['bossPick', 'bossRank', 'BOSS_RANK', 'BOSS_RANK_DEFAULT']) {
+    const r = extract(RANGER, n);
+    for (const f of ['Party/Priest.js', 'Party/Mage.js'])
+      t.eq(f + ': ' + n + ' is the ranger\'s, byte for byte', extract(f, n) === r, true);
+  }
 
   /* AND THE CALL SITE, WHICH A MUTATION CAUGHT AS UNASSERTED. Deleting
      `bossRecast();` from bossTick moved nothing above: every assertion so far

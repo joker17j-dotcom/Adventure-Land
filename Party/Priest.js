@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v73
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v74
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -651,6 +651,8 @@ const CONFIG = {
 		enabled: TOGGLES.rageEntry,
 		minSoaked: 5,            // AVERAGE monsters in the box held by non-party players
 		holdMs: 20000,           // averaged over this long before we go in
+		leaveSoaked: 3.5,        // once in, the average must fall BELOW this to bring us out
+		minInsideMs: 30000,      // and not before we have been in this long
 		retreatAtAttackers: 3,   // on THIS character - meant to sit below courage
 		trustMs: 15000,          // a follower falls out after this much silence
 	},
@@ -1791,6 +1793,7 @@ let ragePullShared = null;
    real widening and not a scoped one. */
 let rageEntryActive = false;
 let rageEntryOkSince = 0;
+let rageEntryInSince = 0;
 let rageEntryWindow = [];
 let rageEntryHeard = null;
 
@@ -2394,6 +2397,7 @@ function rageAttackersOnMe() {
 function rageEntrySet(on, why) {
 	if (!!rageEntryActive === !!on) return;
 	rageEntryActive = !!on;
+	rageEntryInSince = on ? Date.now() : 0;
 	rageLog((on ? 'ENTERING the rage box - ' : 'leaving the rage box - ') + why,
 		on ? '#FFD700' : '#7FD98A');
 }
@@ -2485,7 +2489,21 @@ function rageEntryTick(map) {
 	let sum = 0;
 	for (const x of rageEntryWindow) sum += x[1];
 	const mean = sum / rageEntryWindow.length;
-	if (mean < need) {
+	/* TWO THRESHOLDS AND A DWELL, because one threshold flapped. Measured live
+	   2026-10-24 12:30 EDT on US II: the 20s average sat right at minSoaked
+	   while the raw count swung 0-17 per 2s sample, so the gate crossed both
+	   ways again and again - inside for 2s, 16s, 24s, 4s, then 106s, about a
+	   quarter of the window, and every crossing a walk in or out during the
+	   waves. Once in, the party stays until the average falls below
+	   `leaveSoaked`, and not before `minInsideMs`. The retreat on bodies above
+	   is not subject to either. */
+	const leave = typeof cfg.leaveSoaked === 'number' ? cfg.leaveSoaked : need;
+	const dwell = cfg.minInsideMs || 0;
+	if (rageEntryActive) {
+		if (mean < leave && now - rageEntryInSince >= dwell) {
+			rageEntrySet(false, 'crowd averaging ' + mean.toFixed(1) + ', under ' + leave + ' to stay in (' + soak.soaked + ' of ' + soak.boxed + ' now)');
+		}
+	} else if (mean < need) {
 		rageEntrySet(false, 'crowd averaging ' + mean.toFixed(1) + ' of ' + need + ' (' + soak.soaked + ' of ' + soak.boxed + ' now)');
 	} else if (now - rageEntryOkSince >= holdMs) {
 		rageEntrySet(true, 'crowd averaging ' + mean.toFixed(1) + ' held by others over ' + Math.round(holdMs / 1000) + 's');
@@ -2821,6 +2839,31 @@ function bossEligible(name) {
    reading. The own-reading tie-break is by NAME, not by iteration order,
    because three characters deciding independently have to land on the same
    answer or the party splits between two live bosses. */
+/* THE LEADER'S RANKING, COPIED, so a follower's OWN pick is the leader's -
+   v74/v97. Until then a follower without fresh word from the leader ordered
+   by lowest hp ratio alone, while the ranger ranks first: same parent.S, two
+   rules. Measured live 2026-10-24 12:30 EDT on US II: the graveyard opened
+   with Dexon on it at once and FatherToken and MageofOz on an mrpumpkin trip
+   for 40-65s - a damaged mrpumpkin beats an untouched graveyard on hp ratio
+   and loses to it on rank. The heartbeat (v118) fixed the trust window
+   decaying mid-trip; this fixes the follower deciding differently before the
+   leader's word arrives. Copied from Party/Ranger.js, where the rationale for
+   every rank lives; Tests/suite_bosshop.js fails if the copies drift, so edit
+   all three together. */
+const BOSS_RANK = {
+	dragold: 1,
+	franky: 2,
+	crabxx: 3, wabbit: 3, goobrawl: 3,
+	horseman: 4, graveyard: 4,
+	mrgreen: 5,
+	snowman: 6, grinch: 6, mrpumpkin: 6,
+};
+const BOSS_RANK_DEFAULT = 7;
+function bossRank(name) {
+	const r = BOSS_RANK[name];
+	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;
+}
+
 function bossPick() {
 	const cfg = CONFIG.bossEvents;
 	if (bossState.forced && bossState.forced.name) {
@@ -2836,14 +2879,32 @@ function bossPick() {
 		const d = (parent.S || {})[n];
 		if (bossEntryLive(n, d)) return { name: n, src: 'leader' };
 	}
+	/* RANK FIRST, then the hp ratio this used to lead on. Lowest remaining hp
+	   is a sensible way to choose between two bosses of EQUAL worth - finish
+	   the one nearest dead - and a poor way to choose between unequal ones,
+	   which is what it was doing: a half-dead greenjr beat a fresh mrgreen
+	   every time.
+
+	   THE INCUMBENT WINS A TIE, and that is a behaviour change worth naming.
+	   The caller switches trips whenever this returns a different name, so
+	   with a continuously-moving key like hp ratio two equally-ranked bosses
+	   could trade the trip back and forth as their ratios crossed. Rank is
+	   static, so rank-first already makes switching rarer; holding the
+	   current trip on an exact tie closes the rest. A higher-ranked boss
+	   going live still takes the trip, which is the point of a priority. */
+	const held = bossState.trip && bossState.trip.name;
 	let best = null;
 	for (const n of bossLiveNames()) {
 		if (!bossEligible(n).ok) continue;
 		const d = parent.S[n];
 		const ratio = (d && d.max_hp) ? (d.hp / d.max_hp) : 1;
-		if (!best || ratio < best.ratio - 1e-9 || (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name)) {
-			best = { name: n, ratio: ratio };
-		}
+		const cand = { name: n, ratio: ratio, rank: bossRank(n) };
+		if (!best) { best = cand; continue; }
+		if (cand.rank !== best.rank) { if (cand.rank < best.rank) best = cand; continue; }
+		if (cand.name === held) { best = cand; continue; }
+		if (best.name === held) continue;
+		if (ratio < best.ratio - 1e-9) { best = cand; continue; }
+		if (Math.abs(ratio - best.ratio) < 1e-9 && n < best.name) best = cand;
 	}
 	return best ? { name: best.name, src: 'own' } : null;
 }
