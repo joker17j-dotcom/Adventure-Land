@@ -975,6 +975,26 @@ this ranking until a Ranger build is actually running on him.
   interrupt to absorb. Where a scheduled event is known for a slot, no
   higher-ranked boss outranks it, and it is not spawning on home, a PREPOSITION
   on that server is required.
+  **BUILT IN Ranger v132, AND IT SAT UNIMPLEMENTED UNTIL THE OPERATOR ASKED WHY
+  THE PARTY MISSED THE 2026-10-24 09:00 EDT ASIA GOOBRAWL.** The ruling was
+  recorded, the bridge had published every shard's lineup at `/schedule_live`
+  since that morning, and nothing connected the two - the oscillation-fix shape
+  again, a ruling on nobody's queue. The design is in
+  `Party/RangerComments.md#preposition`. **GOOBRAWL IS WHY IT HAS TO BE
+  LEAD TIME**: join-only, 540s, and the join is refused while hop-sick, so the
+  hop has to land about twelve minutes before the event. **THE SAME BUILD STOPS
+  `goHomeIfIdle` ABANDONING AN EVENT FIGHT**: it only ever consulted
+  `bossHop.targets`, so a graveyard or goobrawl trip live on a foreign shard read
+  as "nothing eligible" and the party hopped home 90s in.
+  **A PLAN DOES NOT INTERRUPT `FIGHTING`**, which still exits on death or a hard
+  abort only, so "ranks 1 and 2 are worth abandoning everything else" is not
+  implemented against a bossHop fight already under way. That one is the
+  operator's to widen.
+  **THE "HOPPED FOR A GRAVEYARD" READING OF THE 08:30 EDT WINDOW WAS NOT
+  POSSIBLE**: graveyard is in no hop list, and the ranger's only `change_server`
+  is `bossHop.changeServer`, which logs `🐉 Hopping to <shard> for <mtype>`. The
+  party was on EU III for one of the four hop targets and picked the graveyard
+  up locally. Why a ~90s walk had not arrived ten minutes in is still OPEN.
 - **THE NINE BASE WINDOWS NEVER OVERLAP, AND THAT HELD UP EXACTLY - BUT THE
   "NOT A CONTENTION PROBLEM" HALF IS FALSE DURING A SEASON.** The base
   arithmetic is CONFIRMED against upstream `43b2c8fc`: dailies at realm hours 13

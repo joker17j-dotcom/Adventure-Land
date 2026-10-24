@@ -21,6 +21,30 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v132
+
+**THE PARTY PREPOSITIONS FOR A SCHEDULED EVENT, AS THE OPERATOR RULED.** It
+had not: the ruling sat in `CLAUDE.md` with nothing implementing it, and the
+party sat home through the 09:00 EDT ASIA goobrawl on 2026-10-24. bossHop now
+reads the bridge's `/schedule_live` every 30s. When an event with an explicit
+rank comes due on another shard - nothing outranking it, nothing equal on home
+- Dexon hops there, and the followers come along. A join-only event (goobrawl)
+leads by the full hop sickness, so the join is open when the event starts;
+anything else leads by `walkLeadMs`. A trip that could not engage with
+`minUsefulMs` of window left is refused rather than taken.
+
+**AND THE PARTY NO LONGER GOES HOME OUT OF AN EVENT FIGHT.** `goHomeIfIdle`
+only ever looked at `bossHop.targets`, so a graveyard, goobrawl or mrgreen trip
+live on a foreign shard counted as "nothing eligible", and the party hopped
+home 90s in. `holdRank()` keeps it there while a plan is for this shard or an
+event trip is live here, and lets only a strictly better-ranked hop through.
+
+`CONFIG.bossHop.preposition`, toggle `bossHopPreposition`; `prepStatus()` on
+the console and on the feature probe. Off, behaviour is v131's except for the
+event-trip hold. Not done: a plan does not interrupt FIGHTING, which still
+exits on death or hard abort only. 13 mutations, each caught in
+`Tests/suite_bosshop.js`. -> RangerComments.md#preposition
+
 ## v131
 
 **DOOR STAND POINTS ARE KEPT ACROSS A RELOAD, IN A STORE SHARED WITH THE

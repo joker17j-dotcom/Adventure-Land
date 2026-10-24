@@ -18,6 +18,59 @@ Anchors match the `-> RangerComments.md#anchor` pointers in the source.
 
 ---
 
+## preposition
+
+**WHY IT EXISTS.** Operator, 2026-10-24: why did the party not preposition for
+the 09:00 EDT ASIA goobrawl? Because nothing implemented the ruling recorded in
+`CLAUDE.md` ("Boss priority and the event schedule"): a scheduled event that
+nothing outranks and that is not on home requires a preposition on its shard.
+The bridge had been publishing every shard's lineup at `/schedule_live` since
+that morning and nothing read it.
+
+**WHY IT IS A LEAD-TIME PROBLEM.** goobrawl is `join: true` with no walkable
+entrance, runs 540s, and the server refuses the join while hop-sick. A hop
+re-stamps 720s of sickness, so the party has to land about twelve minutes
+before the event or the join opens late. Hopping later than about three minutes
+before it means the join never opens inside the event at all. bossHop's
+reactive path cannot do that, and goobrawl was never in `CONFIG.bossHop.targets`.
+
+**THE INPUT IS THE BRIDGE AND NOTHING ELSE.** A character's own `S.schedule`
+holds only its own shard's lineup, which cannot choose between shards. With no
+fresh feed, or no fresh lineup for HOME, the planner returns nothing. "Is it on
+home" is half the ruling, and a missing lineup answering it as "no" would hop
+the party off a shard running the same event.
+
+**WHAT QUALIFIES.** An event with an EXPLICIT `BOSS_RANK` entry, passing
+`bossEligible` for that shard (so the exclude set, cooperative-only and
+shard-keyed give-ups all apply), with status `scheduled` or `live`. The default
+rank is not a rank anybody chose, so icegolem is not prepositioned for.
+
+**WHEN.** Lead time is the full live hop sickness for a join-only event, and
+`walkLeadMs` otherwise. Hop time is the event's start minus that lead, minus
+`marginMs` and the hop latency. A candidate is refused if, hopping now, we
+could not engage with `minUsefulMs` of window left. That refusal is the
+"arrived after it ended" case: the trip is not taken at all.
+
+**WHICH.** Rank first, then home, then the shard we are on, then the earliest,
+then by name. Home at equal rank is the ruling's "not on home": stay or go
+home. Going home also clears hop sickness at once, which turns a taxi join into
+a teleport. A better rank off home still wins.
+
+**THE HOLD IS THE OTHER HALF.** On arrival the event is not live, and
+`goHomeIfIdle` would send an idle off-home party home 90s later. `holdRank()`
+keeps the party where it is while either (a) the plan is for this shard, or
+(b) a boss-event trip is live here. (b) is not a preposition at all. It is the
+gap `goHomeIfIdle`'s own comment predicted: `localTarget()` sees only
+`bossHop.targets`, so a graveyard or goobrawl being fought here was invisible
+to it. While holding, only a STRICTLY better-ranked hop is admitted, so a crabxx
+elsewhere cannot pull the party off the goobrawl it waited twelve minutes for.
+
+**NOT DONE, AND DELIBERATELY.** `FIGHTING` still exits only on death or a hard
+abort, which this file records as load-bearing. So a plan that comes due while
+the party is FIGHTING a bossHop target waits for that fight to end, even when
+the plan outranks it. The ruling says ranks 1 and 2 are worth abandoning
+everything for, so this is the operator's call to widen.
+
 ## joinWhileHopsick
 
 Three call sites point here and the section did not exist until 2026-10-18 -

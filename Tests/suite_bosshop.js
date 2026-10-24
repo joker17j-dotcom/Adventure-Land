@@ -79,6 +79,35 @@ const EVENT_LOC_NAMES = (() => {
   return (body.match(/name:\s*'([^']+)'/g) || []).map(x => x.replace(/.*'([^']+)'/, '$1'));
 })();
 
+/* The preposition planner's world: the ranger hop world plus the gate it
+   consults (bossEligible) and the liveness rule a hold reads (bossEntryLive).
+   US II is home, as on the live party. */
+function prepWorld(o = {}) {
+	const cfg = CFG();
+	cfg.bossHop.preposition = { enabled: true, walkLeadMs: 180000, marginMs: 60000,
+		minUsefulMs: 120000, feedMaxAgeMs: 300000, lineupMaxAgeSec: 1800 };
+	cfg.bossEvents = { enabled: true, exclude: new Set(['abtesting']), include: [], cooperativeOnly: true };
+	const w = ranger({ CONFIG: cfg, BOSS_TYPE_GIVEUP_MAX: 2, character: o.character,
+		parentExtra: { server_region: o.region || 'US', server_identifier: o.id || 'II' } });
+	lift(w, RANGER, ['BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossEligible']);
+	w.bossCooperative = () => true;
+	w.parent.S = {};
+	return w;
+}
+function row(shard, event, at, windowSec, status) {
+	return { shard, event, at, windowSec, status: status || 'scheduled' };
+}
+/* Every shard named in the rows, plus home, gets a fresh lineup unless an
+   age is given for it. */
+function feed(w, rows, ages = {}) {
+	w.bossHop.schedRows = rows;
+	const s = {};
+	for (const k of ['USII'].concat(rows.map(r => r.shard))) s[k] = { ageSec: k in ages ? ages[k] : 10 };
+	for (const k in ages) s[k] = { ageSec: ages[k] };
+	w.bossHop.schedServers = s;
+	w.bossHop.schedAt = Date.now();
+}
+
 module.exports = [
 
 { name: 'the spookytown corridor park point is outside the graveyard rage box', fn(t) {
@@ -1286,7 +1315,7 @@ module.exports = [
 	const scan = extract(RANGER, 'bossHop');
 	const start = scan.slice(scan.indexOf('\tstartScanning() {'), scan.indexOf('\trecord(entry) {'));
 	t.ok('refreshTerminal is wired into the same 30s interval as refreshBridge',
-		/setInterval\(\(\) => \{ this\.refreshBridge\(\); this\.refreshTerminal\(\); \}, 30000\)/.test(start));
+		/setInterval\(\(\) => \{ this\.refreshBridge\(\); this\.refreshTerminal\(\);[^}]*\}, 30000\)/.test(start));
 	t.ok('and is called once up front', /\n\t\tthis\.refreshTerminal\(\);\n/.test(start));
 	t.eq('state starts with no cursor, so the first fetch pulls the whole log',
 		w.bossHop.termCursor, null);
@@ -2250,5 +2279,202 @@ module.exports = [
 		t.eq(`${path.basename(f)}: horseman row present`,
 			/horseman: \['horseman', 'jackowalker'\]/.test(fs.readFileSync(f, 'utf8')), true);
 	}
+} },
+{ name: 'preposition: the planner picks a due, viable, ranked occurrence off home', fn(t) {
+	const NOW = Date.now();
+	const w = prepWorld();
+	/* goobrawl at T+780s is due exactly: join-only, so it leads by the full
+	   720s of hop sickness, plus the 60s margin and the 1.5s hop. */
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+	let p = w.bossHop.prepPlan('USII');
+	t.eq('goobrawl on ASIA I is the plan', p && p.shard + '/' + p.event, 'ASIAI/goobrawl');
+	t.eq('and it is join-only', p && p.joinOnly, true);
+	t.eq('hop time is start - hopsick - margin - latency', p && (p.at - p.hopAt), 720000 + 60000 + 1500);
+
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 900000, 540)]);
+	t.eq('two minutes earlier it is not due yet', w.bossHop.prepPlan('USII'), null);
+
+	/* THE LATE CASE, which is the 08:30 EDT graveyard shape: a hop now could
+	   not engage before the window closed, so it is refused rather than
+	   taken. Precondition first, so the refusal is not some other filter. */
+	feed(w, [row('ASIAI', 'goobrawl', NOW, 540)]);
+	t.ok('precondition: the event is still open', NOW < NOW + 540000);
+	t.eq('a goobrawl that has just opened is not worth the hop', w.bossHop.prepPlan('USII'), null);
+
+	/* Already there, with 100s of sickness left: no hop to pay, only the
+	   remainder to clear, so it is still the plan - that is the hold. */
+	const there = prepWorld({ id: 'I', region: 'ASIA', character: { s: { hopsickness: { ms: 100000 } } } });
+	feed(there, [row('ASIAI', 'goobrawl', NOW + 60000, 540)]);
+	p = there.bossHop.prepPlan('ASIAI');
+	t.eq('on the shard already, the remaining sickness fits', p && p.shard, 'ASIAI');
+	there.character.s.hopsickness.ms = 500000;
+	t.eq('and when it does not, there is no plan to hold for', there.bossHop.prepPlan('ASIAI'), null);
+} },
+
+{ name: 'preposition: no fresh home lineup or feed means no plan', fn(t) {
+	const NOW = Date.now();
+	const w = prepWorld();
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+	t.ok('precondition: with home fresh it plans', !!w.bossHop.prepPlan('USII'));
+	delete w.bossHop.schedServers.USII;
+	t.eq('home lineup missing -> "is it on home" is unanswerable -> nothing', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)], { USII: 4000 });
+	t.eq('home lineup stale -> nothing', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+	w.bossHop.schedAt = NOW - 10 * 60 * 1000;
+	t.eq('our own fetch stale -> nothing', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)], { ASIAI: 4000 });
+	t.eq('the TARGET shard\'s lineup stale -> not that one', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+	w.CONFIG.bossHop.preposition.enabled = false;
+	t.eq('toggle off -> nothing', w.bossHop.prepPlan('USII'), null);
+} },
+
+{ name: 'preposition: what qualifies - explicit rank, eligible, live status', fn(t) {
+	const NOW = Date.now();
+	const w = prepWorld();
+	feed(w, [row('ASIAI', 'icegolem', NOW + 100000, 2400)]);
+	t.eq('icegolem has no explicit rank -> not prepositioned for', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400)]);
+	t.eq('precondition: crabxx at the same time IS', w.bossHop.prepPlan('USII') && w.bossHop.prepPlan('USII').event, 'crabxx');
+	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400, 'missed')]);
+	t.eq('a missed occurrence is not', w.bossHop.prepPlan('USII'), null);
+	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400)]);
+	w.bossState.cooldown['crabxx|ASIAI'] = NOW + 600000;
+	t.eq('a shard we gave up on is not', w.bossHop.prepPlan('USII'), null);
+	w.bossState.cooldown = {};
+	w.CONFIG.bossEvents.exclude = new Set(['crabxx']);
+	t.eq('an excluded event is not - bossEligible is the gate', w.bossHop.prepPlan('USII'), null);
+} },
+
+{ name: 'preposition: rank, then home, then where we stand, then earliest', fn(t) {
+	const NOW = Date.now();
+	const w = prepWorld();
+	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400), row('USII', 'crabxx', NOW + 100000, 2400)]);
+	t.eq('equal rank on home -> home (the "not on home" half)', w.bossHop.prepPlan('EUI').shard, 'USII');
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540), row('USII', 'graveyard', NOW + 60000, 600)]);
+	t.eq('a better rank off home beats a worse one on home', w.bossHop.prepPlan('USII').shard, 'ASIAI');
+	feed(w, [row('EUI', 'crabxx', NOW + 100000, 2400), row('EUII', 'crabxx', NOW + 100000, 2400)]);
+	t.eq('two equal shards off home -> the one we are on', w.bossHop.prepPlan('EUII').shard, 'EUII');
+	t.eq('and from neither, deterministically by name', w.bossHop.prepPlan('ASIAI').shard, 'EUI');
+	feed(w, [row('EUI', 'franky', NOW + 100000, 2400), row('EUII', 'crabxx', NOW + 100000, 2400)]);
+	t.eq('franky (2) beats crabxx (3)', w.bossHop.prepPlan('USII').event, 'franky');
+} },
+
+{ name: 'holdRank: a plan here, or an event trip live here', fn(t) {
+	const NOW = Date.now();
+	const w = prepWorld();
+	t.eq('nothing -> null', w.bossHop.holdRank('USII', null), null);
+	t.eq('a plan here -> its rank', w.bossHop.holdRank('USII', { shard: 'USII', rank: 3 }), 3);
+	t.eq('a plan elsewhere -> null', w.bossHop.holdRank('USII', { shard: 'EUI', rank: 3 }), null);
+	w.bossState.trip = { name: 'graveyard', shard: 'USII' };
+	w.parent.S.graveyard = { live: true };
+	t.eq('a live graveyard trip here -> 4', w.bossHop.holdRank('USII', null), 4);
+	t.eq('the better of the two', w.bossHop.holdRank('USII', { shard: 'USII', rank: 3 }), 3);
+	w.parent.S.graveyard = { live: false };
+	t.eq('its event over -> null', w.bossHop.holdRank('USII', null), null);
+	w.bossState.trip = { name: 'goobrawl', shard: 'USII' };
+	w.parent.S.goobrawl = { end: NOW + 100000 };
+	t.eq('goobrawl by PRESENCE, as bossEntryLive reads it -> 3', w.bossHop.holdRank('USII', null), 3);
+	t.eq('a trip on another shard does not hold this one', w.bossHop.holdRank('EUI', null), null);
+} },
+
+{ name: 'goHomeIfIdle: an event fight here is not "nothing eligible"', fn(t) {
+	const go = (withTrip) => {
+		const w = prepWorld({ region: 'EU', id: 'III' });
+		const hops = [];
+		w.bossHop.lootBeforeHop = async () => false;
+		w.bossHop.changeServer = async (s, m) => { hops.push(s + '/' + m); return true; };
+		if (withTrip) { w.bossState.trip = { name: 'graveyard', shard: 'EUIII' }; w.parent.S.graveyard = { live: true }; }
+		w.bossHop.idleSince = Date.now() - 200000;
+		return w.bossHop.goHomeIfIdle('EUIII').then(() => hops);
+	};
+	return Promise.all([go(false), go(true)]).then(([bare, held]) => {
+		t.eq('precondition: idle off home with nothing on, it goes home', bare, ['USII/home']);
+		t.eq('with a graveyard live here, it stays', held, []);
+	});
+} },
+
+{ name: 'tick IDLE: hop for the plan, hold on arrival, admit only a better hop', fn(t) {
+	const NOW = Date.now();
+	const mk = (region, id) => {
+		const w = prepWorld({ region, id });
+		w.hops = [];
+		w.bossHop.lootBeforeHop = async () => false;
+		w.bossHop.changeServer = async (s, m) => { w.hops.push(s + '/' + m); return true; };
+		w.bossHop.pickTarget = () => w.pick || null;
+		w.bossHop.localTarget = () => w.here || null;
+		feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+		return w;
+	};
+	const a = mk('US', 'II');
+	const b = mk('ASIA', 'I');
+	const c = mk('ASIA', 'I');
+	c.pick = { shard: 'EUI', mtype: 'crabxx', secsToDeath: 100 };
+	const d = mk('ASIA', 'I');
+	d.pick = { shard: 'EUI', mtype: 'franky', secsToDeath: 100 };
+	const e = mk('US', 'II');
+	e.here = 'crabxx';
+	const f = mk('US', 'II');
+	f.here = 'crabxx';
+	feed(f, [row('EUI', 'franky', NOW + 100000, 2400)]);
+	return (async () => {
+		await a.bossHop.tick();
+		t.eq('from home: hops to the plan\'s shard, naming the event', a.hops, ['ASIAI/goobrawl']);
+		t.ok('and says it is prepositioning', a.logs.some(l => /Prepositioning on ASIAI for goobrawl/.test(l)));
+
+		const r1 = await b.bossHop.tick();
+		await b.bossHop.tick();
+		t.eq('on the shard: no hop', b.hops, []);
+		t.eq('it holds', r1, 'continue');
+		t.eq('and says so once, not per tick', b.logs.filter(l => /Holding on ASIAI/.test(l)).length, 1);
+
+		await c.bossHop.tick();
+		t.eq('an EQUAL-ranked boss elsewhere does not pull it off', c.hops, []);
+		await d.bossHop.tick();
+		t.eq('a strictly better one does', d.hops, ['EUI/franky']);
+
+		await e.bossHop.tick();
+		t.eq('a live crabxx here beats an equal-ranked plan elsewhere', e.bossHop.state, 'FIGHTING');
+		await f.bossHop.tick();
+		t.eq('but not a strictly better plan elsewhere', f.hops, ['EUI/franky']);
+	})();
+} },
+
+{ name: 'refreshSchedule: shard names normalised, failure keeps rows', fn(t) {
+	const w = prepWorld();
+	w.bossHop.schedRows = []; w.bossHop.schedAt = 0;
+	let answer = { occurrences: [
+		{ server: 'ASIA I', event: 'goobrawl', at: '2026-10-24T13:00:00Z', at_ms: 1792846800000, window_sec: 540, status: 'scheduled' },
+		{ server: '', event: 'crabxx', at_ms: 1 },
+	], servers: { 'ASIA I': { age_sec: 12 }, 'US II': { age_sec: 30 } } };
+	let fail = false;
+	w.plFetch = (p) => { w.lastPath = p; return fail ? Promise.reject(new Error('down')) : Promise.resolve(answer); };
+	w.bossHop.refreshSchedule();
+	return Promise.resolve().then(() => Promise.resolve()).then(() => {
+		t.eq('asks /schedule_live for a short horizon', w.lastPath, '/schedule_live?hours=3');
+		t.eq('one usable row, shard without the space', w.bossHop.schedRows.map(r => r.shard + '/' + r.event), ['ASIAI/goobrawl']);
+		t.eq('at is the epoch ms', w.bossHop.schedRows[0].at, 1792846800000);
+		t.eq('server ages keyed the same way', w.bossHop.schedServers.USII && w.bossHop.schedServers.USII.ageSec, 30);
+		const at = w.bossHop.schedAt;
+		fail = true;
+		w.bossHop.refreshSchedule();
+		return new Promise(r => setTimeout(r, 5)).then(() => {
+			t.eq('a failed poll keeps the rows', w.bossHop.schedRows.length, 1);
+			t.eq('and does not advance schedAt, so they age out instead', w.bossHop.schedAt, at);
+			t.ok('and records why', /down/.test(w.bossHop.schedErr || ''));
+		});
+	});
+} },
+
+{ name: 'preposition is wired: toggle, scan interval, home guard, feature probe', fn(t) {
+	const src = require('fs').readFileSync(require('path').join(require('./lift').ROOT, RANGER), 'utf8');
+	t.ok('TOGGLES carries the flag with its CONFIG annotation',
+		/bossHopPreposition:\s+true,\s+\/\/ CONFIG\.bossHop\.preposition\.enabled/.test(src));
+	t.ok('CONFIG reads it', /enabled: TOGGLES\.bossHopPreposition,/.test(src));
+	t.ok('the 30s interval refreshes the schedule', /this\.refreshTerminal\(\); this\.refreshSchedule\(\); \}, 30000\)/.test(src));
+	const gh = src.slice(src.indexOf('\tasync goHomeIfIdle(cur) {'), src.indexOf('\tasync lootBeforeHop()'));
+	t.ok('goHomeIfIdle consults the hold', /this\.holdRank\(cur, this\.prepPlan\(cur\)\) !== null/.test(gh));
+	t.ok('prepStatus is on the feature probe', /prepStatus: typeof prepStatus,/.test(src));
 } },
 ];

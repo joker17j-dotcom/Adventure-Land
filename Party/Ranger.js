@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v131
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v132
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -118,6 +118,7 @@ const PARTY_FEATURE_PROBE = {
 	checkFarmEconomics: typeof checkFarmEconomics,
 	combineItems: typeof combineItems,
 	totStatus: typeof totStatus,
+	prepStatus: typeof prepStatus,
 };
 
 function publishPartyBuild() {
@@ -511,6 +512,7 @@ const TOGGLES = {
 	locationBroadcast:               true,   // CONFIG.locationBroadcast.enabled
 	bossHop:                         true,   // CONFIG.bossHop.enabled
 	bossHopReturnHome:               true,   // CONFIG.bossHop.returnHome
+	bossHopPreposition:              true,   // CONFIG.bossHop.preposition.enabled
 	bossEvents:                      true,   // CONFIG.bossEvents.enabled
 	bossEventsCooperativeOnly:       true,   // CONFIG.bossEvents.cooperativeOnly
 	monsterHunt:                     false,  // CONFIG.monsterHunt.enabled
@@ -824,6 +826,31 @@ const CONFIG = {
 		   the eligibility floor cannot ping-pong the party between shards. */
 		returnHome: TOGGLES.bossHopReturnHome,
 		returnHomeAfterMs: 90 * 1000,
+		/* PREPOSITIONING FOR A SCHEDULED EVENT. The operator's ruling: a known
+		   scheduled event that nothing outranks and that is not on home REQUIRES
+		   the party to be on that shard before it opens. The input is the
+		   bridge's /schedule_live, every shard's published lineup in one list.
+		   Without it, or without a fresh lineup for HOME, nothing is
+		   prepositioned - "is it on home" cannot be answered, and guessing it
+		   is not would hop the party off a shard running the same event.
+		   joinOnly events (no walkable entrance - goobrawl) lead by the FULL
+		   hop sickness, read live from G: the hop re-stamps it on arrival and
+		   the server refuses the join until it clears. Everything else leads
+		   by walkLeadMs, which is NOT a measured figure - the one measurement
+		   is Dexon's ~90s walk from main to spookytown, 2026-10-24.
+		   minUsefulMs is how much of the window must still be left once we
+		   can actually engage; a later trip is refused rather than taken to
+		   arrive after the event ended, which is what the 2026-10-24 08:30
+		   EDT graveyard looked like from outside.
+		   -> RangerComments.md#preposition */
+		preposition: {
+			enabled: TOGGLES.bossHopPreposition,
+			walkLeadMs: 3 * 60 * 1000,
+			marginMs: 60 * 1000,
+			minUsefulMs: 2 * 60 * 1000,
+			feedMaxAgeMs: 5 * 60 * 1000,     // our last good /schedule_live fetch
+			lineupMaxAgeSec: 30 * 60,        // one shard's lineup, as the bridge last heard it
+		},
 		/* Dexon's own dps, the denominator of requiredDwellSec(). Measured
 		   against mrgreen, which is a MAGICAL-resistance fight - resistance
 		   900, apiercing 122 - so it is a first approximation elsewhere:
@@ -3823,6 +3850,14 @@ const bossHop = {
 	termCursor: null,
 	termAt: 0,
 	termErr: null,
+	/* /schedule_live, flattened: { shard, event, at, windowSec, status }.
+	   schedServers is shard -> { ageSec } as of schedAt. */
+	schedRows: [],
+	schedServers: {},
+	schedAt: 0,
+	schedErr: null,
+	/* The last hold announced, so the log says it once rather than per tick. */
+	prepSaid: null,
 
 	targetCfg(mtype) {
 		return CONFIG.bossHop.targets.find(t => t.mtype === mtype) || null;
@@ -3870,7 +3905,8 @@ const bossHop = {
 		}
 		this.refreshBridge();
 		this.refreshTerminal();
-		setInterval(() => { this.refreshBridge(); this.refreshTerminal(); }, 30000);
+		this.refreshSchedule();
+		setInterval(() => { this.refreshBridge(); this.refreshTerminal(); this.refreshSchedule(); }, 30000);
 	},
 
 	record(entry) {
@@ -3912,6 +3948,146 @@ const bossHop = {
 			this.bridgeRows = [];
 			this.bridgeErr = String(e);
 		});
+	},
+
+	/* Same fire-and-forget shape as refreshBridge. On failure the rows are
+	   KEPT and schedAt is not advanced, so they age out through feedMaxAgeMs
+	   rather than vanishing on one dropped poll - a plan that blinks off for
+	   30s would let goHomeIfIdle start its clock against a shard we are
+	   holding on. Shard names arrive as "US II"; ours have no space. */
+	refreshSchedule() {
+		if (!CONFIG.bossHop.enabled) return;
+		plFetch('/schedule_live?hours=3').then((j) => {
+			const occ = Array.isArray(j?.occurrences) ? j.occurrences : [];
+			const rows = [];
+			for (const o of occ) {
+				const shard = String(o && o.server || '').replace(/\s+/g, '');
+				const at = typeof o?.at_ms === 'number' ? o.at_ms : Date.parse(o?.at);
+				if (!shard || !o.event || !isFinite(at)) continue;
+				rows.push({
+					shard, event: o.event, at,
+					windowSec: typeof o.window_sec === 'number' ? o.window_sec : null,
+					status: o.status || null,
+				});
+			}
+			const servers = {};
+			for (const k in (j?.servers || {})) {
+				const a = j.servers[k] && j.servers[k].age_sec;
+				servers[String(k).replace(/\s+/g, '')] = { ageSec: typeof a === 'number' ? a : null };
+			}
+			this.schedRows = rows;
+			this.schedServers = servers;
+			this.schedAt = Date.now();
+			this.schedErr = null;
+		}, (e) => {
+			this.schedErr = String(e);
+		});
+	},
+
+	/* How old a shard's lineup is NOW, in seconds, or null if the bridge has
+	   never heard one. The bridge's age is as of its answer; ours is added. */
+	lineupAgeSec(shard, now) {
+		const s = this.schedServers[shard];
+		if (!s || typeof s.ageSec !== 'number') return null;
+		return s.ageSec + Math.max(0, (now - this.schedAt) / 1000);
+	},
+
+	/* One occurrence as a preposition candidate, or null. DUE means the hop
+	   time has arrived; VIABLE means we can still engage with minUsefulMs of
+	   window left. Only an event with an EXPLICIT rank qualifies - the default
+	   rank is "everything nobody ranked", and prepositioning for icegolem on
+	   that basis is not what the ruling asked for. */
+	prepCandidate(o, cur, now) {
+		const c = CONFIG.bossHop, p = c.preposition;
+		if (!Object.prototype.hasOwnProperty.call(BOSS_RANK, o.event)) return null;
+		if (o.status && o.status !== 'scheduled' && o.status !== 'live') return null;
+		const age = this.lineupAgeSec(o.shard, now);
+		if (age === null || age > p.lineupMaxAgeSec) return null;
+		if (!bossEligible(o.event, o.shard).ok) return null;
+		const winMs = o.windowSec ? o.windowSec * 1000 : this.eventWindowMs(o.event);
+		if (!winMs) return null;
+		const closesAt = o.at + winMs;
+		if (now >= closesAt) return null;
+		const joinOnly = this.isJoinEvent(o.event) && !this.isTaxiJoin(o.event);
+		const lead = joinOnly ? this.hopsickMs() : p.walkLeadMs;
+		const hopAt = o.at - lead - p.marginMs - c.hopLatencyMs;
+		if (now < hopAt) return null;
+		/* Already there costs no hop; sickness we already carry still has to
+		   clear for a join-only event, and only what REMAINS of it. */
+		const readyAt = o.shard === cur
+			? now + (joinOnly ? this.hopsickRemainingMs() : 0)
+			: now + c.hopLatencyMs + lead;
+		if (readyAt > closesAt - p.minUsefulMs) return null;
+		return { shard: o.shard, event: o.event, at: o.at, closesAt, hopAt, readyAt,
+			rank: bossRank(o.event), joinOnly };
+	},
+
+	/* The occurrence to be on, or null. Rank first. Then HOME, which is the
+	   "not on home" half of the ruling read as a preference: an equal-ranked
+	   occurrence on home means stay (or go) home rather than preposition -
+	   and going home also clears hop sickness at once, so a taxi join there is
+	   a teleport rather than a sick walk. Then where we already stand, so two
+	   equal shards cannot trade the party back and forth. Then earliest, then
+	   by name so the answer is deterministic. */
+	prepPlan(cur) {
+		const p = CONFIG.bossHop.preposition;
+		if (!p || !p.enabled) return null;
+		const now = Date.now();
+		if (!this.schedAt || now - this.schedAt > p.feedMaxAgeMs) return null;
+		const home = (typeof character !== 'undefined' && character && character.home) || null;
+		if (!home) return null;
+		const homeAge = this.lineupAgeSec(home, now);
+		if (homeAge === null || homeAge > p.lineupMaxAgeSec) return null;
+		let best = null;
+		for (const o of this.schedRows) {
+			const x = this.prepCandidate(o, cur, now);
+			if (!x) continue;
+			x.home = x.shard === home;
+			if (!best) { best = x; continue; }
+			if (x.rank !== best.rank) { if (x.rank < best.rank) best = x; continue; }
+			if (x.home !== best.home) { if (x.home) best = x; continue; }
+			const xc = x.shard === cur, bc = best.shard === cur;
+			if (xc !== bc) { if (xc) best = x; continue; }
+			if (x.at !== best.at) { if (x.at < best.at) best = x; continue; }
+			if (x.shard < best.shard) best = x;
+		}
+		return best;
+	},
+
+	/* The rank of what keeps the party HERE, or null. Two things do: a
+	   preposition whose shard is this one, and a boss-event trip that is live
+	   on this shard. The second is not a preposition at all - it is the gap
+	   goHomeIfIdle's own comment predicted, "any future local-only case has
+	   the same shape": localTarget() sees only bossHop.targets, so a
+	   graveyard or a goobrawl being fought here was invisible to it and the
+	   party went home 90s into the fight. */
+	holdRank(cur, prep) {
+		let r = null;
+		if (prep && prep.shard === cur) r = prep.rank;
+		const trip = bossState.trip;
+		if (trip && trip.name && (!trip.shard || trip.shard === cur)
+			&& bossEntryLive(trip.name, (parent.S || {})[trip.name])) {
+			const tr = bossRank(trip.name);
+			if (r === null || tr < r) r = tr;
+		}
+		return r;
+	},
+
+	prepStatus() {
+		const cur = this.currentShard();
+		const plan = this.prepPlan(cur);
+		const iso = (ms) => ms ? new Date(ms).toISOString() : null;
+		return {
+			cur, home: (character && character.home) || null,
+			plan: plan && { shard: plan.shard, event: plan.event, rank: plan.rank,
+				joinOnly: plan.joinOnly, at: iso(plan.at), hopAt: iso(plan.hopAt),
+				closesAt: iso(plan.closesAt), home: plan.home },
+			hold: this.holdRank(cur, plan),
+			rows: this.schedRows.length,
+			feedAgeSec: this.schedAt ? Math.round((Date.now() - this.schedAt) / 1000) : null,
+			err: this.schedErr,
+			state: this.state,
+		};
 	},
 
 	/* A boss that dies or despawns VANISHES from server_info rather than
@@ -4388,6 +4564,10 @@ const bossHop = {
 		   left. Fixing the taxi gates narrows this; it does not close it,
 		   because any future local-only case has the same shape. */
 		if (this.localTarget()) { this.idleSince = 0; return 'continue'; }
+		/* The same rule for what localTarget() cannot see: a planned event on
+		   this shard, or an event-layer trip live here. Checked here as well
+		   as in tick() so no route into a home hop skips it. */
+		if (this.holdRank(cur, this.prepPlan(cur)) !== null) { this.idleSince = 0; return 'continue'; }
 		if (!c.returnHome) { this.idleSince = 0; return 'continue'; }
 		const home = (typeof character !== 'undefined' && character && character.home) || null;
 		if (!home || cur === home) { this.idleSince = 0; return 'continue'; }
@@ -4485,8 +4665,12 @@ const bossHop = {
 
 		switch (this.state) {
 			case 'IDLE': {
+				/* A preposition elsewhere that STRICTLY outranks the boss in
+				   front of us is the one case a live local boss does not win:
+				   "no higher-ranked boss outranks it" read from the other side. */
+				const prep = this.prepPlan(cur);
 				const here = this.localTarget();
-				if (here) {
+				if (here && !(prep && prep.shard !== cur && prep.rank < bossRank(here))) {
 					this.state = 'FIGHTING';
 					this.targetShard = cur;
 					this.targetType = here;
@@ -4496,13 +4680,40 @@ const bossHop = {
 					return 'continue';
 				}
 
-				const pick = this.pickTarget();
-				if (!pick) return await this.goHomeIfIdle(cur);
-				this.idleSince = 0;
-				this.state = 'HOPPING';
-				this.targetShard = pick.shard;
-				this.targetType = pick.mtype;
-				game_log(`🐉 ${pick.mtype} on ${pick.shard}: ~${Math.round(pick.secsToDeath)}s to death — hopping`, '#FFD700');
+				/* Something holding us here admits only a STRICTLY better hop,
+				   so an equal-ranked boss elsewhere cannot pull the party off a
+				   goobrawl it waited twelve minutes for. */
+				const hold = this.holdRank(cur, prep);
+				let pick = this.pickTarget();
+				if (pick && hold !== null && !(bossRank(pick.mtype) < hold)) pick = null;
+				if (pick && prep && prep.shard !== cur && !(bossRank(pick.mtype) < prep.rank)) pick = null;
+
+				if (!pick && prep && prep.shard !== cur && (hold === null || prep.rank < hold)) {
+					this.idleSince = 0;
+					this.state = 'HOPPING';
+					this.targetShard = prep.shard;
+					this.targetType = prep.event;
+					game_log(`🐉 Prepositioning on ${prep.shard} for ${prep.event} at ${new Date(prep.at).toISOString().slice(11, 16)}Z`
+						+ (prep.joinOnly ? ' (join-only: clearing hop sickness first)' : ''), '#FFD700');
+				} else if (pick) {
+					this.idleSince = 0;
+					this.state = 'HOPPING';
+					this.targetShard = pick.shard;
+					this.targetType = pick.mtype;
+					game_log(`🐉 ${pick.mtype} on ${pick.shard}: ~${Math.round(pick.secsToDeath)}s to death — hopping`, '#FFD700');
+				} else if (hold !== null) {
+					this.idleSince = 0;
+					const key = cur + '|' + (prep && prep.shard === cur ? prep.event + '|' + prep.at : 'trip');
+					if (this.prepSaid !== key) {
+						this.prepSaid = key;
+						game_log(prep && prep.shard === cur
+							? `🐉 Holding on ${cur} for ${prep.event} at ${new Date(prep.at).toISOString().slice(11, 16)}Z`
+							: `🐉 Holding on ${cur} - an event fight is live here`, '#FFD700');
+					}
+					return 'continue';
+				} else {
+					return await this.goHomeIfIdle(cur);
+				}
 			}
 
 			case 'HOPPING': {
@@ -7302,6 +7513,13 @@ async function totTick() {
    line for console use; totStatus(true) returns the same object silently, for
    a sampler - polling the logging form scrolls real [tot] lines out of the
    game log, which is where a route's failure reasons are read. */
+/* The preposition planner's view, for the console and for the other session's
+   probe: what it would be on now, what is holding it, and how fresh its input
+   is. Read-only. */
+function prepStatus() {
+	return bossHop.prepStatus();
+}
+
 function totStatus(quiet) {
 	const now = Date.now();
 	const t = character.trickortreat || null;
