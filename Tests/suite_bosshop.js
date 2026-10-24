@@ -2778,9 +2778,10 @@ module.exports = [
 			quantity: () => 0,
 			CONFIG: { potions: { minStock: 1000 } },
 			buyShortSaid: new Map(),
+			VENDOR_REACH: 380,   // a brace-less const is not liftable - pinned from the source above
 		}, over));
 		w.bought = bought;
-		lift(w, RANGER, ['VENDOR_REACH', 'vendorInReach', 'buyWhereSold', 'buyMissingPotions']);
+		lift(w, RANGER, ['vendorInReach', 'buyWhereSold', 'buyMissingPotions']);
 		return w;
 	};
 	let w = vw('main', 379, 0);
@@ -2953,5 +2954,82 @@ module.exports = [
 		lift(sw, RANGER, ['SCARCE_ITEM_NAMES', 'isScarceItem']);
 		t.eq('the ranger keeps sbelt', sw.isScarceItem('sbelt'), true);
 	})();
+} },
+{ name: 'v143 a boss trip is not a farm verdict - followers and Dexon both hold it', fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
+	for (const n of ['farmVerdictHeld', 'bossBeat']) {
+		const r = extract(RANGER, n);
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === r, true);
+	}
+	for (const f of FILES) {
+		const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		t.ok(f + ': the grace is 3 minutes', /\nconst FARM_VERDICT_GRACE_MS = 180000;\n/.test(s));
+		t.ok(f + ': the busy stamp is what this suite supplies', /\nlet farmVerdictBusyAt = 0;\n/.test(s));
+		t.ok(f + ': the beat keeps it current', /try \{ farmVerdictHeld\(\); \} catch \(e\) \{ \}/.test(extract(f, 'bossBeat')));
+	}
+
+	/* THE PREDICATE. */
+	const hw = (over = {}) => {
+		/* Both supplied, both pinned from the source above: lifting the
+		   brace-less const runs on into farmVerdictHeld and declares its own
+		   farmVerdictBusyAt, which the test then cannot reach. */
+		const w = world(Object.assign({ bossState: { trip: null }, farmVerdictBusyAt: 0, FARM_VERDICT_GRACE_MS: 180000 }, over));
+		lift(w, RANGER, ['farmVerdictHeld']);
+		return w;
+	};
+	let w = hw();
+	t.eq('no trip, never had one: not held', w.farmVerdictHeld(), false);
+	w.bossState.trip = { name: 'mrgreen' };
+	t.eq('on a trip: held', w.farmVerdictHeld(), true);
+	w.bossState.trip = null;
+	t.eq('just after: still held', w.farmVerdictHeld(), true);
+	w.farmVerdictBusyAt = Date.now() - 180001;
+	t.eq('three minutes after: released', w.farmVerdictHeld(), false);
+	w = hw({ bossHop: { state: 'FIGHTING' } });
+	t.eq('a boss hop under way holds it on the ranger', w.farmVerdictHeld(), true);
+	w = hw({ bossHop: { state: 'IDLE' } });
+	t.eq('an idle hop does not', w.farmVerdictHeld(), false);
+
+	/* THE FOLLOWER - the 46 requests. On spookytown, which is also mrgreen's
+	   map, earning nothing for three sampled minutes. */
+	const fw = (trip) => {
+		const sent = [];
+		const w = world({
+			home: 'booboo', mobMap: 'spookytown',
+			character: { name: 'FatherToken', map: 'spookytown', xp: 500, level: 80 },
+			bossState: { trip }, farmVerdictBusyAt: 0, FARM_VERDICT_GRACE_MS: 180000,
+			xpTracker: { lastXp: 500, lastLevel: 80, lastCheckTime: 0, consecutiveBadSamples: 0,
+				trackedHome: 'booboo', trackedMobMap: 'spookytown', arrivedAtSpot: true, assignedAt: 0, reportedUnreachable: false },
+			plSend: (to, m) => { sent.push([to, m.message]); },
+		});
+		w.sent = sent;
+		lift(w, 'Party/Priest.js', ['farmVerdictHeld', 'checkOwnXpEconomics']);
+		return w;
+	};
+	const threeMinutes = (w) => { for (let i = 0; i < 3; i++) { w.xpTracker.lastCheckTime = Date.now() - 61000; w.checkOwnXpEconomics(); } };
+	w = fw(null);
+	threeMinutes(w);
+	t.eq('precondition: with no trip, three flat minutes DO report', JSON.stringify(w.sent), '[["Dexon","blacklist_spot"]]');
+	w = fw({ name: 'mrgreen' });
+	threeMinutes(w);
+	t.eq('on a mrgreen trip on the same map, nothing is reported', w.sent.length, 0);
+	t.eq('and no streak builds', w.xpTracker.consecutiveBadSamples, 0);
+	w.xpTracker.consecutiveBadSamples = 2;
+	w.bossState.trip = null;
+	w.xpTracker.lastCheckTime = Date.now() - 61000;
+	w.checkOwnXpEconomics();
+	t.eq('just after the trip a carried streak is dropped, not completed', [w.sent.length, w.xpTracker.consecutiveBadSamples], [0, 0]);
+	const mage = extract('Party/Mage.js', 'checkOwnXpEconomics');
+	t.ok('the mage carries the same guard', /if \(character\.map !== mobMap \|\| farmVerdictHeld\(\)\) \{[^}]*consecutiveBadSamples = 0;/.test(mage));
+
+	/* DEXON - the receiver validates. */
+	const rs = fs.readFileSync(path.join(ROOT, RANGER), 'utf8');
+	const cm = rs.slice(rs.indexOf("data.message === 'blacklist_spot') {"));
+	const held = cm.indexOf('if (farmVerdictHeld()) {'), add = cm.indexOf('addToBlacklist(data.home');
+	t.ok('Dexon checks the hold before he blacklists', held > 0 && add > held);
+	t.ok('and returns without blacklisting', /if \(farmVerdictHeld\(\)\) \{\n[^\n]*\n\t\t\treturn;\n\t\t\}/.test(cm.slice(held - 2)));
+	const fe = extract(RANGER, 'checkFarmEconomics');
+	t.ok('his own gold check holds too, before it samples', fe.indexOf('if (farmVerdictHeld()) {') > 0 && fe.indexOf('if (farmVerdictHeld()) {') < fe.indexOf('const goldGained'));
 } },
 ];

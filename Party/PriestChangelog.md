@@ -21,6 +21,28 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v78
+
+**A BOSS TRIP IS NOT A FARM VERDICT.** The browser session counted 46
+follower requests to blacklist the farm spot in one day (2026-10-24), one every
+~3 min during mrgreen trips and just after, each "0.00 xp/s over 3 min". The
+earlier fix was still in place: the follower re-baselined only when OFF the
+farm map. The booboo spot and mrgreen are both on spookytown, so a follower
+standing at the boss, earning nothing until it died, counted every minute
+against the spot. Dexon turned every request down only because that spot
+happens to be whitelisted; on any other spot it would have been blacklisted
+mid-trip. **The guard keyed on WHERE the character was, not on WHAT IT WAS
+DOING**, and the two only coincide while the boss's map differs from the
+farm's.
+
+`farmVerdictHeld()` is true during any trip (`bossState.trip`, and on the
+ranger a non-IDLE `bossHop`) and for `FARM_VERDICT_GRACE_MS` (3 min) after,
+which covers the walk back. `bossBeat`'s timer keeps it current. It is
+byte-identical in all three scripts.
+- The followers' `checkOwnXpEconomics` treats it like being off the map, and
+  also drops the streak, so the first post-trip verdict needs three fresh
+  minutes.
+
 ## v77
 
 **RAGE ENTRY ENDS WITH THE TRIP.** Measured 2026-10-24 16:41 EDT by the

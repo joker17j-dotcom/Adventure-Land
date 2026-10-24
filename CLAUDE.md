@@ -1454,6 +1454,15 @@ this ranking until a Ranger build is actually running on him.
   `bossJoinWanted()` joins only from another map or from beyond 1000 on this
   one, never during rage entry. The horseman's 200-unit skip is the browser
   session's read of upstream `16881a2`; this container's clone predates it.
+- **FOLLOWERS ASKED DEXON TO BLACKLIST THE FARM SPOT ON EVERY mrgreen TRIP,
+  AND THE EARLIER FIX KEYED ON THE WRONG FACT.** 46 requests on 2026-10-24,
+  measured by the browser session. The follower's xp monitor re-baselined only
+  when OFF the farm map, and the booboo spot and mrgreen are both on
+  spookytown. Dexon refused them only because that spot is whitelisted - a
+  guard by coincidence. Fixed in Ranger v143 / Priest v78 / Mage v101:
+  `farmVerdictHeld()` holds the verdict during any trip and for 3 minutes
+  after, on the sender and on Dexon as the receiver. **A GUARD ON WHERE A
+  CHARACTER IS STANDS IN FOR WHAT IT IS DOING ONLY WHILE THE TWO MAPS DIFFER.**
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
@@ -5797,6 +5806,12 @@ for it in any script before Ranger v121 / Merchant v115.
   "Version headers" - any initialiser whose first token is not a brace. Supply
   those in the world, and pin them against the source text so a change to
   either cannot leave every assertion testing a stale copy and still passing.
+  **A SCALAR `const X = 380;` IS THE SAME SHAPE AND IT PASSED BY LUCK.**
+  Lifting it runs on into the next brace block, so v141's `VENDOR_REACH` lift
+  re-declared `vendorInReach` harmlessly, and v143's `FARM_VERDICT_GRACE_MS`
+  lift declared a vm-scoped `let farmVerdictBusyAt` the test could not reach -
+  one assertion failed for a reason unrelated to the code under test. Both are
+  supplied now.
 - **A HARNESS OVERRIDE THE HARNESS MERGES OVER IS A TEST OF NOTHING.**
   2026-10-20: `world({ parent: {} })` was meant to make the current shard
   unreadable, and `world()` supplies its own `parent` carrying a default shard,

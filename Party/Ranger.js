@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v142
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v143
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3229,9 +3229,29 @@ function bossRecast() {
    dropped the trust at exactly leaderTrustMs and went to mrpumpkin. The rage
    entry decision rides the same beat, because rageEntryTick sat behind the
    same gate and the followers fall out on its silence too. */
+/* A FARM VERDICT IS ABOUT THE FARM, AND A BOSS TRIP IS NOT FARMING. Measured
+   2026-10-24: 46 follower requests to blacklist the farm spot in one day, one
+   every ~3 min during mrgreen trips and just after, "0.00 xp/s over 3 min".
+   The earlier guard re-baselined only OFF the farm map, and booboo and mrgreen
+   are both on spookytown - so a follower standing at the boss, earning nothing
+   until it died, counted every minute against the spot. Dexon turned them all
+   down only because that spot happens to be whitelisted. Held during any trip
+   and for FARM_VERDICT_GRACE_MS after, which covers the walk back; the beat
+   calls this every 2s so the trip's end is seen even when nothing else asks. */
+const FARM_VERDICT_GRACE_MS = 180000;
+let farmVerdictBusyAt = 0;
+function farmVerdictHeld() {
+	const now = Date.now();
+	const onTrip = !!(bossState && bossState.trip)
+		|| (typeof bossHop !== 'undefined' && !!bossHop && !!bossHop.state && bossHop.state !== 'IDLE');
+	if (onTrip) farmVerdictBusyAt = now;
+	return onTrip || (farmVerdictBusyAt > 0 && now - farmVerdictBusyAt < FARM_VERDICT_GRACE_MS);
+}
+
 const BOSS_BEAT_MS = 2000;
 function bossBeat() {
 	try { rageEntryExpire(); } catch (e) { }
+	try { farmVerdictHeld(); } catch (e) { }
 	if (!bossIsLeader() || !bossState.trip) return;
 	try { bossRecast(); } catch (e) { }
 	try { rageEntryBroadcast(rageEntryActive); } catch (e) { }
@@ -7235,6 +7255,12 @@ function checkFarmEconomics() {
 		economicsTracker.consecutiveBadSamples = 0;
 		return;
 	}
+	if (farmVerdictHeld()) {   // a boss near the spot is not the spot - see farmVerdictHeld
+		economicsTracker.lastGold = character.gold;
+		economicsTracker.lastCheckTime = Date.now();
+		economicsTracker.consecutiveBadSamples = 0;
+		return;
+	}
 
 	const now = Date.now();
 	const elapsedSec = (now - economicsTracker.lastCheckTime) / 1000;
@@ -8657,6 +8683,13 @@ function on_cm(name, data) {
 	}
 
 	if ((name === 'FatherToken' || name === 'MageofOz') && data.message === 'blacklist_spot') {
+		/* THE RECEIVER VALIDATES TOO: a follower's verdict taken during a trip,
+		   or just after one, is about the trip. Refused until farmVerdictHeld()
+		   lets go, whatever the follower's build. */
+		if (farmVerdictHeld()) {
+			game_log(`Ignored ${name}'s blacklist request for ${data.home}@${data.mobMap} - on or just off a boss trip`, 'orange');
+			return;
+		}
 		const key = addToBlacklist(data.home, data.mobMap, data.reason, name, data.details);
 		if (!key) return;   // whitelisted - addToBlacklist said so, and nothing changed
 		game_log(`Blacklisted "${key}" - ${data.reason} (reported by ${name})`, 'red');

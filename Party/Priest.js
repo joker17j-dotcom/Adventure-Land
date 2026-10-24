@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v77
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v78
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -859,10 +859,14 @@ function checkOwnXpEconomics() {
 	   three quiet samples and the spot is reported for blacklisting. Re-baseline
 	   instead, so time away is invisible rather than damning. The travel branch
 	   above already learned this lesson; the sampling branch never did. */
-	if (character.map !== mobMap) {
+	/* AND ON THE FARM MAP IS NOT FARMING EITHER - see farmVerdictHeld. The
+	   streak is dropped as well as the clock, so the first verdict after a
+	   trip needs three fresh minutes of its own. */
+	if (character.map !== mobMap || farmVerdictHeld()) {
 		xpTracker.lastXp = character.xp;
 		xpTracker.lastLevel = character.level;
 		xpTracker.lastCheckTime = Date.now();
+		xpTracker.consecutiveBadSamples = 0;
 		return;
 	}
 	if (elapsedSec < 60) return; // sample roughly once a minute
@@ -2897,9 +2901,29 @@ function bossRecast() {
    dropped the trust at exactly leaderTrustMs and went to mrpumpkin. The rage
    entry decision rides the same beat, because rageEntryTick sat behind the
    same gate and the followers fall out on its silence too. */
+/* A FARM VERDICT IS ABOUT THE FARM, AND A BOSS TRIP IS NOT FARMING. Measured
+   2026-10-24: 46 follower requests to blacklist the farm spot in one day, one
+   every ~3 min during mrgreen trips and just after, "0.00 xp/s over 3 min".
+   The earlier guard re-baselined only OFF the farm map, and booboo and mrgreen
+   are both on spookytown - so a follower standing at the boss, earning nothing
+   until it died, counted every minute against the spot. Dexon turned them all
+   down only because that spot happens to be whitelisted. Held during any trip
+   and for FARM_VERDICT_GRACE_MS after, which covers the walk back; the beat
+   calls this every 2s so the trip's end is seen even when nothing else asks. */
+const FARM_VERDICT_GRACE_MS = 180000;
+let farmVerdictBusyAt = 0;
+function farmVerdictHeld() {
+	const now = Date.now();
+	const onTrip = !!(bossState && bossState.trip)
+		|| (typeof bossHop !== 'undefined' && !!bossHop && !!bossHop.state && bossHop.state !== 'IDLE');
+	if (onTrip) farmVerdictBusyAt = now;
+	return onTrip || (farmVerdictBusyAt > 0 && now - farmVerdictBusyAt < FARM_VERDICT_GRACE_MS);
+}
+
 const BOSS_BEAT_MS = 2000;
 function bossBeat() {
 	try { rageEntryExpire(); } catch (e) { }
+	try { farmVerdictHeld(); } catch (e) { }
 	if (!bossIsLeader() || !bossState.trip) return;
 	try { bossRecast(); } catch (e) { }
 	try { rageEntryBroadcast(rageEntryActive); } catch (e) { }
