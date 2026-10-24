@@ -1,4 +1,17 @@
 
+## v118
+
+**THE FOUR WITCH'S CIPHER INGREDIENTS ARE ON THE PONTY BUY LIST** -
+verdantspore, frostscale, embercoal, gloomfeather - on the operator's go-ahead,
+2026-10-24. Plain entries, as ruled on 2026-10-23: "25 of each" is the trigger
+for the party's FARM priority, not a buy cap, and the q-aware cap is not
+wanted. `capAtOneStack` already bounds them - Ponty asks 1,440 each, so a full
+9,999 stack is about 14.4M. Supply is expected to be thin: a 3,936-entry
+`/ponty` snapshot on 2026-10-23 held none on any shard, and stock appears only
+when somebody vendors one. `sbuy` takes a whole entry, so a single purchase can
+overshoot any count; nothing here relies on a count. The list goes from 58 ids
+to 62.
+
 ## v117
 
 **COMMENT ONLY - NO BEHAVIOUR CHANGE, REDEPLOY WHEN CONVENIENT.** The note

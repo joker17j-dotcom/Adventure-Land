@@ -355,4 +355,12 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
   const out = w.reliefSellable().map((r) => r.name);
   t.eq('CONTROL: an unprotected +0 item at the same value IS offered', out.includes('leather'), true);
   for (const n of ING) t.eq('relief refuses ' + n, out.includes(n), false);
+  /* And on the Ponty BUY list, operator's go-ahead 2026-10-24. Read off the
+     lifted CONFIG rather than the text, so a commented-out entry reads as
+     absent exactly as it does live. No count is pinned: "25 of each" is a farm
+     trigger, not a buy cap (ruled 2026-10-23). */
+  const m = merchant();
+  const buy = m.CONFIG.pontyBuy.items;
+  t.ok('CONTROL: the lifted buy list is the real one (dexbelt on it)', buy.includes('dexbelt'));
+  for (const n of ING) t.ok('Merchant Ponty buy list carries ' + n, buy.includes(n));
 } }];

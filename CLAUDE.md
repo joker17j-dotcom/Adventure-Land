@@ -4334,8 +4334,9 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   the merchant holds fewer than 25 of one, and a gathering window is open, the party
   prioritises that ingredient's monsters. The buy side needs no cap of its own: all
   four cost 1,440 at Ponty, so a full 9,999 stack is 14,398,560 gold, and the
-  existing one-full-stack-held cap already bounds it. The four names go on
-  `CONFIG.pontyBuy.items` as plain entries, which is the operator's edit.
+  existing one-full-stack-held cap already bounds it. The four names are on
+  `CONFIG.pontyBuy.items` as plain entries as of Merchant v118, added on the
+  operator's go-ahead 2026-10-24 and asserted in `Tests/suite_merchantsell.js`.
 - **THE GATHERING WINDOWS AGAINST THE HOP LIST, computed from `SLOTS` and `TIMEO`
   at upstream `16881a27`.** Gathering is the first 20 minutes of a round and the
   loot rows exist only on the shards running it: 05:00 and 17:00 UTC on EU, 11:00
@@ -5308,6 +5309,12 @@ for it in any script before Ranger v121 / Merchant v115.
   Ponty. The cheaper scripted route is to exclude, on the KNOCKER only, whatever
   live `G.events.trickortreat.costumes` names from its own muling - derived from
   `G`, so no hand list returns. The operator's call between the two.
+  **RULED 2026-10-24: THE OPERATOR LOCKS IT BY HAND.** Checked first that a
+  lock cannot break the swap: the `equip` handler at upstream `16881a27` has no
+  `item.l` test at all - its lock refusal (`item.acl || item.v`) sits inside
+  the TRADE branch only - so a locked costume equips and comes back off like
+  any other helmet, and the lock travels with the item object. Source-derived,
+  not yet measured live.
   **SEALED AND UNSEALING ITEMS ARE SAFE FROM VENDORING TOO, AND THE CLIENT
   FILTERS ARE NARROWER THAN THE SERVER'S.** `item.l` has three truthy states -
   `l` locked, `s` sealed, `u` unsealing - and the server's `socket.on("sell")`

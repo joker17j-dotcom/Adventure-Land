@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v117
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v118
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -842,6 +842,11 @@ const CONFIG = {
 			// windbelt craft input. CAPPED AT +2 BY maxLevel BELOW - a +3 is a SPENT
 			// belt, so the cap is part of the entry rather than a separate tuning.
 			'dexbelt',
+			// Witch's Cipher ingredients - operator 2026-10-24. Plain entries on
+			// purpose: "25 of each" is a FARM-priority trigger, not a buy cap, and
+			// capAtOneStack below already bounds them (a full stack is ~14.4M at
+			// 1,440 each). Also never sold - see PROTECTED_ITEM_NAMES.
+			'verdantspore', 'frostscale', 'embercoal', 'gloomfeather',
 			//upgrade
 			'scroll3', 'scroll4', 'cscroll3', 'offeringp', 'offering', 'offeringx',
 			//keys
