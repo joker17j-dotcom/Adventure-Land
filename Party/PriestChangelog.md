@@ -21,6 +21,33 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v73
+
+**GRAVEYARD RAGE ENTRY OPENS FROM WAVE 1, AND THE CROWD GATE IS AN AVERAGE.**
+Operator, 2026-10-24: entry is for the waves, not the Gargoyle - inside the
+box the party gets more zombie and ghoul kills while it waits, and those are
+Halloween-only achievements. `rageEntryNotWanted()` now admits any live
+graveyard; until this build it waited for `gargoyle: true`, which put the
+whole wave phase out of reach.
+The gate could not open for any crowd. Measured live on the 10:30 EDT graveyard
+with six other players: `rageCrowdSoak()` from the corridor read
+6,5,7,3,5,3,5,8,6,4,8,6,5,6,6,6,2,3,5,9 at 2s intervals - so the corridor CAN
+see into the box - and the longest run at or above `minSoaked` 6 was three
+samples against a 20s consecutive hold. `rageEntryTick` now keeps a `holdMs`
+window of samples and goes in when their average reaches `minSoaked`, after the
+leader has watched for `holdMs`; the average falling below it brings the party
+out. `minSoaked` is 5: that crowd averaged 5.4, and a 70%-of-samples rule at 6
+would not have opened on it either. The retreat at `retreatAtAttackers` on each
+character is unchanged and still answers tick by tick. Byte-identical in the
+three party scripts, and the relay divergence check holds them to it.
+
+**CAVE MAIL IS CLAIMED.** A cave reward goes to a random member's bag, or by
+mail from "Dorr" when that bag is full or the member is offline, and only the
+named character can take it. The CAVE MAIL block lists mail with
+`api_call('pull_mail')` 20s after load and every 30 minutes and takes each
+untaken Dorr item letter addressed to this character. Byte-identical in the
+three party scripts.
+
 ## v72
 
 **EVERY GAME LOG LINE NOW GOES TO A FILE ON THE BRIDGE**, on the operator's

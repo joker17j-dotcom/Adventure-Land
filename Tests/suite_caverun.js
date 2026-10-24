@@ -637,5 +637,157 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	t.eq('leaderName is the only reader of the default',
 		(s.match(/DEFAULT_LEADER/g) || []).length, 2);
 }
+},
+
+{ name: 'v25 the encounter table covers all fifty, and every effect it names is scored or refused on purpose', fn(t) {
+	const w = voteWorld();
+	t.eq('fifty encounters', w.CAVE_ENCOUNTERS.length, 50);
+	t.eq('ids e01..e50 in order', w.CAVE_ENCOUNTERS.map((e) => e.id).join(','),
+		Array.from({ length: 50 }, (_, i) => 'e' + String(i + 1).padStart(2, '0')).join(','));
+	t.eq('titles are distinct, which is what lets a title identify the encounter',
+		new Set(w.CAVE_ENCOUNTERS.map((e) => e.n)).size, 50);
+	/* An effect the scorer has no case for returns null and reads exactly like a
+	   ruling, so the refusals have to be the KNOWN ones and nothing else. */
+	const rich = { gold: 1e6, reserve: 0, has: { tool: true, lamp: false }, comfortable: true };
+	const stray = [];
+	for (const e of w.CAVE_ENCOUNTERS) for (const d of e.o) {
+		const sc = w.voteScore(d, { cost: d.c || 0, amber: d.a || 0 }, Object.assign({ kind: e.k }, rich));
+		const meant = w.VOTE.never.indexOf(d.e) >= 0 || d.a || (d.o || []).some((x) => x.sh);
+		if (sc === null && !meant) stray.push(e.id + '/' + d.i + ':' + d.e);
+	}
+	t.eq('no option is refused by accident', stray.join(' '), '');
+}
+
+},
+
+{ name: 'v25 the operator rulings, each as a pick', fn(t) {
+	const w = voteWorld();
+	const st = (o) => Object.assign({ floor: 0, gold: 20000, remaining_ms: 900000, supplies: [], objectives: [] }, o || {});
+	const pick = (enc, ids, o) => {
+		const e = w.CAVE_ENCOUNTER_BY_ID[enc];
+		const choice = { id: 'c', title: e.n, options: ids.map((id) => {
+			const d = e.o.find((x) => x.i === id);
+			return { id: id, cost: d.c || 0, amber: d.a || 0, unavailable: null };
+		}) };
+		return w.votePlan(choice, st(o)).pick;
+	};
+	t.eq('never the 6-Amber die bet', pick('e01', ['die', 'small']), 'small');
+	t.eq('never an Amber exchange, even against walking away', pick('e41', ['e41_0', 'e41_5']), 'e41_5');
+	t.eq('never an Amber price on anything - a 3-Amber pass loses to walking away', pick('e21', ['e21_0', 'e21_5']), 'e21_5');
+	t.eq('never the level-100 wolves', pick('e10', ['e10_0', 'e10_5']), 'e10_5');
+	t.eq('never the shadow copy', pick('e17', ['e17_0', 'e17_5']), 'e17_5');
+	t.eq('2 Amber beats a parcel', pick('e13', ['e13_1', 'e13_0']), 'e13_1');
+	t.ok('a parcel beats 1 Amber', w.voteOutcomeValue({ r: 'parcel' }, { has: {} }) > w.voteOutcomeValue({ a: 1 }, { has: {} }));
+	t.ok('and loses to 2', w.voteOutcomeValue({ r: 'parcel' }, { has: {} }) < w.voteOutcomeValue({ a: 2 }, { has: {} }));
+	t.eq('the rescue table beats a parcel', pick('e18', ['e18_0', 'e18_4']), 'e18_0');
+	t.eq('careful beats the 50/50 while time is comfortable', pick('e02', ['e02_0', 'e02_2']), 'e02_2');
+	t.eq('and loses to it when the clock is short', pick('e02', ['e02_0', 'e02_2'], { remaining_ms: 120000 }), 'e02_0');
+	t.eq('the surveyor: save over hire', pick('e06', ['aid', 'save']), 'save');
+	t.eq('the rogue: watch, not save', pick('e20', ['save', 'watch']), 'watch');
+	t.eq('a conflict: testimony first', pick('e11', ['left', 'testimony']), 'testimony');
+	t.eq('carry a lamp when offered', pick('e38', ['e38_1', 'e38_4']), 'e38_1');
+	t.eq('but not a second one', pick('e38', ['e38_1', 'e38_4'], { supplies: ['lamp'] }), 'e38_4');
+	t.eq('moths beat the 2 Amber beside them', pick('e47', ['e47_0', 'e47_1']), 'e47_0');
+	t.eq('a toll is paid from gold above the reserve', pick('e27', ['e27_0', 'e27_1'], { gold: 13000 }), 'e27_0');
+	t.eq('and below it nobody votes, so the server takes the time option',
+		pick('e27', ['e27_0', 'e27_1'], { gold: 12000 }), null);
+	t.eq('the cheaper time option is refused under the reserve too',
+		pick('e27', ['e27_3', 'e27_4'], { gold: 10500 }), 'e27_4');
+	t.eq('never a fight in a bad encounter', pick('e28', ['e28_1', 'e28_4']), 'e28_4');
+	t.eq('a merchant is inspected while the purse can buy a die', pick('e48', ['e48_0', 'e48_3']), 'e48_0');
+	t.eq('and not worth a lamp when it cannot', pick('e48', ['e48_0', 'e48_3'], { gold: 4000 }), 'e48_3');
+	const rel = st({ floor: 2, gold: 5000, objectives: [{ floor: 2, required: true, kind: 'encounter', done: true }] });
+	t.eq('the reserve releases after the third floor encounter', w.reserveNow(rel), 0);
+	t.eq('and stays released', w.reserveNow(st({ floor: 2 })), 0);
+	t.eq('revival: never revive in place for Amber',
+		w.votePlan({ id: 'r', title: 'A Hand in the Dark', options: [{ id: 'here', amber: 2 }, { id: 'landing', amber: 0 }] }, st()).pick, 'landing');
+}
+
+},
+
+{ name: 'v25 unknown encounters are logged and left to the operator, and any teammate vote is echoed', fn(t) {
+	const mk = (me) => {
+		const w = voteWorld();
+		w.character.name = me;
+		w.sent = []; w.logs = [];
+		w.parent.socket = { emit: (k, d) => w.sent.push(d) };
+		w.clog = (m) => w.logs.push(m);
+		return w;
+	};
+	const known = (votes) => ({ id: 'v1', title: 'The Unclaimed Parcel', votes: votes || {},
+		options: [{ id: 'e02_0', cost: 0, amber: 0 }, { id: 'e02_2', cost: 0, amber: 0 }] });
+	const L = mk('FatherToken');
+	L.voteOpen({ floor: 0, gold: 0, remaining_ms: 900000, supplies: [], objectives: [] }, known());
+	t.eq('the leader votes a known encounter at once', L.sent.map((d) => d.option).join(), 'e02_2');
+	const F = mk('MageofOz');
+	F.voteOpen({}, known());
+	t.eq('a follower does not pick on its own', F.sent.length, 0);
+	F.voteOpen({}, known({ Dexon: 'e02_0' }));
+	t.eq('it echoes whichever teammate voted - the operator on Dexon here', F.sent.map((d) => d.option).join(), 'e02_0');
+	const U = mk('FatherToken');
+	U.voteOpen({ gold: 0 }, { id: 'v2', title: 'A Brand New Thing', options: [{ id: 'x', label: 'Do x', cost: 0, amber: 0 }] });
+	t.eq('an unknown encounter gets no vote', U.sent.length, 0);
+	t.ok('and an UNKNOWN EVENT line naming its options', U.logs.some((m) => /UNKNOWN EVENT/.test(m) && /x "Do x"/.test(m)));
+	const O = mk('FatherToken');
+	O.voteOpen({ gold: 0 }, { id: 'v3', title: 'The Unclaimed Parcel', options: [{ id: 'e02_9', cost: 0, amber: 0 }] });
+	t.eq('an option the table does not list for a known encounter is unknown too', O.sent.length, 0);
+	O.voteOpen({ gold: 0 }, { id: 'v3', title: 'The Unclaimed Parcel', votes: { MageofOz: 'e02_9' }, options: [{ id: 'e02_9', cost: 0, amber: 0 }] });
+	t.eq('and when the operator then votes on a follower, the leader echoes it', O.sent.map((d) => d.option).join(), 'e02_9');
+	t.eq('the UNKNOWN EVENT line is written once, not every tick', O.logs.filter((m) => /UNKNOWN EVENT/.test(m)).length, 1);
+}
+
+},
+
+{ name: 'v25 a friendly cave side is never targeted, and a refusal benches the id', fn(t) {
+	const w = world({ FRIENDLY_SIDES: ['neutral', 'ally', 'victim'], friendlyBenchMs: 10000, friendlySkip: {} });
+	w.mayAttack = () => true;
+	w.bump = () => {};
+	lift(w, 'CaveRun.js', ['caveFriendly', 'mayTarget']);
+	const m = (side, id) => ({ id: id || side, type: 'monster', cave: side ? { side: side } : undefined });
+	for (const s of ['neutral', 'ally', 'victim']) t.eq(s + ' is not a target', w.mayTarget(m(s)), false);
+	for (const s of ['enemy', 'predator', 'duel_left']) t.eq(s + ' is', w.mayTarget(m(s)), true);
+	t.eq('no side at all is a target', w.mayTarget(m(null, 'plain')), true);
+	w.friendlySkip.plain = Date.now() + 5000;
+	t.eq('until a refusal benches it', w.mayTarget(m(null, 'plain')), false);
+	const s = src();
+	t.ok('noteWhy benches on friendly_target', /friendlySkip\[t\.id\] = Date\.now\(\) \+ friendlyBenchMs/.test(s));
+	t.ok('every pickTarget path goes through mayTarget', (s.slice(s.indexOf('function pickTarget()'), s.indexOf('// -------------------------------------------------------------- skills')).match(/mayTarget\(/g) || []).length >= 3);
+}
+
+},
+
+{ name: 'v25 the exit waits for the last seal and the chests, and the leader hold only runs inside a run', fn(t) {
+	const w = world({});
+	lift(w, 'CaveRun.js', ['runFinished']);
+	const o = (done) => ({ floor: 2, objectives: [{ floor: 2, required: true, done: true }, { floor: 2, required: true, done: done }, { floor: 2, required: false, done: false }] });
+	t.eq('finished when every required third-floor room is done', w.runFinished(o(true)), true);
+	t.eq('not before', w.runFinished(o(false)), false);
+	t.eq('not on an earlier floor', w.runFinished({ floor: 1, objectives: [{ floor: 1, required: true, done: true }] }), false);
+	t.eq('not with no objectives read', w.runFinished({ floor: 2, objectives: [] }), false);
+	const s = src();
+	t.ok('exitTick runs every tick', /\t\tlootTick\(\);\n\t\texitTick\(\);/.test(s));
+	t.ok('the leader hold is gated on active()', /if \(active\(\)\) warnOutrun\(\);/.test(s));
+	t.ok('hand-back ships empty', /handback: \{\} \}/.test(s));
+}
 
 }];
+
+function voteWorld() {
+	/* CAVE_ENCOUNTERS is `const X = [`, which lift() cannot take, so it is cut
+	   out of the committed source by text and evaluated here. */
+	const s = src();
+	const a = s.indexOf('const CAVE_ENCOUNTERS = [');
+	const b = s.indexOf('\n];\n', a) + 3;
+	const w = world({ TEAM: ['Dexon', 'FatherToken', 'MageofOz'], votedFor: {}, voteNoted: {}, reserveReleased: false });
+	require('vm').runInContext(s.slice(a, b).replace('const CAVE_ENCOUNTERS', 'globalThis.CAVE_ENCOUNTERS'), w);
+	w.CAVE_ENCOUNTER_BY_ID = {}; w.CAVE_ENCOUNTER_BY_NAME = {};
+	for (const e of w.CAVE_ENCOUNTERS) { w.CAVE_ENCOUNTER_BY_ID[e.id] = e; w.CAVE_ENCOUNTER_BY_NAME[e.n] = e; }
+	w.clog = () => {}; w.ev = () => {}; w.bump = () => {}; w.throttleLog = () => {};
+	w.leaderName = () => 'FatherToken';
+	w.isLeader = () => w.character.name === 'FatherToken';
+	w.character = w.character || {};
+	w.character.name = 'FatherToken';
+	lift(w, 'CaveRun.js', ['VOTE', 'CAVE_REVIVAL', 'encounterOf', 'voteFightValue', 'voteFlagValue', 'voteOutcomeValue',
+		'voteScore', 'reserveNow', 'voteContext', 'votePlan', 'voteEmit', 'voteOpen']);
+	return w;
+}

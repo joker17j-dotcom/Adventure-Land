@@ -1390,6 +1390,16 @@ this ranking until a Ranger build is actually running on him.
   **THE GATE'S INPUT IS STILL UNMEASURED IN A REAL CROWD**, so the first live
   question is whether `rageCrowdSoak()` from the corridor ever reaches
   `minSoaked` with the Gargoyle up.
+- **RULED AGAIN 2026-10-24, NARROWER THAN THE BULLET ABOVE READ IT: ENTRY IS
+  FOR THE WAVES, NOT THE GARGOYLE**, and it opens from wave 1 as of Ranger v137 /
+  Priest v73 / Mage v96. Operator: being inside the box gets more zombie and
+  ghoul kills while waiting on the Gargoyle, and those are Halloween-only
+  achievements. The `gargoyle: true` condition above put the whole wave phase
+  out of reach. **THE GATE'S INPUT IS NOW MEASURED**: from the corridor
+  `rageCrowdSoak()` read 6,5,7,3,5,3,5,8,6,4,8,6,5,6,6,6,2,3,5,9 at 2s with six
+  other players, so the corridor does see into the box, and a 20s CONSECUTIVE
+  hold of >= 6 could never open on a count that noisy. The gate is now the
+  AVERAGE over `holdMs` against `minSoaked` 5 (that series averages 5.4).
 - **THE RECOMMENDED SIGNAL COULD NOT GATE ENTRY, AND THE REASON GENERALISES.**
   attackers-per-character is the right quantity and it is UNAVAILABLE AT THE
   MOMENT OF THE DECISION: parked in the corridor pulling one mummy at a time we
@@ -3421,6 +3431,13 @@ Claude Code session stops after `browser_code_eval`.
   operator edits - `'mole'` in `singleTargetMobs`, `monsterHunt` off, the
   booboo entry commented out - are in the COMMITTED file, so the 2026-10-17
   divergence was folded upstream rather than still being live.
+- **A SLOT ABOUT TWICE THE SIZE OF ITS COMMIT IS AN APPEND, AND A VERSION
+  PROBE CANNOT SEE IT.** Measured 2026-10-24 by the browser session: slot 11
+  "Cave" held CaveRun v24 (137,312 bytes, exactly `a36cd4c`) FOLLOWED BY a
+  complete CaveRun v22 (127,957) - a paste that appended instead of replacing.
+  Both are self-contained IIFEs, so a cave run would have started TWO CaveRuns,
+  and line 1 read v24 both times. Only the size and the hash showed it. The
+  operator replaced it; re-hashed it matched `a36cd4c` exactly.
 - **A LIVE SLOT CAN BE AHEAD OF THE REPO, AND NOTHING RECORDS IT.** The
   deployment markers in the version header only ever say the repo is ahead of
   the slot. There is no marker for the reverse, and the reverse is the one that
@@ -4458,6 +4475,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
+- **CAVE AMBER AND THE LOADED DIE ARE NEVER SOLD AND ALWAYS BANKED, AND THE DIE
+  IS NEVER COMPOUNDED** - operator's rulings 2026-10-24 ("No compounding just
+  bank"). Ranger v137 `SCARCE_ITEM_NAMES`; Merchant v126 `PROTECTED_ITEM_NAMES`,
+  `keepAndBank` and `craftInputCaps.cave_loaded_die: 0`. Amber vendors for 120,
+  so every cheapest-first pass reached it first. Cave rewards that miss a full
+  or offline bag arrive as MAIL from "Dorr" that only the named character can
+  take, and muling never sees mail - so the three combat scripts claim it
+  (`claimCaveMail`, 20s after load and every 30 minutes).
 - **`Party/Ranger.js` HAS NO BANK PLUMBING AT ALL - this is new capability, not
   config.** Measured: zero `bank_store`, zero `bank_retrieve`, no `CONFIG.bank`,
   no bank map. Every "bank" string in that file is monster-hunt token language
@@ -4900,6 +4925,25 @@ a day.
   flip hostile/friendly with the choices and are reused, so it is expected
   noise; the only open question is whether those refusals displace real
   attacks, which the counts cannot answer.
+
+- **THE CAVE VOTES, BUYS THE DIE AND LEAVES BY ITSELF AS OF CaveRun v25**, on
+  the operator's rulings of 2026-10-24. The cave is for Loaded Dice, so Amber is
+  the prize. A vote shows TWO of an encounter's six options and the client gets
+  no effect field, so CaveRun carries a copy of `dreams.encounters` from
+  upstream `16881a2` and scores each shown option in Amber; the scoring and the
+  NEVER list are in the vote block. An encounter or option not in that copy is
+  logged as UNKNOWN EVENT and nobody votes - the operator has the 60s, and any
+  vote he makes on any character is echoed. **OPTION IDS ARE NOT GLOBALLY
+  UNIQUE** (e01's are small/large/six..., the rescues' save/watch/...), so the
+  encounter is identified first, by `title_message.phrase` or by title. A
+  10,000 cave-gold reserve is held for a merchant's Loaded Die until the third
+  floor's encounter is done. Anything whose `cave.side` is neutral, ally or
+  victim is never targeted - the 2026-10-23 run spent 2,394 of Dexon's attacks
+  on one friendly sentinel. Once every required third-floor room is done and
+  the chests are opened (90s cap) each character leaves; hand-back to the main
+  slot is empty until `load_code()` is measured on a character slot.
+  **THE SCORES ARE THE OPERATOR'S ORDERING EXPRESSED AS NUMBERS, NOT
+  MEASUREMENTS** - the hunt miss chances in particular are guesses.
 
 ## The published event schedule - upstream's new mechanism
 

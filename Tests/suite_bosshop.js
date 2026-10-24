@@ -383,6 +383,7 @@ module.exports = [
       ragePullShared: null,
       rageEntryActive: !!over.active,
       rageEntryOkSince: over.okSince || 0,
+      rageEntryWindow: over.window || [],
       rageEntryHeard: over.heard || null,
     });
     lift(w, RANGER, ['rageBoxes', 'rageHit', 'rageCfg', 'bossIsLeader', 'rageCrowdSoak',
@@ -437,28 +438,59 @@ module.exports = [
   t.eq('the decision is broadcast to the other two', sent.length >= 2, true);
   t.eq('never to the merchant', sent.some(x => x[0] === 'Meltymerch'), false);
 
-  /* --- FOR THE GARGOYLE, AND ONLY ONCE IT IS UP -------------------------- */
-  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, S: { graveyard: { live: true } } });
+  /* --- FOR THE WAVES, FROM WAVE 1 ---------------------------------------- */
+  /* Operator, 2026-10-24: entry is for the zombie and ghoul kills, which are
+     Halloween-only achievements, not for the Gargoyle. Until then the wave
+     phase never qualified, because entry waited for `gargoyle: true`. */
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, S: { graveyard: { live: true, wave: 1 } } });
   w.rageEntryTick('spookytown');
-  t.eq('PRECONDITION: the crowd alone would convince the leader',
-    w.rageCrowdSoak('spookytown').soaked >= 6, true);
-  t.eq('but before the gargoyle wakes the leader stays out', w.rageEntryActive, false);
-  t.eq('and the sustain clock is reset rather than banked', w.rageEntryOkSince, 0);
-  t.eq('and still tells the followers OUT', sent.length > 0 && sent[sent.length - 1][1].on, false);
+  t.eq('PRECONDITION: no gargoyle on the event entry', !!w.parent.S.graveyard.gargoyle, false);
+  t.eq('the waves alone let the leader in', w.rageEntryActive, true);
+  t.eq('and the followers are told IN', sent.length > 0 && sent[sent.length - 1][1].on, true);
+  w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, S: {} });
+  w.rageEntryTick('spookytown');
+  t.eq('with no graveyard live the box stays shut', w.rageEntryActive, false);
+  t.eq('and the clock is reset rather than banked', w.rageEntryOkSince, 0);
+  t.eq('and still tells the followers OUT', sent[sent.length - 1][1].on, false);
+
+  /* --- THE MEASURED CROWD OPENS IT --------------------------------------- */
+  /* 2026-10-24 10:30 EDT, six other players, sampled every 2s from the
+     corridor. Under the old rule (>= 6 held for 20s) this never opened. */
+  const SERIES = [6, 5, 7, 3, 5, 3, 5, 8, 6, 4, 8, 6, 5, 6, 6, 6, 2, 3, 5, 9];
+  let run = 0, longest = 0;
+  for (const v of SERIES) { run = v >= 6 ? run + 1 : 0; longest = Math.max(longest, run); }
+  t.ok('PRECONDITION: no run of >= 6 lasts 20s (ten samples)', longest < 10);
+  const past = SERIES.slice(0, -1).map((v, i) => [Date.now() - (SERIES.length - 1 - i) * 1000, v]);
+  w = mk({ cfg: { minSoaked: 5 }, ents: IN(9, 'Stranger'), okSince: Date.now() - 21000, window: past });
+  w.rageEntryTick('spookytown');
+  t.eq('the measured series averages 5.4 and the leader goes in', w.rageEntryActive, true);
+  t.eq('the window keeps only holdMs of samples', w.rageEntryWindow.length <= SERIES.length, true);
+  w = mk({ cfg: { minSoaked: 5 }, ents: IN(9, 'Stranger'), okSince: Date.now() - 5000, window: past });
+  w.rageEntryTick('spookytown');
+  t.eq('but not before the leader has watched for holdMs', w.rageEntryActive, false);
+  const thin = SERIES.map((v, i) => [Date.now() - (SERIES.length - i) * 1000, Math.min(v, 3)]);
+  w = mk({ cfg: { minSoaked: 5 }, ents: IN(9, 'Stranger'), active: true, okSince: Date.now() - 60000, window: thin });
+  w.rageEntryTick('spookytown');
+  t.eq('a crowd that has averaged thin brings an entered leader out, one good tick or not', w.rageEntryActive, false);
+  for (const f of ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js']) {
+    const rs = require('fs').readFileSync(require('path').join(require('./lift').ROOT, f), 'utf8');
+    t.ok(f + ': minSoaked ships at 5, as an average', /minSoaked: 5, +\/\/ AVERAGE/.test(rs));
+  }
   w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, trip: { name: 'mrgreen' } });
   w.rageEntryTick('spookytown');
   t.eq('on any other trip the box stays shut, crowd or not', w.rageEntryActive, false);
   w = mk({ ents: IN(7, 'Stranger'), okSince: Date.now() - 21000, active: true, S: {} });
   w.rageEntryTick('spookytown');
   t.eq('the graveyard ending puts an entered leader straight back out', w.rageEntryActive, false);
-  /* INVERTED: the gargoyle being up is necessary, not sufficient - no crowd,
-     no entry, exactly as before. */
+  /* INVERTED: a live graveyard is necessary, not sufficient - no crowd, no
+     entry. */
   w = mk({ ents: IN(5, 'Stranger'), okSince: Date.now() - 60000 });
   w.rageEntryTick('spookytown');
-  t.eq('a gargoyle up with a thin crowd is still a no', w.rageEntryActive, false);
+  t.eq('a live graveyard with a thin crowd is still a no', w.rageEntryActive, false);
 
-  /* A single tick below the threshold ends it - biased toward staying out,
-     because missing a graveyard costs ~nothing and a wipe in the box does. */
+  /* The AVERAGE falling below the threshold ends it - still biased toward
+     staying out, because missing a graveyard costs ~nothing and a wipe in the
+     box does. */
   w = mk({ ents: IN(5, 'Stranger'), active: true, okSince: Date.now() - 60000 });
   w.rageEntryTick('spookytown');
   t.eq('the crowd thinning puts us straight back out', w.rageEntryActive, false);

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v95
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v96
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -657,8 +657,8 @@ const CONFIG = {
 	   values anything was fitted to. */
 	rageEntry: {
 		enabled: TOGGLES.rageEntry,
-		minSoaked: 6,            // monsters in the box held by non-party players
-		holdMs: 20000,           // sustained for this long before we go in
+		minSoaked: 5,            // AVERAGE monsters in the box held by non-party players
+		holdMs: 20000,           // averaged over this long before we go in
 		retreatAtAttackers: 3,   // on THIS character - meant to sit below courage
 		trustMs: 15000,          // a follower falls out after this much silence
 	},
@@ -2085,9 +2085,11 @@ function bossFightTypes() {
 	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
 	if (!trip || !trip.name) return [];
 	const types = bossMonsterTypes(trip.name);
-	/* INSIDE THE RAGE BOX THE GARGOYLE IS WHAT WE WENT IN FOR. rageEntryActive
-	   is containment off, which is also what points the walk at its spawn
-	   rather than the join spot (bossWalkTarget), so the two widen together. */
+	/* INSIDE THE RAGE BOX THE GARGOYLE IS A TARGET TOO. Entry is for the waves
+	   (rageEntryNotWanted), but once the Gargoyle is up the party inside is
+	   standing at its spawn. rageEntryActive is containment off, which is also
+	   what points the walk at that spawn rather than the join spot
+	   (bossWalkTarget), so the two widen together. */
 	if (trip.name === 'graveyard' && rageEntryActive) return types.concat(['gargoyle']);
 	return types;
 }
@@ -2131,6 +2133,7 @@ let ragePullShared = null;
    real widening and not a scoped one. */
 let rageEntryActive = false;
 let rageEntryOkSince = 0;
+let rageEntryWindow = [];
 let rageEntryHeard = null;
 
 function rageCfg() {
@@ -2743,39 +2746,40 @@ function rageEntrySet(on, why) {
    BIASED TOWARD STAYING OUT, deliberately. Missing a graveyard costs almost
    nothing - another in two hours - while a wipe inside the rectangle with
    containment off costs downtime and leaves three bodies somewhere the party
-   cannot easily walk back to. So entry needs the crowd SUSTAINED over
-   `holdMs`, and a single tick below the threshold ends it immediately.
+   cannot easily walk back to. So entry needs the crowd's AVERAGE over
+   `holdMs` to clear `minSoaked`, and the average dropping below it brings the
+   party out. It was a run of consecutive ticks until 2026-10-24, which a crowd
+   count that swings 2-9 every two seconds could never satisfy.
 
    THE RETREAT IS NOT courage. The file records courage failing as a
    whole-party wipe twice - "firing AT courage pre-empts the ... and all three
    characters died", and attackers going 3 to 9 at the band's own threshold -
    so `retreatAtAttackers` is its own number, meant to sit below courage, and
    escalation is fast enough that it has to. */
-/* Why the leader should stay out right now, or null. Entry is for the
-   Gargoyle - operator, 2026-10-24: "the ability for the party to enter the
-   ragebox for gargoyle" - so only on a graveyard trip whose Gargoyle has
-   woken. graveyard_public() adds `gargoyle: true` to the event's entry at the
-   wake and carries nothing like it before. Going in earlier adds mummy risk
-   and buys nothing: the waves are pulled from the corridor and their points
-   carry over to the Gargoyle anyway. */
+/* Why the leader should stay out right now, or null. ENTRY IS FOR THE WAVES -
+   operator, 2026-10-24: being inside the box gets more kills of the event's own
+   monsters (zombie, ghoul) while the party waits on the Gargoyle, and those are
+   achievements that exist only for Halloween. So any live graveyard qualifies
+   from wave 1, crowd permitting. Until then entry waited for `gargoyle: true`,
+   which put the whole wave phase - where those kills are - out of reach. */
 function rageEntryNotWanted() {
 	const trip = (typeof bossState !== 'undefined' && bossState && bossState.trip) ? bossState.trip : null;
 	if (!trip || trip.name !== 'graveyard') return 'not on a graveyard trip';
 	const S = (typeof parent !== 'undefined' && parent.S) || {};
-	if (!S.graveyard || !S.graveyard.gargoyle) return 'the gargoyle is not up';
+	if (!S.graveyard) return 'the graveyard is not live';
 	return null;
 }
 
 function rageEntryTick(map) {
 	const cfg = (CONFIG.bossEvents && CONFIG.bossEvents.rageEntry) || {};
-	if (!cfg.enabled) { rageEntryOkSince = 0; rageEntrySet(false, 'entry is off'); return; }
+	if (!cfg.enabled) { rageEntryOkSince = 0; rageEntryWindow = []; rageEntrySet(false, 'entry is off'); return; }
 
 	/* THE RETREAT IS EVERY CHARACTER'S OWN AND IS NEVER DELEGATED. Bodies on
 	   ME are a fact only I can see, and waiting for the leader to notice them
 	   is how the thing this guards against happens. So it runs before the
 	   leader check and applies to all three. */
 	if (rageEntryActive && rageAttackersOnMe() >= (cfg.retreatAtAttackers || 3)) {
-		rageEntryOkSince = 0;
+		rageEntryOkSince = 0; rageEntryWindow = [];
 		rageEntrySet(false, 'too many on me');
 		return;
 	}
@@ -2801,21 +2805,32 @@ function rageEntryTick(map) {
 
 	const notNow = rageEntryNotWanted();
 	if (notNow) {
-		rageEntryOkSince = 0;
+		rageEntryOkSince = 0; rageEntryWindow = [];
 		rageEntrySet(false, notNow);
 		rageEntryBroadcast(rageEntryActive);
 		return;
 	}
 
+	/* THE CROWD IS AVERAGED OVER `holdMs`, NOT REQUIRED ON EVERY TICK. Measured
+	   live 2026-10-24 on a 10:30 EDT graveyard with six other players: `soaked`
+	   read 6,5,7,3,5,3,5,8,6,4,8,6,5,6,6,6,2,3,5,9 at 2s intervals, so a run of
+	   >= 6 never lasted more than three samples and a "sustained" gate reset on
+	   every dip - it could not open for any crowd. That series averages 5.4.
+	   The window starts when the leader starts watching and is cleared by
+	   anything that puts the box out of bounds; the retreat above still answers
+	   to bodies on each character, tick by tick. */
 	const soak = rageCrowdSoak(map);
-	if (soak.soaked < (cfg.minSoaked || 6)) {
-		rageEntryOkSince = 0;
-		rageEntrySet(false, 'crowd is soaking only ' + soak.soaked + ' of ' + soak.boxed);
-	} else {
-		if (!rageEntryOkSince) rageEntryOkSince = Date.now();
-		if (Date.now() - rageEntryOkSince >= (cfg.holdMs || 20000)) {
-			rageEntrySet(true, soak.soaked + ' of ' + soak.boxed + ' held by others');
-		}
+	const now = Date.now(), holdMs = cfg.holdMs || 20000, need = cfg.minSoaked || 5;
+	rageEntryWindow.push([now, soak.soaked]);
+	while (rageEntryWindow.length && now - rageEntryWindow[0][0] > holdMs) rageEntryWindow.shift();
+	if (!rageEntryOkSince) rageEntryOkSince = now;
+	let sum = 0;
+	for (const x of rageEntryWindow) sum += x[1];
+	const mean = sum / rageEntryWindow.length;
+	if (mean < need) {
+		rageEntrySet(false, 'crowd averaging ' + mean.toFixed(1) + ' of ' + need + ' (' + soak.soaked + ' of ' + soak.boxed + ' now)');
+	} else if (now - rageEntryOkSince >= holdMs) {
+		rageEntrySet(true, 'crowd averaging ' + mean.toFixed(1) + ' held by others over ' + Math.round(holdMs / 1000) + 's');
 	}
 	/* Re-sent every tick rather than on the edge, because the followers time
 	   out on silence and a dropped message would otherwise strand them. */
@@ -5036,6 +5051,39 @@ if (parent.$) {
 	})();
 
 }
+
+// === CAVE MAIL BEGIN === byte-identical in Party/Ranger.js, Party/Priest.js and
+// Party/Mage.js; Tests/suite_relay.js holds them to it.
+/* CLAIM WHAT THE CAVE MAILED. A cave reward goes to a random member's bag, and
+   when that bag is full or the member is offline the server mails it instead -
+   from "Dorr", subject "From the cave" - and only the character named on the
+   letter can take it (`mail_take_item` refuses wrong_character). Muling never
+   sees mail, so without this the item sits in the mailbox until someone opens
+   it by hand. Read with api_call('pull_mail'), which lists the newest 40; each
+   item letter carries `to`, `fro`, `id` and `taken`. Runs 20s after load and
+   every 30 minutes, and stops for the pass when the bag is full. */
+const CAVE_MAIL_FROM = 'Dorr';
+async function claimCaveMail() {
+	let d;
+	try { d = await api_call('pull_mail', {}, { timeout: 10000 }); }
+	catch (e) { game_log('cave mail: pull_mail failed - ' + ((e && (e.reason || e.message)) || e), 'orange'); return null; }
+	const list = (d && d.mail) || (Array.isArray(d) && d[0] && d[0].mail) || null;
+	if (!list) { game_log('cave mail: pull_mail returned no list', 'orange'); return null; }
+	let claimed = 0;
+	for (const m of list) {
+		if (!m || m.fro !== CAVE_MAIL_FROM || !m.item || m.taken || m.to !== character.name) continue;
+		if ((character.esize || 0) < 1) { game_log('cave mail: bag full - letters left for the next pass', 'orange'); break; }
+		try { parent.socket.emit('mail_take_item', { id: m.id }); claimed++; } catch (e) { }
+		await new Promise((r) => setTimeout(r, 600));
+	}
+	if (claimed) game_log('cave mail: took ' + claimed + ' item(s) from ' + CAVE_MAIL_FROM, '#D4BB88');
+	return claimed;
+}
+setTimeout(function caveMailLoop() {
+	claimCaveMail().catch(function () { });
+	setTimeout(caveMailLoop, 30 * 60 * 1000);
+}, 20000);
+// === CAVE MAIL END ===
 
 // === GAMELOG BEGIN === byte-identical in Party/Ranger.js, Party/Priest.js,
 // Party/Mage.js, Party/Merchant.js and CaveRun.js; Tests/suite_gamelog.js

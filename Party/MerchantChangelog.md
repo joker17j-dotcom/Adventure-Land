@@ -1,4 +1,15 @@
 
+## v126
+
+**CAVE AMBER AND THE LOADED DIE ARE KEPT, BANKED AND NEVER SOLD, AND THE DIE IS
+NEVER COMPOUNDED** - operator's rulings 2026-10-24, "No compounding just bank".
+Both are on `PROTECTED_ITEM_NAMES` and `CONFIG.materials.keepAndBank`, which
+the two sell guards consult and the bank sweeps deposit; Amber vendors for 120
+and a value-sorted dump reached it first. `craftInputCaps.cave_loaded_die` is 0,
+so the auto-combine, the gear-plan step and the bank-triple sweep all refuse
+it, and the tier-2/3 orb goal reads `craft_input_cap@0` rather than acting.
+Removing that one line lets the gear plan compound it again.
+
 ## v125
 
 **EVERY GAME LOG LINE NOW GOES TO A FILE ON THE BRIDGE**, on the operator's

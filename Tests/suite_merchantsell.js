@@ -363,4 +363,26 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
   const buy = m.CONFIG.pontyBuy.items;
   t.ok('CONTROL: the lifted buy list is the real one (dexbelt on it)', buy.includes('dexbelt'));
   for (const n of ING) t.ok('Merchant Ponty buy list carries ' + n, buy.includes(n));
+} },
+
+{ name: 'cave Amber and the Loaded Die are never sold, always banked, and the die is never compounded', fn(t) {
+  /* Operator's rulings 2026-10-24: the cave is run for Loaded Dice and Amber
+     is what one is made from; "No compounding just bank" for the die. */
+  const CAVE = ['cave_amber', 'cave_loaded_die'];
+  const prot = namesIn('Party/Merchant.js', 'const PROTECTED_ITEM_NAMES');
+  const scarce = namesIn('Party/Ranger.js', 'const SCARCE_ITEM_NAMES');
+  const m = merchant();
+  for (const n of CAVE) {
+    t.ok(n + ' is in the merchant PROTECTED_ITEM_NAMES', prot.includes(n));
+    t.ok(n + ' is in the ranger SCARCE_ITEM_NAMES', scarce.includes(n));
+    t.ok(n + ' is kept and banked on the merchant', (m.CONFIG.materials.keepAndBank || []).includes(n));
+    t.ok(n + ' is not on the merchant sell whitelist', m.CONFIG.selling.whitelist.indexOf(n) < 0);
+    const rl = (text('Party/Ranger.js').match(/^\t\twhitelist: \[[^\]]*\]/m) || [''])[0];
+    t.ok('CONTROL: the ranger whitelist was found', rl.length > 20);
+    t.ok(n + ' is not on the ranger sell whitelist', rl.indexOf("'" + n + "'") < 0);
+  }
+  t.eq('the die is capped at +0, so no compound path will take it', m.CONFIG.craftInputCaps.cave_loaded_die, 0);
+  lift(m, 'Party/Merchant.js', ['craftInputCap', 'compoundWouldOvershootCap']);
+  t.eq('compounding a +0 die overshoots the cap', m.compoundWouldOvershootCap('cave_loaded_die', 0), true);
+  t.eq('CONTROL: a +0 dexbelt still compounds', m.compoundWouldOvershootCap('dexbelt', 0), false);
 } }];

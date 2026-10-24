@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v125
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v126
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -707,7 +707,11 @@ const CONFIG = {
 		   also forbid BUYING them, which is the opposite of what is wanted. The
 		   exposure that leaves is arbitrage flipping one, which was weighed and
 		   accepted rather than overlooked. */
-		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire'],
+		/* cave_amber and cave_loaded_die - operator's ruling 2026-10-24: the cave
+		   is run for Loaded Dice and Amber is what one is made from, so both are
+		   kept and banked. The die is NOT compounded - see craftInputCaps. */
+		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire',
+			'cave_amber', 'cave_loaded_die'],
 	},
 
 	selling: {
@@ -815,6 +819,11 @@ const CONFIG = {
 	   a +2 into a +3". Remove a line to uncap that item. */
 	craftInputCaps: {
 		dexbelt: 2,
+		/* No compounding, just bank - the operator's call, 2026-10-24. 0 means
+		   "+0 is the goal", so every compound path refuses the die, and the orb
+		   goal in GEAR_PROGRESSION is held as craft_input_cap@0 rather than
+		   acted on. Remove the line to let the gear plan compound it. */
+		cave_loaded_die: 0,
 	},
 
 	/* CEILINGS ON A CRAFT INPUT - operator's ruling 2026-10-23. Compounding
@@ -3249,6 +3258,9 @@ const PROTECTED_ITEM_NAMES = new Set([
 	   its reach while that list does not name them, and the operator edits it -
 	   so a belt added there would bypass every line above. */
 	'dexbelt', 'intbelt',
+	/* Cave Amber and the Loaded Die - operator's ruling 2026-10-24. Amber
+	   vendors for 120, so a value-sorted dump reaches it first. */
+	'cave_amber', 'cave_loaded_die',
 ]);
 
 /* Items the merchant may not BUY or SELL at all - not to an NPC, not to a

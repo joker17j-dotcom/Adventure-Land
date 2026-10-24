@@ -449,4 +449,50 @@ module.exports = [
 	t.note('land is region+name because that is where change_server actually sends us');
 } },
 
+{ name: 'cave mail: the block is identical in all three and takes only Dorr letters addressed to me', async fn(t) {
+	const fs = require('fs'), path = require('path');
+	const ROOT = require('./lift').ROOT;
+	const block = (f) => {
+		const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+		const a = s.indexOf('// === CAVE MAIL BEGIN ==='), b = s.indexOf('// === CAVE MAIL END ===');
+		return a >= 0 && b > a ? s.slice(a, b) : null;
+	};
+	const blocks = FILES.map(block);
+	t.ok('the block is present in all three', blocks.every((b) => b && b.length > 500));
+	t.eq('and byte-identical', new Set(blocks).size, 1);
+	t.ok('the merchant does not carry it - it is never a cave member',
+		block('Party/Merchant.js') === null);
+
+	const mk = (esize, mail) => {
+		const w = world({ CAVE_MAIL_FROM: 'Dorr' });
+		w.character = { name: 'MageofOz', esize: esize };
+		w.sent = []; w.logs = [];
+		w.parent = { socket: { emit: (k, d) => w.sent.push([k, d.id]) } };
+		w.game_log = (m) => w.logs.push(m);
+		w.api_call = async (name) => { w.asked = name; return { type: 'mail', mail: mail }; };
+		lift(w, 'Party/Mage.js', ['claimCaveMail']);
+		return w;
+	};
+	const MAIL = [
+		{ id: 'ML_cave:1', fro: 'Dorr', to: 'MageofOz', item: '{"name":"cave_amber"}', taken: false },
+		{ id: 'ML_cave:2', fro: 'Dorr', to: 'Dexon', item: '{"name":"cave_amber"}', taken: false },
+		{ id: 'ML_cave:3', fro: 'Dorr', to: 'MageofOz', item: '{"name":"gem1"}', taken: 'mailclaim_x' },
+		{ id: 'ML_x', fro: 'Somebody', to: 'MageofOz', item: '{"name":"gem1"}', taken: false },
+		{ id: 'ML_cave:4', fro: 'Dorr', to: 'MageofOz', taken: false },
+		{ id: 'ML_cave:5', fro: 'Dorr', to: 'MageofOz', item: '{"name":"cave_loaded_die"}', taken: false },
+	];
+	let w = mk(10, MAIL);
+	const n = await w.claimCaveMail();
+	t.eq('it asks pull_mail', w.asked, 'pull_mail');
+	t.eq('it takes the two untaken Dorr item letters addressed to it', w.sent.map((x) => x[1]).join(), 'ML_cave:1,ML_cave:5');
+	t.eq('with mail_take_item', w.sent.every((x) => x[0] === 'mail_take_item'), true);
+	t.eq('and reports the count', n, 2);
+	w = mk(0, MAIL);
+	await w.claimCaveMail();
+	t.eq('a full bag takes nothing', w.sent.length, 0);
+	t.ok('and says why', w.logs.some((m) => /bag full/.test(m)));
+	w = mk(10, null);
+	t.eq('no list is a logged null, not a silent zero', await w.claimCaveMail(), null);
+} },
+
 ];

@@ -1,4 +1,25 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v24 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v25 (TEST BUILD)
+// v25 2026-10-24 THE PARTY VOTES, BUYS THE DIE, LEAVES AND STOPS HITTING
+//                FRIENDS - the operator's cave rulings of 2026-10-24.
+//                VOTES: the leader votes every encounter it knows the moment it
+//                opens, from a copy of design/events.js (upstream 16881a2) scored
+//                in Amber - see the vote block. An encounter or option not in
+//                that copy is logged as UNKNOWN EVENT and nobody votes; the
+//                operator has the 60s and any vote he makes on any character is
+//                echoed by the other two (the echo used to follow the leader
+//                only). A 10,000 cave-gold reserve is held for a merchant's Loaded
+//                Die until the third floor's encounter is done, and the die is
+//                bought whenever a shop shows one. caveVotePreview() shows what
+//                the open vote would pick and why.
+//                TARGETS: anything whose cave side is neutral, ally or victim is
+//                skipped - the 2026-10-23 run spent 2,394 of Dexon's attacks on
+//                one friendly Counterweight Sentinel - and a friendly_target
+//                refusal benches the id for 10s in case a side never arrives.
+//                EXIT: once every required third-floor room is done and this
+//                map's chests are gone (90s cap), each character leaves; the
+//                same run sat six idle minutes before. Hand-back to the main
+//                slot ships empty until load_code() is measured on a character
+//                slot. The leader hold no longer runs outside an active run.
 // v24 2026-10-24 EVERY GAME LOG LINE GOES TO A FILE ON THE BRIDGE - the shared
 //                GAMELOG block, byte-identical in the four party scripts, so a
 //                cave run is no longer a gap in the file. gamelogStatus() on
@@ -314,6 +335,20 @@ const CFG = {
 	autoRespawn: true,      // bare respawn() - the only parameterless one that exists
 	respawnMs: 4000,        // first retry delay; doubles on cant_respawn
 	respawnMaxMs: 30000,
+
+	/* LEAVE WHEN THE LAST SEAL IS DONE - v25. The 2026-10-23 run finished the
+	   third floor's boss at 15:11:56 and sat until 15:18:16 with nothing to do.
+	   Once every required room of the third floor reads done, each character
+	   waits for the chests on its map to be gone - the finish reward and the
+	   purse's Amber are chests until opened, and leaving settles only what was
+	   opened - then asks the server to let it out. chestWaitMs caps that wait,
+	   because a chest the loot range never reaches would otherwise hold the
+	   party in forever; whatever is left is logged.
+	   handback names the CODE slot each character goes back to afterwards, read
+	   by load_code(). Empty until somebody has measured what load_code accepts
+	   for a character slot - until then CaveRun stops and the operator engages
+	   the main slot by hand. */
+	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, handback: {} },
 
 	/* LOOT. v9 called loot() on every 250ms tick with no pause guard and no
 	   cooldown; see lootTick for the measurements. */
@@ -965,6 +1000,32 @@ function inRangeFor(t, skill) {
 	return true;
 }
 
+/* NEVER SWING AT A SIDE THE SERVER WILL REFUSE - v25. The 2026-10-23 run spent
+   2,394 of Dexon's attacks and 2,242 of MageofOz's on ONE entity, a
+   "Counterweight Sentinel" that the encounter had made friendly, from 15:03
+   until the exit at 15:18; can_attack() read true throughout. The rule is the
+   server's: a player's hostile skill is refused unless the target's cave side
+   is something other than neutral or ally, and the server sends that side on
+   every cave monster as `cave: {room, side, citizen}` and again whenever it
+   changes. `victim` is added on the operator's ruling: a player CAN hit one,
+   and killing it forfeits the save the party voted for. `finish` turns the
+   victim into `enemy`, so that choice still gets its fight.
+   friendlySkip is the backstop for an entity whose side never arrived: a
+   friendly_target refusal benches that id for friendlyBenchMs. */
+const FRIENDLY_SIDES = ['neutral', 'ally', 'victim'];
+const friendlyBenchMs = 10000;
+let friendlySkip = {};
+function caveFriendly(t) {
+	try { const c = t && t.cave; if (c && FRIENDLY_SIDES.indexOf(c.side) >= 0) return true; } catch (e) {}
+	const until = t && friendlySkip[t.id];
+	return !!(until && Date.now() < until);
+}
+function mayTarget(t) {
+	if (!t || t.type !== 'monster' || t.dead || !mayAttack(t)) return false;
+	if (caveFriendly(t)) { bump('friendlySkips'); return false; }
+	return true;
+}
+
 function pickTarget() {
 	if (!engaged()) return null;
 	/* THE WHITELIST IS APPLIED TO ALL THREE PATHS, and the third is the one that
@@ -976,20 +1037,27 @@ function pickTarget() {
 		const le = leaderEntity();
 		if (le && le.target) {
 			const t = parent.entities[le.target];
-			if (t && t.type === 'monster' && !t.dead && inRangeFor(t) && mayAttack(t)) return t;
+			if (mayTarget(t) && inRangeFor(t)) return t;
 		}
 	} catch (e) {}
 	const names = partyNames();
 	let best = null, bestD = Infinity;
 	for (const m of threats()) {
 		if (!m.target || names.indexOf(m.target) < 0) continue;
-		if (!mayAttack(m)) continue;
+		if (!mayTarget(m)) continue;
 		const d = dist(character, m);
 		if (d < bestD && inRangeFor(m)) { best = m; bestD = d; }
 	}
 	if (best) return best;
-	try { if (isFn(get_nearest_monster)) { const n = get_nearest_monster(); if (n && inRangeFor(n) && mayAttack(n)) return n; } } catch (e) {}
-	return null;
+	try { if (isFn(get_nearest_monster)) { const n = get_nearest_monster(); if (n && !caveFriendly(n) && inRangeFor(n) && mayAttack(n)) return n; } } catch (e) {}
+	/* The nearest monster can be the friendly one, which used to end the search
+	   there; take the nearest one we may hit instead. */
+	for (const m of threats()) {
+		if (!mayTarget(m)) continue;
+		const d = dist(character, m);
+		if (d < bestD && inRangeFor(m)) { best = m; bestD = d; }
+	}
+	return best;
 }
 
 // -------------------------------------------------------------- skills -----
@@ -1085,6 +1153,9 @@ function noteFriendly(skill, target) {
 				   the whole bug */
 				canAttack: (function () { try { return isFn(can_attack) ? !!can_attack(target) : null; } catch (e) { return 'threw'; } })(),
 				inParty: partyNames().indexOf(target.name) >= 0,
+				/* the field v25 filters on - a refusal on a target reading enemy or
+				   predator here would mean the side rule is not the whole story */
+				side: (target.cave && target.cave.side) || null,
 				map: character.map, floor: (caveState() || {}).floor,
 			};
 		}
@@ -1097,7 +1168,14 @@ function noteWhy(name, e) {
 	try { r = String((e && (e.reason || e.response || e.message)) || e).slice(0, 48); } catch (x) {}
 	if (!tel.skillFailWhy[name]) tel.skillFailWhy[name] = {};
 	tel.skillFailWhy[name][r] = (tel.skillFailWhy[name][r] || 0) + 1;
-	if (r === 'friendly_target' && arguments.length > 2) { try { noteFriendly(name, arguments[2]); } catch (x) {} }
+	if (r === 'friendly_target' && arguments.length > 2) {
+		try { noteFriendly(name, arguments[2]); } catch (x) {}
+		try {
+			const t = arguments[2];
+			if (t && t.id != null) friendlySkip[t.id] = Date.now() + friendlyBenchMs;
+			throttleLog('refused friendly_target on ' + (t && (t.name || t.mtype)) + ' side ' + ((t && t.cave && t.cave.side) || 'unknown') + ' - benched');
+		} catch (x) {}
+	}
 }
 
 async function priestSkills(target) {
@@ -1335,7 +1413,10 @@ async function moveTick() {
 		   caveLeash() reports it, and a probe that lies is this file's most
 		   expensive recurring cost. */
 		noteLeaderMotion({ x: character.real_x, y: character.real_y });
-		warnOutrun();
+		/* ONLY WHILE A RUN IS ACTIVE - v25. The 2026-10-23 dump caught the hold
+		   still firing on main after the exit, at a 1,453u "gap" to followers
+		   who were simply elsewhere. */
+		if (active()) warnOutrun();
 		return;
 	}
 	if (!active()) return;
@@ -1699,27 +1780,710 @@ function deathTick() {
 }
 
 // ---------------------------------------------------------------- vote -----
+/* THE PARTY VOTES BY ITSELF ON EVERY ENCOUNTER IT KNOWS - v25, the operator's
+   rulings of 2026-10-24. The cave is for Loaded Dice, so Amber is the prize
+   and everything below is scored in Amber.
+
+   WHAT THE SERVER SHOWS AND WHAT IT DOES NOT. A vote offers TWO of an
+   encounter's six options (one affordable `offer` pick and one random other;
+   both when there are only two), so this needs a full ranking rather than a
+   single answer. The client payload per option is id, label, cost, amber and
+   unavailable - NO effect - so the effects come from the table below, a copy
+   of design/events.js `dreams.encounters` at upstream 16881a2. Option ids are
+   NOT globally unique (e01's are small/large/six..., the rescues' and
+   conflicts' are save/watch/left/right...), so the encounter is identified
+   first: from title_message.phrase (event.dreams.<id>.name) when the server
+   sends it, else by title, and the 50 titles are distinct.
+
+   UNKNOWN MEANS DO NOT VOTE. An encounter not in the table, or one offering an
+   option id the table does not list for it, is logged as UNKNOWN EVENT with
+   every option, which the game log file then keeps, and nobody votes: the
+   operator has the 60 seconds, whatever he votes on any character is echoed by
+   the other two, and if nobody votes the server applies its own fallback.
+
+   VOTES ARE ECHOED BEFORE THEY ARE CHOSEN. Majority (2 of 3) resolves at once
+   and a vote cannot be changed, so a character that has not voted copies a
+   teammate who has - the leader first - and only the LEADER picks on its own.
+   That keeps one decision per encounter rather than three computed from three
+   views of the purse.
+
+   THE SCORING, all in Amber, and each number is the operator's ordering
+   expressed as a value rather than a measurement:
+   - 2+ Amber beats a parcel and a parcel beats 1 Amber, so a parcel is 1.2;
+     the rescue table (1.8 Amber expected) is 1.9 and the boss table (1.65
+     Amber plus heavier items) 1.95, which keeps both above a parcel and below
+     a flat 2 Amber.
+   - A fight outcome in an ordinary encounter ends in a parcel when the room
+     clears, so it scores a parcel less what it costs: fightBase per fight plus
+     a per-monster cost, plus the 0.08 Amber a rat/bat/crab/guard/wolf drops.
+   - The 20-second careful parcel beats a 50/50 gamble while carefulMinMs of
+     run clock remain and loses to it after, which is the operator's "prefer
+     the guaranteed parcel when run time is comfortable, else the gamble".
+   - Cave gold is nearly worthless (it never leaves the cave), but it is what
+     buys a Loaded Die from a cave merchant, so any option that would take the
+     purse below `reserve` is refused while the reserve stands. It stands until
+     the third floor's required encounter is done.
+   - NEVER: any option that spends Amber (exchanges, the 6-Amber die bet, Amber
+     tolls, reviving in place); `wolves` (level-100 wolves at 50x hp);
+     `bad_double`; the shadow copy of our strongest fighter; and `bad_fight`,
+     which pays nothing.
+   - `prefer` pins the operator's explicit orderings ahead of any score: the
+     surveyor rescue is save/lure/hire; the rogue is watch, since saving him
+     betrays half the time and pays nothing; a conflict is testimony/left/right
+     because the surviving ally pays the rescue table.
+   When every shown option is refused nobody votes, and the server's fallback
+   applies - for a bad encounter that is the 45-second wait, which is exactly
+   the operator's "else the time option". */
+const VOTE = {
+	reserve: 10000,
+	carefulMinMs: 300000,
+	shopMin: 10000,         // inspecting a shop is worth a die chance only if the purse can pay for one
+	value: { parcel: 1.2, rescue: 1.9, boss: 1.95, helper: 0.1, gold: 1 / 50000, reveal: 0.05,
+		shop: 1.5, shopPoor: 0.05, lamp: 1.1, tool: 0.4, decoy: 0.1, truce: 0.1, message: 0.1,
+		mothsteps: 2.2, moths: 2.05, landing: 0.5 },
+	fightBase: 0.1,
+	unit: { rat: 0.03, bat: 0.03, crab: 0.05, guard: 0.1, wolf: 0.12, npc: 0.15, rogue: 0.3,
+		lockbreaker: 0.5, sentinel: 0.6, mothkeeper: 0.7 },
+	kill: { rat: 0.08, bat: 0.08, crab: 0.08, guard: 0.08, wolf: 0.08 },
+	never: ['wolves', 'bad_double', 'bad_fight', 'die', 'exchange', 'revive_here'],
+	prefer: { e06: ['save', 'lure', 'aid'], e20: ['watch'], e11: ['testimony', 'left', 'right'],
+		e14: ['testimony', 'left', 'right'], e24: ['testimony', 'left', 'right'],
+		e25: ['testimony', 'left', 'right'] },
+	/* [parcels, pays 5,000 gold, chance of missing the count] - the miss chance
+	   is a guess, nothing has measured how fast the party clears a hunt. */
+	hunt: { hunt: [1, 1, 0.1], hunt_double: [2, 1, 0.3], hunt_helper: [1, 1, 0.05],
+		hunt_quick: [0, 0, 0.02], hunt_late: [0, 0, 0.03] },
+};
+
+/* The revival a death opens is a vote like any other, outside the encounter
+   list: `here` costs 1 Amber per fallen member and is refused, `landing` is
+   free and is also the server's fallback. */
+const CAVE_REVIVAL = { id: 'revival', n: 'A Hand in the Dark', g: 'positive', k: 'revival', o: [
+	{i:'here',e:'revive_here'}, {i:'landing',e:'revive_landing'} ] };
+
+/* GENERATED from upstream 16881a2 design/events.js. Keys: i option id, e
+   effect, c cost (cave gold), a amber, n needs a supply, w dice win, s seconds,
+   ra practice amber, gd practice guard scale, tr travelers; o outcomes with w
+   weight, g gold, a amber, r reward table, f fight 'type:count', fl supply
+   flags, j joins, al ally, sh shadow. */
+const CAVE_ENCOUNTERS = [
+	{ id: 'e01', n: 'Dice in a Tin Cup', g: 'mixed', k: 'dice', o: [
+		{i:'small',e:'dice',c:2000,w:4000},
+		{i:'large',e:'dice',c:5000,w:10000},
+		{i:'six',e:'dice6',c:2000,w:12000},
+		{i:'die',e:'die',a:6},
+		{i:'favor',e:'favor'},
+		{i:'door',e:'dice_room'},
+	] },
+	{ id: 'e02', n: 'The Unclaimed Parcel', g: 'mixed', k: 'parcel', o: [
+		{i:'e02_0',e:'venture',o:[{w:1,r:'parcel'},{w:1,f:'guard:3'}]},
+		{i:'e02_1',e:'venture',n:'tool',o:[{w:1,r:'parcel'}]},
+		{i:'e02_2',e:'careful'},
+		{i:'e02_3',e:'venture',c:2000,o:[{w:1,r:'parcel'}]},
+		{i:'e02_4',e:'venture',o:[{w:1,f:'guard:3'}]},
+		{i:'e02_5',e:'leave'},
+	] },
+	{ id: 'e03', n: 'Feed the Vault', g: 'mixed', k: 'lure', o: [
+		{i:'e03_0',e:'venture',o:[{w:1,f:'rat:6'}]},
+		{i:'e03_1',e:'venture',o:[{w:1,r:'parcel'},{w:1,f:'wolf:2'}]},
+		{i:'e03_2',e:'venture',a:2,o:[{w:1,fl:'decoy'}]},
+		{i:'e03_3',e:'venture',o:[{w:1,al:1}]},
+		{i:'e03_4',e:'venture',o:[{w:1,g:2000}]},
+		{i:'e03_5',e:'leave'},
+	] },
+	{ id: 'e04', n: 'The Hot Forge', g: 'mixed', k: 'forge', o: [
+		{i:'e04_0',e:'venture',o:[{w:1,r:'boss'},{w:1,f:'lockbreaker:1'}]},
+		{i:'e04_1',e:'venture',a:4,o:[{w:1,r:'parcel'}]},
+		{i:'e04_2',e:'venture',o:[{w:1,f:'lockbreaker:1'}]},
+		{i:'e04_3',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e04_4',e:'venture',o:[{w:1,a:2}]},
+		{i:'e04_5',e:'leave'},
+	] },
+	{ id: 'e05', n: 'The Guard’s Contract', g: 'mixed', k: 'hire', o: [
+		{i:'e05_0',e:'venture',c:2000,o:[{w:1,j:1}]},
+		{i:'e05_1',e:'venture',o:[{w:1,j:1},{w:1,f:'guard:3'}]},
+		{i:'e05_2',e:'venture',o:[{w:1,f:'npc:1'}]},
+		{i:'e05_3',e:'venture',o:[{w:1,fl:'truce'}]},
+		{i:'e05_4',e:'venture',a:1,o:[{w:1,fl:'lamp'}]},
+		{i:'e05_5',e:'leave'},
+	] },
+	{ id: 'e06', n: 'The Trapped Surveyor', g: 'mixed', k: 'rescue', o: [
+		{i:'save',e:'save'},
+		{i:'watch',e:'watch'},
+		{i:'lure',e:'lure'},
+		{i:'aid',e:'hire',c:2000},
+		{i:'finish',e:'both'},
+		{i:'cover',e:'cover'},
+	] },
+	{ id: 'e07', n: 'Borrow a Uniform', g: 'mixed', k: 'disguise', o: [
+		{i:'e07_0',e:'venture',a:2,o:[{w:1,fl:'truce'}]},
+		{i:'e07_1',e:'venture',o:[{w:1,g:2000,fl:'truce'},{w:1,f:'guard:3'}]},
+		{i:'e07_2',e:'venture',o:[{w:1,f:'rogue:1'}]},
+		{i:'e07_3',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e07_4',e:'venture',o:[{w:1,r:'parcel'}]},
+		{i:'e07_5',e:'leave'},
+	] },
+	{ id: 'e08', n: 'Pick a Fighter', g: 'mixed', k: 'arena', o: [
+		{i:'e08_0',e:'venture',o:[{w:1,f:'crab:3'}]},
+		{i:'e08_1',e:'venture',o:[{w:1,f:'bat:6'}]},
+		{i:'e08_2',e:'venture',o:[{w:1,f:'wolf:2'}]},
+		{i:'e08_3',e:'venture',o:[{w:1,f:'lockbreaker:1'}]},
+		{i:'e08_4',e:'venture',o:[{w:1,g:3000,r:'parcel'},{w:1,f:'wolf:4'}]},
+		{i:'e08_5',e:'leave'},
+	] },
+	{ id: 'e09', n: 'Finish the Golem', g: 'mixed', k: 'construct', o: [
+		{i:'e09_0',e:'venture',a:4,o:[{w:1,al:1}]},
+		{i:'e09_1',e:'venture',o:[{w:1,al:1},{w:1,f:'sentinel:1'}]},
+		{i:'e09_2',e:'venture',o:[{w:1,f:'sentinel:1'}]},
+		{i:'e09_3',e:'venture',o:[{w:1,a:2}]},
+		{i:'e09_4',e:'careful'},
+		{i:'e09_5',e:'leave'},
+	] },
+	{ id: 'e10', n: 'The Handler and the Wolves', g: 'mixed', k: 'wolves', o: [
+		{i:'e10_0',e:'wolves'},
+		{i:'e10_1',e:'venture',o:[{w:1,f:'wolf:2'}]},
+		{i:'e10_2',e:'venture',a:2,o:[{w:1,fl:'decoy'}]},
+		{i:'e10_3',e:'venture',o:[{w:1,r:'parcel'},{w:1,f:'wolf:4'}]},
+		{i:'e10_4',e:'venture',c:2000,o:[{w:1,r:'parcel'}]},
+		{i:'e10_5',e:'leave'},
+	] },
+	{ id: 'e11', n: 'Two People Claim the Chest', g: 'mixed', k: 'conflict', o: [
+		{i:'left',e:'left'},
+		{i:'right',e:'right'},
+		{i:'neither',e:'neither'},
+		{i:'both',e:'both'},
+		{i:'peace',e:'peace',c:3000},
+		{i:'testimony',e:'testimony'},
+	] },
+	{ id: 'e12', n: 'The Bell Ropes', g: 'mixed', k: 'bell', o: [
+		{i:'e12_0',e:'venture',o:[{w:1,f:'guard:3'}]},
+		{i:'e12_1',e:'venture',o:[{w:1,f:'mothkeeper:1'}]},
+		{i:'e12_2',e:'wolves'},
+		{i:'e12_3',e:'venture',o:[{w:1,fl:'decoy'}]},
+		{i:'e12_4',e:'use_tool',n:'tool'},
+		{i:'e12_5',e:'leave'},
+	] },
+	{ id: 'e13', n: 'The Strong Magnet', g: 'mixed', k: 'magnet', o: [
+		{i:'e13_0',e:'venture',o:[{w:1,r:'boss'},{w:1,f:'sentinel:1'}]},
+		{i:'e13_1',e:'venture',o:[{w:1,a:2}]},
+		{i:'e13_2',e:'venture',o:[{w:1,f:'sentinel:1'}]},
+		{i:'e13_3',e:'venture',a:2,o:[{w:1,r:'parcel'}]},
+		{i:'e13_4',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e13_5',e:'leave'},
+	] },
+	{ id: 'e14', n: 'Two Couriers, One Badge', g: 'mixed', k: 'conflict', o: [
+		{i:'left',e:'left'},
+		{i:'right',e:'right'},
+		{i:'neither',e:'neither'},
+		{i:'both',e:'both'},
+		{i:'peace',e:'peace',c:3000},
+		{i:'testimony',e:'testimony'},
+	] },
+	{ id: 'e15', n: 'Letter to the Captain', g: 'mixed', k: 'letter', o: [
+		{i:'e15_0',e:'venture',o:[{w:1,g:3000,r:'rescue'},{w:1,f:'npc:2'}]},
+		{i:'e15_1',e:'venture',o:[{w:1,f:'npc:1'}]},
+		{i:'e15_2',e:'venture',c:2000,o:[{w:1,j:1}]},
+		{i:'e15_3',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e15_4',e:'careful'},
+		{i:'e15_5',e:'leave'},
+	] },
+	{ id: 'e16', n: 'Trade the Crates', g: 'mixed', k: 'trade', o: [
+		{i:'e16_0',e:'venture',o:[{w:1,g:4000,r:'parcel'},{w:1,f:'bat:6'}]},
+		{i:'e16_1',e:'venture',a:3,o:[{w:1,r:'parcel'}]},
+		{i:'e16_2',e:'venture',o:[{w:1,f:'npc:2'}]},
+		{i:'e16_3',e:'venture',o:[{w:1,g:1500}]},
+		{i:'e16_4',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e16_5',e:'leave'},
+	] },
+	{ id: 'e17', n: 'The Copying Shadow', g: 'mixed', k: 'shadow', o: [
+		{i:'e17_0',e:'venture',o:[{w:1,sh:1}]},
+		{i:'e17_1',e:'venture',o:[{w:1,r:'parcel'},{w:1,f:'bat:5'}]},
+		{i:'e17_2',e:'venture',a:2,o:[{w:1,r:'parcel'}]},
+		{i:'e17_3',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e17_4',e:'careful'},
+		{i:'e17_5',e:'leave'},
+	] },
+	{ id: 'e18', n: 'The Broken Lift', g: 'mixed', k: 'lift', o: [
+		{i:'e18_0',e:'venture',o:[{w:1,r:'rescue'},{w:1,f:'rat:8'}]},
+		{i:'e18_1',e:'venture',c:2000,o:[{w:1,j:1}]},
+		{i:'e18_2',e:'use_tool',n:'tool'},
+		{i:'e18_3',e:'venture',o:[{w:1,a:2}]},
+		{i:'e18_4',e:'venture',o:[{w:1,f:'wolf:2'}]},
+		{i:'e18_5',e:'leave'},
+	] },
+	{ id: 'e19', n: 'The Farmer’s Guess', g: 'mixed', k: 'mushroom', o: [
+		{i:'e19_0',e:'venture',o:[{w:1,g:3000,r:'parcel'},{w:1,f:'bat:6'}]},
+		{i:'e19_1',e:'venture',o:[{w:1,a:2}]},
+		{i:'e19_2',e:'plant'},
+		{i:'e19_3',e:'venture',o:[{w:1,fl:'decoy'}]},
+		{i:'e19_4',e:'venture',o:[{w:1,f:'rat:6'}]},
+		{i:'e19_5',e:'leave'},
+	] },
+	{ id: 'e20', n: 'The Cornered Rogue', g: 'mixed', k: 'rogue', o: [
+		{i:'save',e:'save'},
+		{i:'watch',e:'watch'},
+		{i:'lure',e:'lure'},
+		{i:'aid',e:'hire',c:2000},
+		{i:'finish',e:'both'},
+		{i:'cover',e:'cover'},
+	] },
+	{ id: 'e21', n: 'Change the Map', g: 'mixed', k: 'route', o: [
+		{i:'e21_0',e:'venture',a:3,o:[{w:1,fl:'truce'}]},
+		{i:'e21_1',e:'venture',o:[{w:1,f:'guard:3'}]},
+		{i:'e21_2',e:'venture',o:[{w:1,r:'parcel'},{w:1,f:'wolf:3'}]},
+		{i:'e21_3',e:'venture',c:2000,o:[{w:1,j:1}]},
+		{i:'e21_4',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e21_5',e:'leave'},
+	] },
+	{ id: 'e22', n: 'One More Turn', g: 'mixed', k: 'pressure', o: [
+		{i:'e22_0',e:'venture',o:[{w:1,r:'boss'},{w:1,f:'sentinel:1'}]},
+		{i:'e22_1',e:'venture',o:[{w:1,f:'lockbreaker:1'}]},
+		{i:'e22_2',e:'careful'},
+		{i:'e22_3',e:'use_tool',n:'tool'},
+		{i:'e22_4',e:'venture',o:[{w:1,a:2}]},
+		{i:'e22_5',e:'leave'},
+	] },
+	{ id: 'e23', n: 'Keep the Crate Cold', g: 'mixed', k: 'escort', o: [
+		{i:'e23_0',e:'escort'},
+		{i:'e23_1',e:'venture',o:[{w:1,r:'rescue'},{w:1,f:'crab:4'}]},
+		{i:'e23_2',e:'venture',c:2000,o:[{w:1,r:'parcel'}]},
+		{i:'e23_3',e:'guide'},
+		{i:'e23_4',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e23_5',e:'leave'},
+	] },
+	{ id: 'e24', n: 'The Same Prisoner Twice', g: 'mixed', k: 'twins', o: [
+		{i:'left',e:'left'},
+		{i:'right',e:'right'},
+		{i:'neither',e:'neither'},
+		{i:'both',e:'both'},
+		{i:'peace',e:'peace',c:3000},
+		{i:'testimony',e:'testimony'},
+	] },
+	{ id: 'e25', n: 'The Prisoner and the Captain', g: 'mixed', k: 'conflict', o: [
+		{i:'left',e:'left'},
+		{i:'right',e:'right'},
+		{i:'neither',e:'neither'},
+		{i:'both',e:'both'},
+		{i:'peace',e:'peace',c:3000},
+		{i:'testimony',e:'testimony'},
+	] },
+	{ id: 'e26', n: 'The Toll Patrol', g: 'bad', k: 'collapse', o: [
+		{i:'e26_0',e:'pay',c:3000},
+		{i:'e26_1',e:'bad_fight'},
+		{i:'e26_2',e:'pay',a:2},
+		{i:'e26_3',e:'time',c:1000,s:30},
+		{i:'e26_4',e:'time',s:45},
+		{i:'e26_5',e:'bad_double'},
+	] },
+	{ id: 'e27', n: 'Stopped by a Guard', g: 'bad', k: 'toll', o: [
+		{i:'e27_0',e:'pay',c:3000},
+		{i:'e27_1',e:'bad_fight'},
+		{i:'e27_2',e:'pay',a:2},
+		{i:'e27_3',e:'time',c:1000,s:30},
+		{i:'e27_4',e:'time',s:45},
+		{i:'e27_5',e:'bad_double'},
+	] },
+	{ id: 'e28', n: 'The Rope Snaps', g: 'bad', k: 'alarm', o: [
+		{i:'e28_0',e:'pay',c:3000},
+		{i:'e28_1',e:'bad_fight'},
+		{i:'e28_2',e:'pay',a:2},
+		{i:'e28_3',e:'time',c:1000,s:30},
+		{i:'e28_4',e:'time',s:45},
+		{i:'e28_5',e:'bad_double'},
+	] },
+	{ id: 'e29', n: 'The Cargo Is Stuck', g: 'bad', k: 'cargo', o: [
+		{i:'e29_0',e:'pay',c:3000},
+		{i:'e29_1',e:'bad_fight'},
+		{i:'e29_2',e:'pay',a:2},
+		{i:'e29_3',e:'time',c:1000,s:30},
+		{i:'e29_4',e:'time',s:45},
+		{i:'e29_5',e:'bad_double'},
+	] },
+	{ id: 'e30', n: 'The Wrong Receipt', g: 'bad', k: 'debt', o: [
+		{i:'e30_0',e:'pay',c:3000},
+		{i:'e30_1',e:'bad_fight'},
+		{i:'e30_2',e:'pay',a:2},
+		{i:'e30_3',e:'time',c:1000,s:30},
+		{i:'e30_4',e:'time',s:45},
+		{i:'e30_5',e:'bad_double'},
+	] },
+	{ id: 'e31', n: 'The Shop with One Item', g: 'positive', k: 'merchant', o: [
+		{i:'e31_0',e:'inspect'},
+		{i:'e31_1',e:'leave'},
+		{i:'e31_2',e:'story'},
+		{i:'e31_3',e:'inspect'},
+		{i:'e31_4',e:'leave'},
+		{i:'e31_5',e:'leave'},
+	] },
+	{ id: 'e32', n: 'Clear the Crab Pens', g: 'positive', k: 'hunt', o: [
+		{i:'e32_0',e:'hunt'},
+		{i:'e32_1',e:'hunt_double'},
+		{i:'e32_2',e:'hunt_quick'},
+		{i:'e32_3',e:'hunt_helper'},
+		{i:'e32_4',e:'hunt_late'},
+		{i:'e32_5',e:'leave'},
+	] },
+	{ id: 'e33', n: 'Catch the Bats', g: 'positive', k: 'hunt_bats', o: [
+		{i:'e33_0',e:'hunt'},
+		{i:'e33_1',e:'hunt_double'},
+		{i:'e33_2',e:'hunt_quick'},
+		{i:'e33_3',e:'hunt_helper'},
+		{i:'e33_4',e:'hunt_late'},
+		{i:'e33_5',e:'leave'},
+	] },
+	{ id: 'e34', n: 'Rats with Silver Teeth', g: 'positive', k: 'hunt_rats', o: [
+		{i:'e34_0',e:'hunt'},
+		{i:'e34_1',e:'hunt_double'},
+		{i:'e34_2',e:'hunt_quick'},
+		{i:'e34_3',e:'hunt_helper'},
+		{i:'e34_4',e:'hunt_late'},
+		{i:'e34_5',e:'leave'},
+	] },
+	{ id: 'e35', n: 'Move the Caravan', g: 'positive', k: 'escort_safe', o: [
+		{i:'e35_0',e:'escort'},
+		{i:'e35_1',e:'guide'},
+		{i:'e35_2',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e35_3',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e35_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e35_5',e:'leave'},
+	] },
+	{ id: 'e36', n: 'Craft with Cave Amber', g: 'positive', k: 'recipes', o: [
+		{i:'e36_0',e:'recipes'},
+		{i:'e36_1',e:'venture',o:[{w:1,a:1}]},
+		{i:'e36_2',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e36_3',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e36_4',e:'venture',o:[{w:1,al:1}]},
+		{i:'e36_5',e:'leave'},
+	] },
+	{ id: 'e37', n: 'Try the Dice', g: 'positive', k: 'practice_dice', o: [
+		{i:'e37_0',e:'free_die'},
+		{i:'e37_1',e:'story'},
+		{i:'e37_2',e:'free_die'},
+		{i:'e37_3',e:'venture',o:[{w:1,j:1}]},
+		{i:'e37_4',e:'leave'},
+		{i:'e37_5',e:'leave'},
+	] },
+	{ id: 'e38', n: 'Borrow a Tool', g: 'positive', k: 'tool', o: [
+		{i:'e38_0',e:'tool'},
+		{i:'e38_1',e:'lamp'},
+		{i:'e38_2',e:'decoy'},
+		{i:'e38_3',e:'venture',o:[{w:1,j:1}]},
+		{i:'e38_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e38_5',e:'leave'},
+	] },
+	{ id: 'e39', n: 'The Amber Garden', g: 'positive', k: 'plant', o: [
+		{i:'e39_0',e:'plant'},
+		{i:'e39_1',e:'venture',o:[{w:1,a:1}]},
+		{i:'e39_2',e:'decoy'},
+		{i:'e39_3',e:'venture',o:[{w:1,al:1}]},
+		{i:'e39_4',e:'lamp'},
+		{i:'e39_5',e:'leave'},
+	] },
+	{ id: 'e40', n: 'Practice with Wooden Swords', g: 'positive', k: 'practice', o: [
+		{i:'e40_0',e:'practice'},
+		{i:'e40_1',e:'practice',ra:1,gd:0.5},
+		{i:'e40_2',e:'practice',s:15},
+		{i:'e40_3',e:'guide'},
+		{i:'e40_4',e:'careful'},
+		{i:'e40_5',e:'leave'},
+	] },
+	{ id: 'e41', n: 'Trade Materials', g: 'positive', k: 'exchange', o: [
+		{i:'e41_0',e:'exchange',a:2},
+		{i:'e41_1',e:'tool'},
+		{i:'e41_2',e:'lamp'},
+		{i:'e41_3',e:'decoy'},
+		{i:'e41_4',e:'venture',o:[{w:1,al:1}]},
+		{i:'e41_5',e:'leave'},
+	] },
+	{ id: 'e42', n: 'The Rat’s Shortcuts', g: 'positive', k: 'ratdoor', o: [
+		{i:'e42_0',e:'reveal'},
+		{i:'e42_1',e:'venture',o:[{w:1,al:1}]},
+		{i:'e42_2',e:'lamp'},
+		{i:'e42_3',e:'tool'},
+		{i:'e42_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e42_5',e:'leave'},
+	] },
+	{ id: 'e43', n: 'Call a Guard Away', g: 'positive', k: 'decoy', o: [
+		{i:'e43_0',e:'decoy'},
+		{i:'e43_1',e:'guide'},
+		{i:'e43_2',e:'reveal',tr:1},
+		{i:'e43_3',e:'lamp'},
+		{i:'e43_4',e:'tool'},
+		{i:'e43_5',e:'leave'},
+	] },
+	{ id: 'e44', n: 'Find the Rogue', g: 'positive', k: 'appraise', o: [
+		{i:'e44_0',e:'appraise'},
+		{i:'e44_1',e:'story'},
+		{i:'e44_2',e:'guide'},
+		{i:'e44_3',e:'lamp'},
+		{i:'e44_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e44_5',e:'leave'},
+	] },
+	{ id: 'e45', n: 'The Lost Traveler', g: 'positive', k: 'escort_safe', o: [
+		{i:'e45_0',e:'escort'},
+		{i:'e45_1',e:'guide'},
+		{i:'e45_2',e:'venture',o:[{w:1,fl:'lamp'}]},
+		{i:'e45_3',e:'venture',o:[{w:1,fl:'tool'}]},
+		{i:'e45_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e45_5',e:'leave'},
+	] },
+	{ id: 'e46', n: 'Is It Worth the Price?', g: 'positive', k: 'merchant', o: [
+		{i:'e46_0',e:'inspect'},
+		{i:'e46_1',e:'leave'},
+		{i:'e46_2',e:'story'},
+		{i:'e46_3',e:'inspect'},
+		{i:'e46_4',e:'leave'},
+		{i:'e46_5',e:'leave'},
+	] },
+	{ id: 'e47', n: 'Follow the Thread', g: 'positive', k: 'moths', o: [
+		{i:'e47_0',e:'moths'},
+		{i:'e47_1',e:'venture',o:[{w:1,a:2}]},
+		{i:'e47_2',e:'lamp'},
+		{i:'e47_3',e:'venture',o:[{w:1,j:1}]},
+		{i:'e47_4',e:'reveal'},
+		{i:'e47_5',e:'leave'},
+	] },
+	{ id: 'e48', n: 'The Supply Cart', g: 'positive', k: 'merchant', o: [
+		{i:'e48_0',e:'inspect'},
+		{i:'e48_1',e:'story'},
+		{i:'e48_2',e:'story'},
+		{i:'e48_3',e:'lamp'},
+		{i:'e48_4',e:'tool'},
+		{i:'e48_5',e:'leave'},
+	] },
+	{ id: 'e49', n: 'Make a Tool', g: 'positive', k: 'tool', o: [
+		{i:'e49_0',e:'tool'},
+		{i:'e49_1',e:'lamp'},
+		{i:'e49_2',e:'decoy'},
+		{i:'e49_3',e:'venture',o:[{w:1,j:1}]},
+		{i:'e49_4',e:'venture',o:[{w:1,a:1}]},
+		{i:'e49_5',e:'leave'},
+	] },
+	{ id: 'e50', n: 'Before You Leave', g: 'positive', k: 'farewell', o: [
+		{i:'e50_0',e:'gift'},
+		{i:'e50_1',e:'venture',o:[{w:1,r:'parcel'}]},
+		{i:'e50_2',e:'lamp'},
+		{i:'e50_3',e:'tool'},
+		{i:'e50_4',e:'guide'},
+		{i:'e50_5',e:'leave'},
+	] },
+];
+const CAVE_ENCOUNTER_BY_ID = {}, CAVE_ENCOUNTER_BY_NAME = {};
+for (const e of CAVE_ENCOUNTERS) { CAVE_ENCOUNTER_BY_ID[e.id] = e; CAVE_ENCOUNTER_BY_NAME[e.n] = e; }
+
+function encounterOf(choice) {
+	if (!choice) return null;
+	try {
+		const ph = choice.title_message && choice.title_message.phrase;
+		const m = ph && /^event\.dreams\.(e\d+)\.name$/.exec(ph);
+		if (m && CAVE_ENCOUNTER_BY_ID[m[1]]) return CAVE_ENCOUNTER_BY_ID[m[1]];
+	} catch (e) {}
+	if (choice.title && CAVE_ENCOUNTER_BY_NAME[choice.title]) return CAVE_ENCOUNTER_BY_NAME[choice.title];
+	const ids = (choice.options || []).map((o) => o.id);
+	if (ids.length && ids.every((id) => id === 'here' || id === 'landing')) return CAVE_REVIVAL;
+	return null;
+}
+
+function voteFightValue(spec) {
+	const p = String(spec).split(':'), t = p[0], n = +p[1] || 1;
+	const unit = VOTE.unit[t] == null ? 0.3 : VOTE.unit[t];
+	return VOTE.value.parcel + n * ((VOTE.kill[t] || 0) - unit) - VOTE.fightBase;
+}
+function voteFlagValue(f, s) { return s.has[f] ? 0 : (VOTE.value[f] || 0); }
+function voteOutcomeValue(x, s) {
+	if (x.sh) return null;
+	let v = (x.a || 0) + (x.g || 0) * VOTE.value.gold;
+	if (x.r) v += VOTE.value[x.r] || 0;
+	if (x.f) v += voteFightValue(x.f);
+	if (x.fl) for (const f of x.fl.split(',')) v += voteFlagValue(f, s);
+	if (x.j || x.al) v += VOTE.value.helper;
+	return v;
+}
+/* null means never vote for it. `o` is the option as the server sent it, so a
+   live cost or amber (the revival's grows with the fallen) wins over the
+   table's, and anything the server marks unavailable is out. */
+function voteScore(d, o, s) {
+	if (!d) return null;
+	if (VOTE.never.indexOf(d.e) >= 0) return null;
+	if ((o && o.amber) || d.a) return null;
+	if (o && o.unavailable) return null;
+	if (d.n && !s.has[d.n]) return null;
+	const cost = (o && o.cost) || d.c || 0;
+	if (cost && s.gold - cost < s.reserve) return null;
+	const V = VOTE.value, U = VOTE.unit;
+	let v = -cost * V.gold;
+	switch (d.e) {
+		case 'leave': case 'story': case 'recipes': return v;
+		case 'venture': {
+			let tot = 0, sum = 0;
+			for (const x of d.o || []) {
+				const ov = voteOutcomeValue(x, s);
+				if (ov === null) return null;
+				tot += x.w; sum += x.w * ov;
+			}
+			return v + (tot ? sum / tot : 0);
+		}
+		case 'careful': return v + V.parcel - (s.comfortable ? 0.05 : 0.6);
+		case 'use_tool': return v + V.parcel;
+		case 'dice': return v + 0.5 * (d.w || 0) * V.gold;
+		case 'dice6': return v + (d.w || 0) * V.gold / 6;
+		case 'favor': return v + 0.5 * V.helper + 0.5 * voteFightValue('guard:2');
+		case 'dice_room': return v + 0.5 * voteFightValue('crab:4') + 0.5 * voteFightValue('rat:4');
+		case 'free_die': return v + 1 / 6;
+		case 'save': case 'lure': return v + V.rescue + 3000 * V.gold - VOTE.fightBase - 2 * U.wolf;
+		case 'hire': return v + V.rescue + 3000 * V.gold - VOTE.fightBase - 2 * U.wolf + V.helper;
+		case 'cover': return v + V.parcel + 3000 * V.gold - VOTE.fightBase - 2 * U.wolf;
+		case 'watch': return v + voteFightValue('wolf:2');
+		case 'both': case 'neither': return v + voteFightValue('npc:2');
+		case 'left': case 'right': case 'testimony': return v + V.rescue - VOTE.fightBase - U.npc;
+		case 'peace': return v + 1;
+		case 'inspect': case 'buy': return v + (s.gold >= VOTE.shopMin ? V.shop : V.shopPoor);
+		case 'pay': return v;
+		case 'time': return v - (d.s || 45) * (s.comfortable ? 0.002 : 0.01);
+		case 'tool': case 'lamp': return v + voteFlagValue(d.e, s);
+		case 'decoy': return v + voteFlagValue(s.kind === 'decoy' ? 'message' : 'decoy', s);
+		case 'guide': return v + V.helper;
+		case 'escort': return v + 0.8 * V.rescue + 3000 * V.gold;
+		case 'moths': return v + (s.has.lamp ? V.mothsteps : V.moths);
+		case 'plant': return v + 3;
+		case 'practice': return v + (d.s && d.s < 30 ? 0.8 : 0.9) * (d.ra || V.parcel) - 0.05;
+		case 'gift': return v + 2;
+		case 'small_gift': return v + 1;
+		case 'reveal': case 'appraise': return v + V.reveal;
+		case 'revive_landing': return v + V.landing;
+	}
+	const h = VOTE.hunt[d.e];
+	if (h) return v + (1 - h[2]) * (h[0] * V.parcel + h[1] * 5000 * V.gold + 2 + (d.e === 'hunt_helper' ? V.helper : 0));
+	return null;
+}
+
+/* THE RESERVE STANDS UNTIL THE THIRD FLOOR'S REQUIRED ENCOUNTER IS DONE, and
+   then it is released for the rest of the run - the operator's "release it
+   after floor 3's encounter with no merchant". Floors are numbered 0-2 by the
+   server. */
+let reserveReleased = false;
+function reserveNow(st) {
+	if (!reserveReleased && st && st.floor === 2
+		&& (st.objectives || []).some((o) => o.floor === 2 && o.required && o.kind === 'encounter' && o.done)) {
+		reserveReleased = true;
+		clog('third floor encounter done - cave gold reserve released', '#7FD98A');
+		ev('reserveReleased', { gold: st.gold });
+	}
+	return reserveReleased ? 0 : VOTE.reserve;
+}
+function voteContext(st, enc) {
+	const has = {};
+	for (const k of (st && st.supplies) || []) has[k] = true;
+	return { gold: (st && st.gold) || 0, reserve: reserveNow(st), has: has, kind: enc && enc.k,
+		comfortable: !st || st.remaining_ms == null || st.remaining_ms >= VOTE.carefulMinMs };
+}
+/* The pick, as data, so caveVotePreview() and the suite read exactly what the
+   vote would do. Returns { enc, unknown, pick, scores }. */
+function votePlan(choice, st) {
+	const enc = encounterOf(choice);
+	if (!enc) return { enc: null, unknown: 'encounter', pick: null, scores: {} };
+	const byId = {};
+	for (const d of enc.o) byId[d.i] = d;
+	const shown = choice.options || [];
+	const missing = shown.filter((o) => !byId[o.id]).map((o) => o.id);
+	if (missing.length) return { enc: enc, unknown: 'option ' + missing.join(','), pick: null, scores: {} };
+	const s = voteContext(st, enc), scores = {};
+	for (const o of shown) scores[o.id] = voteScore(byId[o.id], o, s);
+	let pick = null;
+	for (const id of VOTE.prefer[enc.id] || []) if (scores[id] != null) { pick = id; break; }
+	if (!pick) for (const o of shown) if (scores[o.id] != null && (pick === null || scores[o.id] > scores[pick])) pick = o.id;
+	return { enc: enc, unknown: null, pick: pick, scores: scores };
+}
+
+function voteEmit(choice, option, how) {
+	votedFor[choice.id] = option;
+	try {
+		parent.socket.emit('interaction', { type: 'cave', action: 'vote', choice: choice.id, option: option,
+			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
+		bump(how === 'echo' ? 'votesEcho' : 'votesAuto'); ev('vote', { choice: choice.id, option: option, how: how });
+	} catch (e) { bump('voteErr'); ev('voteErr', String(e)); clog('vote emit failed: ' + e, 'red'); }
+}
 function voteTick() {
-	if (stopped || offCave() || isLeader()) return;
+	if (stopped || offCave()) return;
 	const st = caveState(), choice = st && st.choice;
-	if (!choice || choice.resolved) return;
+	if (!choice) return;
+	if (!choice.resolved) voteOpen(st, choice);
+	else if (isLeader()) shopTick(st, choice);
+}
+function voteOpen(st, choice) {
 	if (choice.deadline && Date.now() > choice.deadline) return;
 	if (votedFor[choice.id]) return;
-	if (choice.votes && choice.votes[character.name]) { votedFor[choice.id] = choice.votes[character.name]; return; }
+	const votes = choice.votes || {};
+	if (votes[character.name]) { votedFor[choice.id] = votes[character.name]; return; }
+	const offered = (id) => (choice.options || []).some((o) => o.id === id);
+	/* Echo first: the leader's vote if there is one, else any teammate's - the
+	   operator may vote on whichever character he has in front of him. */
 	const L = leaderName();
-	const want = choice.votes && choice.votes[L];
-	if (!want) return;
-	if (!(choice.options || []).some((o) => o.id === want)) {
-		clog('leader voted ' + want + ', not offered to me - skipping', 'orange');
-		votedFor[choice.id] = '(unavailable)'; return;
+	const from = votes[L] ? L : TEAM.filter((n) => n !== character.name && votes[n])[0];
+	if (from) {
+		const want = votes[from];
+		if (!offered(want)) {
+			clog(from + ' voted ' + want + ', not offered to me - skipping', 'orange');
+			votedFor[choice.id] = '(unavailable)'; return;
+		}
+		voteEmit(choice, want, 'echo');
+		clog('mirrored ' + from + ': ' + want, '#7FD98A');
+		return;
 	}
-	votedFor[choice.id] = want;
+	if (!isLeader() || voteNoted[choice.id]) return;
+	const plan = votePlan(choice, st);
+	/* Not voting is NOT marked in votedFor, which would stop this character
+	   echoing the operator's own vote when it arrives - voteNoted only keeps the
+	   log line from repeating every tick. */
+	if (plan.unknown) {
+		voteNoted[choice.id] = 'unknown';
+		bump('voteUnknown');
+		const opts = (choice.options || []).map((o) => o.id + ' "' + o.label + '" cost ' + (o.cost || 0) + ' amber ' + (o.amber || 0)
+			+ (o.unavailable ? ' [' + o.unavailable + ']' : ''));
+		clog('UNKNOWN EVENT (' + plan.unknown + ') - not voting, the operator has the timer. id '
+			+ ((plan.enc && plan.enc.id) || (choice.title_message && choice.title_message.phrase) || '?')
+			+ ' title "' + choice.title + '" kind ' + choice.kind + ' options: ' + opts.join(' | '), 'orange');
+		ev('voteUnknown', { why: plan.unknown, title: choice.title, phrase: choice.title_message && choice.title_message.phrase,
+			kind: choice.kind, options: choice.options });
+		return;
+	}
+	const sc = Object.keys(plan.scores).map((k) => k + '=' + (plan.scores[k] == null ? 'never' : plan.scores[k].toFixed(2))).join(' ');
+	if (!plan.pick) {
+		voteNoted[choice.id] = 'fallback';
+		bump('voteFallback');
+		clog(plan.enc.id + ' ' + plan.enc.n + ': nothing acceptable offered (' + sc + ') - leaving it to the server fallback', 'orange');
+		ev('voteFallback', { enc: plan.enc.id, scores: plan.scores });
+		return;
+	}
+	voteEmit(choice, plan.pick, 'auto');
+	clog(plan.enc.id + ' ' + plan.enc.n + ': voted ' + plan.pick + ' (' + sc + ')', '#7FD98A');
+}
+/* ALWAYS BUY A LOADED DIE WHEN A CAVE MERCHANT SHOWS ONE. The shop opens once
+   the inspect option resolves, and the server only sells within 160 of the
+   merchant - the leader is, having started the conversation. One attempt per
+   shop; the server's refusal names why. */
+let shopTried = {}, voteNoted = {};
+function shopTick(st, choice) {
+	const shop = choice.shop;
+	if (!shop || shop.sold || shop.name !== 'cave_loaded_die' || shopTried[shop.room]) return;
+	if (!shop.nearby || (st.gold || 0) < shop.price) {
+		throttleLog('Loaded Die on sale for ' + shop.price + ' - ' + (!shop.nearby ? 'not near the merchant' : 'purse only ' + st.gold));
+		return;
+	}
+	shopTried[shop.room] = true;
 	try {
-		parent.socket.emit('interaction', { type: 'cave', action: 'vote', choice: choice.id, option: want,
+		parent.socket.emit('interaction', { type: 'cave', action: 'buy', room: shop.room,
 			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
-		bump('votesEcho'); ev('vote', { choice: choice.id, option: want });
-		clog('mirrored ' + L + ': ' + want, '#7FD98A');
-	} catch (e) { bump('voteErr'); ev('voteErr', String(e)); clog('vote emit failed: ' + e, 'red'); }
+		bump('dieBuys'); ev('dieBuy', { room: shop.room, price: shop.price, gold: st.gold });
+		clog('buying the Loaded Die for ' + shop.price + ' cave gold', '#FFD700');
+	} catch (e) { bump('voteErr'); clog('die buy failed: ' + e, 'red'); }
+}
+function caveVotePreview() {
+	const st = caveState(), choice = st && st.choice;
+	if (!choice) return { choice: null };
+	const p = votePlan(choice, st);
+	return { id: choice.id, enc: p.enc && p.enc.id, unknown: p.unknown, pick: p.pick, scores: p.scores,
+		reserve: reserveNow(st), gold: st.gold };
 }
 
 // ---------------------------------------------------------------- gate -----
@@ -1835,6 +2599,52 @@ function hookPartyInvite() {
    filter applies only when the fields are actually numbers - typeof, never
    truthiness - and tel.chestFields records the real shape the first time one
    is seen, so the next run settles it. */
+let finishedAt = 0, exitAsked = 0, exitedByUs = false, chestsClearSince = 0;
+function runFinished(st) {
+	if (!st || st.floor !== 2) return false;
+	const req = (st.objectives || []).filter((o) => o.floor === 2 && o.required);
+	return req.length > 0 && req.every((o) => o.done);
+}
+function exitTick() {
+	const X = CFG.exit;
+	if (!X || !X.enabled || stopped || mode !== 'cave' || !inCave() || character.rip) return;
+	const st = caveState();
+	if (!runFinished(st)) { finishedAt = 0; return; }
+	const now = Date.now();
+	if (!finishedAt) {
+		finishedAt = now; chestsClearSince = 0;
+		clog('last seal done - leaving once the chests here are opened', '#7FD98A');
+		ev('runFinished', { gold: st.gold, amber: st.amber });
+	}
+	let chests = 0;
+	try { chests = Object.keys((typeof get_chests === 'function' && get_chests()) || {}).length; } catch (e) {}
+	if (chests) chestsClearSince = 0; else if (!chestsClearSince) chestsClearSince = now;
+	const settled = chestsClearSince && now - chestsClearSince >= X.settleMs;
+	const timedOut = now - finishedAt >= X.chestWaitMs;
+	if (!settled && !timedOut) return;
+	if (exitAsked && now - exitAsked < X.retryMs) return;
+	exitAsked = now; exitedByUs = true;
+	try {
+		parent.socket.emit('interaction', { type: 'cave', action: 'exit',
+			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
+		bump('exits');
+		ev('exit', { chestsLeft: chests, waitedMs: now - finishedAt, amber: st.amber, gold: st.gold });
+		clog('leaving the cave' + (chests ? ' with ' + chests + ' chest(s) unopened after ' + Math.round((now - finishedAt) / 1000) + 's' : ''), chests ? 'orange' : '#7FD98A');
+	} catch (e) { bump('exitErr'); clog('exit emit failed: ' + e, 'red'); }
+}
+/* Back to the main script, if the slot is known. The new script is loaded into
+   this same CODE context, so every CaveRun loop is retired first by claiming a
+   new generation - alive() goes false for all of them. */
+function handBack() {
+	exitedByUs = false;
+	const slot = (CFG.exit.handback || {})[character.name];
+	if (!slot) { clog('out of the cave - engage the main script to carry on', '#FFD700'); stopped = true; return; }
+	try { window.__caveGen = (window.__caveGen || 0) + 1; } catch (e) {}
+	clog('out of the cave - handing back to ' + slot, '#7FD98A');
+	ev('handBack', { slot: slot });
+	try { load_code(slot); } catch (e) { clog('hand back failed: ' + e, 'red'); }
+}
+
 function lootTick() {
 	if (stopped || character.rip) return;
 	if (cavePaused()) { bump('pausedLootSkipped'); return; }
@@ -2114,7 +2924,8 @@ const tel = {
 		closeSteps: 0, closeSmart: 0, kiteSteps: 0, kiteRejected: 0, recoveries: 0,
 		followSteps: 0, followBlocked: 0,
 		outrunWarnTicks: 0, doorTry: 0, doorOk: 0, telArchiveFail: 0, cryptBlocked: 0,
-		votesEcho: 0, voteErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
+		votesEcho: 0, votesAuto: 0, voteUnknown: 0, voteFallback: 0, dieBuys: 0, voteErr: 0,
+		friendlySkips: 0, exits: 0, exitErr: 0, entityDeaths: 0, partyDeaths: 0, respawnCalls: 0,
 		hpPots: 0, mpPots: 0, scares: 0, exceptions: 0,
 		invites: 0, accepts: 0, lootCalls: 0, lootErr: 0,
 		buys: 0, buyErr: 0, restockBroke: 0, restockGaveUp: 0, restockMoveFail: 0,
@@ -2390,7 +3201,7 @@ try {
 	window.caveGo = caveGo; window.caveDry = caveDry; window.caveLead = caveLead;
 	window.caveCrypt = caveCrypt; window.caveOnly = caveOnly; window.caveNever = caveNever;
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
-	window.caveDump = caveDump; window.caveLeash = caveLeash;
+	window.caveDump = caveDump; window.caveLeash = caveLeash; window.caveVotePreview = caveVotePreview;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
@@ -2398,7 +3209,7 @@ async function tick() {
 	try {
 		const was = phase;
 		if (inCave()) phase = 'inside';
-		else if (phase === 'inside') { phase = 'idle'; votedFor = {}; deadDoors = {}; }
+		else if (phase === 'inside') { phase = 'idle'; votedFor = {}; deadDoors = {}; shopTried = {}; voteNoted = {}; reserveReleased = false; friendlySkip = {}; exitAsked = 0; finishedAt = 0; if (exitedByUs) handBack(); }
 		else if (offCave()) phase = stopped ? 'idle' : 'active';
 		else if (phase === 'gather' && character.map === CFG.keeper.map && dist(character, CFG.keeper) <= CFG.stageWithin) phase = 'staged';
 		if (phase !== was) { clog('phase -> ' + phase, '#7FD1FF'); ev('phase', { from: was, to: phase }); }
@@ -2415,6 +3226,7 @@ async function tick() {
 		potionTick();
 		partyTick();
 		lootTick();
+		exitTick();
 		senseTick();            // beacon out, trouble + leash in - before anything moves
 		await moveTick();
 		await combatTick();
