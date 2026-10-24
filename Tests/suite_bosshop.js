@@ -84,7 +84,7 @@ const EVENT_LOC_NAMES = (() => {
    US II is home, as on the live party. */
 function prepWorld(o = {}) {
 	const cfg = CFG();
-	cfg.bossHop.preposition = { enabled: true, walkLeadMs: 180000, marginMs: 60000,
+	cfg.bossHop.preposition = { enabled: true, alsoFor: o.alsoFor || [], walkLeadMs: 180000, marginMs: 60000,
 		minUsefulMs: 120000, feedMaxAgeMs: 300000, lineupMaxAgeSec: 1800 };
 	cfg.bossEvents = { enabled: true, exclude: new Set(['abtesting']), include: [], cooperativeOnly: true };
 	const w = ranger({ CONFIG: cfg, BOSS_TYPE_GIVEUP_MAX: 2, character: o.character,
@@ -2311,6 +2311,27 @@ module.exports = [
 	t.eq('and when it does not, there is no plan to hold for', there.bossHop.prepPlan('ASIAI'), null);
 } },
 
+{ name: 'preposition: only join-only events, unless the operator names one', fn(t) {
+	/* The operator's narrowing, 2026-10-24: hop in advance only where the
+	   entrance requires not being hop-sick, or where arriving early is shown
+	   to be worth it. crabxx, franky, horseman and graveyard can all be walked
+	   into sick, so the reactive hop - which also runs the dwell check - keeps
+	   them. */
+	const NOW = Date.now();
+	const w = prepWorld();
+	for (const ev of ['crabxx', 'franky', 'horseman', 'graveyard']) {
+		feed(w, [row('ASIAI', ev, NOW + 100000, 600)]);
+		t.eq(ev + ' is walkable -> not prepositioned for', w.bossHop.prepPlan('USII'), null);
+	}
+	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540)]);
+	t.eq('goobrawl is join-only -> it is', w.bossHop.prepPlan('USII') && w.bossHop.prepPlan('USII').event, 'goobrawl');
+	const named = prepWorld({ alsoFor: ['crabxx'] });
+	feed(named, [row('ASIAI', 'crabxx', NOW + 100000, 2400)]);
+	t.eq('a name in alsoFor is, and leads by the walk', named.bossHop.prepPlan('USII') && named.bossHop.prepPlan('USII').joinOnly, false);
+	const src = require('fs').readFileSync(require('path').join(require('./lift').ROOT, RANGER), 'utf8');
+	t.ok('alsoFor ships empty', /alsoFor: \[\],/.test(src));
+} },
+
 { name: 'preposition: no fresh home lineup or feed means no plan', fn(t) {
 	const NOW = Date.now();
 	const w = prepWorld();
@@ -2332,7 +2353,7 @@ module.exports = [
 
 { name: 'preposition: what qualifies - explicit rank, eligible, live status', fn(t) {
 	const NOW = Date.now();
-	const w = prepWorld();
+	const w = prepWorld({ alsoFor: ['crabxx', 'icegolem'] });
 	feed(w, [row('ASIAI', 'icegolem', NOW + 100000, 2400)]);
 	t.eq('icegolem has no explicit rank -> not prepositioned for', w.bossHop.prepPlan('USII'), null);
 	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400)]);
@@ -2349,7 +2370,7 @@ module.exports = [
 
 { name: 'preposition: rank, then home, then where we stand, then earliest', fn(t) {
 	const NOW = Date.now();
-	const w = prepWorld();
+	const w = prepWorld({ alsoFor: ['crabxx', 'franky', 'graveyard'] });
 	feed(w, [row('ASIAI', 'crabxx', NOW + 100000, 2400), row('USII', 'crabxx', NOW + 100000, 2400)]);
 	t.eq('equal rank on home -> home (the "not on home" half)', w.bossHop.prepPlan('EUI').shard, 'USII');
 	feed(w, [row('ASIAI', 'goobrawl', NOW + 780000, 540), row('USII', 'graveyard', NOW + 60000, 600)]);
@@ -2398,7 +2419,7 @@ module.exports = [
 { name: 'tick IDLE: hop for the plan, hold on arrival, admit only a better hop', fn(t) {
 	const NOW = Date.now();
 	const mk = (region, id) => {
-		const w = prepWorld({ region, id });
+		const w = prepWorld({ region, id, alsoFor: ['franky'] });
 		w.hops = [];
 		w.bossHop.lootBeforeHop = async () => false;
 		w.bossHop.changeServer = async (s, m) => { w.hops.push(s + '/' + m); return true; };

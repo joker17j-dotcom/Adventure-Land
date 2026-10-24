@@ -21,6 +21,21 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v133
+
+**PREPOSITIONING IS NARROWED TO JOIN-ONLY EVENTS, ON THE OPERATOR'S RULING.**
+"I only want hopping in advance for events that entrance requires no hop
+sickness or if doing it offers benefits that make it worth it. At this time I
+think the only qualifying item is goo brawl." v132 planned for every ranked
+event off home, which would have hopped the party ahead of crabxx, franky and
+horseman several times a day. Those can all be walked into while sick. The
+reactive hop already reaches them within minutes of spawn and checks the
+dwell, which the planner does not, and a v132 hold could have parked the
+party off home for a full 40-minute window the dwell check would have
+refused. `CONFIG.bossHop.preposition.alsoFor` ships empty and is where a
+walkable event goes if arriving early is ever shown to pay. The event-trip
+hold from v132 is unchanged. Three mutations, each caught.
+
 ## v132
 
 **THE PARTY PREPOSITIONS FOR A SCHEDULED EVENT, AS THE OPERATOR RULED.** It

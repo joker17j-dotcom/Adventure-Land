@@ -40,7 +40,16 @@ fresh feed, or no fresh lineup for HOME, the planner returns nothing. "Is it on
 home" is half the ruling, and a missing lineup answering it as "no" would hop
 the party off a shard running the same event.
 
-**WHAT QUALIFIES.** An event with an EXPLICIT `BOSS_RANK` entry, passing
+**NARROWED IN v133, ON THE OPERATOR'S RULING.** Only an event whose
+entrance requires not being hop-sick - join-only, which today is goobrawl - or
+a name the operator puts in `alsoFor`. A walkable boss gains a minute or two
+from arriving early, because the reactive hop reaches it within minutes of
+spawn anyway. Prepositioning would also skip the dwell check the reactive path
+runs, and the hold could then park the party off home for a whole window that
+check would have refused. Graveyard does not qualify either: it opens on every
+shard at once, home included, and home is the best seat for it.
+
+**WHAT QUALIFIES, beyond that.** An event with an EXPLICIT `BOSS_RANK` entry, passing
 `bossEligible` for that shard (so the exclude set, cooperative-only and
 shard-keyed give-ups all apply), with status `scheduled` or `live`. The default
 rank is not a rank anybody chose, so icegolem is not prepositioned for.

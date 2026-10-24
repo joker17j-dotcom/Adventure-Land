@@ -995,6 +995,28 @@ this ranking until a Ranger build is actually running on him.
   is `bossHop.changeServer`, which logs `🐉 Hopping to <shard> for <mtype>`. The
   party was on EU III for one of the four hop targets and picked the graveyard
   up locally. Why a ~90s walk had not arrived ten minutes in is still OPEN.
+  **NARROWED IN Ranger v133, OPERATOR'S RULING 2026-10-24: "I only want hopping
+  in advance for events that entrance requires no hop sickness or if doing it
+  offers benefits that make it worth it. At this time I think the only
+  qualifying item is goo brawl."** This supersedes the general "a PREPOSITION is
+  required" above for walkable bosses; `alsoFor` ships empty for the exceptions.
+  **GRAVEYARD DOES NOT QUALIFY FOR AN ADVANCE HOP, AND THE REASON IS NOT
+  TIMING.** It opens on every shard at once, home included, and home is the
+  best seat for it: no sickness, the join teleport, and x5 points on monsters
+  that are all cooperative, with the wave points carrying into the gargoyle.
+  **WHAT GARGOYLE DEATH ORDER COULD JUSTIFY IS A DIFFERENT DESIGN - A
+  REACTIVE HOP AFTER HOME'S GARGOYLE DIES, TO ONE STILL ALIVE.** Wakes split
+  roughly [360, 540]s and each gargoyle lives up to 600s past wake, so deaths
+  are staggered by minutes. By `requiredDwellSec` the presence needed is
+  seconds even hop-sick (3-8s at 5-40 contributors, before the wave points
+  others banked raise it). It is NOT BUILT, for two reasons: the spawn is
+  inside the mummy rage box, so credit depends on rage entry, which has not
+  yet been seen working live; and bossHop's scanner cannot see a gargoyle at
+  all, because it is published inside `S.graveyard` rather than as its own
+  key. The operator asked about it 2026-10-24, citing ordering data from the
+  browser session that this session could not find in the repo or the
+  transcript. Per-shard gargoyle wake and death times from the bridge log
+  are the input it needs.
 - **THE NINE BASE WINDOWS NEVER OVERLAP, AND THAT HELD UP EXACTLY - BUT THE
   "NOT A CONTENTION PROBLEM" HALF IS FALSE DURING A SEASON.** The base
   arithmetic is CONFIRMED against upstream `43b2c8fc`: dailies at realm hours 13

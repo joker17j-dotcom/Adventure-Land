@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v132
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v133
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -828,14 +828,18 @@ const CONFIG = {
 		returnHomeAfterMs: 90 * 1000,
 		/* PREPOSITIONING FOR A SCHEDULED EVENT. The operator's ruling: a known
 		   scheduled event that nothing outranks and that is not on home REQUIRES
-		   the party to be on that shard before it opens. The input is the
+		   the party to be on that shard before it opens - NARROWED 2026-10-24 to
+		   events whose entrance requires not being hop-sick (join-only), plus any
+		   name in alsoFor where arriving early is shown to be worth it. A
+		   walkable boss is left to the reactive hop, which reaches it within
+		   minutes of spawn AND runs the dwell check this planner does not. The input is the
 		   bridge's /schedule_live, every shard's published lineup in one list.
 		   Without it, or without a fresh lineup for HOME, nothing is
 		   prepositioned - "is it on home" cannot be answered, and guessing it
 		   is not would hop the party off a shard running the same event.
 		   joinOnly events (no walkable entrance - goobrawl) lead by the FULL
 		   hop sickness, read live from G: the hop re-stamps it on arrival and
-		   the server refuses the join until it clears. Everything else leads
+		   the server refuses the join until it clears. An alsoFor name leads
 		   by walkLeadMs, which is NOT a measured figure - the one measurement
 		   is Dexon's ~90s walk from main to spookytown, 2026-10-24.
 		   minUsefulMs is how much of the window must still be left once we
@@ -845,6 +849,7 @@ const CONFIG = {
 		   -> RangerComments.md#preposition */
 		preposition: {
 			enabled: TOGGLES.bossHopPreposition,
+			alsoFor: [],                     // walkable events worth arriving early for; empty by design
 			walkLeadMs: 3 * 60 * 1000,
 			marginMs: 60 * 1000,
 			minUsefulMs: 2 * 60 * 1000,
@@ -4009,6 +4014,7 @@ const bossHop = {
 		const closesAt = o.at + winMs;
 		if (now >= closesAt) return null;
 		const joinOnly = this.isJoinEvent(o.event) && !this.isTaxiJoin(o.event);
+		if (!joinOnly && (p.alsoFor || []).indexOf(o.event) < 0) return null;
 		const lead = joinOnly ? this.hopsickMs() : p.walkLeadMs;
 		const hopAt = o.at - lead - p.marginMs - c.hopLatencyMs;
 		if (now < hopAt) return null;
