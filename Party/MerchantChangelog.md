@@ -1,4 +1,10 @@
 
+## v127
+
+**SNAKEOIL IS KEPT AND BANKED** - added to `CONFIG.materials.keepAndBank` on
+the browser session's finding, 2026-10-24: it was on no list at all, and it
+is the only Hop Sickness cure.
+
 ## v126
 
 **CAVE AMBER AND THE LOADED DIE ARE KEPT, BANKED AND NEVER SOLD, AND THE DIE IS

@@ -368,12 +368,12 @@ name: 'the exchangeable seed does not drift between the two scripts', fn(t) {
 { name: 'cave Amber and the Loaded Die are never sold, always banked, and the die is never compounded', fn(t) {
   /* Operator's rulings 2026-10-24: the cave is run for Loaded Dice and Amber
      is what one is made from; "No compounding just bank" for the die. */
-  const CAVE = ['cave_amber', 'cave_loaded_die'];
+  const CAVE = ['cave_amber', 'cave_loaded_die', 'snakeoil'];
   const prot = namesIn('Party/Merchant.js', 'const PROTECTED_ITEM_NAMES');
   const scarce = namesIn('Party/Ranger.js', 'const SCARCE_ITEM_NAMES');
   const m = merchant();
   for (const n of CAVE) {
-    t.ok(n + ' is in the merchant PROTECTED_ITEM_NAMES', prot.includes(n));
+    if (n !== 'snakeoil') t.ok(n + ' is in the merchant PROTECTED_ITEM_NAMES', prot.includes(n));
     t.ok(n + ' is in the ranger SCARCE_ITEM_NAMES', scarce.includes(n));
     t.ok(n + ' is kept and banked on the merchant', (m.CONFIG.materials.keepAndBank || []).includes(n));
     t.ok(n + ' is not on the merchant sell whitelist', m.CONFIG.selling.whitelist.indexOf(n) < 0);

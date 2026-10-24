@@ -767,10 +767,233 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	const s = src();
 	t.ok('exitTick runs every tick', /\t\tlootTick\(\);\n\t\texitTick\(\);/.test(s));
 	t.ok('the leader hold is gated on active()', /if \(active\(\)\) warnOutrun\(\);/.test(s));
-	t.ok('hand-back ships empty', /handback: \{\} \}/.test(s));
+	t.ok('hand-back is on, by the character\'s own slot name', /handback: true \}/.test(s) && /load_code\(slot\)/.test(s));
 }
 
-}];
+},
+
+{ name: 'v26 the live encounter table is read when G carries it, and converts to the copy\'s shape', fn(t) {
+	const w = voteWorld();
+	t.eq('with no live table the copy is used', w.voteTableSource(), 'copy');
+	/* The design file's own shape, reduced to the fields the server sends. */
+	for (const raw of RAW_ENCOUNTERS) {
+		const mine = w.compactEncounter(raw);
+		const copy = w.CAVE_ENCOUNTERS.find((e) => e.id === raw.id);
+		t.eq(raw.id + ' converts to exactly the committed copy', JSON.stringify(mine), JSON.stringify(copy));
+	}
+	w.parent.G = { events: { dreams: { encounters: RAW_ENCOUNTERS.concat([{ id: 'e51', name: 'A New Thing', group: 'positive',
+		kind: 'gift', options: [{ id: 'e51_0', effect: 'gift' }, { id: 'e51_1', effect: 'leave' }] }]) } } };
+	t.eq('a live table is preferred', w.voteTableSource(), 'live');
+	const p = w.votePlan({ id: 'x', title: 'A New Thing', options: [{ id: 'e51_0' }, { id: 'e51_1' }] },
+		{ floor: 0, gold: 0, remaining_ms: 900000, supplies: [], objectives: [] });
+	t.eq('so an encounter the copy never had is known and voted', p.pick, 'e51_0');
+	w.parent.G.events.dreams.encounters = [];
+	t.eq('an empty live table falls back to the copy', w.voteTableSource(), 'copy');
+} },
+
+{ name: 'v26 revive in place only for the operator\'s four reasons, inside the 2-Amber budget', fn(t) {
+	const w = voteWorld();
+	const choice = { id: 'r', title: 'A Hand in the Dark', options: [{ id: 'here', amber: 1 }, { id: 'landing', amber: 0 }] };
+	const st = (o) => Object.assign({ remaining_ms: 900000, doors: [{ x: 0, y: 0 }] }, o || {});
+	const dead = (name, o) => { w.__beacons = { [name]: Object.assign({ t: Date.now(), rip: true, map: 'cave1', x: 10, y: 0, deaths: 1, ctype: 'ranger' }, o || {}) }; };
+	w.character.map = 'cave1';
+	dead('Dexon');
+	t.eq('an ordinary first death near the door: the free doorway', w.votePlan(choice, st()).pick, 'landing');
+	dead('FatherToken', { ctype: 'priest' });
+	t.eq('the healer died: here', w.votePlan(choice, st()).pick, 'here');
+	dead('Dexon', { deaths: 2 });
+	t.eq('a repeat death: here', w.votePlan(choice, st()).pick, 'here');
+	dead('Dexon');
+	t.eq('the clock is short: here', w.votePlan(choice, st({ remaining_ms: 200000 })).pick, 'here');
+	dead('Dexon', { x: 3000 });
+	t.eq('a long walk back: here', w.votePlan(choice, st()).pick, 'here');
+	dead('FatherToken', { ctype: 'priest' });
+	w.reviveSpent = { FatherToken: 2 };
+	t.eq('but never past 2 Amber for one character', w.votePlan(choice, st()).pick, 'landing');
+	w.reviveSpent = {};
+	t.eq('and never when the server marks here unavailable',
+		w.votePlan({ id: 'r', title: 'A Hand in the Dark', options: [{ id: 'here', amber: 1, unavailable: 'short' }, { id: 'landing' }] }, st()).pick, 'landing');
+} },
+
+{ name: 'v26 a dead character waits for the revival vote before respawning', fn(t) {
+	const mk = (choice, sinceMs) => {
+		const w = world({ mode: 'cave', wasRip: true, diedAt: Date.now() - sinceMs, lastRespawn: 0, respawnWait: 0,
+			myDeaths: [], hpTrail: [], lastAlive: null, resting: false, deathLoop: false, recovering: false, aim: null,
+			CFG: { autoRespawn: true, respawnMs: 4000 } });
+		w.character = { rip: true, name: 'Dexon' };
+		w.inCave = () => true; w.caveState = () => ({ choice: choice });
+		w.calls = 0; w.respawn = () => { w.calls++; };
+		w.bump = () => {}; w.ev = () => {}; w.clog = () => {}; w.throttleLog = () => {}; w.noteWhy = () => {};
+		lift(w, 'CaveRun.js', ['REGROUP', 'deathTick']);
+		return w;
+	};
+	let w = mk({ id: 'r', resolved: false }, 10000);
+	w.deathTick();
+	t.eq('an open vote holds the respawn', w.calls, 0);
+	w = mk(null, 1000);
+	w.deathTick();
+	t.eq('the first moments after dying wait for the offer', w.calls, 0);
+	w = mk(null, 10000);
+	w.deathTick();
+	t.eq('no vote after the grace: respawn as before', w.calls, 1);
+	w = mk({ id: 'r', resolved: false }, 80000);
+	w.deathTick();
+	t.eq('and an open vote holds it only up to reviveWaitMs', w.calls, 1);
+} },
+
+{ name: 'v26 regroup: deaths are trouble, the hold does not give up on them, and a rested member waits out hostiles', fn(t) {
+	const s = src();
+	const w = world({ TROUBLE: { hpAt: 0.55, atkAt: 3 } });
+	lift(w, 'CaveRun.js', ['REGROUP_WHY', 'troubleOf']);
+	t.eq('a dead mate is trouble', w.troubleOf({ rip: true }), 'dead');
+	t.eq('a resting mate is trouble', w.troubleOf({ rest: true, hpFrac: 1 }), 'resting');
+	t.eq('a death loop is trouble', w.troubleOf({ loop: true, rest: true, hpFrac: 1 }), 'deathloop');
+	t.ok('the hold\'s give-up skips a regroup', /Date\.now\(\) - holdFrom > HOLD\.maxMs && !regroup\.length/.test(s));
+	t.ok('and lets the leader walk back to collect', /if \(regroup\.length && collectingMove\(regroup\)\)/.test(s));
+
+	const mk = (o) => {
+		const x = world(Object.assign({ resting: true, deathLoop: false, restSince: Date.now(), restSaid: false,
+			recovering: false, aim: null }, o || {}));
+		x.character = Object.assign({ name: 'MageofOz', hp: 100, max_hp: 100, mp: 100, max_mp: 100, fear: 0, rip: false, real_x: 0, real_y: 0 }, o && o.ch);
+		x.isLeader = () => false; x.leaderEntity = () => (o && o.leader) || null;
+		x.here = (e) => !!e; const P = (o, k) => (o['real_' + k] != null ? o['real_' + k] : o[k]);
+		x.dist = (a, b) => Math.hypot(P(a, 'x') - P(b, 'x'), P(a, 'y') - P(b, 'y'));
+		x.threats = () => (o && o.threats) || []; x.caveFriendly = () => false;
+		x.clog = () => {}; x.ev = () => {}; x.bump = () => {};
+		lift(x, 'CaveRun.js', ['REGROUP', 'hostileInView', 'restTick']);
+		return x;
+	};
+	let x = mk({ ch: { hp: 50 } });
+	x.restTick();
+	t.eq('still hurt: keeps resting', x.resting, true);
+	x = mk();
+	x.restTick();
+	t.eq('rested and nothing in view: rejoins', [x.resting, x.recovering].join(), 'false,true');
+	x = mk({ threats: [{ mtype: 'cave_wolf', x: 100, y: 0 }] });
+	x.restTick();
+	t.eq('a hostile in view: waits for the party', [x.resting, x.recovering].join(), 'true,false');
+	x = mk({ deathLoop: true, leader: { x: 50, y: 0 } });
+	x.restTick();
+	t.eq('a death loop ends when the leader collects it', [x.resting, x.deathLoop].join(), 'false,false');
+} },
+
+{ name: 'v26 the Loaded Die is retried whenever someone is beside its shop with the gold', fn(t) {
+	const mk = (gold, keeperAt) => {
+		const w = world({ stopped: false, mode: 'cave', DIE: { reach: 150, retryMs: 5000, maxTries: 8 },
+			dieShops: { r1: { map: 'cave1', price: 10000, done: false, tries: 0, lastTry: 0 } }, pendingBuys: {},
+			launcher: { rid: null } });
+		w.character = { map: 'cave1', rip: false, real_x: 0, real_y: 0 };
+		w.inCave = () => true; w.caveState = () => ({ gold: gold });
+		w.parent.entities = keeperAt == null ? {} : { k: { cave: { room: 'r1' }, x: keeperAt, y: 0 } };
+		w.sent = []; w.parent.socket = { emit: (k, d) => w.sent.push(d) };
+		w.dist = (a, b) => Math.hypot((a.real_x != null ? a.real_x : a.x) - b.x, (a.real_y != null ? a.real_y : a.y) - b.y);
+		w.isLeader = () => true; w.logs = []; w.throttleLog = (m) => w.logs.push(m);
+		w.bump = () => {}; w.ev = () => {}; w.clog = () => {};
+		lift(w, 'CaveRun.js', ['shopKeeper', 'dieTick', 'onCaveResponse']);
+		return w;
+	};
+	let w = mk(5000, 50);
+	w.dieTick();
+	t.eq('a short purse does not try', w.sent.length, 0);
+	w = mk(12000, 50);
+	w.dieTick();
+	t.eq('beside the shopkeeper with the gold: buys', w.sent.map((d) => d.action + ':' + d.room).join(), 'buy:r1');
+	w.onCaveResponse({ interaction: 'cave', request_id: w.sent[0].request_id, failed: true, reason: 'distance' });
+	t.eq('a refusal other than sold_out keeps the shop open', w.dieShops.r1.done, false);
+	w.dieShops.r1.lastTry = 0; w.dieTick();
+	t.eq('and it is tried again', w.sent.length, 2);
+	w.onCaveResponse({ interaction: 'cave', request_id: w.sent[1].request_id, success: true, recipient: 'Dexon' });
+	t.eq('bought settles it', w.dieShops.r1.done, true);
+	w = mk(12000, 900);
+	w.dieTick();
+	t.eq('out of reach: no buy', w.sent.length, 0);
+	t.ok('but the leader says the detour is worth it', w.logs.some((m) => /affordable/.test(m)));
+	w = mk(12000, 50);
+	w.dieTick();
+	w.onCaveResponse({ interaction: 'cave', request_id: w.sent[0].request_id, failed: true, reason: 'sold_out' });
+	t.eq('sold_out settles it too', w.dieShops.r1.done, true);
+} },
+
+{ name: 'v26 the launcher stages when today\'s cave is open and hands back when it is spent', fn(t) {
+	const mk = () => {
+		const w = world({ mode: 'cave', phase: 'idle', stopped: false,
+			launcher: { rid: 'crl1', askedAt: Date.now(), answered: false, handBackAt: 0, said: false },
+			CFG: { launch: { enabled: true, graceMs: 20000, answerMs: 10000 } } });
+		w.went = 0; w.caveGo = () => { w.went++; };
+		w.back = []; w.handBack = (why) => w.back.push(why);
+		w.inCave = () => false; w.clog = () => {}; w.ev = () => {};
+		lift(w, 'CaveRun.js', ['launcherAnswer', 'launcherTick', 'caveStay']);
+		return w;
+	};
+	let w = mk();
+	w.launcherAnswer({ visit: { available: true } });
+	t.eq('available: restock and walk to Dorr', w.went, 1);
+	w = mk();
+	w.launcherAnswer({ visit: { available: false } });
+	t.ok('spent: a hand-back is scheduled', w.launcher.handBackAt > Date.now());
+	w.launcherTick();
+	t.eq('not before the grace', w.back.length, 0);
+	w.launcher.handBackAt = Date.now() - 1;
+	w.launcherTick();
+	t.eq('then it hands back', w.back.length, 1);
+	w = mk();
+	w.launcherAnswer({ visit: { available: false } });
+	w.caveStay();
+	w.launcher.handBackAt = w.launcher.handBackAt || 0;
+	w.launcherTick();
+	t.eq('caveStay() cancels it', [w.back.length, w.launcher.handBackAt].join(), '0,0');
+	w = mk();
+	w.launcherAnswer({ visit: { available: false, resume: { server: 'USII' } } });
+	t.eq('a run open to resume: neither stages nor hands back', [w.went, w.launcher.handBackAt].join(), '0,0');
+	const s = src();
+	for (const fn of ['caveCrypt', 'caveDry', 'caveGo'])
+		t.ok(fn + '() cancels a pending hand-back', new RegExp('function ' + fn + '\\(\\) \\{\\n\\tlauncher\\.handBackAt = 0;').test(s));
+	t.ok('the launcher asks on load', /\nvoteLoop\(\);\nlauncherStart\(\);\n/.test(s));
+} },
+
+{ name: 'v26 leaving waits for the Amber cap, the last minute or caveExit(), and the dump rides the game log', fn(t) {
+	const mk = (st, o) => {
+		const w = world(Object.assign({ stopped: false, mode: 'cave', finishedAt: 0, exitAsked: 0, exitedByUs: false,
+			chestsClearSince: Date.now() - 20000, exitForce: false, exitWhyFrom: 0,
+			CFG: { exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000 } } }, o || {}));
+		w.character = { rip: false };
+		w.inCave = () => true; w.caveState = () => st;
+		w.get_chests = () => ({});
+		w.sent = []; w.parent.socket = { emit: (k, d) => w.sent.push(d.action) };
+		w.bump = () => {}; w.ev = () => {}; w.clog = () => {};
+		lift(w, 'CaveRun.js', ['runFinished', 'exitTick']);
+		return w;
+	};
+	const done = { floor: 2, objectives: [{ floor: 2, required: true, done: true }], remaining_ms: 300000,
+		limits: { amber: 36, amber_spawned: 20 } };
+	let w = mk(done);
+	w.exitTick(); w.chestsClearSince = Date.now() - 20000; w.exitWhyFrom = 1; w.exitTick();
+	t.ok('PRECONDITION: the chests have settled, so only the gate can hold it',
+		Date.now() - w.chestsClearSince >= 15000);
+	t.eq('finished with time and Amber left: stays to farm', w.sent.length, 0);
+	w = mk(Object.assign({}, done, { limits: { amber: 36, amber_spawned: 36 } }));
+	w.exitTick(); w.exitWhyFrom = 1; w.exitTick();
+	t.eq('at the Amber cap: leaves', w.sent.join(), 'exit');
+	w = mk(Object.assign({}, done, { remaining_ms: 30000 }));
+	w.exitTick(); w.exitWhyFrom = 1; w.exitTick();
+	t.eq('in the last minute: leaves', w.sent.join(), 'exit');
+	w = mk(Object.assign({}, done, { floor: 1 }), { exitForce: true });
+	w.exitTick(); w.exitWhyFrom = 1; w.exitTick();
+	t.eq('caveExit() leaves even before the last seal', w.sent.join(), 'exit');
+
+	const d = world({ tel: { counters: { a: 1 } } });
+	d.character = { name: 'Dexon' };
+	const buf = [];
+	d.parent.__gamelog = { buf: buf, capture: (m, c, src) => buf.push({ message: m, source: src }) };
+	d.caveVersion = () => 26; d.caveBuild = () => 'line 1';
+	lift(d, 'CaveRun.js', ['caveDumpToLog']);
+	t.eq('the dump is written', d.caveDumpToLog('exit'), true);
+	t.ok('as one CAVE DUMP row', /^CAVE DUMP \(exit\) - Dexon$/.test(buf[0].message));
+	t.eq('with the telemetry under dump', JSON.stringify(buf[0].dump.counters), '{"a":1}');
+} },
+];
+
+const RAW_ENCOUNTERS = [{"id":"e02","name":"The Unclaimed Parcel","group":"mixed","kind":"parcel","options":[{"id":"e02_0","effect":"venture","label":"Cut the seal. Something inside is scratching.","outcomes":[{"weight":1,"reward":"cave_parcel"},{"weight":1,"fight":["cave_guard",3]}],"offer":true},{"id":"e02_1","effect":"venture","label":"Pry the hinges off quietly.","outcomes":[{"weight":1,"reward":"cave_parcel"}],"needs":"tool"},{"id":"e02_2","label":"Spend 20 seconds checking the trap.","effect":"careful"},{"id":"e02_3","effect":"venture","label":"Buy the box for 2,000 shared gold","outcomes":[{"weight":1,"reward":"cave_parcel"}],"cost":2000},{"id":"e02_4","effect":"venture","label":"Ring the alarm and take what the guards carry.","outcomes":[{"weight":1,"fight":["cave_guard",3]}]},{"id":"e02_5","label":"Leave it and keep going.","effect":"leave"}]},{"id":"e06","name":"The Trapped Surveyor","group":"mixed","kind":"rescue","options":[{"id":"save","label":"Save {npc}: fight the wolves","effect":"save","offer":true},{"id":"watch","label":"Wait; loot the pack if {npc} dies","effect":"watch"},{"id":"lure","label":"Draw the wolves away from {npc}","effect":"lure","offer":true},{"id":"aid","label":"Save and hire {npc} for 2,000 shared gold","effect":"hire","cost":2000},{"id":"finish","label":"Attack {npc} and the wolves","effect":"both"},{"id":"cover","label":"Bring {npc} behind us; take a smaller reward","effect":"cover"}]},{"id":"e17","name":"The Copying Shadow","group":"mixed","kind":"shadow","options":[{"id":"e17_0","effect":"venture","label":"Step into the shadow. Fight a copy of your strongest fighter.","outcomes":[{"weight":1,"shadow":true}],"offer":true},{"id":"e17_1","effect":"venture","label":"Throw a stone into the shadow","outcomes":[{"weight":1,"reward":"cave_parcel"},{"weight":1,"fight":["cave_bat",5]}]},{"id":"e17_2","effect":"venture","label":"Pay 2 Amber to keep the lamp burning","outcomes":[{"weight":1,"reward":"cave_parcel"}],"amber":2},{"id":"e17_3","effect":"venture","label":"Borrow the watcher’s lamp","outcomes":[{"weight":1,"flags":["lamp"]}]},{"id":"e17_4","label":"Watch the shadow for 20 seconds","effect":"careful"},{"id":"e17_5","label":"Leave it and keep going.","effect":"leave"}]}];
 
 function voteWorld() {
 	/* CAVE_ENCOUNTERS is `const X = [`, which lift() cannot take, so it is cut
@@ -778,7 +1001,9 @@ function voteWorld() {
 	const s = src();
 	const a = s.indexOf('const CAVE_ENCOUNTERS = [');
 	const b = s.indexOf('\n];\n', a) + 3;
-	const w = world({ TEAM: ['Dexon', 'FatherToken', 'MageofOz'], votedFor: {}, voteNoted: {}, reserveReleased: false });
+	const w = world({ TEAM: ['Dexon', 'FatherToken', 'MageofOz'], votedFor: {}, voteNoted: {}, reserveReleased: false,
+		encounterIndex: null, reviveSpent: {} });
+	w.beacons = () => w.__beacons || {};
 	require('vm').runInContext(s.slice(a, b).replace('const CAVE_ENCOUNTERS', 'globalThis.CAVE_ENCOUNTERS'), w);
 	w.CAVE_ENCOUNTER_BY_ID = {}; w.CAVE_ENCOUNTER_BY_NAME = {};
 	for (const e of w.CAVE_ENCOUNTERS) { w.CAVE_ENCOUNTER_BY_ID[e.id] = e; w.CAVE_ENCOUNTER_BY_NAME[e.n] = e; }
@@ -787,7 +1012,8 @@ function voteWorld() {
 	w.isLeader = () => w.character.name === 'FatherToken';
 	w.character = w.character || {};
 	w.character.name = 'FatherToken';
-	lift(w, 'CaveRun.js', ['VOTE', 'CAVE_REVIVAL', 'encounterOf', 'voteFightValue', 'voteFlagValue', 'voteOutcomeValue',
-		'voteScore', 'reserveNow', 'voteContext', 'votePlan', 'voteEmit', 'voteOpen']);
+	lift(w, 'CaveRun.js', ['VOTE', 'CAVE_REVIVAL', 'compactEncounter', 'encounterTable', 'voteTableSource', 'encounterOf',
+		'voteFightValue', 'voteFlagValue', 'voteOutcomeValue', 'voteScore', 'reserveNow', 'voteContext', 'votePlan',
+		'REVIVE', 'deadMates', 'reviveChoice', 'voteEmit', 'voteOpen']);
 	return w;
 }

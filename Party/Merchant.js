@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v126
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v127
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -711,7 +711,9 @@ const CONFIG = {
 		   is run for Loaded Dice and Amber is what one is made from, so both are
 		   kept and banked. The die is NOT compounded - see craftInputCaps. */
 		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire',
-			'cave_amber', 'cave_loaded_die'],
+			'cave_amber', 'cave_loaded_die',
+			// The only Hop Sickness cure; kept and banked since v127.
+			'snakeoil'],
 	},
 
 	selling: {

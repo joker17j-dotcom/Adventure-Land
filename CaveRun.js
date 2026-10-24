@@ -1,4 +1,31 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v25 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v26 (TEST BUILD)
+// v26 2026-10-24 CAVERUN IS A LAUNCHER, THE DIE IS RETRIED, DEATHS REGROUP -
+//                the operator's rulings relayed in the 12:22 EDT block.
+//                LAUNCHER: on load outside the cave each character asks the
+//                server (interaction `info`) whether today's visit is spent.
+//                Open: restock and walk to Dorr on its own, no 'go' needed.
+//                Spent: hand back to the main script after 20s (caveStay()
+//                keeps CaveRun). A reload of the Cave slot therefore does the
+//                right thing either way. Leaving the cave - our exit or the
+//                clock - writes one CAVE DUMP row to the game log file and loads
+//                this character's own slot by name.
+//                EXIT now waits for the Amber cap, the last minute or
+//                caveExit(); the time after the last seal is for farming.
+//                VOTES read G.events.dreams.encounters live when it is there,
+//                the copy otherwise. REVIVE HERE is voted for the healer, a
+//                repeat death, a short clock or a long walk back, inside 2
+//                Amber per character, and a dead character waits for that vote
+//                instead of respawning at the doorway first.
+//                DIE: any character beside an unsold die shop with the purse
+//                to pay buys it; the leader says when it is affordable but out
+//                of reach, because the detour is the operator's to walk.
+//                REGROUP: a death holds the leader with no 20s give-up (moves
+//                back toward the stranded member pass); a respawned character
+//                rests at the landing, then rejoins unless hostiles are in
+//                view; a dead or resting leader is not chased; two deaths in 5
+//                minutes is a death loop that holds at the landing until
+//                collected or caveResume(). Every death logs where, fear,
+//                attackers and seconds from 90% hp.
 // v25 2026-10-24 THE PARTY VOTES, BUYS THE DIE, LEAVES AND STOPS HITTING
 //                FRIENDS - the operator's cave rulings of 2026-10-24.
 //                VOTES: the leader votes every encounter it knows the moment it
@@ -336,19 +363,28 @@ const CFG = {
 	respawnMs: 4000,        // first retry delay; doubles on cant_respawn
 	respawnMaxMs: 30000,
 
-	/* LEAVE WHEN THE LAST SEAL IS DONE - v25. The 2026-10-23 run finished the
-	   third floor's boss at 15:11:56 and sat until 15:18:16 with nothing to do.
-	   Once every required room of the third floor reads done, each character
-	   waits for the chests on its map to be gone - the finish reward and the
+	/* LEAVING - v25, narrowed in v26. Once every required room of the third
+	   floor is done the time left is the operator's to farm (camps, unvisited
+	   encounters - the leader is theirs to drive), so a character leaves by
+	   itself only when there is nothing left to earn: the run's Amber cap is
+	   reached, or finalMs of clock remain, or caveExit() asks. It still waits
+	   for the chests on its map to be gone first - the finish reward and the
 	   purse's Amber are chests until opened, and leaving settles only what was
-	   opened - then asks the server to let it out. chestWaitMs caps that wait,
-	   because a chest the loot range never reaches would otherwise hold the
-	   party in forever; whatever is left is logged.
-	   handback names the CODE slot each character goes back to afterwards, read
-	   by load_code(). Empty until somebody has measured what load_code accepts
-	   for a character slot - until then CaveRun stops and the operator engages
-	   the main slot by hand. */
-	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, handback: {} },
+	   opened - capped at chestWaitMs, because a chest the loot range never
+	   reaches would otherwise hold it in forever; whatever is left is logged.
+	   handback: on leaving the cave, by exit or by the clock, write the final
+	   dump to the game log and load this character's own main slot by name -
+	   load_code(character.name), measured by the browser session to resolve
+	   the character slot by its name. */
+	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000, handback: true },
+	/* THE LAUNCHER - v26. On load outside the cave, ask the server whether
+	   today's visit is spent (interaction `info`, which answers
+	   {visit: {available, resets, resume}}). Available: restock and walk to
+	   Dorr on our own, no 'go' message needed, so engage order does not matter
+	   and a reloaded character catches up. Spent: hand back to the main script
+	   after graceMs, which caveStay(), caveDry() or caveCrypt() cancel. A run
+	   open to resume: do nothing and say so. Entry stays caveEnter(). */
+	launch: { enabled: true, graceMs: 20000, answerMs: 10000 },
 
 	/* LOOT. v9 called loot() on every 250ms tick with no pause guard and no
 	   cooldown; see lootTick for the measurements. */
@@ -677,6 +713,14 @@ function beaconWrite() {
 			fear: character.fear || 0,
 			atk: attackersOnMe(),
 			rip: !!character.rip,
+			/* v26: the regroup state. `rest` is resting at the landing after a
+			   respawn (or held there by a death loop), `loop` the death loop
+			   itself, `deaths` this character's deaths this run, `ctype` so the
+			   leader can tell the healer died without a name table. */
+			rest: !!(resting || deathLoop),
+			loop: !!deathLoop,
+			deaths: myDeaths.length,
+			ctype: character.ctype || null,
 		}));
 	} catch (e) { bump('beaconWriteFail'); }
 }
@@ -701,9 +745,18 @@ function beacons() {
    them back. followerGaps reports a dead mate as gap 0 for the same reason, so
    neither path strands the run on a body. Caught by the harness; reading it
    twice had not. */
+/* ANY DEATH PUTS THE PARTY IN REGROUP - the operator's ruling of 2026-10-24.
+   Until v26 a dead member was not trouble at all ("holding for a corpse helps
+   nobody"), so the leader walked on and the respawned character crossed the
+   floor alone, which is the repeat-death loop the operator watched. A dead,
+   resting or death-looped member now holds the leader, and REGROUP_WHY marks
+   the holds that have no 20-second give-up. */
+const REGROUP_WHY = ['dead', 'resting', 'deathloop'];
 function troubleOf(st) {
 	if (!st) return null;
-	if (st.rip) return null;
+	if (st.rip) return 'dead';
+	if (st.loop) return 'deathloop';
+	if (st.rest) return 'resting';
 	if (st.hpFrac <= TROUBLE.hpAt) return 'hp';
 	if (st.fear > 0) return 'fear';
 	if (st.atk >= TROUBLE.atkAt) return 'mobbed';
@@ -1405,6 +1458,7 @@ async function moveTick() {
 		}
 		return;
 	}
+	restTick();
 	if (isLeader()) {
 		/* The leader never reaches noteLeaderMotion below, so without this its
 		   own leaderMovedAt stays 0 and computeLeash would report the
@@ -1424,6 +1478,18 @@ async function moveTick() {
 	const lp = leaderPos();
 	if (!lp) { if (await followFloor()) return; return; }
 	noteLeaderMotion(lp);
+	/* RESTING AT THE LANDING, or held there by a death loop: no recovery latch,
+	   nothing crosses the floor. combatTick still answers what attacks. */
+	if (resting || deathLoop) { recovering = false; aim = null; return; }
+	/* A DEAD OR RESTING LEADER IS NOT CHASED - v26. It used to pull both
+	   followers back across the floor, fighting without heals on the way. They
+	   hold where they are and kite; the leader comes back to them. */
+	if (leaderDown()) {
+		if (recovering) { recovering = false; aim = null; ev('recoverHeld', { why: 'leader down' }); }
+		const k = kiteStep(lp);
+		if (k) { try { move(k.x, k.y); bump('kiteSteps'); } catch (e) {} }
+		return;
+	}
 	const L = leash();
 	const gap = Math.hypot(lp.x - character.real_x, lp.y - character.real_y);
 	tel.maxDistLeader = Math.max(tel.maxDistLeader, Math.round(gap));
@@ -1458,8 +1524,10 @@ async function moveTick() {
    produced a worst gap of 0 and no warning whatsoever. That is the exact state
    this work exists to catch. An unseen mate now reports Infinity, and the
    beacon is consulted first so a member merely out of render range still
-   yields a real distance. A dead one reports 0 deliberately: holding for a
-   corpse helps nobody, and deathTick owns the respawn. */
+   yields a real distance. A dead one reports 0 here, because a corpse has no
+   distance to close; it holds the leader through troubleOf() instead, which
+   reads it as 'dead' - the regroup ruling of v26 - and deathTick owns the
+   respawn. */
 function followerGaps() {
 	const bs = beacons(), now = Date.now(), out = [];
 	for (const nm of followers()) {
@@ -1485,6 +1553,20 @@ function holdResume() {
 		clog('party is back - resuming toward ' + Math.round(g.x) + ',' + Math.round(g.y), '#5ED6A8');
 		ev('holdResume', { x: Math.round(g.x), y: Math.round(g.y) });
 	} catch (e) { bump('holdResumeFail'); }
+}
+function collectingMove(regroup) {
+	try {
+		if (!character.moving || character.going_x == null) return false;
+		const bs = beacons();
+		for (const t of regroup) {
+			const b = bs[t.who];
+			if (!b || b.map !== character.map) continue;
+			const now = Math.hypot(b.x - character.real_x, b.y - character.real_y);
+			const then = Math.hypot(b.x - character.going_x, b.y - character.going_y);
+			if (then < now - 10) return true;
+		}
+	} catch (e) {}
+	return false;
 }
 function warnOutrun() {
 	try {
@@ -1518,7 +1600,12 @@ function warnOutrun() {
 		   top of the operator's range - see the v15 block. */
 		const need = (holdFrom ? worst > MOVE.holdReleaseAt : worst > MOVE.holdAt) || troubleNow.length > 0;
 		if (!need) { holdDone = false; if (holdFrom) holdResume(); return; }
-		if (holdDone) return;
+		const regroup = troubleNow.filter((t) => REGROUP_WHY.indexOf(t.why) >= 0);
+		/* A REGROUP HOLD STOPS THE LEADER LEAVING, NOT COMING BACK. The operator
+		   walks back to collect a member stranded at the landing, so a move whose
+		   target is nearer that member than the leader is now passes through. */
+		if (regroup.length && collectingMove(regroup)) { bump('regroupCollectMoves'); return; }
+		if (holdDone && !regroup.length) return;
 
 		if (!holdFrom) {
 			holdFrom = Date.now();
@@ -1530,7 +1617,7 @@ function warnOutrun() {
 			ev('hold', { who: who, src: src, gap: worst === Infinity ? null : Math.round(worst),
 				trouble: troubleNow, resume: !!holdGoing });
 		}
-		if (Date.now() - holdFrom > HOLD.maxMs) {
+		if (Date.now() - holdFrom > HOLD.maxMs && !regroup.length) {
 			holdDone = true;
 			bump('holdGaveUp');
 			clog('HOLD GAVE UP after ' + Math.round((Date.now() - holdFrom) / 1000) + 's - ' + who + ' still ' + shown
@@ -1753,30 +1840,153 @@ function deathSnapshot() {
 	try { snap.map = character.map; snap.x = Math.round(character.real_x); snap.y = Math.round(character.real_y); } catch (e) {}
 	return snap;
 }
+/* DEATHS ARE LOGGED WITH WHAT KILLED THEM - v26. The 2026-10-23 dumps read
+   partyDeaths 0, so there was no data at all; each death now writes one line
+   to the game log (and so to the bridge's file) with the map, position, fear,
+   the monsters on this character and how long it took from 90% hp, and the
+   respawn and any re-death are logged the same way. */
+let myDeaths = [], hpTrail = [], lastAlive = null, diedAt = 0;
+let resting = false, restSince = 0, restSaid = false, deathLoop = false;
+function sampleAlive() {
+	if (character.rip) return;
+	const now = Date.now();
+	const f = character.max_hp ? character.hp / character.max_hp : 1;
+	hpTrail.push([now, f]);
+	while (hpTrail.length && now - hpTrail[0][0] > 30000) hpTrail.shift();
+	const on = {};
+	for (const m of threats()) if (m.target === character.name) on[m.mtype || '?'] = (on[m.mtype || '?'] || 0) + 1;
+	lastAlive = { at: now, map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y),
+		fear: character.fear || 0, attackers: on, hp: Math.round(f * 100) };
+}
+function msFrom90(now) {
+	for (let i = hpTrail.length - 1; i >= 0; i--) if (hpTrail[i][1] >= 0.9) return now - hpTrail[i][0];
+	return hpTrail.length ? now - hpTrail[0][0] : null;
+}
 function deathTick() {
 	const rip = !!character.rip;
+	if (!rip) sampleAlive();
 	if (rip && !wasRip) {
 		wasRip = true;
+		const now = Date.now();
+		diedAt = now;
+		myDeaths.push(now);
 		bump('partyDeaths');
 		const snap = deathSnapshot();
+		const la = lastAlive || {};
+		const ttd = msFrom90(now);
+		snap.n = myDeaths.length; snap.fear = la.fear; snap.attackers = la.attackers; snap.msFrom90 = ttd;
 		ev('died', snap);
-		clog('DIED - snapshotting respawn options then respawning at the door', 'red');
+		clog('DIED (#' + myDeaths.length + ' this run) on ' + (la.map || character.map) + ' at ' + la.x + ',' + la.y
+			+ ' - fear ' + (la.fear || 0) + ', attackers ' + JSON.stringify(la.attackers || {})
+			+ ', from 90% hp in ' + (ttd == null ? '?' : Math.round(ttd / 1000) + 's'), 'red');
 	}
 	if (!rip) {
 		if (wasRip) {
 			wasRip = false;
 			respawnWait = 0; respawnRefusals = 0;
-			/* Back on our feet somewhere other than the fight - go to the leader
-			   and keep going, which is exactly the recovery latch. */
-			recovering = true; aim = null; bump('recoveries'); ev('respawned', { map: character.map });
+			const now = Date.now();
+			const recent = myDeaths.filter((t) => now - t <= REGROUP.deathLoopMs).length;
+			ev('respawned', { map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y), recent: recent });
+			if (mode === 'cave' && inCave()) {
+				/* REST AT THE LANDING FIRST - the operator's ruling. The old latch sent
+				   a respawned character straight back across the floor, alone. */
+				resting = true; restSince = now; restSaid = false; recovering = false; aim = null;
+				if (recent >= 2) {
+					deathLoop = true;
+					clog('DEATH LOOP - ' + recent + ' deaths inside ' + Math.round(REGROUP.deathLoopMs / 60000)
+						+ ' min. Holding at the landing, defending only, until the party collects me or caveResume().', 'red');
+					ev('deathLoop', { recent: recent });
+				} else clog('respawned at ' + Math.round(character.real_x) + ',' + Math.round(character.real_y) + ' - resting before rejoining', 'orange');
+			} else {
+				/* Back on our feet somewhere other than the fight - go to the leader
+				   and keep going, which is exactly the recovery latch. */
+				recovering = true; aim = null; bump('recoveries');
+			}
 		}
 		return;
 	}
 	if (!CFG.autoRespawn) return;
+	/* NOT WHILE A VOTE IS OPEN IN THE CAVE. The server offers the revival vote
+	   - revive here for Amber, or at the doorway free - only once no other vote
+	   is open, and a bare respawn() would take the free doorway before that vote
+	   could pick "here". So wait for it, up to REGROUP.reviveWaitMs, and wait a
+	   moment after dying for the offer to arrive at all. */
+	if (mode === 'cave' && inCave()) {
+		const ch = (caveState() || {}).choice;
+		const since = Date.now() - diedAt;
+		if (since < REGROUP.reviveWaitMs && ((ch && !ch.resolved) || since < REGROUP.offerGraceMs)) {
+			throttleLog('dead - waiting for the revival vote before respawning');
+			return;
+		}
+	}
 	if (Date.now() - lastRespawn < (respawnWait || CFG.respawnMs)) return;
 	lastRespawn = Date.now();
 	bump('respawnCalls');
 	try { respawn(); } catch (e) { noteWhy('respawn', e); clog('respawn threw: ' + e, 'red'); }
+}
+
+/* THE REGROUP - v26, the operator's rulings of 2026-10-24.
+   A respawned character rests at the landing until hp, mp and fear are back,
+   then walks to the party only when nothing hostile is in view; otherwise it
+   stays and the party comes back for it. Two deaths of one character inside
+   deathLoopMs is a death loop: it holds at the landing, defending only, until
+   the leader reaches it or caveResume(). */
+const REGROUP = {
+	hpAt: 0.9, mpAt: 0.8,
+	restMaxMs: 90000,       // rest ends at this age even short of full, if the path is clear
+	hostileWithin: 300,     // a monster this close that is not friendly blocks walking out
+	collectedWithin: 150,   // the leader this close has collected a resting member
+	deathLoopMs: 300000,
+	reviveWaitMs: 75000,    // longest a dead character waits for the revival vote
+	offerGraceMs: 3000,
+};
+function hostileInView() {
+	for (const m of threats()) {
+		if (caveFriendly(m)) continue;
+		if (dist(character, m) <= REGROUP.hostileWithin) return m;
+	}
+	return null;
+}
+function restTick() {
+	if (!(resting || deathLoop) || character.rip) return;
+	const le = leaderEntity();
+	if (!isLeader() && here(le) && dist(character, le) <= REGROUP.collectedWithin) {
+		clog('the party is here - back to normal', '#7FD98A');
+		ev('collected', { loop: deathLoop });
+		resting = false; deathLoop = false;
+		return;
+	}
+	if (deathLoop) return;
+	const hp = character.max_hp ? character.hp / character.max_hp : 1;
+	const mp = character.max_mp ? character.mp / character.max_mp : 1;
+	const full = hp >= REGROUP.hpAt && mp >= REGROUP.mpAt && !(character.fear > 0);
+	const aged = Date.now() - restSince >= REGROUP.restMaxMs;
+	if (!full && !aged) return;
+	/* The leader is the operator's to drive, so it only waits for hp/mp/fear. */
+	const h = isLeader() ? null : hostileInView();
+	if (h) {
+		if (!restSaid) {
+			restSaid = true;
+			clog('rested, but ' + (h.mtype || h.name) + ' is ' + Math.round(dist(character, h)) + 'u away - waiting here for the party', 'orange');
+			ev('restBlocked', { by: h.mtype || h.name });
+		}
+		return;
+	}
+	resting = false;
+	ev('restDone', { hp: Math.round(hp * 100), mp: Math.round(mp * 100), aged: aged });
+	if (!isLeader()) { recovering = true; aim = null; bump('recoveries'); clog('rested - rejoining the party', '#7FD98A'); }
+}
+function leaderDown() {
+	if (isLeader()) return false;
+	const L = leaderName(), b = beacons()[L];
+	if (b && Date.now() - b.t <= TROUBLE.staleMs && (b.rip || b.rest)) return true;
+	const e = leaderEntity();
+	return !!(e && e.rip);
+}
+function caveResume() {
+	resting = false; deathLoop = false; recovering = true; aim = null;
+	clog('released from the landing by hand', '#FFD700');
+	return true;
 }
 
 // ---------------------------------------------------------------- vote -----
@@ -2268,17 +2478,65 @@ const CAVE_ENCOUNTERS = [
 		{i:'e50_5',e:'leave'},
 	] },
 ];
-const CAVE_ENCOUNTER_BY_ID = {}, CAVE_ENCOUNTER_BY_NAME = {};
-for (const e of CAVE_ENCOUNTERS) { CAVE_ENCOUNTER_BY_ID[e.id] = e; CAVE_ENCOUNTER_BY_NAME[e.n] = e; }
+/* THE LIVE TABLE WINS - v26. The browser session measured the client's own G
+   carrying G.events.dreams.encounters, 50 entries with `effect` on every
+   option (G version 18183), so an encounter the game adds arrives with its
+   effects instead of reading as UNKNOWN until somebody copies the table again.
+   It is converted into the compact shape above, so the scorer reads one shape
+   from either source; the copy is the fallback when the live table is missing
+   or empty. voteTableSource() says which one is in use. */
+function compactEncounter(e) {
+	const out = { id: e.id, n: e.name, g: e.group, k: e.kind, o: [] };
+	for (const o of e.options || []) {
+		const r = { i: o.id, e: o.effect };
+		if (o.cost) r.c = o.cost;
+		if (o.amber) r.a = o.amber;
+		if (o.needs) r.n = o.needs;
+		if (o.win) r.w = o.win;
+		if (o.seconds) r.s = o.seconds;
+		if (o.reward_amber) r.ra = o.reward_amber;
+		if (o.guard) r.gd = o.guard;
+		if (o.travelers) r.tr = 1;
+		if (o.hazard) r.hz = o.hazard;
+		if (o.outcomes) r.o = o.outcomes.map((x) => {
+			const y = { w: x.weight };
+			if (x.gold) y.g = x.gold;
+			if (x.amber) y.a = x.amber;
+			if (x.reward) y.r = String(x.reward).replace(/^cave_/, '');
+			if (x.fight) y.f = String(x.fight[0]).replace(/^cave_/, '') + ':' + x.fight[1];
+			if (x.flags) y.fl = x.flags.join(',');
+			if (x.join) y.j = 1;
+			if (x.ally) y.al = 1;
+			if (x.shadow) y.sh = 1;
+			return y;
+		});
+		out.o.push(r);
+	}
+	return out;
+}
+let encounterIndex = null;
+function encounterTable() {
+	let live = null;
+	try { live = parent.G.events.dreams.encounters; } catch (e) {}
+	const src = (Array.isArray(live) && live.length) ? live : null;
+	if (encounterIndex && encounterIndex.from === (src || CAVE_ENCOUNTERS)) return encounterIndex;
+	const list = src ? src.map(compactEncounter) : CAVE_ENCOUNTERS;
+	const byId = {}, byName = {};
+	for (const e of list) { byId[e.id] = e; byName[e.n] = e; }
+	encounterIndex = { from: src || CAVE_ENCOUNTERS, source: src ? 'live' : 'copy', list: list, byId: byId, byName: byName };
+	return encounterIndex;
+}
+function voteTableSource() { return encounterTable().source; }
 
 function encounterOf(choice) {
 	if (!choice) return null;
+	const T = encounterTable();
 	try {
 		const ph = choice.title_message && choice.title_message.phrase;
 		const m = ph && /^event\.dreams\.(e\d+)\.name$/.exec(ph);
-		if (m && CAVE_ENCOUNTER_BY_ID[m[1]]) return CAVE_ENCOUNTER_BY_ID[m[1]];
+		if (m && T.byId[m[1]]) return T.byId[m[1]];
 	} catch (e) {}
-	if (choice.title && CAVE_ENCOUNTER_BY_NAME[choice.title]) return CAVE_ENCOUNTER_BY_NAME[choice.title];
+	if (choice.title && T.byName[choice.title]) return T.byName[choice.title];
 	const ids = (choice.options || []).map((o) => o.id);
 	if (ids.length && ids.every((id) => id === 'here' || id === 'landing')) return CAVE_REVIVAL;
 	return null;
@@ -2387,12 +2645,59 @@ function votePlan(choice, st) {
 	const shown = choice.options || [];
 	const missing = shown.filter((o) => !byId[o.id]).map((o) => o.id);
 	if (missing.length) return { enc: enc, unknown: 'option ' + missing.join(','), pick: null, scores: {} };
+	if (enc.id === 'revival') return reviveChoice(enc, choice, st);
 	const s = voteContext(st, enc), scores = {};
 	for (const o of shown) scores[o.id] = voteScore(byId[o.id], o, s);
 	let pick = null;
 	for (const id of VOTE.prefer[enc.id] || []) if (scores[id] != null) { pick = id; break; }
 	if (!pick) for (const o of shown) if (scores[o.id] != null && (pick === null || scores[o.id] > scores[pick])) pick = o.id;
 	return { enc: enc, unknown: null, pick: pick, scores: scores };
+}
+
+/* REVIVE IN PLACE ONLY WHEN IT PAYS - the operator's ruling of 2026-10-24,
+   the one place an Amber price is allowed. "Here" costs 1 Amber per dead
+   member on that map; it is taken when (1) the healer died, (2) the walk back
+   from the doorway is estimated over walkSec, (3) the run clock is short, or
+   (4) it is that character's repeat death - and only while every dead member
+   is inside a budget of 2 Amber per run. The walk is straight-line from where
+   the member lies to the floor's doorway (doors[0], where the free revive
+   lands) times a maze factor, at a resting speed - an estimate, logged as one.
+   Spend is counted by this page; a reload resets it. */
+const REVIVE = { budget: 2, tightMs: 300000, walkSec: 60, mazeFactor: 1.5, speed: 60 };
+let reviveSpent = {};
+function deadMates(st) {
+	const bs = beacons(), out = [];
+	for (const n of TEAM) {
+		const e = n === character.name ? character : (parent.entities || {})[n];
+		const b = bs[n];
+		const rip = (e && e.rip) || (b && b.rip && Date.now() - b.t <= 10000);
+		if (!rip) continue;
+		const pos = (b && b.map === character.map) ? { x: b.x, y: b.y } : (e && e.map === character.map ? { x: e.x, y: e.y } : null);
+		out.push({ name: n, ctype: (b && b.ctype) || (e && e.ctype) || null, deaths: (b && b.deaths) || 0, pos: pos });
+	}
+	return out;
+}
+function reviveChoice(enc, choice, st) {
+	const shown = choice.options || [];
+	const here = shown.find((o) => o.id === 'here'), landing = shown.find((o) => o.id === 'landing');
+	const dead = deadMates(st || {});
+	const why = [];
+	if (dead.some((d) => d.ctype === 'priest')) why.push('the healer died');
+	if (dead.some((d) => d.deaths >= 2)) why.push('a repeat death');
+	if (st && st.remaining_ms != null && st.remaining_ms < REVIVE.tightMs) why.push('the clock is short');
+	const door = st && st.doors && st.doors[0];
+	if (door) for (const d of dead) {
+		if (!d.pos) continue;
+		const sec = Math.hypot(d.pos.x - door.x, d.pos.y - door.y) * REVIVE.mazeFactor / REVIVE.speed;
+		if (sec > REVIVE.walkSec) { why.push(d.name + ' is ~' + Math.round(sec) + 's from the doorway'); break; }
+	}
+	const inBudget = dead.length > 0 && dead.every((d) => (reviveSpent[d.name] || 0) + 1 <= REVIVE.budget);
+	const canHere = !!(here && !here.unavailable && inBudget && why.length > 0);
+	const pick = canHere ? 'here' : (landing ? 'landing' : null);
+	const reason = canHere ? why.join('; ')
+		: (!why.length ? 'no reason to pay' : !inBudget ? 'over the 2-Amber budget' : 'here not available');
+	return { enc: enc, unknown: null, pick: pick, scores: { here: canHere ? 1 : null, landing: 0.5 },
+		revive: { dead: dead.map((d) => d.name), reason: reason } };
 }
 
 function voteEmit(choice, option, how) {
@@ -2408,7 +2713,7 @@ function voteTick() {
 	const st = caveState(), choice = st && st.choice;
 	if (!choice) return;
 	if (!choice.resolved) voteOpen(st, choice);
-	else if (isLeader()) shopTick(st, choice);
+	else learnShop(choice);
 }
 function voteOpen(st, choice) {
 	if (choice.deadline && Date.now() > choice.deadline) return;
@@ -2456,28 +2761,89 @@ function voteOpen(st, choice) {
 		return;
 	}
 	voteEmit(choice, plan.pick, 'auto');
-	clog(plan.enc.id + ' ' + plan.enc.n + ': voted ' + plan.pick + ' (' + sc + ')', '#7FD98A');
-}
-/* ALWAYS BUY A LOADED DIE WHEN A CAVE MERCHANT SHOWS ONE. The shop opens once
-   the inspect option resolves, and the server only sells within 160 of the
-   merchant - the leader is, having started the conversation. One attempt per
-   shop; the server's refusal names why. */
-let shopTried = {}, voteNoted = {};
-function shopTick(st, choice) {
-	const shop = choice.shop;
-	if (!shop || shop.sold || shop.name !== 'cave_loaded_die' || shopTried[shop.room]) return;
-	if (!shop.nearby || (st.gold || 0) < shop.price) {
-		throttleLog('Loaded Die on sale for ' + shop.price + ' - ' + (!shop.nearby ? 'not near the merchant' : 'purse only ' + st.gold));
+	if (plan.revive) {
+		if (plan.pick === 'here') for (const n of plan.revive.dead) reviveSpent[n] = (reviveSpent[n] || 0) + 1;
+		clog('revival for ' + plan.revive.dead.join(', ') + ': ' + plan.pick + ' - ' + plan.revive.reason, plan.pick === 'here' ? '#FFD700' : '#7FD98A');
+		ev('revive', { pick: plan.pick, dead: plan.revive.dead, reason: plan.revive.reason, spent: reviveSpent });
 		return;
 	}
-	shopTried[shop.room] = true;
-	try {
-		parent.socket.emit('interaction', { type: 'cave', action: 'buy', room: shop.room,
-			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
-		bump('dieBuys'); ev('dieBuy', { room: shop.room, price: shop.price, gold: st.gold });
-		clog('buying the Loaded Die for ' + shop.price + ' cave gold', '#FFD700');
-	} catch (e) { bump('voteErr'); clog('die buy failed: ' + e, 'red'); }
+	clog(plan.enc.id + ' ' + plan.enc.n + ': voted ' + plan.pick + ' (' + sc + ')', '#7FD98A');
 }
+/* ALWAYS BUY A LOADED DIE WHEN A CAVE MERCHANT SHOWS ONE - and keep trying,
+   v26. v25 tried once, at the moment the shop opened, and every floor's shop
+   is in its first room while the purse starts at 0 - so on floor 1 the attempt
+   was refused gold_not_enough and never made again. Now any character that saw
+   a die shop remembers it, and whichever one is within reach of that
+   shopkeeper (the entity whose cave.room is the shop's room) buys once the
+   purse covers the price: a respawn at the doorway, or the party passing back.
+   The server's answer settles it - bought, or sold_out - and other refusals
+   are retried every retryMs. The leader also says, throttled, when the die is
+   affordable but out of reach, because the detour is the operator's to walk. */
+const DIE = { reach: 150, retryMs: 5000, maxTries: 8 };
+let voteNoted = {}, dieShops = {}, pendingBuys = {};
+function learnShop(choice) {
+	const shop = choice && choice.shop;
+	if (!shop || shop.name !== 'cave_loaded_die' || dieShops[shop.room]) return;
+	dieShops[shop.room] = { map: character.map, price: shop.price, done: !!shop.sold, tries: 0, lastTry: 0 };
+	clog('a Loaded Die is for sale here for ' + shop.price + ' cave gold', '#FFD700');
+	ev('dieShop', { room: shop.room, price: shop.price });
+}
+function shopKeeper(room) {
+	try {
+		for (const id in parent.entities) {
+			const e = parent.entities[id];
+			if (e && !e.dead && e.cave && e.cave.room === room) return e;
+		}
+	} catch (e) {}
+	return null;
+}
+function dieTick() {
+	if (stopped || mode !== 'cave' || !inCave() || character.rip) return;
+	const st = caveState();
+	if (!st) return;
+	const now = Date.now();
+	for (const room in dieShops) {
+		const d = dieShops[room];
+		if (d.done || d.map !== character.map) continue;
+		const gold = st.gold || 0;
+		if (gold < d.price) continue;
+		const k = shopKeeper(room);
+		const reach = k ? dist(character, k) : Infinity;
+		if (reach > DIE.reach) {
+			if (isLeader()) throttleLog('Loaded Die affordable (' + gold + ' of ' + d.price + ') at the shop '
+				+ (k ? Math.round(reach) + 'u away' : 'out of sight') + ' - detour if the route allows');
+			continue;
+		}
+		if (now - d.lastTry < DIE.retryMs || d.tries >= DIE.maxTries) continue;
+		d.lastTry = now; d.tries++;
+		const rid = 'crd' + Math.random().toString(36).slice(2, 10);
+		pendingBuys[rid] = room;
+		try {
+			parent.socket.emit('interaction', { type: 'cave', action: 'buy', room: room, request_id: rid });
+			bump('dieBuys'); ev('dieBuy', { room: room, price: d.price, gold: gold, try: d.tries });
+			clog('buying the Loaded Die for ' + d.price + ' cave gold (try ' + d.tries + ')', '#FFD700');
+		} catch (e) { bump('voteErr'); clog('die buy failed: ' + e, 'red'); }
+	}
+}
+/* The server's answer to our own buy and info requests, matched by request_id. */
+function onCaveResponse(d) {
+	if (!d || d.interaction !== 'cave' || !d.request_id) return;
+	const room = pendingBuys[d.request_id];
+	if (room) {
+		delete pendingBuys[d.request_id];
+		const shop = dieShops[room];
+		if (!shop) return;
+		if (d.success) { shop.done = true; clog('bought the Loaded Die - it went to ' + (d.recipient || '?'), '#7FD98A'); ev('dieBought', { room: room, to: d.recipient }); }
+		else if (d.reason === 'sold_out') { shop.done = true; clog('the Loaded Die is sold', 'orange'); ev('dieSold', { room: room }); }
+		else ev('dieRefused', { room: room, reason: d.reason });
+		return;
+	}
+	if (d.request_id === launcher.rid) launcherAnswer(d);
+}
+try {
+	parent.socket.on('game_response', function (d) { try { if (alive()) onCaveResponse(d); } catch (e) {} });
+} catch (e) {}
+
 function caveVotePreview() {
 	const st = caveState(), choice = st && st.choice;
 	if (!choice) return { choice: null };
@@ -2599,7 +2965,13 @@ function hookPartyInvite() {
    filter applies only when the fields are actually numbers - typeof, never
    truthiness - and tel.chestFields records the real shape the first time one
    is seen, so the next run settles it. */
-let finishedAt = 0, exitAsked = 0, exitedByUs = false, chestsClearSince = 0;
+let finishedAt = 0, exitAsked = 0, exitedByUs = false, chestsClearSince = 0, exitForce = false, exitWhyFrom = 0;
+function caveExit() {
+	if (!inCave()) { clog('not in the cave', 'orange'); return false; }
+	exitForce = true; exitWhyFrom = 0;
+	clog('leaving once the chests here are opened', '#FFD700');
+	return true;
+}
 function runFinished(st) {
 	if (!st || st.floor !== 2) return false;
 	const req = (st.objectives || []).filter((o) => o.floor === 2 && o.required);
@@ -2609,18 +2981,22 @@ function exitTick() {
 	const X = CFG.exit;
 	if (!X || !X.enabled || stopped || mode !== 'cave' || !inCave() || character.rip) return;
 	const st = caveState();
-	if (!runFinished(st)) { finishedAt = 0; return; }
+	if (!st || (!runFinished(st) && !exitForce)) { finishedAt = 0; return; }
 	const now = Date.now();
 	if (!finishedAt) {
 		finishedAt = now; chestsClearSince = 0;
-		clog('last seal done - leaving once the chests here are opened', '#7FD98A');
+		clog('last seal done - the time left is for farming; leaving at the Amber cap, the last minute, or caveExit()', '#7FD98A');
 		ev('runFinished', { gold: st.gold, amber: st.amber });
 	}
 	let chests = 0;
 	try { chests = Object.keys((typeof get_chests === 'function' && get_chests()) || {}).length; } catch (e) {}
 	if (chests) chestsClearSince = 0; else if (!chestsClearSince) chestsClearSince = now;
+	const capped = !!(st.limits && st.limits.amber != null && st.limits.amber_spawned >= st.limits.amber);
+	const lastMinute = st.remaining_ms != null && st.remaining_ms <= X.finalMs;
+	if (!capped && !lastMinute && !exitForce) return;
+	if (!exitWhyFrom) exitWhyFrom = now;
 	const settled = chestsClearSince && now - chestsClearSince >= X.settleMs;
-	const timedOut = now - finishedAt >= X.chestWaitMs;
+	const timedOut = now - exitWhyFrom >= X.chestWaitMs;
 	if (!settled && !timedOut) return;
 	if (exitAsked && now - exitAsked < X.retryMs) return;
 	exitAsked = now; exitedByUs = true;
@@ -2628,21 +3004,93 @@ function exitTick() {
 		parent.socket.emit('interaction', { type: 'cave', action: 'exit',
 			request_id: 'cr' + Math.random().toString(36).slice(2, 12) });
 		bump('exits');
-		ev('exit', { chestsLeft: chests, waitedMs: now - finishedAt, amber: st.amber, gold: st.gold });
+		ev('exit', { chestsLeft: chests, waitedMs: now - finishedAt, amber: st.amber, gold: st.gold,
+			why: exitForce ? 'asked' : capped ? 'amber cap' : 'clock' });
 		clog('leaving the cave' + (chests ? ' with ' + chests + ' chest(s) unopened after ' + Math.round((now - finishedAt) / 1000) + 's' : ''), chests ? 'orange' : '#7FD98A');
 	} catch (e) { bump('exitErr'); clog('exit emit failed: ' + e, 'red'); }
 }
-/* Back to the main script, if the slot is known. The new script is loaded into
-   this same CODE context, so every CaveRun loop is retired first by claiming a
-   new generation - alive() goes false for all of them. */
-function handBack() {
+/* THE FINAL DUMP GOES TO THE GAME LOG FILE - v26, the operator's ruling. One
+   row reading CAVE DUMP, with the telemetry under an extra `dump` field: the
+   bridge caps a row's message at 4,000 characters but stores unknown fields
+   whole, so no bridge change is needed. Written into the page's log buffer,
+   which outlives this script, so it is sent even after the hand-back. */
+function caveDumpToLog(why) {
+	try {
+		const st = parent.__gamelog;
+		if (!st || typeof st.capture !== 'function') return false;
+		try { tel.ver = caveVersion(); tel.build = caveBuild(); } catch (e) {}
+		st.capture('CAVE DUMP (' + why + ') - ' + character.name, '#8b98ab', 'script');
+		const row = st.buf[st.buf.length - 1];
+		if (row) row.dump = JSON.parse(JSON.stringify(tel));
+		return true;
+	} catch (e) { return false; }
+}
+/* Out of the cave, by our exit or by the clock: dump, then hand back. */
+function leftCave() {
+	const why = exitedByUs ? 'exit' : 'run over';
+	ev('leftCave', { why: why });
+	telFlush(true);
+	caveDumpToLog(why);
+	handBack(why);
+}
+/* Back to the main script. The new script is loaded into this same CODE
+   context, so every CaveRun loop is retired first by claiming a new
+   generation - alive() goes false for all of them. The two GAMELOG copies do
+   not double up: the page-level capture is reused as it is, and the flush
+   timer is one window slot the main script's copy replaces. */
+function handBack(why) {
 	exitedByUs = false;
-	const slot = (CFG.exit.handback || {})[character.name];
-	if (!slot) { clog('out of the cave - engage the main script to carry on', '#FFD700'); stopped = true; return; }
+	if (!CFG.exit.handback) { stopped = true; clog('out of the cave - engage the main script to carry on', '#FFD700'); return; }
+	let slot = null;
+	try { slot = character.name; } catch (e) {}
+	if (!slot) { stopped = true; clog('hand back: character name unread - engage the main script by hand', 'red'); return; }
 	try { window.__caveGen = (window.__caveGen || 0) + 1; } catch (e) {}
-	clog('out of the cave - handing back to ' + slot, '#7FD98A');
-	ev('handBack', { slot: slot });
-	try { load_code(slot); } catch (e) { clog('hand back failed: ' + e, 'red'); }
+	stopped = true;
+	clog('handing back to the main script (' + slot + ') - ' + why, '#7FD98A');
+	ev('handBack', { slot: slot, why: why });
+	try { load_code(slot); } catch (e) { clog('hand back failed: ' + e + ' - engage the main script by hand', 'red'); }
+}
+
+let launcher = { rid: null, askedAt: 0, answered: false, handBackAt: 0, said: false };
+function launcherStart() {
+	const L = CFG.launch;
+	if (!L || !L.enabled || mode !== 'cave' || inCave()) return false;
+	launcher.rid = 'crl' + Math.random().toString(36).slice(2, 10);
+	launcher.askedAt = Date.now();
+	try { parent.socket.emit('interaction', { type: 'cave', action: 'info', request_id: launcher.rid }); }
+	catch (e) { clog('cave info request failed: ' + e + ' - caveGo() by hand', 'orange'); return false; }
+	return true;
+}
+function launcherAnswer(d) {
+	launcher.answered = true;
+	const v = (d && d.visit) || {};
+	ev('launch', { failed: !!(d && d.failed), reason: d && d.reason, available: v.available, resume: !!v.resume });
+	if (d && d.failed) { clog('cave info refused (' + d.reason + ') - caveGo() by hand', 'orange'); return; }
+	if (v.resume) { clog('a cave run is open to resume' + (v.resume.server ? ' on ' + v.resume.server : '') + ' - not staging', 'orange'); return; }
+	if (v.available) {
+		if (phase === 'idle' && !stopped && mode === 'cave') { clog("today's cave is available - restocking and walking to Dorr", '#FFD700'); caveGo(); }
+		return;
+	}
+	launcher.handBackAt = Date.now() + CFG.launch.graceMs;
+	clog("today's cave is done - handing back to the main script in " + Math.round(CFG.launch.graceMs / 1000)
+		+ 's (caveStay() keeps CaveRun)', '#FFD700');
+}
+function launcherTick() {
+	if (!launcher.rid) return;
+	const now = Date.now();
+	if (!launcher.answered && !launcher.said && now - launcher.askedAt > CFG.launch.answerMs) {
+		launcher.said = true;
+		clog('no answer to the cave info request - caveGo() by hand', 'orange');
+	}
+	if (launcher.handBackAt && now >= launcher.handBackAt) {
+		launcher.handBackAt = 0;
+		if (mode === 'cave' && !inCave() && !stopped) handBack("today's cave is done");
+	}
+}
+function caveStay() {
+	launcher.handBackAt = 0;
+	clog('staying on CaveRun', '#FFD700');
+	return true;
 }
 
 function lootTick() {
@@ -3108,6 +3556,7 @@ function caveLead(name) {
 /* Crypt mode. The leader is yours to drive; the other two cohere and shoot,
    and only at CRYPT.only. Run it on all three before you take the door. */
 function caveCrypt() {
+	launcher.handBackAt = 0;
 	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
 	clog('CRYPT MODE as ' + role() + ' - hunting: ' + CRYPT.only.join(', ')
 		+ ' | will answer anything that starts it EXCEPT ' + CRYPT.never.join(', '), '#FFD700');
@@ -3132,6 +3581,7 @@ function caveNever() {
 }
 
 function caveDry() {
+	launcher.handBackAt = 0;
 	if (inCave()) { clog('already inside a cave - caveDry() is for outside', 'orange'); return null; }
 	mode = 'dry'; stopped = false; phase = 'active'; recovering = false; aim = null;
 	clog('DRY RUN as ' + role() + ' (' + character.name + '/' + character.ctype + ' speed ' + character.speed
@@ -3146,6 +3596,7 @@ function caveDry() {
    out of gold, or on the give-up timer - so there is no path where a character
    stays in town indefinitely. */
 function caveGo() {
+	launcher.handBackAt = 0;
 	if (offCave()) { clog('in ' + mode + ' mode - caveStop() then re-engage for a real run', 'orange'); return null; }
 	stopped = false;
 	restockReset();
@@ -3191,7 +3642,7 @@ try {
 			if (!alive() || !d || !d.message || !d.message.cave) return;
 			if (d.name !== leaderName()) return;
 			ev('cm', { from: d.name, msg: d.message.cave });
-			if (d.message.cave === 'go') caveGo();
+			if (d.message.cave === 'go') { if (phase === 'idle') caveGo(); }
 			else if (d.message.cave === 'stop') caveStop();
 		} catch (e) {}
 	});
@@ -3202,17 +3653,21 @@ try {
 	window.caveCrypt = caveCrypt; window.caveOnly = caveOnly; window.caveNever = caveNever;
 	window.caveEnter = caveEnter; window.caveStatus = caveStatus; window.caveStop = caveStop;
 	window.caveDump = caveDump; window.caveLeash = caveLeash; window.caveVotePreview = caveVotePreview;
+	window.caveExit = caveExit; window.caveStay = caveStay; window.caveResume = caveResume;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
+let leaving = false;
 async function tick() {
 	try {
 		const was = phase;
 		if (inCave()) phase = 'inside';
-		else if (phase === 'inside') { phase = 'idle'; votedFor = {}; deadDoors = {}; shopTried = {}; voteNoted = {}; reserveReleased = false; friendlySkip = {}; exitAsked = 0; finishedAt = 0; if (exitedByUs) handBack(); }
+		else if (phase === 'inside') { leaving = true; phase = 'idle'; votedFor = {}; deadDoors = {}; dieShops = {}; pendingBuys = {}; voteNoted = {}; reserveReleased = false; reviveSpent = {};
+			myDeaths = []; resting = false; deathLoop = false; friendlySkip = {}; exitAsked = 0; finishedAt = 0; exitForce = false; exitWhyFrom = 0; }
 		else if (offCave()) phase = stopped ? 'idle' : 'active';
 		else if (phase === 'gather' && character.map === CFG.keeper.map && dist(character, CFG.keeper) <= CFG.stageWithin) phase = 'staged';
 		if (phase !== was) { clog('phase -> ' + phase, '#7FD1FF'); ev('phase', { from: was, to: phase }); }
+		if (leaving) { leaving = false; if (mode === 'cave') { leftCave(); if (!alive()) return; } }
 		if (phase === 'staged' && isLeader()) {
 			const b = gateReport();
 			throttleLog(b.length ? 'staged, BLOCKED: ' + b.join(' | ') : 'staged and clear - caveEnter() when ready');
@@ -3227,6 +3682,8 @@ async function tick() {
 		partyTick();
 		lootTick();
 		exitTick();
+		dieTick();
+		launcherTick();
 		senseTick();            // beacon out, trouble + leash in - before anything moves
 		await moveTick();
 		await combatTick();
@@ -3245,6 +3702,7 @@ ev('load', { ver: caveVersion(), build: caveBuild(), leader: leaderName(), role:
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 tick();
 voteLoop();
+launcherStart();
 
 // === GAMELOG BEGIN === byte-identical in Party/Ranger.js, Party/Priest.js,
 // Party/Mage.js, Party/Merchant.js and CaveRun.js; Tests/suite_gamelog.js

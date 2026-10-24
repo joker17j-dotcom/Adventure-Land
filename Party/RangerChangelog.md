@@ -21,6 +21,12 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v138
+
+**SNAKEOIL IS NEVER SOLD** - added to `SCARCE_ITEM_NAMES` on the browser
+session's finding, 2026-10-24. It is the only Hop Sickness cure, and relief's
+cheapest-first list sold it early at ~120.
+
 ## v137
 
 **GRAVEYARD RAGE ENTRY OPENS FROM WAVE 1, AND THE CROWD GATE IS AN AVERAGE.**

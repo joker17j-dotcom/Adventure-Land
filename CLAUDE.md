@@ -559,6 +559,13 @@ character tab, with the operator's go-ahead for a disruptive test hop.
   the new page starting. So a hop does not reset position. The walk after
   landing starts from wherever the character stood, and that walk is the
   variable cost of a cross-shard trip.
+- **A SAME-SHARD PAGE RELOAD ON HOME ADDS NEITHER CONDITION.** Measured
+  2026-10-24 12:16-12:17 EDT on US II: MageofOz reloaded (`location.reload`),
+  and ~45s later - past the 10-30s lag a real hop shows - all three read no
+  `realmfatigue` and no `hopsickness`. So "engage a slot, then reload" is a free
+  hand-back at home. The same reload on a FOREIGN shard is unmeasured
+  (`serverhop_logic`'s same-shard early return says no Hop Sickness; Realm
+  Fatigue unknown).
 - **So Realm Fatigue is the cheap half.** It blocks home bonuses and kiss
   rewards only, the home bonus does not apply off-home anyway, and it does not
   scale with how many shards get visited - its whole cost is delaying the home
@@ -3438,6 +3445,11 @@ Claude Code session stops after `browser_code_eval`.
   Both are self-contained IIFEs, so a cave run would have started TWO CaveRuns,
   and line 1 read v24 both times. Only the size and the hash showed it. The
   operator replaced it; re-hashed it matched `a36cd4c` exactly.
+  **IT HAPPENED AGAIN ON THE NEXT DEPLOY, THE OTHER WAY ROUND**: v25 first,
+  then the whole v24 (311,437 bytes, two headers) - a paste with the cursor at
+  the top and nothing selected. So the operator-side recipe is **SELECT ALL IN
+  THE SLOT BEFORE PASTING**, then hash: two appends in two deploys is a habit
+  of the editor, not a one-off.
 - **A LIVE SLOT CAN BE AHEAD OF THE REPO, AND NOTHING RECORDS IT.** The
   deployment markers in the version header only ever say the repo is ahead of
   the slot. There is no marker for the reverse, and the reverse is the one that
@@ -4944,6 +4956,22 @@ a day.
   slot is empty until `load_code()` is measured on a character slot.
   **THE SCORES ARE THE OPERATOR'S ORDERING EXPRESSED AS NUMBERS, NOT
   MEASUREMENTS** - the hunt miss chances in particular are guesses.
+
+- **CaveRun v26 IS A LAUNCHER AND THE CAVE LEADER STILL HAS NO NAVIGATION.**
+  On load outside the cave it asks the server (`interaction` action `info`,
+  answered through `game_response` with `{visit: {available, resets, resume}}`)
+  and restocks for Dorr if today's visit is open, or hands back after 20s if it
+  is spent. `gateReport()` does NOT read the daily visit - the 12:22 EDT block
+  said it did; it reads the event flag, home, party and combat only. Leaving the
+  cave writes a CAVE DUMP row to the game log and runs `load_code(character.name)`,
+  which the browser session measured resolving the character slot by name.
+  **NOTHING IN CaveRun MOVES THE CAVE LEADER INSIDE THE CAVE** - `moveTick`
+  returns at the leader branch and the operator walks him - so the rulings that
+  plan a ROUTE (the die-shop detour, camp waves, post-completion farming, "the
+  party walks back") are the operator's to walk until a leader autopilot is
+  built, which is its own piece of work. The client's `G` carries
+  `G.events.dreams.encounters` with every effect (G version 18183), and v26
+  votes from it when present.
 
 ## The published event schedule - upstream's new mechanism
 

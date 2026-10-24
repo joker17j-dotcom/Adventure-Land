@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v137
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v138
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5879,7 +5879,9 @@ function isExchangeable(name) { return !!name && exchangeableNames().has(String(
 /* cave_amber and cave_loaded_die since v137 - operator's ruling 2026-10-24.
    The cave is run for Loaded Dice, and Amber is what one is made from. Amber
    vendors for 120, so it sorts FIRST in relief's cheapest-first list. */
-const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt', 'cave_amber', 'cave_loaded_die']);
+/* snakeoil since v138 - it is the only Hop Sickness cure, and relief sold it
+   early at ~120. */
+const SCARCE_ITEM_NAMES = new Set(['dexbelt', 'intbelt', 'cave_amber', 'cave_loaded_die', 'snakeoil']);
 function isScarceItem(name) { return !!name && SCARCE_ITEM_NAMES.has(String(name)); }
 
 /* THE TRICK-OR-TREAT COSTUMES, AND THE SLOT IS NOT A CHOICE WE GET TO MAKE.
