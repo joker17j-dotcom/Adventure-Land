@@ -21,6 +21,32 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v136
+
+**BOOBOO IS BACK IN THE ACHIEVEMENT QUEUE AND THE PULL KNOB GOES 1 -> 3**, on
+the operator's ruling 2026-10-24: with the bank holding so many dexbelts,
+booboo's drop is now what limits windbelt production. Two config edits, no
+logic changed:
+
+- The first queue entry, `{ m: 'booboo', map: 'spookytown', x: 290, y: -990,
+  rung: null, also: ['mummy'] }`, is uncommented. It is the verified corridor
+  park point outside both spookytown rage rectangles, `rung: null` so it runs
+  until the toggle goes off or `achvStop()`, and `also` farms the mummies from
+  the same spot.
+- `CONFIG.achievements.pull.concurrent` 1 -> 3. **It counts every pulled type
+  together** (`rageEngagedCount` filters on the whole `ragePullTypes()` list),
+  so on this entry three is booboo and mummies combined, not three of each. It
+  reaches the priest and mage as `pullConcurrent` with the farm spot
+  (`ragePullShared`), so the followers' gate rises with it. The comment above it
+  puts the healing ceiling at roughly four, so 3 is one step under it;
+  courage still caps attackers per character independently.
+
+**THE QUEUE'S SAVED POSITION IS AN INDEX, AND UNCOMMENTING ENTRY 0 SHIFTS
+EVERY OTHER ENTRY UP BY ONE**, so a saved index now names the entry BEFORE the
+one it was on, and on a saved index above 0 booboo is never reached at all.
+`achvReset(0)` once after the deploy puts the queue on booboo (it also clears
+the done list).
+
 ## v135
 
 **EVERY GAME LOG LINE NOW GOES TO A FILE ON THE BRIDGE**, on the operator's

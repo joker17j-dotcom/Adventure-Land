@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v135
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v136
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1003,8 +1003,9 @@ const CONFIG = {
 		   that used to sit in the queue was removed in v86 - inside the rage
 		   box, rejected by huntParkPoint, and the achievement path never did
 		   use it differently. The booboo entry that remains is the verified
-		   park point (290,-990), shipped commented out; uncomment it to run
-		   booboo. */
+		   park point (290,-990); comment it out to stop running booboo. The
+		   operator turned it on 2026-10-24 because booboo's drop, not dexbelt,
+		   is now what limits windbelt production. */
 		enabled: TOGGLES.achievements,
 		/* Consecutive failed travel attempts to an achievement spot before the
 		   override is released. Needed because the breaker in the farm loop
@@ -1018,10 +1019,13 @@ const CONFIG = {
 		   at once. 1 is the measured-safe start - one un-enraged booboo is 264 dps
 		   and one mummy 317 after armor, against FatherToken's ~1,499 hps, so the
 		   ceiling is roughly four before healing loses. Raise it a step at a time;
-		   courage still caps attackers on any one character independently. */
+		   courage still caps attackers on any one character independently. It
+		   counts EVERY pulled type together, so on the booboo entry it covers the
+		   `also` mummies as well. The operator raised it 2026-10-24; it reaches the
+		   priest and mage through ragePullShared, broadcast with the farm spot. */
 		pull: {
 			enabled: TOGGLES.achievementsPull,
-			concurrent: 1,
+			concurrent: 3,
 			margin: 4,           // margin + step must stay <= 9 - see rageCfg
 			guardMargin: 0,      // the guard trips only on a REAL breach - see rageCfg
 			step: 5,             // route-search grid, in units
@@ -1049,7 +1053,7 @@ const CONFIG = {
 			   because booboo respawns every 48s against mummy's 24 and would otherwise
 			   idle most of the trip; the rung still tracks `m`. rung null means run
 			   until the toggle goes off or achvStop(). */
-			//{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
+			{ m: 'booboo', map: 'spookytown', x: 290, y: -990, rung: null, also: ['mummy'] },
 			{ m: 'stoneworm',  map: 'spookytown',  x:  677, y:   129, rung: 100000 },
 			{ m: 'mole',       map: 'tunnel',      x:   14, y: -1072, rung: 10000  },
 			{ m: 'armadillo',  map: 'main',        x:  526, y:  1846, rung: 100000 },
