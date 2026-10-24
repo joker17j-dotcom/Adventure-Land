@@ -5270,6 +5270,47 @@ probes are listed at the end as still-open.
   running. Nothing should be built on this section until (1) and (4) are
   measured.
 
+## The game-log file
+
+**Both sessions.** Built 2026-10-24 on the operator's request: the game keeps
+480 log lines and then cuts to the newest 160, and needed evidence kept
+scrolling away.
+
+- **WHERE IT LANDS.** `POST /gamelog` on the bridge appends to
+  `./data/gamelogs/gamelog-<LOCAL date>.jsonl`, one file per local day,
+  `--gamelog-dir` to move it and an empty value to turn it off. Day files older
+  than 14 days are deleted on the first write of each new day, matching only
+  the exact `gamelog-YYYY-MM-DD.jsonl` shape and judged by the date in the
+  NAME, so nothing else in the folder can be touched.
+- **A ROW** is `t` (bridge clock), `t_script` (sender's clock), `character`,
+  `server`, `map`, `color`, `message`, `source` (`script` for our `game_log()`,
+  `game` for everything else, `bridge` for a dropped-lines marker), `page` and
+  `seq`. `(character, page, seq)` identifies a line, so a batch sent twice -
+  one that landed just before a hop unloaded its page - can be dropped at read
+  time. `map` comes from the top window's `character`, which this file
+  records can carry stale x/y, so treat `map` as a lead near a transition.
+- **WHAT IS CAPTURED, AND THE ONE GAP.** The page's `add_log` carries the
+  client's messages, the game's default server-message handler and every
+  script's `game_log()`. The four party scripts' log filter replaces that
+  server-message listener and writes lines itself, so its `addLogEntry` calls
+  the capture directly. CaveRun installs no filter, so on a page it started the
+  default handler still reaches `add_log`. **The gap**: a runner swap from a
+  party script to CaveRun without a page reload leaves the party script's
+  listener attached, now a closure from a destroyed iframe. Whether that still
+  delivers is unmeasured.
+- **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
+  The wrapper and buffer are built with the PAGE's `Function`, so they outlive
+  the CODE iframe. A failed POST leaves its lines in the buffer, and a hop
+  saves the unsent ones to `localStorage` under `gamelog_unsent_<name>`, sent
+  first by the next page. `gamelogStatus()` shows the buffer, dropped count,
+  sent count and last error.
+- **`t.eq` CANNOT COMPARE FUNCTIONS.** It compares by serialised value, and
+  every function serialises to the same nothing, so any two functions are
+  "equal". Found while mutation-testing this block, where an assertion that
+  the new wrapper sat directly on the game's `add_log` passed against code that
+  stacked a wrapper per restart. Compare identities with `===` and assert the
+  boolean.
+
 ## Trick or Treat
 
 **Both sessions.** Read from upstream `16881a27` on 2026-10-23, so SOURCE-

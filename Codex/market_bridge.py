@@ -98,6 +98,15 @@ BOSS_STALE_AFTER = 120
 # `estimated_respawn` goes null and `lastSeen` with it, so polling /bosses after
 # the fact can never reconstruct a kill. Default lives next to ledger.jsonl.
 BOSS_EVENTS_PATH = "./data/boss_events.jsonl"
+# Game-log capture, one file per local day in its own subfolder so data/ stays
+# clean. See GameLog.
+GAMELOG_DIR = "./data/gamelogs"
+GAMELOG_KEEP_DAYS = 14
+GAMELOG_MAX_LINES = 2000      # per POST; a sender batches far fewer than this
+GAMELOG_MAX_MESSAGE = 4000    # characters per line
+GAMELOG_NAME_RE = re.compile(r"^gamelog-(\d{4})-(\d{2})-(\d{2})\.jsonl$")
+GAMELOG_FIELDS = ("t_script", "character", "server", "map", "color", "message",
+                  "source", "page", "seq")
 # A boss going ABSENT from the response is not a death - a 429 or a partial
 # answer looks identical. Measured 2026-10-17 on a real cycle:
 # last_error "HTTPError: HTTP Error 429: Too Many Requests", recovered by
@@ -3573,10 +3582,127 @@ class BossWatch:
             }
 
 
+class GameLog:
+    """Every game-log line the characters see, one JSONL file per LOCAL day.
+
+    The operator's request, 2026-10-24: the game keeps 480 lines and then cuts
+    to the newest 160, and the evidence behind that morning's spookytown door
+    diagnosis existed only in that scrollback. The scripts send EVERY line,
+    unfiltered, and the file is filtered at read time - which is also what lets
+    the volume question answer itself from the first day's file.
+
+    The day is the bridge's LOCAL date, because the operator reads these by
+    their own day. Pruning matches `gamelog-YYYY-MM-DD.jsonl` exactly and goes
+    by the date IN THE NAME, never mtime, so nothing else in the folder can be
+    touched and a file copied in later is still judged by the day it records.
+
+    `t` is the bridge's clock and `t_script` the sender's, the same split the
+    skip rows use: our clock orders the file, and a browser clock with unknown
+    skew sits beside it rather than in the key. `page` and `seq` identify a
+    line, so a batch POSTed twice - landed just before a hop unloaded the page
+    that sent it - can be dropped at read time. Unknown fields survive under
+    `extra` rather than being dropped, for the reason the skip rows give."""
+
+    def __init__(self, directory, keep_days=GAMELOG_KEEP_DAYS, clock=None):
+        self.dir = pathlib.Path(directory) if directory else None
+        self.keep_days = keep_days
+        self.clock = clock or now
+        self.lock = threading.Lock()
+        self.pruned_for = None
+        self.written = 0
+        self.last_error = None
+        if self.dir:
+            try:
+                self.dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                self.last_error = f"cannot create {self.dir}: {e}"
+                print(f"[bridge] {self.last_error}")
+
+    @staticmethod
+    def day_of(t):
+        return datetime.fromtimestamp(t).date()
+
+    def file_for(self, t):
+        return f"gamelog-{self.day_of(t).isoformat()}.jsonl"
+
+    def prune(self, t=None):
+        """Delete day files older than keep_days. Returns the names removed."""
+        if not self.dir or not self.dir.is_dir():
+            return []
+        today = self.day_of(self.clock() if t is None else t)
+        gone = []
+        for p in self.dir.iterdir():
+            m = GAMELOG_NAME_RE.match(p.name)
+            if not m or not p.is_file():
+                continue
+            try:
+                d = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3))).date()
+            except ValueError:
+                continue
+            if (today - d).days > self.keep_days:
+                try:
+                    p.unlink()
+                    gone.append(p.name)
+                except OSError as e:
+                    self.last_error = f"cannot remove {p.name}: {e}"
+        self.pruned_for = today
+        return gone
+
+    def append(self, body):
+        if not self.dir:
+            return {"ok": False, "error": "game log disabled (--gamelog-dir is empty)"}
+        lines = body.get("lines")
+        if not isinstance(lines, list):
+            return {"ok": False, "error": "`lines` must be a list"}
+        if len(lines) > GAMELOG_MAX_LINES:
+            return {"ok": False, "error": f"at most {GAMELOG_MAX_LINES} lines per POST"}
+        t = self.clock()
+        stamp = iso(t)
+        rows, rejected = [], 0
+        for ln in lines:
+            if not isinstance(ln, dict):
+                rejected += 1
+                continue
+            row = {"t": stamp}
+            for f in GAMELOG_FIELDS:
+                row[f] = ln.get(f)
+            msg = row.get("message")
+            if msg is not None and not isinstance(msg, str):
+                msg = str(msg)
+            if isinstance(msg, str) and len(msg) > GAMELOG_MAX_MESSAGE:
+                msg = msg[:GAMELOG_MAX_MESSAGE] + " [truncated by the bridge]"
+            row["message"] = msg
+            extra = {k: v for k, v in ln.items() if k not in GAMELOG_FIELDS}
+            if extra:
+                row["extra"] = extra
+            rows.append(row)
+        dropped = body.get("dropped")
+        if isinstance(dropped, int) and not isinstance(dropped, bool) and dropped > 0:
+            first = rows[0] if rows else {}
+            rows.insert(0, {"t": stamp, "source": "bridge",
+                            "character": first.get("character"), "server": first.get("server"),
+                            "message": f"{dropped} line(s) dropped by the sender before this batch "
+                                       f"- its buffer was full"})
+        name = self.file_for(t)
+        with self.lock:
+            if self.pruned_for != self.day_of(t):
+                self.prune(t)
+            try:
+                with (self.dir / name).open("a", encoding="utf-8") as fh:
+                    for r in rows:
+                        fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+            except OSError as e:
+                self.last_error = f"cannot write {name}: {e}"
+                return {"ok": False, "error": self.last_error}
+            self.written += len(rows)
+        return {"ok": True, "written": len(rows), "rejected": rejected, "file": name}
+
+
 class Handler(BaseHTTPRequestHandler):
     store: Store = None            # set on the server instance below
     ledger: Ledger = None
     bosses: "BossWatch" = None
+    gamelog: "GameLog" = None
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -3779,7 +3905,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path not in ("/scan", "/msg", "/trade", "/skip"):
+        if path not in ("/scan", "/msg", "/trade", "/skip", "/gamelog"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
             return
         try:
@@ -3796,6 +3922,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(self.store.post_message(body))
             elif path == "/trade":
                 self._send(self.ledger.append(body))
+            elif path == "/gamelog":
+                if self.gamelog is None:
+                    self._send({"ok": False, "error": "game log not configured"}, 503)
+                else:
+                    self._send(self.gamelog.append(body))
             elif path == "/skip":
                 # UNREACHABLE AS SHIPPED and kept as a cheap guard rather
                 # than left looking load-bearing: `Handler.bosses` is assigned
@@ -3836,6 +3967,10 @@ def main():
     ap.add_argument("--boss-events", default=BOSS_EVENTS_PATH,
                     help=f"append-only boss spawn/kill log (default {BOSS_EVENTS_PATH}); "
                          f"empty string disables it")
+    ap.add_argument("--gamelog-dir", default=GAMELOG_DIR,
+                    help=f"folder for the characters' game-log files, one per local day, "
+                         f"kept {GAMELOG_KEEP_DAYS} days (default {GAMELOG_DIR}); "
+                         f"empty string disables it")
     a = ap.parse_args()
 
     global QUIET
@@ -3843,6 +3978,7 @@ def main():
 
     Handler.store = Store(pathlib.Path(a.state) if a.state else None)
     Handler.ledger = Ledger(pathlib.Path(a.ledger))
+    Handler.gamelog = GameLog(a.gamelog_dir or None)
     _ev = pathlib.Path(a.boss_events) if a.boss_events else None
     if _ev:
         try:
@@ -3865,6 +4001,7 @@ def main():
     print(f"[bridge]   scouts POST -> /scan      page GET -> /merchants, /ponty")
     print(f"[bridge]   party relay  -> POST /msg, GET /msg?to=<name>&since=<seq>")
     print(f"[bridge]   trades       -> POST /trade, GET /trades (raw=1 for events)")
+    print(f"[bridge]   game logs    -> POST /gamelog ({a.gamelog_dir or 'OFF'})")
     if a.no_bosses:
         print(f"[bridge]   bosses       -> GET /bosses (poller OFF, --no-bosses)")
     else:

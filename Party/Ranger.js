@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v134
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v135
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -8768,6 +8768,9 @@ if (parent.$) {
 		}
 
 		function addLogEntry(message, color = 'white') {
+			/* The game-log file sees server messages through here: this filter
+			   replaced the listener that would have sent them to add_log. */
+			try { const g = parent.__gamelog; if (g && typeof g.capture === 'function') g.capture(message, color, 'game'); } catch (e) { }
 			if (parent.mode?.dom_tests || parent.inside === 'payments') return;
 
 			const gamelog = parent.document.getElementById('gamelog');
@@ -9253,3 +9256,196 @@ if (parent.$) {
 	})();
 
 }
+
+// === GAMELOG BEGIN === byte-identical in Party/Ranger.js, Party/Priest.js,
+// Party/Mage.js, Party/Merchant.js and CaveRun.js; Tests/suite_gamelog.js
+// holds them to it.
+/* EVERY GAME LOG LINE TO A FILE ON THE BRIDGE. Operator's request 2026-10-24:
+   the game keeps 480 lines and then cuts to the newest 160, and the evidence
+   for that morning's spookytown door diagnosis existed only in that
+   scrollback. Every line is sent, unfiltered; the file is filtered at read
+   time.
+
+   THE CAPTURE LIVES IN THE PAGE, THE SENDER IN THIS SCRIPT. parent.add_log is
+   the game's one log writer: the client's own messages, the default
+   server-message handler and every script's game_log() all reach it. The
+   wrapper and its buffer are built with the PAGE's Function, so a runner
+   restart, which destroys this iframe, leaves them working, and each load
+   just picks the buffer up and drains it. The party scripts' log filter
+   replaces the server-message listener and writes the line itself, so it calls
+   capture() directly - without that, every server message would be missed
+   while the filter runs.
+
+   NOTHING IS LOST TO A HOP OR A BRIDGE OUTAGE, UP TO `keep` LINES. A failed
+   POST leaves its lines in the buffer, and the page saves whatever is unsent
+   to localStorage as it unloads, keyed by character because that storage is
+   shared by every character in the browser. Each line carries the page's start
+   time and a sequence number, so a batch sent twice can be told apart at read
+   time. */
+const GAMELOG = {
+	base: 'http://127.0.0.1:8787', path: '/gamelog',
+	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
+	unsentKey: 'gamelog_unsent_',
+};
+
+/* Evaluated in whichever realm builds it - the page's by preference. Plain
+   ES5 on purpose, since it is a string that is never parsed by our tooling. */
+function gamelogPageSource() {
+	return [
+		'var st = { realm: realm, buf: [], dropped: 0, seq: 0, page: Date.now(), src: null,',
+		'  sent: 0, flushingSince: 0, lastOk: 0, lastErr: null, restored: false, orig: P.add_log };',
+		'st.capture = function (message, color, source) {',
+		'  try {',
+		'    var c = P.character || {};',
+		'    var m = message;',
+		'    if (m !== null && typeof m === "object") { try { m = JSON.stringify(m); } catch (e) { m = "[object]"; } }',
+		'    st.buf.push({ page: st.page, seq: ++st.seq, t_script: Date.now(), character: c.name || null,',
+		'      server: ((P.server_region || "") + (P.server_identifier || "")) || null, map: c.map || null,',
+		'      color: color == null ? null : String(color), message: String(m), source: source || st.src || "game" });',
+		'    if (st.buf.length > keep) { st.dropped += st.buf.length - keep; st.buf.splice(0, st.buf.length - keep); }',
+		'  } catch (e) {}',
+		'};',
+		'P.add_log = function (message, color) { st.capture(message, color, null); return st.orig.apply(this, arguments); };',
+		'P.add_log.__gamelog = true;',
+		'try {',
+		'  P.addEventListener("pagehide", function () {',
+		'    try {',
+		'      var n = P.character && P.character.name;',
+		'      if (n && st.buf.length) P.localStorage.setItem(unsentKey + n, JSON.stringify(st.buf.slice(-keep)));',
+		'    } catch (e) {}',
+		'  });',
+		'} catch (e) {}',
+		'return st;',
+	].join('\n');
+}
+
+/* Returns the page's capture state, building it if absent. A state built in a
+   CODE iframe (the page refused its Function) may outlive that iframe, so it
+   is rebuilt on every load, carrying its lines over; a page-realm one is
+   reused as it is. */
+function gamelogInstall() {
+	let P = null;
+	try { P = parent; } catch (e) { return null; }
+	if (!P || typeof P.add_log !== 'function') return null;
+	let st = P.__gamelog || null;
+	if (st && st.realm === 'page') return st;
+	const carry = (st && Array.isArray(st.buf)) ? st.buf : [];
+	if (st && typeof st.orig === 'function' && P.add_log && P.add_log.__gamelog) P.add_log = st.orig;
+	const src = gamelogPageSource();
+	let make = null, realm = 'page';
+	try { make = new P.Function('P', 'keep', 'realm', 'unsentKey', src); }
+	catch (e) { make = new Function('P', 'keep', 'realm', 'unsentKey', src); realm = 'code'; }
+	st = make(P, GAMELOG.keep, realm, GAMELOG.unsentKey);
+	if (carry.length) st.buf = carry.concat(st.buf).slice(-GAMELOG.keep);
+	P.__gamelog = st;
+	return st;
+}
+
+/* Marks our own game_log() lines as `script` rather than `game`. Wraps the
+   runner's game_log once per CODE context. */
+function gamelogMarkScript() {
+	try {
+		if (typeof game_log !== 'function' || game_log.__gamelog) return false;
+		const inner = game_log;
+		const wrapped = function () {
+			let st = null;
+			try { st = parent.__gamelog || null; } catch (e) { }
+			if (st) st.src = 'script';
+			try { return inner.apply(this, arguments); } finally { if (st) st.src = null; }
+		};
+		wrapped.__gamelog = true;
+		window.game_log = wrapped;
+		return true;
+	} catch (e) { return false; }
+}
+
+function gamelogName() {
+	try { return (character && character.name) || null; } catch (e) { return null; }
+}
+
+/* The lines a hop unloaded before they were sent, put back in front of
+   anything captured since. Read once per page, by name. */
+function gamelogRestore(st, name) {
+	try {
+		const key = GAMELOG.unsentKey + name;
+		const raw = parent.localStorage.getItem(key);
+		if (!raw) return 0;
+		parent.localStorage.removeItem(key);
+		const old = JSON.parse(raw);
+		if (!Array.isArray(old) || !old.length) return 0;
+		st.buf = old.concat(st.buf).slice(-GAMELOG.keep);
+		return old.length;
+	} catch (e) { return 0; }
+}
+
+function gamelogPost(body) {
+	if (typeof fetch !== 'function') return Promise.reject(new Error('no fetch'));
+	const o = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+	let stop = null;
+	if (typeof AbortController === 'function') {
+		const ac = new AbortController();
+		o.signal = ac.signal;
+		stop = setTimeout(() => { try { ac.abort(); } catch (e) { } }, GAMELOG.timeoutMs);
+	}
+	return fetch(GAMELOG.base + GAMELOG.path, o).then(
+		(r) => { if (stop) clearTimeout(stop); return r.json(); },
+		(e) => { if (stop) clearTimeout(stop); throw e; });
+}
+
+/* One batch. Lines leave the buffer only once the bridge has them, and by
+   identity rather than by position, because the capture trims the front of
+   the buffer when it is full and may have done so while the POST was out. A
+   flush older than twice the timeout is taken as abandoned - its iframe was
+   destroyed mid-await - so it cannot block the next script for ever. */
+async function gamelogFlush() {
+	const st = gamelogInstall();
+	if (!st) return 'not installed';
+	const now = Date.now();
+	if (st.flushingSince && now - st.flushingSince < 2 * GAMELOG.timeoutMs) return 'busy';
+	const name = gamelogName();
+	if (name && !st.restored) { st.restored = true; gamelogRestore(st, name); }
+	if (!st.buf.length) return 'empty';
+	const lines = st.buf.slice(0, GAMELOG.batch);
+	const dropped = st.dropped;
+	st.flushingSince = now;
+	try {
+		const r = await gamelogPost({ lines: lines, dropped: dropped });
+		if (r && r.ok) {
+			const out = new Set(lines);
+			st.buf = st.buf.filter((l) => !out.has(l));
+			st.sent += lines.length;
+			st.dropped = Math.max(0, st.dropped - dropped);
+			st.lastOk = Date.now();
+			st.lastErr = null;
+			return 'sent';
+		}
+		st.lastErr = (r && r.error) || 'refused';
+		return 'refused';
+	} catch (e) {
+		st.lastErr = String((e && e.message) || e);
+		return 'failed';
+	} finally {
+		st.flushingSince = 0;
+	}
+}
+
+/* The console view: what is waiting, what was lost, when the bridge last took
+   a batch. Read-only. */
+function gamelogStatus() {
+	let st = null;
+	try { st = parent.__gamelog || null; } catch (e) { }
+	if (!st) return { installed: false };
+	return {
+		installed: true, realm: st.realm, buffered: st.buf.length, dropped: st.dropped, sent: st.sent,
+		lastOk: st.lastOk ? new Date(st.lastOk).toISOString() : null, lastErr: st.lastErr,
+	};
+}
+
+function gamelogStart() {
+	gamelogInstall();
+	gamelogMarkScript();
+	try { if (window.__gamelogTimer) clearInterval(window.__gamelogTimer); } catch (e) { }
+	try { window.__gamelogTimer = setInterval(() => { gamelogFlush().catch(() => { }); }, GAMELOG.everyMs); } catch (e) { }
+}
+gamelogStart();
+// === GAMELOG END ===

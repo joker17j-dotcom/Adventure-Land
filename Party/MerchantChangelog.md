@@ -1,4 +1,22 @@
 
+## v125
+
+**EVERY GAME LOG LINE NOW GOES TO A FILE ON THE BRIDGE**, on the operator's
+request: the game keeps 480 lines and then cuts to the newest 160, and the
+evidence for the spookytown door diagnosis existed only in that scrollback.
+The shared `GAMELOG` block at the end of the file is byte-identical in Ranger,
+Priest, Mage, Merchant and CaveRun, held to it by `Tests/suite_gamelog.js`.
+It wraps the page's `add_log`, which carries the client's messages, the
+default server-message handler and every script's `game_log()`. The wrapper and
+its buffer are built in the page, so a runner restart leaves them working. The
+log filter's `addLogEntry` calls the capture directly, because the filter
+replaces the listener that would have sent server messages through `add_log`.
+Batches POST to the bridge's `/gamelog` every 3s. A failed POST keeps its lines
+(up to 600), and lines unsent at a hop are saved under `gamelog_unsent_<name>`
+and sent first by the next page. `gamelogStatus()` on the console. Needs the
+bridge restarted on the new `Codex/market_bridge.py`; until then the POSTs fail
+and the buffer simply holds its last 600 lines.
+
 ## v124
 
 **AN UNREACHED DOOR NOW CARRIES ITS REASON** into `totStatus().last.failed`, as
