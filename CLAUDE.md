@@ -81,6 +81,20 @@ through Chrome" would stop a session that *can* push from ever trying.
   relays between two Claude sessions by copying. Text meant for the other
   session must be inside a fenced block so it can be copied in one action,
   with nothing addressed to them left loose in the reply.
+- **DO NOT WRITE A NEW PASTE BLOCK WHILE A REPLY FROM THE OTHER SESSION IS
+  OUTSTANDING.** Operator's standing rule, 2026-10-24. Anything worth relaying
+  in the meantime is held and folded into the reply to the next block that
+  arrives from the other session, so there is one block per turn of the
+  exchange. The operator relays by hand, so three blocks one after another
+  cost three relays, and they risk crossing in transit. This is how one block
+  was never relayed and its successor was rewritten twice the same morning.
+- **EVERY PASTE BLOCK OPENS WITH A HEADER GIVING THE SENDER, DATE AND TIME,
+  WITH THE TIME ZONE** - e.g. `FROM THE CLAUDE CODE SESSION, 2026-10-24 09:40
+  EDT.` A date alone is not enough when several blocks go the same day.
+- **THE HEADER ALSO LISTS THE PREVIOUS TWO BLOCKS THIS SESSION SENT IN THE SAME
+  EXCHANGE, BY THEIR HEADERS**, so the receiver can check it got each one. A
+  block the operator says was NOT sent is left off that list. Only blocks
+  actually relayed are listed. Its content goes into the new block instead.
 
 ## Git
 
