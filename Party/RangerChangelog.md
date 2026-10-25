@@ -21,6 +21,35 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v148
+
+**THE CIPHER FARM'S THREE LIVE DEFECTS**, measured by the browser session over
+the 05:00Z and 11:00Z windows of 2026-10-25, in which nothing was farmed.
+-> RangerComments.md#cipherFarm
+- **The count is kept across a hop, aged from when Meltymerch counted, and
+  asked for.** It lived only in memory, so every hop wiped it - 14 "no fresh
+  count" lines in one night. It is now in the scoped `cipher_stock` key, read
+  back once per page; its age is the report's own `at`, so a message the bridge
+  held for a character mid-hop arrives as old as it is, and an older report
+  arriving after a newer one is ignored. While the count is stale Dexon sends
+  `cipher_stock_request` to Meltymerch, at most every `askEveryMs` (2 min).
+  Merchant v132 is the other half.
+- **The pick no longer flips at the opening.** Its key held the window's exact
+  start, which moves from the schedule's `at` to `S.witchcipher.start` a few
+  seconds later, so every opening re-picked: arcticbee@winterland (20.8
+  expected, already walked to) for spider@main (19.6) at 11:00:10Z. The key is
+  the five-minute bucket now, and a real re-pick keeps the held spot unless the
+  best is more than `switchFactor` (1.25) better, scored from where we stand.
+- **No hop into a window a hop target opens inside.** `cipherPlan()` refuses a
+  window that needs a hop when `targetOpensWithin()` finds a `bossHop.targets`
+  event scheduled to open, on any shard, before the gathering ends. The 05:00Z
+  EU hop landed the party where the US horseman pulled it away from at 05:00:09.
+  Horseman meets a gathering window three times a day. Home and the shard we
+  stand on need no hop and still farm until the boss calls.
+- **No rage pull while dead.** `ragePullTick()` returns at once on `rip`; both
+  followers had logged "pull tick threw: unable" several times a second while
+  dead at the 06:30Z graveyard. Same line in Priest v81 / Mage v104.
+
 ## v147
 
 **CIPHER FARMING HAS NO SEASON END**, operator 2026-10-25: the cipher stays in

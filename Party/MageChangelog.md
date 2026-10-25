@@ -21,6 +21,13 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v104
+
+**NO RAGE PULL WHILE DEAD.** `ragePullTick()` returns at once on `rip`. Measured
+by the browser session at the 06:30Z 2026-10-25 graveyard: both followers logged
+"pull tick threw: unable" several times a second while dead. Same line in Ranger
+v148; `ragePullTick` is on the relay divergence list.
+
 ## v103
 
 **THE GRAVEYARD STAND, THE WAY OUT OF THE BOX, AND AN IDLE LEADER IS OBEYED** -

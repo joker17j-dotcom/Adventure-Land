@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v147
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v148
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1128,6 +1128,8 @@ const CONFIG = {
 		minUsefulMs: 3 * 60 * 1000,       // gathering left once there, or the trip is refused
 		pathFactor: 1.5,                  // door-graph distance to walking distance
 		unknownTravelSec: 300,            // no door route found - assume a long walk
+		switchFactor: 1.25,               // a held pick yields only to one this much better
+		askEveryMs: 2 * 60 * 1000,        // how often to ask Meltymerch for a count while ours is stale
 	},
 };
 
@@ -2981,6 +2983,9 @@ function rageEngagedCount(types) {
    it owns this tick. */
 async function ragePullTick() {
 	if (ragePull.busy) return true;
+	/* Dead, nothing can be pulled: measured 2026-10-25 06:30Z, both followers
+	   logged "pull tick threw: unable" several times a second while rip. */
+	if (character.rip) return false;
 	if (!ragePullActive()) return false;
 	const cfg = rageCfg();
 	const map = character.map;
@@ -4440,6 +4445,14 @@ const bossHop = {
 			const lead = (here || isHome) ? cf.walkLeadMaxMs
 				: this.hopsickMs() + cf.marginMs + CONFIG.bossHop.hopLatencyMs;
 			if (now < o.at - lead) continue;
+			/* A window that needs a HOP is refused when a hop target is
+			   scheduled to open inside it, on any shard: bossHop will go to that
+			   boss the moment it spawns, so the cipher hop is wasted and the
+			   party lands sick somewhere it is about to leave. Horseman meets a
+			   gathering window three times a day (05:00Z EU against US, 17:00Z
+			   EU against ASIA, 23:00Z US and ASIA against EU). Home and here
+			   need no hop, so they farm until the boss pulls the party off. */
+			if (!here && !isHome && this.targetOpensWithin(now, end)) continue;
 			const x = { shard: o.shard, event: CIPHER_EVENT, at: o.at, end, home: isHome, here, rank: CIPHER_RANK };
 			if (!best) { best = x; continue; }
 			if (x.home !== best.home) { if (x.home) best = x; continue; }
@@ -4448,6 +4461,18 @@ const bossHop = {
 			if (x.shard < best.shard) best = x;
 		}
 		return best;
+	},
+
+	/* A bossHop target scheduled to OPEN in [from, to), on any shard, by the
+	   published lineup. Opening only: one already live has been weighed by
+	   pickTarget() already, and if it was declined it should not block. */
+	targetOpensWithin(from, to) {
+		for (const r of this.schedRows) {
+			if (!r || !this.targetCfg(r.event) || typeof r.at !== 'number') continue;
+			if (r.status && r.status !== 'scheduled') continue;
+			if (r.at >= from && r.at < to) return r;
+		}
+		return null;
 	},
 
 	/* The rank of what keeps the party HERE, or null. Two things do: a
@@ -7716,7 +7741,11 @@ const CIPHER_INGREDIENTS_FALLBACK = [
 	['embercoal', ['plantoid', 'porcupine', 'fireroamer', 'gscorpion']],
 	['gloomfeather', ['snake', 'osnake', 'minimush', 'ghost']],
 ];
-const cipherFarm = { stock: null, stockAt: 0, pick: null, key: '', said: '' };
+const cipherFarm = { stock: null, stockAt: 0, loaded: false, pick: null, key: '', said: '', askedAt: 0 };
+/* Meltymerch's last count, kept across a hop. In memory alone it died with
+   every page load, and Dexon reloads on every hop - 14 "no fresh count" lines
+   in one night. Scoped: it is what THIS character last heard. */
+const CIPHER_STOCK_KEY = 'cipher_stock';
 
 function cipherLog(m, c) { try { game_log('[cipher] ' + m, c || '#C9A0FF'); } catch (e) { } console.log('[cipher] ' + m); }
 /* Once per distinct message, so a 15s tick repeating the same reason is quiet. */
@@ -7751,14 +7780,44 @@ function cipherOnStock(data) {
 		const n = c[name];
 		counts[name] = (typeof n === 'number' && isFinite(n) && n >= 0) ? n : null;
 	}
+	/* Aged from when he COUNTED, not when we heard: the bridge holds a message
+	   for a character mid-hop and hands it over on the next page, so a
+	   delivery can be minutes old. Same browser, same clock. A stamp from the
+	   future or none at all is read as now. */
+	const now = Date.now();
+	const at = (typeof data.at === 'number' && isFinite(data.at) && data.at > 0 && data.at <= now + 60000)
+		? Math.min(data.at, now) : now;
+	if (cipherFarm.stock && cipherFarm.stockAt > at) return;   // an older count arriving late
 	cipherFarm.stock = counts;
-	cipherFarm.stockAt = Date.now();
+	cipherFarm.stockAt = at;
+	try { scopedSet(CIPHER_STOCK_KEY, { counts, at }); } catch (e) { }
+}
+
+/* The persisted count, once per page - the name is not readable at module
+   load, so this runs from the first read rather than at the top level. */
+function cipherStockLoad() {
+	if (cipherFarm.stock || cipherFarm.loaded) return;
+	const v = scopedGet(CIPHER_STOCK_KEY);
+	if (scopeKey(CIPHER_STOCK_KEY)) cipherFarm.loaded = true;
+	if (v && v.counts && typeof v.at === 'number') { cipherFarm.stock = v.counts; cipherFarm.stockAt = v.at; }
+}
+
+/* Asked, not waited for: Meltymerch reports on a change and every five
+   minutes, but he hops so often that a report can be a long time coming,
+   and with no count nothing is farmed. Throttled, and only while ours is
+   stale. */
+function cipherAskForStock(now) {
+	if (now - cipherFarm.askedAt < CONFIG.cipherFarm.askEveryMs) return false;
+	cipherFarm.askedAt = now;
+	try { plSend('Meltymerch', { message: 'cipher_stock_request' }); return true; }
+	catch (e) { cipherLog('could not ask Meltymerch for a count: ' + e, 'orange'); return false; }
 }
 
 /* The ingredients he is short of, or NULL when that cannot be known - no
    report, a stale one, or a name it does not carry. Null farms nothing. */
 function cipherShort(now) {
 	const cf = CONFIG.cipherFarm;
+	cipherStockLoad();
 	if (!cipherFarm.stock || !cipherFarm.stockAt) return null;
 	if ((now || Date.now()) - cipherFarm.stockAt > cf.stockMaxAgeMs) return null;
 	const out = [];
@@ -7923,6 +7982,7 @@ function cipherTick() {
 	const short = cipherShort(now);
 	const win = cipherWindowHere(now);
 	const idle = cipherIdleReason(short, win, now);
+	if (short === null && CONFIG.cipherFarm.enabled) cipherAskForStock(now);
 	if (idle) {
 		if (cipherFarm.pick) cipherRelease(idle);
 		cipherSay(idle, '#8b98ab');
@@ -7934,7 +7994,12 @@ function cipherTick() {
 		cipherSay('the farm spot was set by hand - standing aside', 'orange');
 		return;
 	}
-	const key = win.start + '|' + short.join(',');
+	/* The window by its five-minute bucket, not its exact start: before the
+	   open the start is the schedule's `at`, after it the server's own
+	   `start`, a few seconds apart - and a key on the exact value re-picked
+	   at every opening, throwing away the walk the preposition had just made
+	   (arcticbee for spider at 11:00:10Z 2026-10-25, 20.8 against 19.6). */
+	const key = Math.round(win.start / 300000) + '|' + short.join(',');
 	if (!cipherFarm.pick || cipherFarm.key !== key) {
 		const spots = cipherSpots(short, win.start, win.end, now);
 		if (!spots.length) {
@@ -7942,7 +8007,14 @@ function cipherTick() {
 			cipherSay('no viable spot for ' + short.join(', '), 'orange');
 			return;
 		}
-		cipherFarm.pick = spots[0];
+		/* STICKY: a held pick still in the list - its ingredient still short,
+		   the spot still safe - is kept unless the best is materially better,
+		   re-scored from where we stand now. Estimates a few percent apart are
+		   noise against a walk already made. */
+		const held = cipherFarm.pick
+			&& spots.find((s) => s.home === cipherFarm.pick.home && s.mobMap === cipherFarm.pick.mobMap);
+		const keep = !!held && !(spots[0].qty > held.qty * CONFIG.cipherFarm.switchFactor);
+		cipherFarm.pick = keep ? held : spots[0];
 		cipherFarm.key = key;
 	}
 	const p = cipherFarm.pick;

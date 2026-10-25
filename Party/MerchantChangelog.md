@@ -1,4 +1,20 @@
 
+## v132
+
+**THE CIPHER COUNT REACHES DEXON, AND A MERGED PONTY BUY IS AN ARRIVAL**, from
+the browser session's 2026-10-25 report.
+- **The stock report survives a page load.** What was sent and when is kept in
+  `cipher_stock_sent_<name>`, and the first send is 3s after a load rather than
+  15. In memory the clock restarted on every hop, and a scouting merchant left
+  most shards inside 15s, so Dexon's count went 20 minutes without a word.
+- **`cipher_stock_request` from Dexon is answered at once**, whatever was sent
+  last. Ranger v148 asks while his count is stale.
+- **`pontyCount()` counts quantity, not slots.** A stackable buy merges into a
+  stack already held, so the slot count did not move and a bought gloomfeather
+  (27 -> 37 for 14,400) was logged as "nothing arrived ... CHECK THIS". The same
+  helper feeds the arbitrage and stall-buy arrival checks, whose "bought N x"
+  now reports the quantity.
+
 ## v131
 
 **CIPHER INGREDIENTS STAY IN THE BAG YEAR-ROUND, UP TO ONE FULL STACK EACH**,

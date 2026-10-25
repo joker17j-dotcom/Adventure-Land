@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v80
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v81
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2646,6 +2646,9 @@ function rageEngagedCount(types) {
    it owns this tick. */
 async function ragePullTick() {
 	if (ragePull.busy) return true;
+	/* Dead, nothing can be pulled: measured 2026-10-25 06:30Z, both followers
+	   logged "pull tick threw: unable" several times a second while rip. */
+	if (character.rip) return false;
 	if (!ragePullActive()) return false;
 	const cfg = rageCfg();
 	const map = character.map;

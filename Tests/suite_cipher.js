@@ -66,20 +66,22 @@ function G() {
    so they are supplied - and pinned against the source text below, so a change
    to the file cannot leave these copies stale while the suite stays green. */
 const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 7, CIPHER_RANK: 8,
-	CIPHER_INGREDIENTS_FALLBACK: INGREDIENTS };
+	CIPHER_INGREDIENTS_FALLBACK: INGREDIENTS, CIPHER_STOCK_KEY: 'cipher_stock' };
 const RANGER_FNS = ['cipherLog', 'cipherSay', 'cipherRules', 'cipherIngredients', 'cipherGatherMs', 'cipherLootRate',
 	'cipherOnStock', 'cipherShort', 'cipherWindowHere', 'cipherDoorDistance', 'cipherTravelSec',
 	'cipherSpots', 'cipherOwnsSpot', 'cipherApply', 'cipherRelease', 'cipherIdleReason',
-	'cipherTick', 'farmSpotKill', 'FARM_SEARCH', 'spotKey', 'isPermanentlyBlacklisted',
+	'cipherTick', 'cipherStockLoad', 'cipherAskForStock', 'scopeKey', 'scopedSet', 'scopedGet', 'farmSpotKill', 'FARM_SEARCH', 'spotKey', 'isPermanentlyBlacklisted',
 	'isMapSafeForFarming', 'dodgeMultiplier', 'mitigated', 'defenseMultiplier'];
 
 function cfg() {
 	return { enabled: true, hop: true, target: 25, stockMaxAgeMs: 900000, tickMs: 15000,
-		walkLeadMaxMs: 600000, marginMs: 60000, minUsefulMs: 180000, pathFactor: 1.5, unknownTravelSec: 300 };
+		walkLeadMaxMs: 600000, marginMs: 60000, minUsefulMs: 180000, pathFactor: 1.5, unknownTravelSec: 300,
+		switchFactor: 1.25, askEveryMs: 120000 };
 }
 
 function rangerWorld(o = {}) {
 	const w = world({
+		store: o.store,
 		character: Object.assign({ name: 'Dexon', map: 'main', x: 0, y: 0, real_x: 0, real_y: 0, speed: 50,
 			max_hp: 5000, home: 'USII', s: {} }, o.character || {}),
 		/* The game's own mitigation, so the scorer never takes its logged
@@ -94,7 +96,9 @@ function rangerWorld(o = {}) {
 	Object.assign(w, JSON.parse(JSON.stringify(CONSTS)));
 	w.manualOverride = o.override || null;
 	w.rageAlso = ['mummy'];
-	w.cipherFarm = { stock: null, stockAt: 0, pick: null, key: '', said: '' };
+	w.cipherFarm = { stock: null, stockAt: 0, loaded: false, pick: null, key: '', said: '', askedAt: 0 };
+	w.sentMsgs = [];
+	w.plSend = (to, body) => w.sentMsgs.push({ to, body });
 	w.PERMANENT_WHITELIST = new Set();
 	w.PERMANENT_BLACKLIST = new Set(o.permBlack || []);
 	w.blacklist = o.blacklist || {};
@@ -138,14 +142,14 @@ function hopWorld(o = {}) {
 		REGIONS: ['US', 'EU', 'ASIA'], HOP_ATTEMPT_CAP: 5, HOP_RELOAD_GRACE_MS: 15000,
 		TAXI_PROBE_KEY: 'taxi_probe', TAXI_PROBE_MAX: 30,
 	});
-	w.cipherFarm = { stock: null, stockAt: 0, pick: null, key: '', said: '' };
+	w.cipherFarm = { stock: null, stockAt: 0, loaded: false, pick: null, key: '', said: '', askedAt: 0 };
 	Object.assign(w, JSON.parse(JSON.stringify(CONSTS)));
 	lift(w, RANGER, ['scopeKey', 'scopedHas', 'scopedSet', 'scopedGet', 'scopedGetLegacy',
 		'bossState', 'bossCooledDown', 'bossShard', 'bossCooldownKey',
 		'BOSS_RANK', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossEligible',
 		'cipherRules', 'cipherIngredients',
-		'cipherGatherMs', 'cipherOnStock', 'cipherShort', 'bossHop']);
+		'cipherGatherMs', 'cipherOnStock', 'cipherStockLoad', 'cipherShort', 'bossHop']);
 	w.bossCooperative = () => true;
 	w.hops = [];
 	w.bossHop.lootBeforeHop = async () => false;
@@ -168,16 +172,16 @@ const crow = (shard, at, status) => ({ shard, event: 'witchcipher', at, windowSe
 function merchantWorld(o = {}) {
 	const sent = [];
 	const w = world({
+		store: o.store,
 		character: Object.assign({ name: 'Meltymerch', items: o.items || [] }, o.character || {}),
 		parent: { G: { events: { witchcipher: WC } }, S: o.S || {} },
 		plSend: (to, body) => sent.push({ to, body }),
 	});
 	w.sent = sent;
-	w.cipherStockSent = '';
-	w.cipherStockSentAt = 0;
 	w.CIPHER_INGREDIENTS_FALLBACK = INGREDIENTS.map((x) => x[0]);
+	w.CIPHER_STOCK_SENT_KEY = 'cipher_stock_sent';
 	lift(w, MERCHANT, ['cipherIngredientNames', 'cipherHeldInBag', 'cipherBagQty',
-		'cipherStockCounts', 'cipherStockTick', 'pontyStackCap']);
+		'cipherStockCounts', 'cipherStockSentKey', 'cipherStockTick', 'pontyStackCap']);
 	return w;
 }
 
@@ -480,11 +484,16 @@ module.exports = [
 		/async function mhTick\(\) \{[\s\S]*?cipherOwnsSpot\(\)\) return;[\s\S]*?if \(mhPhase === 'hunt'\)/.test(src));
 	t.ok('the tick runs on its own timer', /setInterval\(\(\) => \{ try \{ cipherTick\(\);/.test(src));
 	t.ok('the state the suite supplies is the state the file starts with',
-		/^const cipherFarm = \{ stock: null, stockAt: 0, pick: null, key: '', said: '' \};$/m.test(src)
+		/^const cipherFarm = \{ stock: null, stockAt: 0, loaded: false, pick: null, key: '', said: '', askedAt: 0 \};$/m.test(src)
 		&& /^let manualOverride = null;$/m.test(src));
 	/* The live G is what the code reads; the fallback must match the source it
 	   was copied from, or a G without the field silently farms the wrong list. */
 	t.ok('CIPHER_EVENT as supplied', /^const CIPHER_EVENT = 'witchcipher';$/m.test(src));
+	t.ok('CIPHER_STOCK_KEY as supplied', /^const CIPHER_STOCK_KEY = 'cipher_stock';$/m.test(src));
+	t.ok('the merchant answers Dexon\'s request before any other handling',
+		/if \(!CONFIG\.partyMembers\.includes\(name\)\) return;\n\tif \(name === 'Dexon' && data\.message === 'cipher_stock_request'\) \{ cipherStockTick\(true\); return; \}/.test(text(MERCHANT)));
+	t.ok('CIPHER_STOCK_SENT_KEY as supplied', /^const CIPHER_STOCK_SENT_KEY = 'cipher_stock_sent';$/m.test(text(MERCHANT)));
+	t.ok('the merchant reports 3s after a page loads, not 15', /^setTimeout\(cipherStockTick, 3000\);$/m.test(text(MERCHANT)));
 	t.ok('BOSS_RANK_DEFAULT as supplied', /^const BOSS_RANK_DEFAULT = 7;$/m.test(src));
 	t.ok('CIPHER_RANK is one below the default, as supplied', /^const CIPHER_RANK = BOSS_RANK_DEFAULT \+ 1;$/m.test(src));
 	const fb = src.match(/^const CIPHER_INGREDIENTS_FALLBACK = (\[[\s\S]*?\n\]);/m);
@@ -536,7 +545,7 @@ module.exports = [
 	w.character.items[3].q = 4;
 	w.cipherStockTick();
 	t.eq('a change is sent at once', w.sent.length, 2);
-	w.cipherStockSentAt = Date.now() - 5 * 60 * 1000 - 1;
+	w.store.cipher_stock_sent_Meltymerch.at -= 5 * 60 * 1000 + 1;
 	w.cipherStockTick();
 	t.eq('and the same count is re-sent after five minutes, so Dexon\'s copy never goes stale while we run', w.sent.length, 3);
 	const after = merchantWorld({ S: { event_ends: { halloween: Date.now() - 1 } } });
@@ -642,6 +651,143 @@ module.exports = [
 		await w.pontyBuyPass(rows);
 		t.eq('the bank cap still governs everything else', w.bought, ['verdantspore']);
 	})();
+} },
+
+/* 2026-10-25, the browser session's three live defects. */
+{ name: 'cipher: the count survives a hop, is aged from when he counted, and is asked for', fn(t) {
+	const NOW = Date.now();
+	const a = rangerWorld();
+	a.cipherOnStock({ counts: Object.assign({}, FULL, { frostscale: 0 }), at: NOW - 60000 });
+	t.eq('heard on one page', a.cipherShort(NOW), ['frostscale']);
+	t.eq('precondition: a page with nothing stored knows nothing', rangerWorld().cipherShort(NOW), null);
+	const b = rangerWorld({ store: a.store });
+	t.eq('the next page reads it back - a hop no longer wipes it', b.cipherShort(NOW), ['frostscale']);
+	t.eq('and its age is the count\'s own', Math.round((NOW - b.cipherFarm.stockAt) / 1000), 60);
+
+	const old = rangerWorld();
+	old.cipherOnStock({ counts: FULL, at: NOW - 16 * 60000 });
+	t.eq('a report delivered late is as old as its count, so stale', old.cipherShort(NOW), null);
+	const fut = rangerWorld();
+	fut.cipherOnStock({ counts: FULL, at: NOW + 3600000 });
+	t.ok('a stamp from the future is read as now', fut.cipherFarm.stockAt <= Date.now() && fut.cipherFarm.stockAt >= NOW);
+	const late = rangerWorld();
+	late.cipherOnStock({ counts: FULL, at: NOW - 1000 });
+	late.cipherOnStock({ counts: Object.assign({}, FULL, { embercoal: 0 }), at: NOW - 5000 });
+	t.eq('an older count arriving after a newer one is ignored', late.cipherShort(NOW), []);
+
+	const s = rangerWorld({ S: gathering(NOW, 900000) });
+	s.cipherTick();
+	t.eq('no count: Meltymerch is asked', s.sentMsgs.map((m) => [m.to, m.body.message]), [['Meltymerch', 'cipher_stock_request']]);
+	s.cipherTick();
+	t.eq('not again inside askEveryMs', s.sentMsgs.length, 1);
+	s.cipherFarm.askedAt -= 120001;
+	s.cipherTick();
+	t.eq('and again once it has passed', s.sentMsgs.length, 2);
+	const f = rangerWorld({ S: gathering(NOW, 900000) });
+	stock(f, FULL);
+	f.cipherTick();
+	t.eq('a fresh count asks nothing', f.sentMsgs.length, 0);
+} },
+
+{ name: 'cipher: the pick holds through the opening and yields only to a much better one', fn(t) {
+	const NOW = Date.now();
+	/* On a five-minute boundary, as every published `at` is (realm hours). */
+	const START = Math.ceil((NOW + 300000) / 300000) * 300000;
+	const w = rangerWorld({ rows: [crow('USII', START)] });
+	stock(w, Object.assign({}, FULL, { gloomfeather: 0 }));
+	w.cipherTick();
+	const before = w.cipherFarm.pick && w.cipherFarm.pick.home;
+	t.eq('precondition: picked before the opening', before, 'snake');
+	/* The opening, as S publishes it: the server's start a few seconds off the
+	   schedule's `at`. */
+	w.parent.S = { witchcipher: { live: true, phase: 'gathering', start: START + 4000, gather_end: START + 1200000 } };
+	w.cipherFarm.said = '';
+	const keyBefore = w.cipherFarm.key;
+	w.cipherTick();
+	t.eq('the window opening does not change the key', w.cipherFarm.key, keyBefore);
+	t.eq('nor the pick', w.cipherFarm.pick.home, before);
+
+	/* A real re-pick (the short set changed): the held spot, still in the
+	   list, against the best one. */
+	const mk = (factor) => {
+		const x = rangerWorld({ S: gathering(NOW, 900000), cf: { switchFactor: factor } });
+		stock(x, Object.assign({}, FULL, { verdantspore: 3 }));
+		const spots = x.cipherSpots(['verdantspore'], NOW - 60000, NOW + 900000, NOW);
+		x.cipherFarm.pick = spots[1];
+		x.cipherFarm.key = 'something else';
+		return { x, spots };
+	};
+	const { x: k, spots } = mk(100);
+	t.ok('precondition: two candidates, the held one strictly worse', spots.length >= 2 && spots[0].qty > spots[1].qty);
+	k.cipherTick();
+	t.eq('within the switch factor the held pick stays', k.cipherFarm.pick.home, spots[1].home);
+	const { x: sw } = mk(1);
+	sw.cipherTick();
+	t.eq('beyond it the better one is taken', sw.cipherFarm.pick.home, spots[0].home);
+	const gone = rangerWorld({ S: gathering(NOW, 900000), cf: { switchFactor: 100 } });
+	stock(gone, Object.assign({}, FULL, { verdantspore: 3 }));
+	gone.cipherFarm.pick = { home: 'snake', mobMap: 'halloween', qty: 99 };
+	gone.cipherFarm.key = 'something else';
+	gone.cipherTick();
+	t.eq('a held pick whose ingredient is no longer short is dropped whatever the factor', gone.cipherFarm.pick.home, 'bee');
+} },
+
+{ name: 'cipher plan: no hop into a window a hop target opens inside', fn(t) {
+	const NOW = Date.now();
+	const mk = () => {
+		const w = hopWorld();
+		w.CONFIG.bossHop.targets = [{ mtype: 'horseman', kills_to_rung: 1 }];
+		stock(w, Object.assign({}, FULL, { embercoal: 0 }));
+		return w;
+	};
+	const horse = (shard, at) => ({ shard, event: 'horseman', at, windowSec: 2400, status: 'scheduled' });
+	let w = mk();
+	feed(w, [crow('EUI', NOW + 12 * 60000)]);
+	t.eq('precondition: the window alone is planned', w.bossHop.cipherPlan('USII') && w.bossHop.cipherPlan('USII').shard, 'EUI');
+	w = mk();
+	feed(w, [crow('EUI', NOW + 12 * 60000), horse('USI', NOW + 12 * 60000)]);
+	t.eq('horseman opening at the same minute on another shard: no hop - 05:00Z 2026-10-25', w.bossHop.cipherPlan('USII'), null);
+	w = mk();
+	feed(w, [crow('EUI', NOW + 12 * 60000), horse('USI', NOW + 12 * 60000 + 21 * 60000)]);
+	t.eq('one opening after the gathering ends does not block', w.bossHop.cipherPlan('USII') && w.bossHop.cipherPlan('USII').shard, 'EUI');
+	w = mk();
+	feed(w, [crow('USII', NOW + 5 * 60000), horse('EUI', NOW + 5 * 60000)]);
+	t.eq('home needs no hop, so home\'s window is still planned', w.bossHop.cipherPlan('ASIAI') && w.bossHop.cipherPlan('ASIAI').shard, 'USII');
+	w = mk();
+	feed(w, [crow('EUI', NOW - 60000, 'live'), horse('USI', NOW + 60000)]);
+	t.eq('nor is the window we stand on', w.bossHop.cipherPlan('EUI') && w.bossHop.cipherPlan('EUI').shard, 'EUI');
+	w = mk();
+	w.CONFIG.bossHop.targets = [];
+	feed(w, [crow('EUI', NOW + 12 * 60000), horse('USI', NOW + 12 * 60000)]);
+	t.eq('an event that is not a hop target blocks nothing', w.bossHop.cipherPlan('USII') && w.bossHop.cipherPlan('USII').shard, 'EUI');
+} },
+
+{ name: 'merchant: the report survives a page load and answers a request', fn(t) {
+	const items = [{ name: 'verdantspore', q: 10 }];
+	const a = merchantWorld({ items });
+	a.cipherStockTick();
+	t.eq('precondition: the first page sends', a.sent.length, 1);
+	const b = merchantWorld({ items, store: a.store });
+	b.cipherStockTick();
+	t.eq('a reloaded page with the same bag does not resend inside five minutes', b.sent.length, 0);
+	b.cipherStockTick(true);
+	t.eq('but a request is answered at once', b.sent.length, 1);
+	b.cipherStockTick();
+	t.eq('and the request resets the five-minute clock', b.sent.length, 1);
+	const c = merchantWorld({ items: [{ name: 'verdantspore', q: 11 }], store: a.store });
+	c.cipherStockTick();
+	t.eq('a reloaded page with a changed bag sends at once', c.sent.length, 1);
+} },
+
+{ name: 'merchant: a Ponty buy that merges into a stack has arrived', fn(t) {
+	const w = world({ character: { name: 'Meltymerch', items: [{ name: 'gloomfeather', q: 27 }, null], gold: 1000000 } });
+	lift(w, MERCHANT, ['pontyCount']);
+	const had = w.pontyCount('gloomfeather', 0);
+	w.character.items[0].q = 37;
+	t.ok('27 -> 37 in the same slot is an arrival - 2026-10-25\'s false CHECK THIS', w.pontyCount('gloomfeather', 0) > had);
+	t.eq('the count is quantity, not slots', [had, w.pontyCount('gloomfeather', 0)], [27, 37]);
+	w.character.items[1] = { name: 'dexbelt', level: 2 };
+	t.eq('an unstacked item counts one', w.pontyCount('dexbelt', 2), 1);
 } },
 
 ];

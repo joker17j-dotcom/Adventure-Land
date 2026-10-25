@@ -2132,7 +2132,7 @@ module.exports = [
   const KEYS = {
     'Party/Ranger.js': {
       scoped: ['PL_ACTED_KEY', 'TAXI_PROBE_KEY', 'BOSS_KEY', 'CRABXX_KEY',
-        'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY'],
+        'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY', 'CIPHER_STOCK_KEY'],
       /* TOT_STAND_KEY is shared ON PURPOSE: a door's stand point is a fact
          about the map, and the merchant and the ranger knock the same doors. */
       shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY', 'TOT_STAND_KEY'],
@@ -3154,5 +3154,25 @@ module.exports = [
 	t.ok('and returns without blacklisting', /if \(farmVerdictHeld\(\)\) \{\n[^\n]*\n\t\t\treturn;\n\t\t\}/.test(cm.slice(held - 2)));
 	const fe = extract(RANGER, 'checkFarmEconomics');
 	t.ok('his own gold check holds too, before it samples', fe.indexOf('if (farmVerdictHeld()) {') > 0 && fe.indexOf('if (farmVerdictHeld()) {') < fe.indexOf('const goldGained'));
+} },
+{ name: 'rage pull: nothing is pulled while dead - 2026-10-25 06:30Z', fn(t) {
+	return (async () => {
+		for (const f of [RANGER, PRIEST_PATH, MAGE_PATH]) {
+			const mk = (rip) => {
+				const w = world({ character: { name: 'Dexon', map: 'spookytown', rip } });
+				w.ragePull = { busy: false, lastPull: 0 };
+				w.asked = 0;
+				w.ragePullActive = () => { w.asked++; return false; };
+				lift(w, f, ['ragePullTick']);
+				return w;
+			};
+			const dead = mk(true);
+			t.eq(f + ': dead, the tick returns false', await dead.ragePullTick(), false);
+			t.eq(f + ': before asking whether a pull is wanted', dead.asked, 0);
+			const alive = mk(false);
+			await alive.ragePullTick();
+			t.eq(f + ': precondition - alive, it does ask', alive.asked, 1);
+		}
+	})();
 } },
 ];

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v131
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v132
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2118,6 +2118,7 @@ async function mHopTo(key) {
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (!CONFIG.partyMembers.includes(name)) return;
+	if (name === 'Dexon' && data.message === 'cipher_stock_request') { cipherStockTick(true); return; }
 
 	// A message with no _plshard came in-game, which means same shard by
 	// definition - the pre-relay assumption, still correct.
@@ -3431,17 +3432,29 @@ function cipherStockCounts() {
    is unknown to him, and an unknown count farms nothing. So a merchant that
    stops reporting (another script in the slot, a dead tab) stops the farming
    rather than leaving it running on a stale number. */
-let cipherStockSent = '', cipherStockSentAt = 0;
-function cipherStockTick() {
+/* What was last sent and when, kept across a page load. In memory it restarted
+   on every hop, and the first send waited 15s: a scouting merchant leaves most
+   shards sooner than that, so for twenty minutes on 2026-10-25 nothing was sent
+   at all. Keyed by name at the moment of use, never at module load. */
+const CIPHER_STOCK_SENT_KEY = 'cipher_stock_sent';
+function cipherStockSentKey() {
+	const who = (typeof character !== 'undefined' && character && character.name) || '';
+	return who ? CIPHER_STOCK_SENT_KEY + '_' + who : null;
+}
+/* `force` answers Dexon's request whatever was sent last. */
+function cipherStockTick(force) {
 	const counts = cipherStockCounts();
 	const sig = JSON.stringify(counts);
-	if (sig === cipherStockSent && Date.now() - cipherStockSentAt < 5 * 60 * 1000) return;
-	cipherStockSent = sig;
-	cipherStockSentAt = Date.now();
-	try { plSend('Dexon', { message: 'cipher_stock', counts, at: Date.now() }); }
+	const k = cipherStockSentKey();
+	let last = null;
+	try { last = k ? get(k) : null; } catch (e) { }
+	const now = Date.now();
+	if (force !== true && last && last.sig === sig && now - last.at < 5 * 60 * 1000) return;
+	try { if (k) set(k, { sig, at: now }); } catch (e) { }
+	try { plSend('Dexon', { message: 'cipher_stock', counts, at: now }); }
 	catch (e) { game_log('[cipher] stock report failed: ' + e, 'orange'); }
 }
-setTimeout(cipherStockTick, 15000);
+setTimeout(cipherStockTick, 3000);
 setInterval(cipherStockTick, 30000);
 
 /* What the rule is costing or saving, on demand. */
@@ -6655,9 +6668,13 @@ function pontySlotOf(name, level) {
 	}
 	return -1;
 }
+/* QUANTITY held, not slots. A stackable buy merges into a stack already in the
+   bag, so counting slots read an arrived purchase as "nothing arrived" and
+   raised CHECK THIS for gold that had bought exactly what it should
+   (gloomfeather 27 -> 37 for 14,400, 2026-10-25). */
 function pontyCount(name, level) {
 	let n = 0;
-	for (const it of character.items) if (it && it.name === name && (it.level || 0) === (level || 0)) n++;
+	for (const it of character.items) if (it && it.name === name && (it.level || 0) === (level || 0)) n += (it.q || 1);
 	return n;
 }
 

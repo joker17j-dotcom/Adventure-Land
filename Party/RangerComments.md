@@ -90,6 +90,34 @@ smaller stack beyond it and never buying it back from Ponty - so his bag count
 stays the measure. v146 ended both with the season; that reading was
 superseded the next day.
 
+**THE COUNT HAS TO SURVIVE A HOP, AND BOTH ENDS LOST IT** (v148, from the
+2026-10-25 05:00Z and 11:00Z windows, where nothing was farmed). Dexon held the
+count in memory and reloads on every hop; Meltymerch held his send clock in
+memory, reloads on every hop, and sent first at 15s - longer than a scouting
+visit lasts. So the stated cadence, "every change and every five minutes",
+existed on paper only. Now both halves persist (`cipher_stock` scoped on Dexon,
+`cipher_stock_sent_<name>` on the merchant), the merchant sends 3s after a
+load, a count is aged from when it was COUNTED rather than heard, and Dexon
+asks (`cipher_stock_request`) while his is stale. **A RATE STATED BY A TIMER
+THAT RESETS ON EVERY RELOAD IS NOT A RATE ON A CHARACTER THAT RELOADS
+CONSTANTLY.**
+
+**THE PICK IS STICKY.** The re-pick key held the window's exact start, and the
+start moves from the schedule's `at` to the server's `S.witchcipher.start` at
+the opening - so every opening re-picked, and a 6% difference in two noisy
+estimates threw away the walk the preposition had made. Keyed by five-minute
+bucket now, and a held spot still on the list yields only to one
+`switchFactor` better.
+
+**A HOP TARGET OPENING INSIDE THE WINDOW REFUSES THE CIPHER HOP.** The plan read
+only what was scheduled for the cipher, so at 04:49Z it hopped to EU for the
+05:00Z gathering and the US horseman, ranked above it and opening the same
+minute, took the party away at 05:00:09. `targetOpensWithin()` reads the same
+lineup for any `bossHop.targets` event opening before the gathering ends.
+Opening only: a target already live was weighed by `pickTarget()`, and one it
+declined must not block. Home and here are exempt, because farming there costs
+no hop and the boss can still call the party away.
+
 ## preposition
 
 **WHY IT EXISTS.** Operator, 2026-10-24: why did the party not preposition for

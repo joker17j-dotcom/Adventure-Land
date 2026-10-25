@@ -4600,6 +4600,13 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   hold is permanent - up to ONE FULL STACK each; the smaller stack beyond it is
   sold (`cipherOverflowSellPass()`) and never bought back, because the Ponty buy
   counts the bag for these names.
+  **FIRST LIVE NIGHT, 2026-10-25: NOTHING FARMED, THREE DEFECTS, FIXED IN Ranger
+  v148 / Merchant v132.** The count never survived a hop on either end, so
+  Dexon read it stale all night. Both ends now keep it in storage, the merchant
+  sends 3s after a load, and Dexon asks while his copy is stale. The pick flipped at the opening because
+  its key held the window's exact start; it is sticky now. And the plan hopped
+  into windows that horseman, ranked above it, opens inside; it now reads the
+  lineup for a hop target opening there.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
