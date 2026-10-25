@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v83
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v84
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -654,6 +654,7 @@ const CONFIG = {
 		leaveSoaked: 3.5,        // once in, the average must fall BELOW this to bring us out
 		minInsideMs: 30000,      // and not before we have been in this long
 		retreatAtAttackers: 3,   // on THIS character - meant to sit below courage
+		retreatHoldMs: 60000,    // after anyone's retreat on bodies, the party stays out this long
 		trustMs: 15000,          // a follower falls out after this much silence
 	},
 		// G.monsters[x].cooperative - the game's own "credit is shared by damage
@@ -1812,6 +1813,7 @@ let rageEntryOkSince = 0;
 let rageEntryInSince = 0;
 let rageEntryWindow = [];
 let rageEntryHeard = null;
+let rageEntryRetreatAt = 0;
 
 function rageCfg() {
 	const a = (typeof CONFIG !== 'undefined' && CONFIG.achievements && CONFIG.achievements.pull) || {};
@@ -2575,7 +2577,25 @@ function rageEntryTick(map) {
 	   leader check and applies to all three. */
 	if (rageEntryActive && rageAttackersOnMe() >= (cfg.retreatAtAttackers || 3)) {
 		rageEntryOkSince = 0; rageEntryWindow = [];
+		rageEntryRetreatAt = Date.now();
 		rageEntrySet(false, 'too many on me');
+		if (bossIsLeader()) rageEntryBroadcast(false);
+		else { try { plSend(CONFIG.bossEvents.leaderName, { message: 'rageentry', on: false, retreat: true }); } catch (e) { } }
+		return;
+	}
+	/* ONE RETREAT TAKES THE PARTY OUT, AND KEEPS IT OUT FOR retreatHoldMs -
+	   Ranger v151 / Priest v84 / Mage v107. Measured 12:30Z 2026-10-25 on EU
+	   II: two of three entries ended within 0-5s on "too many on me", with
+	   FatherToken terrified each time, so 3 is not early and is kept. What was
+	   wrong is what followed. A follower that retreated obeyed the leader's
+	   standing "in" again as soon as the bodies dropped, walking back into what
+	   drove it out; and the healer alone outside is the party split this
+	   section exists to prevent. So a follower's retreat is sent to the
+	   leader, the leader takes everyone out, and nobody goes back in until the
+	   hold has run. */
+	if (rageEntryRetreatAt && Date.now() - rageEntryRetreatAt < (cfg.retreatHoldMs || 0)) {
+		rageEntryOkSince = 0; rageEntryWindow = [];
+		rageEntrySet(false, 'holding out after a retreat');
 		return;
 	}
 
@@ -2657,6 +2677,16 @@ function rageEntryBroadcast(on) {
 /* Heard from the leader. Only the leader's word counts, by the same rule
    bossOnCall applies to an unforced pick. */
 function rageEntryOnCall(from, data) {
+	/* A member's retreat on bodies, heard by the leader: everyone out. */
+	if (data && data.retreat && bossIsLeader()) {
+		const members = (CONFIG.party && CONFIG.party.groupMembers) || [];
+		if (members.indexOf(from) < 0) return;
+		rageEntryRetreatAt = Date.now();
+		rageEntryOkSince = 0; rageEntryWindow = [];
+		rageEntrySet(false, from + ' retreated - too many on them');
+		rageEntryBroadcast(false);
+		return;
+	}
 	if (from !== CONFIG.bossEvents.leaderName) return;
 	rageEntryHeard = { on: !!data.on, at: Date.now() };
 }

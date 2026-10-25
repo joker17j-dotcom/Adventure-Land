@@ -21,6 +21,20 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v151
+
+**ONE RETREAT TAKES THE PARTY OUT OF THE RAGE BOX, AND HOLDS IT OUT FOR 60s.**
+The operator left the retreat-at-3 question to this session's judgement on
+2026-10-25. At the 12:30Z EU II graveyard two of three entries ended inside 5s on
+"too many on me", with FatherToken terrified each time - so 3 is not early, and
+`retreatAtAttackers` stays at 3. What changed is what follows a retreat:
+- a follower that retreats tells the leader (`rageentry` with `retreat: true`);
+  the leader takes everyone out and says so at once;
+- `retreatHoldMs` (60000): after anyone's retreat on bodies, nobody re-enters
+  until it has run. Before this a follower obeyed the leader's standing "in" as
+  soon as the bodies dropped and walked back into what drove it out, and the
+  healer alone outside the box is the party split entry was built to prevent.
+
 ## v150
 
 - **A WAY OUT OF A RAGE BOX FOR A CHARACTER ALREADY IN ONE.** Measured by the

@@ -371,7 +371,7 @@ module.exports = [
           leaderName: 'FatherToken',
           rageEntry: Object.assign({
             enabled: true, minSoaked: 6, holdMs: 20000,
-            retreatAtAttackers: 3, trustMs: 15000,
+            retreatAtAttackers: 3, retreatHoldMs: 60000, trustMs: 15000,
           }, over.cfg || {}),
         },
       },
@@ -386,6 +386,7 @@ module.exports = [
       rageEntryInSince: over.inSince || 0,
       rageEntryWindow: over.window || [],
       rageEntryHeard: over.heard || null,
+      rageEntryRetreatAt: over.retreatAt || 0,
     });
     lift(w, RANGER, ['rageBoxes', 'rageHit', 'rageCfg', 'bossIsLeader', 'rageCrowdSoak',
       'rageAttackersOnMe', 'rageEntrySet', 'rageEntryNotWanted', 'rageEntryTick',
@@ -571,6 +572,48 @@ module.exports = [
   w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() }, ents: onMe(2, 'Dexon') });
   w.rageEntryTick('spookytown');
   t.eq('two on it is not a retreat', w.rageEntryActive, true);
+
+  /* --- ONE RETREAT TAKES THE PARTY OUT AND HOLDS IT OUT - v151/v84/v107 ----
+     12:30Z 2026-10-25, EU II: two of three entries ended inside 5s on "too
+     many on me", FatherToken terrified each time. */
+  for (const f of ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js']) {
+    const rs = require('fs').readFileSync(require('path').join(require('./lift').ROOT, f), 'utf8');
+    t.ok(f + ': retreatAtAttackers stays 3, retreatHoldMs ships 60000',
+      /retreatAtAttackers: 3, [^\n]*\n\t\tretreatHoldMs: 60000, /.test(rs));
+  }
+  const before = sent.length;
+  w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() }, ents: onMe(3, 'Dexon') });
+  w.rageEntryTick('spookytown');
+  const told = sent.slice(before);
+  t.eq('a follower’s retreat is sent to the leader alone',
+    told.map((x) => [x[0], x[1].message, x[1].retreat]), [['FatherToken', 'rageentry', true]]);
+  w.parent.entities = {};
+  w.rageEntryTick('spookytown');
+  t.eq('precondition: the bodies are gone and the leader still says in', [w.rageAttackersOnMe(), w.rageEntryHeard.on], [0, true]);
+  t.eq('it does not walk back in on the standing word', w.rageEntryActive, false);
+  w.rageEntryRetreatAt = Date.now() - 61000;
+  w.rageEntryTick('spookytown');
+  t.eq('once the hold has run it obeys again', w.rageEntryActive, true);
+
+  /* The leader hears it. */
+  w = mk({ ents: IN(9, 'Stranger'), active: true, inSince: Date.now() - 5000, okSince: Date.now() - 60000 });
+  const b2 = sent.length;
+  w.rageEntryOnCall('MageofOz', { message: 'rageentry', on: false, retreat: true });
+  t.eq('a member’s retreat takes the leader out', w.rageEntryActive, false);
+  t.eq('and the leader tells both followers OUT', sent.slice(b2).map((x) => [x[0], x[1].on]), [['Dexon', false], ['MageofOz', false]]);
+  w.rageEntryTick('spookytown');
+  t.eq('a crowd that would open the gate does not, inside the hold', [w.rageEntryActive, w.rageEntryOkSince], [false, 0]);
+  w = mk({ ents: IN(9, 'Stranger'), active: true });
+  w.rageEntryOnCall('Stranger', { on: false, retreat: true });
+  t.eq('a retreat from outside the party is ignored', w.rageEntryActive, true);
+  w = mk({ me: 'Dexon', active: true, heard: { on: true, at: Date.now() } });
+  w.rageEntryOnCall('MageofOz', { on: false, retreat: true });
+  t.eq('and a follower does not act on another follower’s retreat', w.rageEntryActive, true);
+  w = mk({ ents: onMe(3, 'FatherToken'), active: true, inSince: Date.now() - 5000, okSince: Date.now() - 60000 });
+  const b3 = sent.length;
+  w.rageEntryTick('spookytown');
+  t.eq('the leader’s own retreat tells both followers OUT at once',
+    sent.slice(b3).map((x) => [x[0], x[1].on]), [['Dexon', false], ['MageofOz', false]]);
 } },
 
 { name: 'the rage pull reads the BOSS context, not the farm it is not serving', fn(t) {

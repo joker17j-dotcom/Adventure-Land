@@ -1484,6 +1484,15 @@ this ranking until a Ranger build is actually running on him.
   FOR THE ONE MOVE THAT REDUCES WHAT IT GUARDS AGAINST.** The same build stops
   the pull for a trip on another map, stops a farm walk with `stop('smart')`
   rather than only orphaning it, and keeps Blink out of rage boxes.
+- **RETREAT-AT-3 SETTLED 2026-10-25, BY THIS SESSION ON THE OPERATOR'S
+  DELEGATION ("use your judgment").** `retreatAtAttackers` stays 3: at the
+  12:30Z EU II graveyard FatherToken was terrified at it every time, so it is
+  not early. Ranger v151 / Priest v84 / Mage v107 change what a retreat DOES:
+  any member's retreat takes the whole party out through the leader, and
+  `retreatHoldMs` (60s) keeps it out. Two of three entries that window ended
+  inside 5s; a follower used to walk straight back in on the leader's standing
+  word, and the healer leaving alone is a party split. Revisit on data: if
+  holds fire on most entries, the crowd gate (`minSoaked`) is what is too low.
 - **FOLLOWERS ASKED DEXON TO BLACKLIST THE FARM SPOT ON EVERY mrgreen TRIP,
   AND THE EARLIER FIX KEYED ON THE WRONG FACT.** 46 requests on 2026-10-24,
   measured by the browser session. The follower's xp monitor re-baselined only
