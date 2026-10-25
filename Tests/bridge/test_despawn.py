@@ -1746,6 +1746,81 @@ chk("skip: no LAST-KNOWN reading names",
     sorted(k for k in ("last_hp", "last_pct", "last_target")
            if k in row(_srows, 0)), [])
 
+# ---- ACROSS A RECONNECT. A server restart kills the sid, the socket
+# reconnects, and the restarted shard does not resume an occurrence already
+# started - so a live event boss vanishes and reads as a death. Measured
+# 2026-10-24 23:02Z: EU horseman "deaths" at 87%, 82%, 50% and 0.36% two
+# minutes into the window. The poller MARKS a terminal whose boss was last seen
+# alive on an earlier socket; it never vetoes, because a kill during a dropped
+# socket reads the same.
+def _rc_run(session_at):
+    lf = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); lf.close()
+    bw = b.BossWatch(["franky"], enabled=False, events_path=lf.name)
+    _poll(bw, 1000, [_ICE("r0")])
+    _poll(bw, 1045, [_ICE("r1"), _ent("franky", 120000000, "x1")])
+    _poll(bw, 1090, [_ICE("r2"), _ent("franky", 100000000, "x2")])
+    if session_at is not None:
+        bw._session_t[("EU", "IV")] = float(session_at)
+    for i, t in enumerate((1135, 1180, 1225)):
+        _poll(bw, t, [_ICE("r%d" % (i + 3))])
+    return [r for r in _rows(lf.name) if r["type"] == "franky"]
+
+_rcY = _rc_run(1100)     # socket reopened AFTER the last alive sighting
+_rcN = _rc_run(900)      # one socket throughout
+_rcU = _rc_run(None)     # aldata mode: no socket at all
+# PRECONDITION: each run ends in a death, not a despawn - ~180s elapsed is
+# nowhere near franky's 2400s window - so the field is read off the right row.
+chk("reconnect: every run ends in a death",
+    [byev(r, "death").get("ev") for r in (_rcY, _rcN, _rcU)],
+    ["death", "death", "death"])
+chk("reconnect: a boss last seen on an earlier socket is marked",
+    byev(_rcY, "death").get("across_reconnect"), True)
+chk("reconnect: and the row says when the reporting socket opened",
+    byev(_rcY, "death").get("socket_opened"), b.iso(1100.0))
+chk("reconnect: one socket throughout is NOT marked",
+    byev(_rcN, "death").get("across_reconnect"), False)
+# None and False are different answers: no socket means unknown, and a
+# planner filtering on True must not read aldata rows as cleared.
+chk("reconnect: no socket is unknown, emitted as a key holding None",
+    ("across_reconnect" in byev(_rcU, "death"),
+     byev(_rcU, "death").get("across_reconnect")), (True, None))
+chk("reconnect: a mark is not a veto - the marked row is still a death",
+    [r["ev"] for r in _rcY], [r["ev"] for r in _rcN])
+chk("reconnect: the despawn row carries the key too",
+    "across_reconnect" in byev(_rB, "despawn"), True)
+
+# The handler is where the map is filled, from the client that delivered the
+# push. A payload with no boss keys still records it.
+import types as _types
+_srvR = {"region": "EU", "name": "I", "address": "x", "path": "/"}
+_bwR = b.BossWatch(["franky"], enabled=False)
+_bwR.clients.append(_types.SimpleNamespace(server=_srvR, session_t=4321.0))
+_bwR._on_server_info(_srvR, {"schedule": {}, "event_flags": {}})
+chk("reconnect: the handler records the delivering socket's open time",
+    _bwR._session_t.get(("EU", "I")), 4321.0)
+_srvR2 = dict(_srvR, name="II")
+_bwR._on_server_info(_srvR2, {"schedule": {}, "event_flags": {}})
+chk("reconnect: a server with no client of its own records nothing",
+    ("EU", "II") in _bwR._session_t, False)
+chk("reconnect: the client stamps the time AFTER the namespace connect",
+    _MBSRC.index('self.session_t = now()') >
+    _MBSRC.index('self._post(self._url(sid), "40"'), True)
+
+# The reader: True only, so None and False both pass a filter.
+chk("reconnect: stored_row_across_reconnect is True only for True",
+    [b.stored_row_across_reconnect({"across_reconnect": v})
+     for v in (True, False, None)] + [b.stored_row_across_reconnect({})],
+    [True, False, False, False])
+_lfR = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False); _lfR.close()
+_write(_lfR.name, [dict(_KILL, across_reconnect=True), dict(_KILL),
+                   dict(_KILL, across_reconnect=False)])
+_hR = [r for r in (b.boss_history(_lfR.name, want_type="franky") or {}).get("history") or []
+       if r.get("type") == "franky"]
+chk("reconnect: history counts the marked kill INSIDE kills_logged",
+    (_hR[0].get("kills_logged") if _hR else None), 3)
+chk("reconnect: and beside it, so the number to subtract is visible",
+    (_hR[0].get("kills_across_reconnect") if _hR else None), 1)
+
 print(f"PASS {len(PASS)}   FAIL {len(FAIL)}")
 for n, g, w in FAIL: print(f"  FAIL {n}: got {g!r} want {w!r}")
 sys.exit(1 if FAIL else 0)

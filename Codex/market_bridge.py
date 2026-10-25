@@ -781,6 +781,16 @@ def despawn_qualifies(mtype, elapsed_sec, last_pct) -> bool:
     return not (early and damaged)
 
 
+def stored_row_across_reconnect(d: dict) -> bool:
+    """True only for a terminal row the poller marked as spanning a reconnect.
+
+    A MARK, not a classification: a server restart wipes a live event boss and
+    reads as a death, and a real kill during a dropped socket reads the same.
+    None (aldata mode, or a row written before the field existed) is unknown
+    and returns False - a planner wanting to drop suspects drops only these."""
+    return d.get("across_reconnect") is True
+
+
 def stored_despawn_row_rejected(d: dict):
     """For a row ALREADY written `ev: "despawn"`: would the current rule refuse it?
 
@@ -2179,6 +2189,7 @@ def boss_history(path, want_type=None, want_server=None, since=None,
         a = agg.setdefault(k, {
             "type": mtype, "server": server, "kills_logged": 0, "spawns": 0,
             "lost": 0, "despawns": 0, "despawns_reclassified": 0,
+            "kills_across_reconnect": 0,
             "despawns_reclassified_low": 0,
             "ttks": [], "ttk_hi": [], "ttk_upper_no_spawn": 0, "last_kill_t": None,
             "last_spawn_t": None, "last_despawn_t": None,
@@ -2218,6 +2229,11 @@ def boss_history(path, want_type=None, want_server=None, since=None,
                 a["last_despawn_t"] = t
         elif ev == "death":
             a["kills_logged"] += 1
+            # Counted INSIDE kills_logged and beside it, so the number a
+            # planner subtracts is visible without changing what the total
+            # has always meant.
+            if stored_row_across_reconnect(d):
+                a["kills_across_reconnect"] += 1
             c = "high" if d.get("confidence") == "high" else "low"
             a["confidence_counts"][c] += 1
             if t and (a["last_kill_t"] is None or t > a["last_kill_t"]):
@@ -2481,6 +2497,9 @@ class ServerInfoClient(threading.Thread):
         self.on_event = on_event
         self._stop = stop_evt
         self.connected = False
+        # When the socket delivering the current pushes opened. A server
+        # restart invalidates the sid, so it always lands as a reconnect.
+        self.session_t = 0.0
         self.events = 0
         self.last_event = 0.0
         self.last_error: str | None = None
@@ -2535,6 +2554,7 @@ class ServerInfoClient(threading.Thread):
             raise RuntimeError("no sid in handshake")
         # socket.io CONNECT on the default namespace.
         self._post(self._url(sid), "40", SI_HTTP_TIMEOUT)
+        self.session_t = now()
         self.connected = True
         read_to = (float(ping_timeout or 12000) / 1000.0) + SI_READ_SLACK
 
@@ -2723,6 +2743,10 @@ class BossWatch:
         self.clients: list = []
         self.servers: list = []
         self._seeded_servers: set = set()   # per server, not per process
+        # (region, ident) -> when the socket that delivered that server's
+        # latest push opened. server_info only; absent in aldata mode, where a
+        # terminal row's across_reconnect is then None (unknown), never False.
+        self._session_t: dict = {}
         self._last_poll_t = 0.0
         self.types = list(types)
         self.interval = max(5, int(interval))
@@ -2798,7 +2822,10 @@ class BossWatch:
             k = self._record(e)
             if k:
                 seen.add(k)
+        client = next((c for c in self.clients if c.server is server), None)
         with self.lock:
+            if client is not None and client.session_t:
+                self._session_t[key] = client.session_t
             for k, m in self.meta.items():
                 if (k[1], k[2]) == key:
                     m["present"] = k in seen
@@ -3320,6 +3347,19 @@ class BossWatch:
                     # Before either terminal emit, so the log reads
                     # closing-sample then terminal.
                     self._hp_final(f, key, server, poll_t)
+                    # ACROSS A RECONNECT: the boss was last seen alive on an
+                    # EARLIER socket than the one now reporting it gone. A
+                    # server restart always lands this way - the old sid dies
+                    # with the process - and a restarted shard does not resume
+                    # an occurrence already started, so its boss simply
+                    # vanishes. Measured 2026-10-24 23:02Z: EU I-IV horseman
+                    # "deaths" at 87%, 82%, 50% and 0.36% two minutes into the
+                    # window. A kill landing during a network blip reads the
+                    # same, so this MARKS and never vetoes - the 0.36% may
+                    # well have been real.
+                    sess = self._session_t.get((region, ident))
+                    across = (bool((f.get("last_alive_t") or 0.0) < sess)
+                              if sess else None)
                     despawned = bool(
                         er is None and not dead_reported and win
                         and elapsed is not None
@@ -3364,6 +3404,8 @@ class BossWatch:
                                 if f.get("spawn_exact") else None),
                             "reason": "event window closed; absent from a "
                                       "responding server with no respawn estimate",
+                            "across_reconnect": across,
+                            "socket_opened": iso(sess) if sess else None,
                             "poll_gap_sec": round(gap),
                             "confidence": despawn_confidence(f.get("last_pct"))})
                     else:
@@ -3408,6 +3450,8 @@ class BossWatch:
                             "ttk_exact_upper_sec": (
                                 round(poll_t - f["spawn_exact"], 1)
                                 if f.get("spawn_exact") else None),
+                            "across_reconnect": across,
+                            "socket_opened": iso(sess) if sess else None,
                             "poll_gap_sec": round(gap), "confidence": dconf})
                 self.fights[key] = {
                     "alive": False, "id": None, "spawn_t": None,

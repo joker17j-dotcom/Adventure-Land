@@ -563,9 +563,14 @@ character tab, with the operator's go-ahead for a disruptive test hop.
   2026-10-24 12:16-12:17 EDT on US II: MageofOz reloaded (`location.reload`),
   and ~45s later - past the 10-30s lag a real hop shows - all three read no
   `realmfatigue` and no `hopsickness`. So "engage a slot, then reload" is a free
-  hand-back at home. The same reload on a FOREIGN shard is unmeasured
-  (`serverhop_logic`'s same-shard early return says no Hop Sickness; Realm
-  Fatigue unknown).
+  hand-back at home.
+- **A SAME-SHARD RELOAD ON A FOREIGN SHARD RESTAMPS NEITHER CONDITION EITHER.**
+  Measured by the browser session 2026-10-25 03:40-03:43Z. Hop Sickness came
+  back short by a constant 2.4s, which is the time spent offline: it does not
+  tick then, and it was not reset. Realm Fatigue took one top-up of 26.5s and
+  then went on falling 1:1. Neither returned to full. Back on home, Hop Sickness
+  cleared and Realm Fatigue stayed, as after a real hop. So a reload while away
+  costs a few seconds, not a fresh 12 or 30 minutes.
 - **So Realm Fatigue is the cheap half.** It blocks home bonuses and kiss
   rewards only, the home bonus does not apply off-home anyway, and it does not
   scale with how many shards get visited - its whole cost is delaying the home
@@ -2813,6 +2818,23 @@ time on 2026-10-18.
   correction, so the COINCIDENCE between them is preserved even though neither
   value is right. A retraction that scales both sides of a comparison equally
   leaves the comparison standing.
+- **A SERVER RESTART LOGS A LIVE EVENT BOSS AS A DEATH, SO THOSE ROWS ARE
+  MARKED.** Measured by the browser session: the EU horseman spawned 23:00:02Z
+  on 2026-10-24, the shards restarted, and "deaths" followed at 23:02-23:03Z at
+  87.2%, 81.9%, 50.0% and 0.36% (EU I-IV; EU PVP at 100% at 23:09:47). They
+  were written as `absent_on_responding_server` deaths. A restart kills the
+  socket's sid, so the bridge always reconnects, and the restarted shard does
+  not restart an occurrence that had already begun. Since 2026-10-25 every
+  `death` and `despawn` row carries `across_reconnect`: true when the boss was
+  last seen alive on an EARLIER socket than the one reporting it gone, false on
+  one socket, null in aldata mode or on older rows. `socket_opened` says when
+  the reporting socket opened. **IT MARKS AND DOES NOT VETO**, because a kill
+  during a dropped socket looks the same - the 0.36% may have been real.
+  `boss_history` counts `kills_across_reconnect` inside `kills_logged` and
+  beside it; `stored_row_across_reconnect()` is the filter. Whether planners
+  drop these rows is the operator's call. The reconnect at 23:02 comes from
+  source, not from a measurement: the bridge console's first-failure line or
+  `/bosses` `sockets` would confirm it on the next restart.
 - **`taxiProbeNote` AND `bossRank` BEGAN EXECUTING 2026-10-19**, when Dexon was
   measured byte-identical to committed v97; until then he ran `Party/Mage.js` out of
   the Ranger slot and neither had ever run. Kept because the entry above was answered
