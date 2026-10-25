@@ -2791,8 +2791,70 @@ module.exports = [
 	const p = fs.readFileSync(path.join(ROOT, 'Party/Priest.js'), 'utf8');
 	t.ok('the priest loot line needs its fields', /if \(data\.opener !== undefined && data\.goldm !== undefined\) \{\n\t\t\tconsole\.log/.test(p));
 	const m = fs.readFileSync(path.join(ROOT, 'Party/Merchant.js'), 'utf8');
-	t.ok('the merge line is throttled', /if \(Date\.now\(\) - arbMergeSaidAt >= 600000\) \{ arbMergeSaidAt = Date\.now\(\); pLog\(m\.rows\.length/.test(m));
+	t.ok('the merge line is throttled', /if \(Date\.now\(\) - arbMergeSaidAt >= 600000\) \{\n\t\tarbMergeSaidAt = Date\.now\(\);/.test(m));
+	t.ok('and reaches the file only when the answering sources change', /bannerEmit\('merge', shape, \(\) => pLog\(m\.rows\.length/.test(m));
 } },
+{ name: 'v152 a whitelist sale is sent only where a merchant npc is in reach (Ranger and Mage)', fn(t) {
+	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
+	const MAGE = 'Party/Mage.js';
+	t.eq('sellerInReach is the ranger’s in the mage, byte for byte', extract(MAGE, 'sellerInReach') === extract(RANGER, 'sellerInReach'), true);
+	t.eq('the priest has no whitelist sale to gate', /function sellItems/.test(fs.readFileSync(path.join(ROOT, 'Party/Priest.js'), 'utf8')), false);
+	/* EVERY BARE sell() IN THE TWO FILES, comments stripped: the ranger's
+	   sellItems and its relief run (which walks to a vendor first), the mage's
+	   sellItems. A new ungated sale fails here rather than printing "Get
+	   closer" every two seconds in the live game. */
+	const bare = (s) => {
+		const code = s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+		return (code.match(/(^|[^\w.$])sell\(/g) || []).length;
+	};
+	t.eq('ranger: two bare sell() calls and no more', bare(fs.readFileSync(path.join(ROOT, RANGER), 'utf8')), 2);
+	t.eq('mage: one', bare(fs.readFileSync(path.join(ROOT, MAGE), 'utf8')), 1);
+	for (const f of [RANGER, MAGE]) {
+		const body = extract(f, 'sellItems');
+		t.ok(f + ': sellItems asks sellerInReach before the loop', body.indexOf('if (!sellerInReach()) return;') > 0
+			&& body.indexOf('if (!sellerInReach()) return;') < body.indexOf('for (let i'));
+	}
+
+	const G = {
+		npcs: { pots: { items: ['hpot1'] }, guard: {}, thief: { items: ['licence'] }, wbartender: { items: ['elixirluck'] } },
+		items: { pstem: {}, stramulet: {} },
+		maps: {
+			main: { npcs: [{ id: 'pots', position: [0, 0] }, { id: 'guard', position: [1000, 0] },
+				{ id: 'thief', positions: [[2000, 0], [3000, 0]] }] },
+			winter_inn: { npcs: [{ id: 'wbartender', position: [-143, -220] }] },
+			bank: { npcs: [{ id: 'guard', position: [0, 0] }] },
+		},
+	};
+	const sw = (file, map, x, y) => {
+		const sold = [];
+		const w = world({
+			G, character: { map, x, y, items: [{ name: 'pstem', q: 3 }, null, { name: 'stramulet' }] },
+			CONFIG: { selling: { enabled: true, whitelist: ['pstem', 'stramulet'] } },
+			sell: (i) => { sold.push(i); }, totBusy: false, VENDOR_REACH: 380,
+			SELL_WHITELIST: new Set(['pstem', 'stramulet']),
+			isExchangeable: () => false, isScarceItem: () => false, isCostumeItem: () => false, isCipherIngredient: () => false,
+		});
+		w.sold = sold;
+		lift(w, file, ['sellerInReach', 'sellItems']);
+		return w;
+	};
+	t.eq('379 from a merchant npc is in reach', sw(RANGER, 'main', 379, 0).sellerInReach(), true);
+	t.eq('381 is not', sw(RANGER, 'main', 381, 0).sellerInReach(), false);
+	t.eq('an npc with no items is not a merchant', sw(RANGER, 'main', 1000, 0).sellerInReach(), false);
+	t.eq('nor is one listed by positions[] - the server’s merchants list skips it', sw(RANGER, 'main', 2000, 0).sellerInReach(), false);
+	t.eq('a merchant on another map does not count - its coordinates, this map', sw(RANGER, 'bank', -143, -220).sellerInReach(), false);
+	t.eq('but on its own map it does', sw(RANGER, 'winter_inn', -143, -220).sellerInReach(), true);
+	t.eq('a map with no npcs is not in reach', sw(RANGER, 'desertland', 0, 0).sellerInReach(), false);
+	for (const f of [RANGER, MAGE]) {
+		let w = sw(f, 'spookytown', 0, 0);
+		w.sellItems();
+		t.eq(f + ': away from a merchant nothing is sent', w.sold.length, 0);
+		w = sw(f, 'main', 10, 10);
+		w.sellItems();
+		t.eq(f + ': beside one the whitelist sells', JSON.stringify(w.sold), '[0,2]');
+	}
+} },
+
 { name: 'v141 a buy is sent only where that item’s vendor is in reach', fn(t) {
 	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
 	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');

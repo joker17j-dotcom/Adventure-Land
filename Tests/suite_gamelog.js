@@ -14,7 +14,7 @@ const block = (f) => {
 	return (a >= 0 && b > a) ? s.slice(a, b) : null;
 };
 const FNS = ['GAMELOG', 'gamelogPageSource', 'gamelogInstall', 'gamelogMarkScript', 'gamelogName',
-	'gamelogRestore', 'gamelogPost', 'gamelogFlush', 'gamelogStatus'];
+	'gamelogRestore', 'gamelogPost', 'gamelogFlush', 'gamelogStatus', 'gamelogScreenOnly', 'gamelogQuietly', 'gamelogFileOnChange'];
 
 /* A page with the game's add_log, its own localStorage, and a pagehide hook we
    can fire. pageFn false makes the page refuse its Function, as a strict CSP
@@ -83,12 +83,12 @@ module.exports = [
 	const { w, pg } = mk();
 	const st = w.gamelogInstall();
 	t.eq('built in the page realm', st.realm, 'page');
-	pg.P.add_log('Path not found!', 'red');
-	t.eq('the game still shows the line', pg.shown, [['Path not found!', 'red']]);
+	pg.P.add_log('Moving to the bank', 'red');
+	t.eq('the game still shows the line', pg.shown, [['Moving to the bank', 'red']]);
 	const l = st.buf[0] || {};
 	t.eq('captured with its fields',
 		[l.character, l.server, l.map, l.color, l.message, l.source, l.seq],
-		['Dexon', 'USII', 'main', 'red', 'Path not found!', 'game', 1]);
+		['Dexon', 'USII', 'main', 'red', 'Moving to the bank', 'game', 1]);
 	t.ok('stamped with the page start and a send time', typeof l.page === 'number' && typeof l.t_script === 'number');
 	pg.P.add_log({ a: 1 }, null);
 	t.eq('an object message is stored as JSON, as add_log itself does', st.buf[1].message, '{"a":1}');
@@ -213,6 +213,166 @@ module.exports = [
 	o.w.gamelogInstall();
 	await o.w.gamelogFlush();
 	t.eq('another character never sends Dexon\'s backlog', 'gamelog_unsent_Dexon' in other.ls, true);
+} },
+
+{ name: 'pathfinder lines become one count row a minute; the screen still shows them', async fn(t) {
+	const { w, pg } = mk();
+	const st = w.gamelogInstall();
+	w.game_log = function (m, c) { pg.P.add_log(m, c); };
+	w.gamelogMarkScript();
+	w.game_log('Searching for a path...', 'gray');
+	pg.P.add_log('Path found!', 'gray');
+	w.game_log('Searching for a path...', 'gray');
+	pg.P.add_log('Path not found!', 'gray');
+	pg.P.add_log('Lost the path...', 'gray');
+	t.eq('all five reached the screen', pg.shown.length, 5);
+	t.eq('only the line no ruling names is kept', st.buf.map((l) => l.message), ['Lost the path...']);
+	t.ok('precondition: a minute is open', st.win.start > 0);
+	t.eq('it does not close early', await w.gamelogFlush(), 'sent');
+	t.eq('nothing summarised yet', st.sent, 1);
+	const start = st.win.start - 61000;
+	st.win.start = start;
+	await w.gamelogFlush();
+	t.eq('a flush closes the spent minute and sends it', st.sent, 2);
+	t.eq('and the window is reset', st.win.start, 0);
+	const posted = [];
+	const b = mk({ fetch: async (u, o) => { posted.push(...JSON.parse(o.body).lines); return { json: async () => ({ ok: true }) }; } });
+	const st2 = b.w.gamelogInstall();
+	b.pg.P.add_log('Searching for a path...', null);
+	b.pg.P.add_log('Path not found!', null);
+	st2.win.start -= 61000;
+	await b.w.gamelogFlush();
+	const r = posted[0] || {};
+	t.eq('one summary row', [posted.length, r.source, r.kind], [1, 'summary', 'pathfinder_minute']);
+	t.eq('counting each kind', r.pathfinder, { searching: 1, found: 0, not_found: 1 });
+	t.eq('readable as a line', r.message, '[minute] pathfinder: searching 1, found 0, not found 1');
+	t.eq('the window is the minute, not the time it was noticed', r.window_end - r.window_start, 60000);
+	t.eq('with the usual fields', [r.character, r.server], ['Dexon', 'USII']);
+} },
+
+{ name: 'kills and loot gold from the game become one row a minute; ours and "Received" do not', async fn(t) {
+	const posted = [];
+	const { w, pg } = mk({ fetch: async (u, o) => { posted.push(...JSON.parse(o.body).lines); return { json: async () => ({ ok: true }) }; } });
+	const st = w.gamelogInstall();
+	w.game_log = function (m, c) { pg.P.add_log(m, c); };
+	w.gamelogMarkScript();
+	st.capture('10:01:02 | MageofOz killed a Goo', 'gray', 'game');       // the party filter's path
+	pg.P.add_log('You killed a Goo', 'gray');                             // the game's own path
+	st.capture('10:01:04 | Dexon killed an Arctic Bee', 'gray', 'game');
+	st.capture('10:01:05 | FatherToken killed the Franky', 'gray', 'game');
+	st.capture('10:01:06 | 1,234 gold', 'gold', 'game');
+	pg.P.add_log('66 gold', 'gold');
+	st.capture('10:01:07 | Received 5,000 gold', 'gold', 'game');
+	w.game_log('Dexon killed a franky after 20 min', 'white');            // our own line
+	t.eq('kept: the muled gold and our own line', st.buf.map((l) => l.message),
+		['10:01:07 | Received 5,000 gold', 'Dexon killed a franky after 20 min']);
+	await w.gamelogFlush();
+	posted.length = 0;
+	st.win.start -= 61000;
+	await w.gamelogFlush();
+	const r = posted[0] || {};
+	t.eq('one party row', [posted.length, r.kind, r.source], [1, 'party_minute', 'summary']);
+	t.eq('each monster with its count', r.kills, { Goo: 2, 'Arctic Bee': 1, Franky: 1 });
+	t.eq('and the gold as one total', [r.gold, r.gold_drops], [1300, 2]);
+	t.eq('readable as a line', r.message, '[minute] kills: Arctic Bee 1, Franky 1, Goo 2 | loot gold 1300 (2 drops)');
+} },
+
+{ name: 'a minute closes before the line that falls outside it, and a hop writes the open one', fn(t) {
+	const { w, pg } = mk();
+	const st = w.gamelogInstall();
+	st.capture('Dexon killed a Goo', 'gray', 'game');
+	st.win.start -= 61000;
+	st.capture('Dexon killed a Bee', 'gray', 'game');
+	t.eq('the old minute was written first', st.buf.map((l) => l.kills), [{ Goo: 1 }]);
+	t.eq('and the new line opened the next one', st.win.kills, { Bee: 1 });
+	pg.hooks.pagehide();
+	const saved = JSON.parse(pg.ls.gamelog_unsent_Dexon || '[]');
+	t.eq('the hop saved the open minute too, cut short', saved.map((l) => l.kills), [{ Goo: 1 }, { Bee: 1 }]);
+	t.ok('its window ends at the hop', saved[1].window_end - saved[1].window_start < 60000);
+} },
+
+{ name: 'gamelogScreenOnly shows a line and keeps it out of the file', fn(t) {
+	const { w, pg } = mk();
+	const st = w.gamelogInstall();
+	w.game_log = function (m, c) { pg.P.add_log(m, c); };
+	w.gamelogMarkScript();
+	w.gamelogScreenOnly('Absorbing MageofOz', '#FFA600');
+	w.game_log('kept', 'white');
+	t.eq('on screen, both', pg.shown.map((x) => x[0]), ['Absorbing MageofOz', 'kept']);
+	t.eq('in the file, only the ordinary one', st.buf.map((l) => l.message), ['kept']);
+	w.game_log = function () { throw new Error('boom'); };
+	let threw = false;
+	try { w.gamelogScreenOnly('x', null); } catch (e) { threw = true; }
+	t.eq('a throwing game_log still clears the flag', [threw, st.quiet], [true, false]);
+} },
+
+{ name: 'gamelogFileOnChange keeps a matching line only when its text changed, across hops, per character', fn(t) {
+	const { w, pg } = mk();
+	const st = w.gamelogInstall();
+	t.eq('registered', w.gamelogFileOnChange('hopsick', 'Hop Sickness'), true);
+	pg.P.add_log('You are affected by Hop Sickness - Home: US II', 'gray');
+	pg.P.add_log('09:00:01 | You are affected by Hop Sickness - Home: US II', 'gray');
+	pg.P.add_log('something else', 'gray');
+	pg.P.add_log('You are affected by Hop Sickness - Home: EU I', 'gray');
+	t.eq('first and changed kept; the repeat (timestamp aside) dropped', st.buf.map((l) => l.message),
+		['You are affected by Hop Sickness - Home: US II', 'something else', 'You are affected by Hop Sickness - Home: EU I']);
+	t.eq('the screen saw all four', pg.shown.length, 4);
+	t.ok('remembered in the page storage, by character', /EU I/.test(pg.ls.gamelog_seen_Dexon || ''));
+	/* The next page: same storage. */
+	const next = page();
+	Object.assign(next.ls, pg.ls);
+	const n = mk({ page: next });
+	const st2 = n.w.gamelogInstall();
+	n.w.gamelogFileOnChange('hopsick', 'Hop Sickness');
+	next.P.add_log('You are affected by Hop Sickness - Home: EU I', 'gray');
+	t.eq('after a hop the unchanged line is still dropped', st2.buf.length, 0);
+	next.P.character.name = 'Meltymerch';
+	next.P.add_log('You are affected by Hop Sickness - Home: EU I', 'gray');
+	t.eq('another character keeps its own memory', st2.buf.length, 1);
+	t.eq('a bad pattern registers nothing', w.gamelogFileOnChange('bad', '('), false);
+} },
+
+{ name: 'a page state from an older build is rebuilt, keeping its lines, its rules and the screen path', fn(t) {
+	const pg = page();
+	const gameAddLog = pg.P.add_log;
+	/* The v1 shape: page realm, no v, no roll. */
+	const oldSt = { realm: 'page', buf: [{ message: 'old line' }], dropped: 0, seq: 1, orig: gameAddLog,
+		capture() { oldSt.buf.push({ message: 'captured by v1' }); } };
+	pg.P.add_log = function (m, c) { oldSt.capture(m, c); return gameAddLog.apply(this, arguments); };
+	pg.P.add_log.__gamelog = true;
+	pg.P.__gamelog = oldSt;
+	const { w } = mk({ page: pg });
+	const st = w.gamelogInstall();
+	t.ok('rebuilt', st !== oldSt && st.v === w.GAMELOG.v);
+	t.eq('carrying the old lines', st.buf.map((l) => l.message), ['old line']);
+	t.eq('and emptying the old buffer so its unload handler saves nothing', oldSt.buf.length, 0);
+	pg.P.add_log('new', 'white');
+	t.eq('one capture per line, by the new state', st.buf.map((l) => l.message), ['old line', 'new']);
+	t.eq('the new wrapper sits on the game\'s add_log', st.orig === gameAddLog, true);
+	t.eq('a current one is reused', w.gamelogInstall() === st, true);
+	w.gamelogFileOnChange('x', '^banner');
+	st.v = 1;                                     // pretend the next build moved on
+	const st3 = w.gamelogInstall();
+	t.ok('rules are carried across a rebuild', st3 !== st && !!st3.rules.x);
+	t.eq('status reports the build and the rules', [w.gamelogStatus().v, w.gamelogStatus().changeRules], [w.GAMELOG.v, ['x']]);
+} },
+
+{ name: 'FatherToken\'s chest, luck and absorb lines are screen-only; nothing else is', fn(t) {
+	const p = text('Party/Priest.js');
+	for (const re of [/gamelogScreenOnly\(`Absorbing \$\{entity\.target\}`, '#FFA600'\)/,
+		/const msg = `\$\{mobName\} died with \$\{luckDisplay\} luck`;[\s\S]{0,200}?gamelogScreenOnly\(msg, '#96a4ff'\)/,
+		/gamelogScreenOnly\(`\$\{data\.opener\} looted chest goldm: \$\{data\.goldm\}`, 'gold'\)/]) t.ok('priest: ' + re.source.slice(0, 40), re.test(p));
+	for (const re of [/game_log\(`Absorbing/, /game_log\(msg, '#96a4ff'\)/, /game_log\(`\$\{data\.opener\} looted chest/])
+		t.eq('no game_log() of it is left: ' + re.source.slice(0, 30), re.test(p), false);
+	/* Outside the shared block, only the priest and the merchant use the
+	   quiet path - so a new caller has to be a decision. */
+	for (const f of FILES) {
+		const s = text(f);
+		const a = s.indexOf('// === GAMELOG BEGIN ==='), b = s.indexOf('// === GAMELOG END ===');
+		const outside = s.slice(0, a) + s.slice(b);
+		const n = (outside.match(/gamelogScreenOnly\(|gamelogQuietly\(/g) || []).length;
+		t.eq(f + ': quiet calls outside the block', n, { 'Party/Priest.js': 3, 'Party/Merchant.js': 1 }[f] || 0);
+	}
 } },
 
 { name: 'status reads the page state without building it', fn(t) {

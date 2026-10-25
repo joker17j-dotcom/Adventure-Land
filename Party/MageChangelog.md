@@ -21,6 +21,40 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v108
+
+**`sellItems()` SELLS ONLY BESIDE A MERCHANT NPC** - `sellerInReach()`, byte for
+byte the ranger's: an npc with a single `position` and an `items` list, within 380
+of the server's 400. The browser session traced Dexon's "Get closer" flood on
+2026-10-25 to `sellItems()` selling the whitelist wherever he stood - 389 of 389
+refusals `{place: 'sell', reason: 'distance'}` in 14 minutes. The mage's
+`sellItems()` has the same shape and had no gate either. The mage wrote 1 such
+line in the same review, and why it was quiet was not checked. The whitelist now waits
+in the bag until the next town visit.
+
+**THE GAME-LOG FILE STOPS TAKING FOUR KINDS OF LINE ONE BY ONE** - the operator's
+rulings of 2026-10-25, in the GAMELOG block shared by all five scripts (`v: 2`).
+The screen is untouched; only the file changes.
+- The pathfinder's "Searching for a path...", "Path found!" and "Path not found!"
+  become one `[minute] pathfinder` row a minute, with a count of each. They arrive
+  as `script` lines, so they are counted whatever their source. "Lost the path..."
+  is not one of the three and is still kept line by line.
+- The game's "<X> killed a <Y>" and "N gold" lines become one `[minute] kills` row
+  a minute per character: each monster with its count, and the window's loot gold
+  as one total plus the number of drops. Only lines the GAME wrote are summarised;
+  our own `game_log()` and "Received N gold" are kept as they are. The row carries
+  `kind`, `window_start`, `window_end`, `kills`, `gold` and `gold_drops`, which the
+  bridge files under `extra`.
+- The open minute is written out on `pagehide`, so a hop or a reload loses none
+  of it, and each flush closes a minute that has run out.
+- `gamelogScreenOnly()` / `gamelogQuietly()` show a line and keep it out of the
+  file; `gamelogFileOnChange(name, source)` keeps a matching line only when its
+  text changed since the last one kept under that name, remembered per character
+  across hops in `gamelog_seen_<name>`.
+A page state left by an older build is now rebuilt on the next load (`v`), with
+its lines, its open minute and its rules carried over; until now a page-realm
+state was reused as it was, so a runner restart would have kept the old capture.
+
 ## v107
 
 **ONE RETREAT TAKES THE PARTY OUT OF THE RAGE BOX, AND HOLDS IT OUT FOR 60s.**

@@ -285,6 +285,7 @@ name: 'the bank sources compound triples, and only ones the compounder will take
 			},
 			sleep: async () => {},
 			game_log: () => {},
+			bannerEmit: (n, v, emit) => emit(),   // the file-on-change gate; tested in suite_gamelog
 			arbHeldNames: () => over.held || {},
 			PARTY_CLASSES: over.plan ? ['priest'] : [],
 			GEAR_PROGRESSION: over.plan || {},
@@ -429,6 +430,7 @@ function ceilWorld(over) {
 			calculate_item_value: () => 30000,
 		},
 		game_log: (m) => calls.logs.push(m),
+		bannerEmit: (n, v, emit) => emit(),   // the file-on-change gate; tested in suite_gamelog
 		api_call: over.api_call || (async () => ({ packs: over.bankPacks || { items0: [] } })),
 		atTownSpot: () => over.atTown !== false,
 		sell: async (i) => { if (over.sellFails) throw new Error('too_far'); calls.sold.push(i); },
@@ -609,5 +611,94 @@ module.exports.push(
 	const s = text();
 	t.ok('the never-sell set still names dexbelt - the exception is carved, not widened',
 		/const PROTECTED_ITEM_NAMES = new Set\(\[[\s\S]*?'dexbelt', 'intbelt',/.test(s));
+} },
+);
+
+/* THE PAGE-LOAD BANNER AND THE GEAR-PLAN OVERRIDES - operator's rulings
+   2026-10-25 (Merchant v134). */
+function bannerWorld(store) {
+	const logs = [];
+	const gl = { quiet: false };
+	const w = world({
+		get: (k) => (k in store ? JSON.parse(store[k]) : null),
+		set: (k, v) => { store[k] = JSON.stringify(v); },
+		game_log: (m) => logs.push([m, gl.quiet]),
+		parent: { __gamelog: gl },
+		BANNER_KEY: 'merch_banner', GV_OVERRIDE_SAID_KEY: 'gv_override_said',
+	});
+	w.bannerSeen = null;
+	w.gvOverrideSaid = null;
+	w.logs = logs;
+	lift(w, MERCHANT, ['gamelogQuietly', 'bannerChanged', 'bannerEmit', 'gvOverrideNote']);
+	return w;
+}
+module.exports.push(
+{ name: 'banner lines reach the file only when their state changed, across hops; the screen always', fn(t) {
+	const s = text();
+	for (const k of ["const BANNER_KEY = 'merch_banner';", "const GV_OVERRIDE_SAID_KEY = 'gv_override_said';",
+		'let bannerSeen = null;', 'let gvOverrideSaid = null;']) t.ok('the world supplies what the source declares: ' + k, s.indexOf('\n' + k + '\n') >= 0);
+	const store = {};
+	let w = bannerWorld(store);
+	w.bannerEmit('link', 'up', () => w.game_log('[link] bridge up'));
+	w.bannerEmit('link', 'up', () => w.game_log('[link] bridge up'));
+	w.bannerEmit('link', 'down', () => w.game_log('[link] bridge unreachable'));
+	t.eq('first to the file, repeat to the screen only, the change to the file',
+		w.logs.map((l) => l[1]), [false, true, false]);
+	t.eq('and the flag is cleared after', w.parent.__gamelog.quiet, false);
+	w = bannerWorld(store);                      // the next page: fresh memory, same CODE storage
+	w.bannerEmit('link', 'down', () => w.game_log('[link] bridge unreachable'));
+	w.bannerEmit('scout', 'up', () => w.game_log('[scout] bridge up'));
+	t.eq('a hop does not forget the state; another name has its own', w.logs.map((l) => l[1]), [true, false]);
+
+	/* Every banner site goes through it, and the hop-sickness rule is
+	   registered after the GAMELOG block has run. */
+	t.ok('[link] up', /bannerEmit\('link', 'up', \(\) => plLog\('bridge up/.test(s));
+	t.ok('[link] down', /bannerEmit\('link', 'down', \(\) => plLog\(typeof fetch/.test(s));
+	t.ok('[scout] up and lost', /bannerEmit\('scout', 'up'/.test(s) && /bannerEmit\('scout', 'down'/.test(s));
+	t.ok('[ceiling] by its state, not its count', /bannerEmit\('ceiling:' \+ name, key, \(\) => ceilingLog/.test(s));
+	t.ok('[probe] merge by the answering sources', /bannerEmit\('merge', shape,/.test(s));
+	t.ok('the gear plan header and its items as one', /bannerEmit\('gearplan', key, \(\) => \{\n\t\tgame_log\('Gear plan handing/.test(s));
+	t.ok('the game\'s Hop Sickness line by a file rule', /gamelogFileOnChange\('hopsick', 'Hop Sickness'\)/.test(s));
+	t.ok('registered from a timer, after the block at the end of the file', /\nsetTimeout\(merchantLogRules, 0\);/.test(s)
+		&& s.indexOf('setTimeout(merchantLogRules, 0);') < s.indexOf('// === GAMELOG BEGIN ==='));
+} },
+
+{ name: 'gear plan: xhelmet, intamulet and intbelt resolve by the operator\'s overrides, logged once ever', fn(t) {
+	const s = text();
+	const m = /const PONTY_PRICED_ITEMS = new Set\(\[([\s\S]*?)\]\);/.exec(s);
+	const ponty = new Set(((m && m[1]) || '').match(/'[^']+'/g).map((x) => x.slice(1, -1)));
+	t.ok('intamulet and intbelt are Ponty-priced', ponty.has('intamulet') && ponty.has('intbelt'));
+	t.ok('xhelmet is NOT Ponty-priced - it takes the ask', !ponty.has('xhelmet'));
+	const store = {};
+	const mk = () => {
+		const w = bannerWorld(store);
+		Object.assign(w, {
+			PONTY_PRICED_ITEMS: ponty, VALUE_DIVERGENCE_LIMIT: 3,
+			scoutItemPrice: (it) => ({ xhelmet: 3840000, intamulet: 36000, intbelt: 60000, ringsj: 1000 })[it.name],
+			gtQuote: (rows, name) => ({ xhelmet: { ask: 40000000, bid: 20000000 }, intamulet: { ask: 475000 },
+				intbelt: { ask: 99999999999 }, ringsj: { ask: 900000 } })[name] || null,
+		});
+		lift(w, MERCHANT, ['GEAR_VALUE_OVERRIDES', 'GEAR_VALUE_FALLBACK', 'gvFallback', 'gvBaseValue']);
+		return w;
+	};
+	let w = mk();
+	t.eq('xhelmet: 40,000,000 by override', JSON.stringify(w.gvBaseValue('xhelmet', [])), '{"value":40000000,"src":"override"}');
+	t.eq('intamulet: its Ponty price', w.gvBaseValue('intamulet', []).value, 36000);
+	t.eq('intbelt: its Ponty price', w.gvBaseValue('intbelt', []).value, 60000);
+	t.eq('an item with no override still hands over when its anchors disagree',
+		[w.gvBaseValue('ringsj', []).value, /anchors disagree/.test(w.gvBaseValue('ringsj', []).src)], [null, true]);
+	t.eq('three override lines, one per item', w.logs.map((l) => l[0]), [
+		'[gear] xhelmet is valued by GEAR_VALUE_OVERRIDES at 40000000 - an operator override',
+		'[gear] intamulet is valued by the Ponty price at 36000 - an operator override',
+		'[gear] intbelt is valued by the Ponty price at 60000 - an operator override']);
+	w.gvBaseValue('xhelmet', []); w.gvBaseValue('intamulet', []);
+	t.eq('not again on the same page', w.logs.length, 3);
+	w = mk();
+	w.gvBaseValue('xhelmet', []); w.gvBaseValue('intbelt', []);
+	t.eq('nor on the next page', w.logs.length, 0);
+	store.gv_override_said = JSON.stringify({ xhelmet: 'the Ponty price' });
+	w = mk();
+	w.gvBaseValue('xhelmet', []);
+	t.eq('a change of route is logged again', w.logs.length, 1);
 } },
 );

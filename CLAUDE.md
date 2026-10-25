@@ -5594,6 +5594,23 @@ scrolling away.
   Mage v99 send a buy only where `vendorInReach()` finds that item's vendor
   within the server's 400. The pathfinder's "Searching for a path" lines are not
   ours to cut and are still open as a question.
+  **THE REST OF "Get closer" WAS SALES** - the browser session's recording on
+  Dexon, 2026-10-25: 389 of 389 `{place: 'sell', reason: 'distance'}`, from
+  `maintenanceLoop -> sellItems -> sell` selling the whitelist wherever he stood.
+  Ranger v152 / Mage v108 sell only where `sellerInReach()` finds a merchant npc
+  (an npc with a single `position` and `items`, the server's own rule).
+- **FOUR KINDS OF LINE STOPPED REACHING THE FILE ONE BY ONE ON 2026-10-25** -
+  operator's rulings, GAMELOG `v: 2` in all five scripts; the screen is unchanged.
+  The three pathfinder lines become one `[minute] pathfinder` count row; the
+  game's "<X> killed a <Y>" and "N gold" become one `[minute] kills` row per
+  character (monster counts and one gold total - the gold line names no monster);
+  FatherToken's chest, luck and absorb lines go through `gamelogScreenOnly()`; and
+  Meltymerch's page-load banner reaches the file only when its state changed
+  (`bannerEmit`, and `gamelogFileOnChange` for the game's Hop Sickness line). The
+  open minute is written on `pagehide`. **A summary row's `kills`, `gold` and
+  window fields sit under `extra`** in the file, because the bridge keeps only its
+  named fields at the top level. A page state from an older build is rebuilt on
+  the next load, so a deploy by runner restart takes the new capture too.
 - **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
   The wrapper and buffer are built with the PAGE's `Function`, so they outlive
   the CODE iframe. A failed POST leaves its lines in the buffer, and a hop

@@ -1,4 +1,51 @@
 
+## v134
+
+**THE PAGE-LOAD BANNER REACHES THE GAME-LOG FILE ONLY WHEN IT CHANGED** - the
+operator's ruling of 2026-10-25. He hops about every 19 seconds and each page
+wrote the same lines again, about 7,700 in two days. `bannerEmit(name, value,
+emit)` writes to the file when `value` differs from the last one written under
+`name`, kept in `merch_banner` so a hop does not forget it, and otherwise shows the
+line on screen only. Each site keeps its in-page gate, so the screen is as before.
+- `[link]` and `[scout]` bridge up or down, by state;
+- `[ceiling]` by its state (under, buying stopped, full), not by its count;
+- `[probe]` merge by which sources answered, since the counts move every read;
+- the gear plan's held list, header and items as one;
+- the game's own Hop Sickness line by a file rule, `merchantLogRules()`.
+
+**THE GEAR PLAN PRICES xhelmet, intamulet AND intbelt** - the same ruling. Their
+market anchors disagreed by more than 3x on every read for two days (xhelmet ask
+40,000,000 / bid 20,000,000 / Ponty 3,840,000, 2,570 lines; intamulet ask 475,000 /
+Ponty 36,000, 2,286; intbelt ask 99,999,999,999 / Ponty 60,000, 62), so each was
+handed over as `value_unknown: anchors disagree` on every page. intamulet and
+intbelt join `PONTY_PRICED_ITEMS`; xhelmet is `GEAR_VALUE_OVERRIDES` 40,000,000, the
+ask. Each item valued through either table is logged ONCE, ever (`[gear] <name> is
+valued by ...`, kept in `gv_override_said`), so the operator has the list to
+review; that includes the items already Ponty-priced. A change of route logs again.
+
+**THE GAME-LOG FILE STOPS TAKING FOUR KINDS OF LINE ONE BY ONE** - the operator's
+rulings of 2026-10-25, in the GAMELOG block shared by all five scripts (`v: 2`).
+The screen is untouched; only the file changes.
+- The pathfinder's "Searching for a path...", "Path found!" and "Path not found!"
+  become one `[minute] pathfinder` row a minute, with a count of each. They arrive
+  as `script` lines, so they are counted whatever their source. "Lost the path..."
+  is not one of the three and is still kept line by line.
+- The game's "<X> killed a <Y>" and "N gold" lines become one `[minute] kills` row
+  a minute per character: each monster with its count, and the window's loot gold
+  as one total plus the number of drops. Only lines the GAME wrote are summarised;
+  our own `game_log()` and "Received N gold" are kept as they are. The row carries
+  `kind`, `window_start`, `window_end`, `kills`, `gold` and `gold_drops`, which the
+  bridge files under `extra`.
+- The open minute is written out on `pagehide`, so a hop or a reload loses none
+  of it, and each flush closes a minute that has run out.
+- `gamelogScreenOnly()` / `gamelogQuietly()` show a line and keep it out of the
+  file; `gamelogFileOnChange(name, source)` keeps a matching line only when its
+  text changed since the last one kept under that name, remembered per character
+  across hops in `gamelog_seen_<name>`.
+A page state left by an older build is now rebuilt on the next load (`v`), with
+its lines, its open minute and its rules carried over; until now a page-realm
+state was reused as it was, so a runner restart would have kept the old capture.
+
 ## v133
 
 **MELTYMERCH BREWS THE WITCH'S CIPHER** - BUILD 2 of the browser session's

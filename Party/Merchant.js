@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v133
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v134
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -87,6 +87,37 @@
 // starting the bridge later is picked up without a restart.
 // ============================================================================
 
+/* THE PAGE-LOAD BANNER REACHES THE GAME-LOG FILE ONLY WHEN IT CHANGED.
+   Operator's ruling 2026-10-25. He hops about every 19 seconds and each page
+   printed the same few lines again - "[link] bridge up", "[scout] bridge up",
+   the [ceiling] state, the [probe] merge and the gear plan's held list, about
+   7,700 lines in two days. Each site keeps its own in-page gate, so the SCREEN
+   behaves as before; what is new is that a line whose state matches the last
+   one written to the file is shown and not kept. The states are kept in CODE
+   storage so a hop does not forget them. The game's own Hop Sickness line is
+   the same ruling by another route - merchantLogRules(). */
+const BANNER_KEY = 'merch_banner';
+let bannerSeen = null;
+
+function bannerChanged(name, value) {
+	if (!bannerSeen) { try { bannerSeen = get(BANNER_KEY) || {}; } catch (e) { bannerSeen = {}; } }
+	if (bannerSeen[name] === value) return false;
+	bannerSeen[name] = value;
+	try { set(BANNER_KEY, bannerSeen); } catch (e) { }
+	return true;
+}
+
+/* emit() runs either way; the file keeps what it logs only on a change. */
+function bannerEmit(name, value, emit) {
+	if (bannerChanged(name, String(value))) return emit();
+	return gamelogQuietly(emit);
+}
+
+/* Rules for lines the GAME writes, registered once the capture exists. */
+function merchantLogRules() {
+	try { gamelogFileOnChange('hopsick', 'Hop Sickness'); } catch (e) { }
+}
+
 const PARTY_LINK = {
 	url: 'http://127.0.0.1:8787',
 	pollMs: 2000,           // how often to collect relayed messages
@@ -140,13 +171,13 @@ async function plProbe() {
 	try {
 		await plFetch('/health');
 		plUp = true;
-		if (!was) plLog('bridge up - messages go out in-game AND through the relay', '#7FD98A');
+		if (!was) bannerEmit('link', 'up', () => plLog('bridge up - messages go out in-game AND through the relay', '#7FD98A'));
 	} catch (e) {
 		plUp = false;
 		if (was || plProbed === Date.now()) {
-			plLog(typeof fetch !== 'function'
+			bannerEmit('link', 'down', () => plLog(typeof fetch !== 'function'
 				? 'no fetch here (Mainframe) - relay off, send_cm only'
-				: 'bridge unreachable - relay off, send_cm only', 'orange');
+				: 'bridge unreachable - relay off, send_cm only', 'orange'));
 		}
 	}
 	return plUp;
@@ -4511,16 +4542,39 @@ const NPC_MAX_SCROLL_GRADE = 2;
 // Ponty restocks these often enough that his price is the honest replacement
 // cost. USER-CONFIRMED list - do not extend it by reading G.items[x].g, which
 // is a weak anchor: starkillers' g is 7,800,000 against ~100,000,000 actually
-// paid, a 12.8x gap.
-const PONTY_PRICED_ITEMS = new Set(['harmor', 'firebow', 'dexearring', 'frankypants', 'wbook0', 'coat', 'dexbelt']);
+// paid, a 12.8x gap. intamulet and intbelt by the operator's ruling of
+// 2026-10-25: their market anchors disagreed on every read for two days (ask
+// 475,000 against Ponty 36,000; ask 99,999,999,999 against Ponty 60,000), so
+// each was handed over as value_unknown on every page.
+const PONTY_PRICED_ITEMS = new Set(['harmor', 'firebow', 'dexearring', 'frankypants', 'wbook0', 'coat', 'dexbelt',
+	'intamulet', 'intbelt']);
 
 // YOUR values, checked FIRST and beating every other source, a live market read
-// included. Deliberately EMPTY: this table is the operator's lever, so anything
-// in it is a decision rather than a leftover. The derived numbers live in
-// GEAR_VALUE_FALLBACK below and are overridden by whatever you put here.
+// included. This table is the operator's lever, so anything in it is a decision
+// rather than a leftover. The derived numbers live in GEAR_VALUE_FALLBACK below
+// and are overridden by whatever you put here.
 const GEAR_VALUE_OVERRIDES = {
 	// gcape: 2000000000,
+	// The operator's ruling 2026-10-25, the ask. Its anchors read ask 40,000,000 /
+	// bid 20,000,000 / Ponty 3,840,000 - more than 10x apart - for two days.
+	xhelmet: 40000000,
 };
+
+/* Each item valued through one of the two tables above is logged ONCE, ever,
+   not per page, so the operator has a list to review - operator's ruling
+   2026-10-25. Keyed by name and route, so moving an item from one table to the
+   other logs it again. */
+const GV_OVERRIDE_SAID_KEY = 'gv_override_said';
+let gvOverrideSaid = null;
+
+function gvOverrideNote(name, route, value) {
+	if (!gvOverrideSaid) { try { gvOverrideSaid = get(GV_OVERRIDE_SAID_KEY) || {}; } catch (e) { gvOverrideSaid = {}; } }
+	if (gvOverrideSaid[name] === route) return false;
+	gvOverrideSaid[name] = route;
+	try { set(GV_OVERRIDE_SAID_KEY, gvOverrideSaid); } catch (e) { }
+	try { game_log('[gear] ' + name + ' is valued by ' + route + ' at ' + value + ' - an operator override', '#FFD700'); } catch (e) { }
+	return true;
+}
 
 // Last resort, consulted ONLY when there is no override, no Ponty price, and no
 // pair of agreeing market anchors. A live anchor BEATS these, which is the
@@ -4612,13 +4666,13 @@ function gvFallback(name, why) {
    tell the user to price it. */
 function gvBaseValue(name, rows) {
 	const ov = GEAR_VALUE_OVERRIDES[name];
-	if (ov != null) return { value: ov, src: 'override' };
+	if (ov != null) { gvOverrideNote(name, 'GEAR_VALUE_OVERRIDES', ov); return { value: ov, src: 'override' }; }
 
 	let ponty = null;
 	try { ponty = scoutItemPrice({ name: name, level: 0 }); } catch (e) { ponty = null; }
 
 	if (PONTY_PRICED_ITEMS.has(name)) {
-		if (ponty != null) return { value: ponty, src: 'ponty ' + ponty };
+		if (ponty != null) { gvOverrideNote(name, 'the Ponty price', ponty); return { value: ponty, src: 'ponty ' + ponty }; }
 		return gvFallback(name, 'ponty price unavailable');
 	}
 
@@ -4788,8 +4842,10 @@ function gearHoldLog(held) {
 	if (key === gearHold.key && Date.now() - gearHold.at < GEAR_HOLD_LOG_MS) return;
 	gearHold.key = key;
 	gearHold.at = Date.now();
-	game_log('Gear plan handing ' + held.length + ' item(s) over for manual upgrade:', '#FFD700');
-	for (const h of held) game_log('  ' + h.key.replace('|', ' +') + ' - ' + h.why, '#8b98ab');
+	bannerEmit('gearplan', key, () => {
+		game_log('Gear plan handing ' + held.length + ' item(s) over for manual upgrade:', '#FFD700');
+		for (const h of held) game_log('  ' + h.key.replace('|', ' +') + ' - ' + h.why, '#8b98ab');
+	});
 }
 
 
@@ -5256,9 +5312,9 @@ function ceilingState(name) {
 		const key = out.full ? 'full' : out.stopBuy ? 'stopBuy' : 'under';
 		if (ceilBank.said[name] !== key) {
 			ceilBank.said[name] = key;
-			ceilingLog(name + '+' + cfg.level + ': ' + count + ' held - '
+			bannerEmit('ceiling:' + name, key, () => ceilingLog(name + '+' + cfg.level + ': ' + count + ' held - '
 				+ (out.full ? 'FULL: no buying, no compounding, selling +0'
-					: out.stopBuy ? 'buying stopped' : 'under the ceiling'), out.stopBuy ? '#FFD700' : '#7FD98A');
+					: out.stopBuy ? 'buying stopped' : 'under the ceiling'), out.stopBuy ? '#FFD700' : '#7FD98A'));
 		}
 	}
 	return out;
@@ -6912,9 +6968,9 @@ async function scoutProbe() {
 	try {
 		await scoutFetch('/health');
 		scout.up = true;
-		if (!was) scoutLog('bridge up - scouting enabled', '#7FD98A');
+		if (!was) bannerEmit('scout', 'up', () => scoutLog('bridge up - scouting enabled', '#7FD98A'));
 	} catch (e) {
-		if (was) scoutLog('bridge lost - scouting suspended', 'orange');
+		if (was) bannerEmit('scout', 'down', () => scoutLog('bridge lost - scouting suspended', 'orange'));
 		scout.up = false;
 	}
 	return scout.up;
@@ -9872,9 +9928,15 @@ async function arbProbeMarketRows() {
 
 	const m = arbMergeMarketRows(aldataRows, bridgeRows, gameRows);
 	/* Once every 10 minutes - 1,951 lines on 2026-10-24 said the same thing. */
-	if (Date.now() - arbMergeSaidAt >= 600000) { arbMergeSaidAt = Date.now(); pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
-		+ m.fromBridge + ' bridge, ' + m.fromGame + ' game; bridge fresher on '
-		+ m.bridgeWins + ', game fresher on ' + m.gameWins + ')'); }
+	/* To the file only when the set of sources answering changes, since the
+	   counts move on every read. */
+	if (Date.now() - arbMergeSaidAt >= 600000) {
+		arbMergeSaidAt = Date.now();
+		const shape = (m.fromAldata ? 'aldata ' : '') + (m.fromBridge ? 'bridge ' : '') + (m.fromGame ? 'game' : '');
+		bannerEmit('merge', shape, () => pLog(m.rows.length + ' merchant rows merged (' + m.fromAldata + ' aldata, '
+			+ m.fromBridge + ' bridge, ' + m.fromGame + ' game; bridge fresher on '
+			+ m.bridgeWins + ', game fresher on ' + m.gameWins + ')'));
+	}
 	return { rows: m.rows, source: 'merged', merge: m, errors: errors };
 }
 
@@ -11259,6 +11321,7 @@ async function resumeInterruptedTrip() {
 // can only make that call correctly once it knows a trade is in flight.
 arbRestore();
 cipherRestore();
+setTimeout(merchantLogRules, 0);   // after the GAMELOG block at the end of the file has run
 resumeInterruptedTrip();
 /* Pick up where the pre-hop script left off: a reload wiped every in-memory
    field, but the findings, rotation position and Ponty timers were written to
@@ -11299,8 +11362,7 @@ try {
 /* EVERY GAME LOG LINE TO A FILE ON THE BRIDGE. Operator's request 2026-10-24:
    the game keeps 480 lines and then cuts to the newest 160, and the evidence
    for that morning's spookytown door diagnosis existed only in that
-   scrollback. Every line is sent, unfiltered; the file is filtered at read
-   time.
+   scrollback.
 
    THE CAPTURE LIVES IN THE PAGE, THE SENDER IN THIS SCRIPT. parent.add_log is
    the game's one log writer: the client's own messages, the default
@@ -11317,34 +11379,117 @@ try {
    to localStorage as it unloads, keyed by character because that storage is
    shared by every character in the browser. Each line carries the page's start
    time and a sequence number, so a batch sent twice can be told apart at read
-   time. */
+   time.
+
+   WHAT THE FILE DOES NOT GET LINE BY LINE - the operator's rulings of
+   2026-10-25. The screen is untouched by all of it; only the file changes.
+   - The pathfinder's "Searching for a path...", "Path found!" and "Path not
+     found!" become one count row a minute.
+   - The party broadcasts "<X> killed a <Y>" and "N gold" become one row a
+     minute per character: each monster killed with its count, and the
+     window's loot gold as one total, because the gold line names no monster.
+     Only lines the GAME wrote are summarised, never our own game_log().
+     "Received N gold" is a different line and is kept.
+   - A line a script sends through gamelogScreenOnly() is shown and not kept.
+   - A line matching a rule a script registered with gamelogFileOnChange() is
+     kept only when its text differs from the last one kept under that rule,
+     remembered across hops.
+   The open minute is written out before the page unloads, so a hop loses
+   none of it. `v` rebuilds a page state left by an older build, which would
+   otherwise outlive a runner restart and go on capturing the old way. */
 const GAMELOG = {
 	base: 'http://127.0.0.1:8787', path: '/gamelog',
 	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
-	unsentKey: 'gamelog_unsent_',
+	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 2,
 };
 
 /* Evaluated in whichever realm builds it - the page's by preference. Plain
    ES5 on purpose, since it is a string that is never parsed by our tooling. */
 function gamelogPageSource() {
 	return [
-		'var st = { realm: realm, buf: [], dropped: 0, seq: 0, page: Date.now(), src: null,',
-		'  sent: 0, flushingSince: 0, lastOk: 0, lastErr: null, restored: false, orig: P.add_log };',
+		'var TS = /^\\d{1,2}:\\d{2}:\\d{2} \\| /;',
+		'var st = { v: ver, realm: realm, buf: [], dropped: 0, seq: 0, page: Date.now(), src: null, quiet: false,',
+		'  sent: 0, flushingSince: 0, lastOk: 0, lastErr: null, restored: false, orig: P.add_log,',
+		'  rules: {}, seen: null, seenFor: null, win: null };',
+		'st.fresh = function () { return { start: 0, kills: {}, gold: 0, golds: 0, pfn: 0,',
+		'  pf: { searching: 0, found: 0, not_found: 0 } }; };',
+		'st.win = st.fresh();',
+		'st.row = function (message, color, source, extra) {',
+		'  var c = P.character || {};',
+		'  var r = { page: st.page, seq: ++st.seq, t_script: Date.now(), character: c.name || null,',
+		'    server: ((P.server_region || "") + (P.server_identifier || "")) || null, map: c.map || null,',
+		'    color: color, message: message, source: source };',
+		'  if (extra) for (var k in extra) r[k] = extra[k];',
+		'  st.buf.push(r);',
+		'  if (st.buf.length > keep) { st.dropped += st.buf.length - keep; st.buf.splice(0, st.buf.length - keep); }',
+		'};',
+		'st.roll = function (now, force) {',
+		'  var w = st.win;',
+		'  if (!w.start || (!force && now - w.start < minuteMs)) return false;',
+		'  st.win = st.fresh();',
+		'  var end = force ? now : w.start + minuteMs;',
+		'  var names = Object.keys(w.kills).sort(), parts = [];',
+		'  for (var i = 0; i < names.length; i++) parts.push(names[i] + " " + w.kills[names[i]]);',
+		'  if (parts.length || w.golds) st.row("[minute] kills: " + (parts.join(", ") || "none") + " | loot gold " + w.gold',
+		'    + " (" + w.golds + " drops)", null, "summary", { kind: "party_minute", window_start: w.start,',
+		'    window_end: end, kills: w.kills, gold: w.gold, gold_drops: w.golds });',
+		'  if (w.pfn) st.row("[minute] pathfinder: searching " + w.pf.searching + ", found " + w.pf.found',
+		'    + ", not found " + w.pf.not_found, null, "summary", { kind: "pathfinder_minute", window_start: w.start,',
+		'    window_end: end, pathfinder: w.pf });',
+		'  return true;',
+		'};',
+		'st.tally = function (body, source, now) {',
+		'  var w = st.win, m = /^(Searching for a path|Path found|Path not found)/.exec(body);',
+		'  if (m) {',
+		'    if (!w.start) w.start = now;',
+		'    w.pf[m[1] === "Path found" ? "found" : m[1] === "Path not found" ? "not_found" : "searching"]++;',
+		'    w.pfn++;',
+		'    return true;',
+		'  }',
+		'  if (source !== "game") return false;',
+		'  m = /^\\S+ killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
+		'  if (m) { if (!w.start) w.start = now; w.kills[m[1]] = (w.kills[m[1]] || 0) + 1; return true; }',
+		'  m = /^([\\d,]+) gold\\s*$/.exec(body);',
+		'  if (m) { if (!w.start) w.start = now; w.gold += parseInt(m[1].replace(/,/g, ""), 10) || 0; w.golds++; return true; }',
+		'  return false;',
+		'};',
+		'st.watch = function (name, source, flags) {',
+		'  try { st.rules[name] = new RegExp(source, String(flags || "").replace(/g/g, "")); } catch (e) {}',
+		'};',
+		'st.changed = function (body) {',
+		'  for (var n in st.rules) {',
+		'    if (!st.rules[n].test(body)) continue;',
+		'    var who = (P.character && P.character.name) || "";',
+		'    if (st.seenFor !== who) {',
+		'      st.seenFor = who; st.seen = {};',
+		'      try { st.seen = JSON.parse(P.localStorage.getItem(seenKey + who) || "{}") || {}; } catch (e) {}',
+		'    }',
+		'    if (st.seen[n] === body) return false;',
+		'    st.seen[n] = body;',
+		'    try { if (who) P.localStorage.setItem(seenKey + who, JSON.stringify(st.seen)); } catch (e) {}',
+		'    return true;',
+		'  }',
+		'  return true;',
+		'};',
 		'st.capture = function (message, color, source) {',
 		'  try {',
-		'    var c = P.character || {};',
+		'    if (st.quiet) return;',
+		'    var now = Date.now();',
+		'    st.roll(now, false);',
 		'    var m = message;',
 		'    if (m !== null && typeof m === "object") { try { m = JSON.stringify(m); } catch (e) { m = "[object]"; } }',
-		'    st.buf.push({ page: st.page, seq: ++st.seq, t_script: Date.now(), character: c.name || null,',
-		'      server: ((P.server_region || "") + (P.server_identifier || "")) || null, map: c.map || null,',
-		'      color: color == null ? null : String(color), message: String(m), source: source || st.src || "game" });',
-		'    if (st.buf.length > keep) { st.dropped += st.buf.length - keep; st.buf.splice(0, st.buf.length - keep); }',
+		'    m = String(m);',
+		'    var src = source || st.src || "game", body = m.replace(TS, "");',
+		'    if (st.tally(body, src, now)) return;',
+		'    if (!st.changed(body)) return;',
+		'    st.row(m, color == null ? null : String(color), src);',
 		'  } catch (e) {}',
 		'};',
 		'P.add_log = function (message, color) { st.capture(message, color, null); return st.orig.apply(this, arguments); };',
 		'P.add_log.__gamelog = true;',
 		'try {',
 		'  P.addEventListener("pagehide", function () {',
+		'    try { st.roll(Date.now(), true); } catch (e) {}',
 		'    try {',
 		'      var n = P.character && P.character.name;',
 		'      if (n && st.buf.length) P.localStorage.setItem(unsentKey + n, JSON.stringify(st.buf.slice(-keep)));',
@@ -11356,23 +11501,29 @@ function gamelogPageSource() {
 }
 
 /* Returns the page's capture state, building it if absent. A state built in a
-   CODE iframe (the page refused its Function) may outlive that iframe, so it
-   is rebuilt on every load, carrying its lines over; a page-realm one is
-   reused as it is. */
+   CODE iframe (the page refused its Function) may outlive that iframe, and one
+   from an older build would go on capturing the old way, so either is rebuilt
+   on the next load, carrying its lines and its open minute over; a current
+   page-realm one is reused as it is. */
 function gamelogInstall() {
 	let P = null;
 	try { P = parent; } catch (e) { return null; }
 	if (!P || typeof P.add_log !== 'function') return null;
 	let st = P.__gamelog || null;
-	if (st && st.realm === 'page') return st;
+	if (st && st.realm === 'page' && st.v === GAMELOG.v) return st;
+	if (st && typeof st.roll === 'function') { try { st.roll(Date.now(), true); } catch (e) { } }
 	const carry = (st && Array.isArray(st.buf)) ? st.buf : [];
+	const rules = (st && st.rules) || null;
 	if (st && typeof st.orig === 'function' && P.add_log && P.add_log.__gamelog) P.add_log = st.orig;
+	if (st) st.buf = [];   // its own pagehide handler then saves nothing over ours
 	const src = gamelogPageSource();
+	const args = ['P', 'keep', 'realm', 'unsentKey', 'seenKey', 'minuteMs', 'ver', src];
 	let make = null, realm = 'page';
-	try { make = new P.Function('P', 'keep', 'realm', 'unsentKey', src); }
-	catch (e) { make = new Function('P', 'keep', 'realm', 'unsentKey', src); realm = 'code'; }
-	st = make(P, GAMELOG.keep, realm, GAMELOG.unsentKey);
+	try { make = P.Function.apply(null, args); }
+	catch (e) { make = Function.apply(null, args); realm = 'code'; }
+	st = make(P, GAMELOG.keep, realm, GAMELOG.unsentKey, GAMELOG.seenKey, GAMELOG.minuteMs, GAMELOG.v);
 	if (carry.length) st.buf = carry.concat(st.buf).slice(-GAMELOG.keep);
+	if (rules) for (const n in rules) { try { st.watch(n, rules[n].source, rules[n].flags); } catch (e) { } }
 	P.__gamelog = st;
 	return st;
 }
@@ -11393,6 +11544,30 @@ function gamelogMarkScript() {
 		window.game_log = wrapped;
 		return true;
 	} catch (e) { return false; }
+}
+
+/* Runs fn with the capture off: whatever it logs is shown and not kept. */
+function gamelogQuietly(fn) {
+	let st = null;
+	try { st = parent.__gamelog || null; } catch (e) { }
+	if (st) st.quiet = true;
+	try { return fn(); } finally { if (st) st.quiet = false; }
+}
+
+/* game_log() for a line that belongs on the screen and not in the file. */
+function gamelogScreenOnly(message, color) {
+	return gamelogQuietly(() => game_log(message, color));
+}
+
+/* Lines matching `source` (a RegExp source string, built in the page) reach
+   the file only when their text changed since the last one kept under `name`.
+   A string rather than a RegExp, because a RegExp made here belongs to this
+   iframe and the capture outlives it. */
+function gamelogFileOnChange(name, source, flags) {
+	const st = gamelogInstall();
+	if (!st || typeof st.watch !== 'function') return false;
+	st.watch(name, source, flags);
+	return !!st.rules[name];
 }
 
 function gamelogName() {
@@ -11432,11 +11607,14 @@ function gamelogPost(body) {
    identity rather than by position, because the capture trims the front of
    the buffer when it is full and may have done so while the POST was out. A
    flush older than twice the timeout is taken as abandoned - its iframe was
-   destroyed mid-await - so it cannot block the next script for ever. */
+   destroyed mid-await - so it cannot block the next script for ever. Each
+   call also closes a minute that has run out, so a quiet one is still
+   written within a flush of its end. */
 async function gamelogFlush() {
 	const st = gamelogInstall();
 	if (!st) return 'not installed';
 	const now = Date.now();
+	try { st.roll(now, false); } catch (e) { }
 	if (st.flushingSince && now - st.flushingSince < 2 * GAMELOG.timeoutMs) return 'busy';
 	const name = gamelogName();
 	if (name && !st.restored) { st.restored = true; gamelogRestore(st, name); }
@@ -11466,14 +11644,17 @@ async function gamelogFlush() {
 }
 
 /* The console view: what is waiting, what was lost, when the bridge last took
-   a batch. Read-only. */
+   a batch, and the minute still open. Read-only. */
 function gamelogStatus() {
 	let st = null;
 	try { st = parent.__gamelog || null; } catch (e) { }
 	if (!st) return { installed: false };
+	const w = st.win || {};
 	return {
-		installed: true, realm: st.realm, buffered: st.buf.length, dropped: st.dropped, sent: st.sent,
+		installed: true, v: st.v || 1, realm: st.realm, buffered: st.buf.length, dropped: st.dropped, sent: st.sent,
 		lastOk: st.lastOk ? new Date(st.lastOk).toISOString() : null, lastErr: st.lastErr,
+		minuteOpen: w.start ? new Date(w.start).toISOString() : null,
+		changeRules: Object.keys(st.rules || {}),
 	};
 }
 
