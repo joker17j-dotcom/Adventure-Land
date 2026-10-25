@@ -21,6 +21,34 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v150
+
+- **A WAY OUT OF A RAGE BOX FOR A CHARACTER ALREADY IN ONE.** Measured by the
+  browser session at the 12:30Z 2026-10-25 EU II graveyard: when rage entry
+  ended, every walk toward the join spot (255,-1030) was refused as cutting
+  through the box, on all three, because `rageRoute` seeds from the nearest
+  open cell within 14 cells and the field is further in than that. The
+  containment guard's own escape aimed at the NEAREST edge, which from the
+  field is the wall to the north. `rageExitPoint()` picks the exit: the four
+  edge points `rageEscape` considers plus each edge's point nearest the
+  destination, dropping any inside another box or not standable, and
+  preferring one a straight leg reaches. `rageWaypoints` walks that exit leg
+  first and routes on from it; `rageGuard` exits toward the park point it is
+  working. A leg that only exits cannot cut through anything.
+- **NO PULL FOR A TRIP ON ANOTHER MAP.** `ragePullCtx()` fell back to the farm
+  when a trip's target was elsewhere, so at 06:30Z on ASIA I the pull worked the
+  booboo override on spookytown while the trip walked to crabxx on main. Dexon
+  and MageofOz died in the west booboo box. A trip elsewhere now leaves the
+  context empty and the pull idle.
+- **A FARM WALK IS STOPPED, NOT ONLY ORPHANED.** `travelCancel()` bumps the
+  attempt and calls `stop('smart')`; the watchdog uses it, and `bossApproach`
+  calls it first, so a trip takes the wheel from a farm walk still under way.
+  12:00Z EU I: a travelTo for the farm spot outlived the goobrawl join and
+  walked Dexon out of the event four times; bumping `attemptId` alone left the
+  game walking.
+- **A REFUSED POSTURE OR FIELD-SPOT MOVE IS NOTED, NOT THROWN.** "Path not
+  found!" rejected out of `bossTick` 275 times on 2026-10-25, ending the tick.
+
 ## v149
 
 **GOOBRAWL ALONE AT 3, THE OPERATOR'S RULING 2026-10-25 08:17 EDT.** It tied

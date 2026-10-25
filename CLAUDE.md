@@ -1474,6 +1474,16 @@ this ranking until a Ranger build is actually running on him.
   repeats "no boss" and followers obey it**, after MageofOz died twice
   self-picking a franky Dexon had given up on. The retreat count is unchanged
   and is the operator's to set.
+- **EVERY ROUTE OUT OF A BOX STARTS IN THE BOX, SO A PLANNER THAT REFUSES TO
+  ENTER ONE COULD NEVER LEAVE ONE** - Ranger v150 / Priest v83 / Mage v106,
+  from the 12:30Z 2026-10-25 EU II graveyard, where every walk to the join spot
+  was refused on all three once entry ended. `rageExitPoint()` takes an exit
+  that a straight leg reaches toward where we are going, and both the planner
+  and the containment guard use it; the guard used to take the NEAREST edge,
+  which from the field is the north wall. **A REFUSAL RULE NEEDS AN EXCEPTION
+  FOR THE ONE MOVE THAT REDUCES WHAT IT GUARDS AGAINST.** The same build stops
+  the pull for a trip on another map, stops a farm walk with `stop('smart')`
+  rather than only orphaning it, and keeps Blink out of rage boxes.
 - **FOLLOWERS ASKED DEXON TO BLACKLIST THE FARM SPOT ON EVERY mrgreen TRIP,
   AND THE EARLIER FIX KEYED ON THE WRONG FACT.** 46 requests on 2026-10-24,
   measured by the browser session. The follower's xp monitor re-baselined only

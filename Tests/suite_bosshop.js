@@ -2926,10 +2926,11 @@ module.exports = [
 			bossTaxiWalkable: () => true,
 			BOSS_FIELD_HOLD: 40,
 			safeMove: async (x, y) => { walked.push({ x, y, held: true }); },
+			travelState: { inFlight: false, attemptId: 0 },
 		}, over));
 		w.parent.socket = { emit: (ev, d) => emitted.push([ev, d.name]) };
 		w.emitted = emitted; w.walked = walked;
-		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'bossApproach']);
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'travelCancel', 'bossApproach']);
 		return w;
 	};
 	t.eq('from another map it joins', jw('main', 0, 0).bossJoinWanted('graveyard'), true);
@@ -2997,10 +2998,11 @@ module.exports = [
 			safeSmartMove: (p) => { walked.push(p); return Promise.resolve(); },
 			bossWalkTarget: () => ({ map: 'spookytown', x: 255, y: -1545 }),
 			bossTaxiWalkable: () => true,
+			travelState: { inFlight: false, attemptId: 0 },
 		}, over));
 		w.parent.socket = { emit: () => {} };
 		w.moved = moved;
-		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'bossApproach']);
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_FIELD_SPOTS', 'bossJoinWanted', 'travelCancel', 'bossApproach']);
 		return w;
 	};
 
@@ -3181,6 +3183,150 @@ module.exports = [
 			await alive.ragePullTick();
 			t.eq(f + ': precondition - alive, it does ask', alive.asked, 1);
 		}
+	})();
+} },
+{ name: 'v150 a way out of a box, no pull for a trip elsewhere, a farm walk stopped, a refused move noted', fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const { extract } = require('./lift');
+	for (const n of ['rageExitPoint', 'rageWaypoints', 'travelCancel', 'travelWatchdog', 'bossPosture'])
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === extract(RANGER, n), true);
+
+	/* spookytown with the mummy box and a wall north of it: nothing stands or
+	   walks above y -1600. The graveyard field and its join spot are game data. */
+	const G = { maps: { spookytown: { monsters: [{ type: 'mummy', rage: MUMMY_RAGE, boundary: MUMMY_BOUNDARY }] },
+		main: { monsters: [{ type: 'booboo', rage: [0, 0, 100, 100] }] } }, monsters: {} };
+	const wallOk = (o) => o.y > -1600 && o.going_y > -1600;
+	const rw = (x, y, over = {}) => {
+		const moved = [];
+		const w = world(Object.assign({
+			character: { name: 'Dexon', map: 'spookytown', x, y, s: {}, base: {} },
+			CONFIG: { achievements: { pull: {} } }, ragePullShared: null, rageEntryActive: false,
+			parent: { G: G }, can_move: wallOk, rageLog: () => {},
+			stop: () => {}, xmove: async (px, py) => { moved.push([px, py]); },
+			errText: (e) => String(e), rageEscapeEp: { joinAt: 0, townAt: 0 },
+			rageEscapeLadder: async () => 'ladder',
+			ragePullCtx: () => ({ src: 'boss', map: 'spookytown', x: 255, y: -1030, types: ['zombie'] }),
+		}, over));
+		w.moved = moved;
+		lift(w, RANGER, ['rageCfg', 'rageBoxes', 'rageHit', 'rageEscape', 'rageExitPoint', 'rageWaypoints', 'rageGuard']);
+		return w;
+	};
+
+	/* --- the exit point --------------------------------------------------- */
+	let w = rw(256, -1430);
+	const m = w.rageCfg().margin;
+	t.eq('precondition: the field spot is inside the mummy box', !!w.rageHit('spookytown', 256, -1430, 0), true);
+	t.eq('precondition: the nearest edge is the north one', w.rageEscape('spookytown', 256, -1430, m).y < -1631, true);
+	const toJoin = w.rageExitPoint('spookytown', { x: 256, y: -1430 }, { x: 255, y: -1030 }, m);
+	t.eq('toward the join spot it leaves by the south edge', toJoin.y > -1130 && Math.abs(toJoin.x - 256) <= 1, true);
+	t.eq('by a leg that is clear', toJoin.clear, true);
+	const noAim = w.rageExitPoint('spookytown', { x: 256, y: -1430 }, null, m);
+	t.eq('with no aim it still refuses the walled north edge', noAim.y > -1600, true);
+	t.eq('outside every box there is no exit to take', w.rageExitPoint('spookytown', { x: 255, y: -1030 }, null, m), null);
+	/* The two filters, each in the case only it decides: north is the cheapest
+	   edge in both. */
+	/* West is tried first and is unclear too, so the preference has to replace
+	   an unclear incumbent - without that the comparison's equal-clear clause
+	   alone would keep the first clear candidate and hide the preference. */
+	const lineBlocked = rw(256, -1430, { can_move: (o) => (o.x === o.going_x && o.y === o.going_y) || (o.going_y > -1600 && o.going_x > 0) });
+	t.eq('a standable edge no straight leg reaches loses to one that is reached',
+		lineBlocked.rageExitPoint('spookytown', { x: 256, y: -1430 }, null, m).y > -1130, true);
+	const standBlocked = rw(256, -1430, { can_move: (o) => !(o.x === o.going_x && o.y === o.going_y) || o.y > -1600 });
+	t.eq('an edge nobody can stand on is dropped even with a clear line to it',
+		standBlocked.rageExitPoint('spookytown', { x: 256, y: -1430 }, null, m).y > -1130, true);
+
+	/* --- the route out ------------------------------------------------------ */
+	const asked = [];
+	w = rw(256, -1430);
+	w.rageRoute = (map, from, to) => { asked.push([Math.round(from.x), Math.round(from.y)]); return [[to.x, to.y]]; };
+	const wp = w.rageWaypoints('spookytown', { x: 255, y: -1030 }, m);
+	t.eq('from inside, the route is planned from the exit', asked[0][1] > -1130, true);
+	t.eq('and the exit is the first waypoint', wp[0][1] > -1130 && wp.length === 2, true);
+	w.rageRoute = () => null;
+	t.eq('no route on from the exit is no route', w.rageWaypoints('spookytown', { x: 255, y: -1030 }, m), null);
+	const out = rw(255, -1030); const asked2 = [];
+	out.rageRoute = (map, from) => { asked2.push([from.x, from.y]); return [[1, 1]]; };
+	out.rageWaypoints('spookytown', { x: 300, y: -990 }, m);
+	t.eq('from outside it plans from where we stand, as before', asked2[0], [255, -1030]);
+
+	/* --- the guard leaves toward the park point ----------------------------- */
+	return (async () => {
+		w = rw(256, -1430);
+		await w.rageGuard();
+		t.eq('the guard walks out by the south edge, not into the wall', w.moved.length === 1 && w.moved[0][1] > -1130, true);
+		const nowhere = rw(256, -1430, { can_move: () => false });
+		await nowhere.rageGuard();
+		t.eq('with nothing standable it falls back to the nearest edge', nowhere.moved[0][1] < -1631, true);
+
+		/* --- a trip elsewhere serves no pull here ----------------------------- */
+		const pw = world({
+			character: { name: 'Dexon', map: 'main', x: 50, y: 50, s: {} },
+			CONFIG: { achievements: { pull: {} } }, parent: { G: G, S: {}, entities: {} },
+			ragePullShared: null, rageEntryActive: false, rageActiveMemo: { at: 0, key: '', val: false },
+			home: 'booboo', rageAlso: [], destination: { map: 'main', x: 50, y: 50 },
+			bossState: { trip: null }, EVENT_LOCATIONS: [], rageLog: () => {},
+		});
+		lift(pw, RANGER, ['rageCfg', 'rageBoxes', 'rageHit', 'BOSS_FIGHT_TYPES', 'bossMonsterTypes', 'BOSS_JOIN_SPOTS',
+			'bossWalkTarget', 'ragePullCtx', 'ragePullTypes', 'rageBoxedTarget', 'ragePullActive']);
+		pw.EVENT_LOCATIONS = [];
+		t.eq('precondition: with no trip the booboo farm pull is active', pw.ragePullActive(), true);
+		pw.bossState.trip = { name: 'graveyard' };
+		t.eq('a trip to another map leaves the context empty', pw.ragePullCtx().src, 'trip');
+		t.eq('so the pull is idle - 06:30Z 2026-10-25', pw.ragePullActive(), false);
+		pw.character.map = 'spookytown'; pw.character.x = 255; pw.character.y = -1030;
+		t.eq('on the trip’s own map it is still the boss context', pw.ragePullCtx().src, 'boss');
+
+		/* --- a farm walk is stopped, not only orphaned ------------------------ */
+		const stops = [], fails = [];
+		const tw = world({
+			travelState: { inFlight: true, attemptId: 4, startedAt: 0 },
+			TRAVEL: { attemptTimeoutMs: 180000 },
+			stop: (a) => { stops.push(a); },
+			noteTravelFailure: (d, why) => { fails.push(why); },
+		});
+		lift(tw, RANGER, ['travelCancel', 'travelWatchdog']);
+		tw.travelWatchdog({ map: 'spookytown' });
+		t.eq('the watchdog stops the smart_move', stops, ['smart']);
+		t.eq('and still orphans the attempt', tw.travelState.inFlight === false && tw.travelState.attemptId === 5, true);
+		t.eq('and still counts the failure', fails.length, 1);
+		t.eq('nothing in flight, nothing stopped', tw.travelCancel(), false);
+		t.eq('precondition: one stop only', stops.length, 1);
+		const src = require('fs').readFileSync(require('path').join(require('./lift').ROOT, RANGER), 'utf8');
+		t.ok('bossApproach takes the wheel from a farm walk first',
+			/async function bossApproach\(name\) \{[\s\S]{0,400}?if \(travelCancel\(\)\) bossNote\(/.test(src));
+
+		/* --- a refused posture move is noted, not thrown ----------------------- */
+		const notes = [];
+		const bw = world({
+			character: { x: 0, y: 0 }, smart: { moving: false },
+			CONFIG: { bossEvents: { holdTolerance: 10 } },
+			bossHoldDistance: () => 100,
+			safeMove: async () => { throw { reason: 'failed', place: 'smart_move' }; },
+			bossNote: (m2) => { notes.push(m2); },
+		});
+		lift(bw, RANGER, ['bossPosture']);
+		let threw = false;
+		try { await bw.bossPosture({ x: 500, y: 0, mtype: 'mrgreen' }); } catch (e) { threw = true; }
+		t.eq('Path not found does not throw out of the tick', threw, false);
+		t.eq('it is noted with its reason', notes, ['cannot hold off mrgreen: failed']);
+
+		/* --- Blink never lands in a box (Mage) ---------------------------------- */
+		const bl = world({
+			character: { name: 'MageofOz', map: 'main', x: 50, y: 160, s: {} },
+			CONFIG: { achievements: { pull: {} } }, parent: { G: G }, ragePullShared: null, rageEntryActive: false,
+		});
+		lift(bl, 'Party/Mage.js', ['rageCfg', 'rageBoxes', 'rageHit', 'blinkLanding']);
+		const down = bl.blinkLanding(Math.PI / 2 + Math.PI);   // straight at the box below
+		t.eq('precondition: the straight landing is inside the box', !!bl.rageHit('main', 50, 10, 0), true);
+		t.eq('Blink turns away from the box', !!down && !bl.rageHit('main', down.x, down.y, 0), true);
+		bl.character.x = 50; bl.character.y = 50;
+		bl.parent.G = { maps: { main: { monsters: [{ type: 'booboo', rage: [-500, -500, 500, 500] }] } } };
+		t.eq('inside a box with no clear landing it still blinks', !!bl.blinkLanding(0), true);
+		bl.character.x = 700; bl.character.y = 0;
+		bl.parent.G = { maps: { main: { monsters: [{ type: 'a', rage: [-500, -500, 600, 500] }, { type: 'b', rage: [800, -500, 1500, 500] }, { type: 'c', rage: [600, -500, 800, -100] }, { type: 'd', rage: [600, 100, 800, 500] }] } } };
+		t.eq('outside every box, boxed in all round, it does not', bl.blinkLanding(0), null);
+		const ms = require('fs').readFileSync(require('path').join(require('./lift').ROOT, 'Party/Mage.js'), 'utf8');
+		t.ok('handleBlinkEscape blinks to blinkLanding only', /const spot = blinkLanding\(Math\.random\(\) \* Math\.PI \* 2\);\n\tif \(!spot\) return;\n\tuse_skill\('blink', \[spot\.x, spot\.y\]\);/.test(ms));
 	})();
 } },
 ];

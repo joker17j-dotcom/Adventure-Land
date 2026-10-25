@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v82
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v83
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1918,6 +1918,48 @@ function rageEscape(map, x, y, margin) {
 	return { x: px, y: py };
 }
 
+/* THE WAY OUT OF A BOX FOR A CHARACTER ALREADY STANDING IN ONE - Ranger v150 /
+   Priest v83 / Mage v106. rageEscape takes the NEAREST edge, and from the
+   graveyard field that is the wall north of it; rageRoute seeds from the
+   nearest open cell within 14 cells, which from the middle of the field is
+   none, so every safeSmartMove out refused - measured 12:33Z 2026-10-25 on
+   EU II, "no safe route to 255,-1030 ... refusing to let the pathfinder cut
+   through a rage box" on all three. A leg that only EXITS cannot cut through
+   anything. This weighs each edge by where we are going and prefers one a
+   straight leg reaches: the four points rageEscape considers, plus each edge's
+   point nearest the destination. A point inside another box, or one nobody
+   can stand on, is dropped. null when we are not in a box or nothing is left,
+   and the caller falls back to what it did before. */
+function rageExitPoint(map, from, to, margin) {
+	const b = rageHit(map, from.x, from.y, margin);
+	if (!b) return null;
+	const r = b.r, m = margin + 2;
+	const cx = (v) => Math.max(r[0] - m, Math.min(r[2] + m, v));
+	const cy = (v) => Math.max(r[1] - m, Math.min(r[3] + m, v));
+	const cands = [
+		{ x: r[0] - m, y: from.y }, { x: r[2] + m, y: from.y },
+		{ x: from.x, y: r[1] - m }, { x: from.x, y: r[3] + m },
+	];
+	if (to) cands.push({ x: r[0] - m, y: cy(to.y) }, { x: r[2] + m, y: cy(to.y) },
+		{ x: cx(to.x), y: r[1] - m }, { x: cx(to.x), y: r[3] + m });
+	const base = character.base;
+	const line = (a, p) => {
+		if (typeof can_move !== 'function') return null;
+		try { return !!can_move({ map: map, x: a.x, y: a.y, going_x: p.x, going_y: p.y, base: base }); }
+		catch (e) { return false; }
+	};
+	let best = null;
+	for (const p of cands) {
+		if (rageHit(map, p.x, p.y, margin)) continue;
+		if (line(p, p) === false) continue;
+		const clear = line(from, p) !== false;
+		const cost = Math.hypot(p.x - from.x, p.y - from.y) + (to ? Math.hypot(to.x - p.x, to.y - p.y) : 0);
+		if (!best || (clear && !best.clear) || (clear === best.clear && cost < best.cost))
+			best = { x: p.x, y: p.y, clear: clear, cost: cost };
+	}
+	return best ? { x: best.x, y: best.y, clear: best.clear } : null;
+}
+
 /* A walkable route from->to that never enters a rectangle. BFS on a coarse grid
    with the rectangles treated as solid, then greedily simplified so EVERY leg
    is verified straight-line can_move-clear. That last property is the point:
@@ -2054,6 +2096,17 @@ const rageNav = { busy: false };
    without that being load-bearing. A chain whose own points sit inside a
    rectangle is refused rather than walked. */
 function rageWaypoints(map, to, margin) {
+	/* ALREADY INSIDE A BOX: walk the exit leg, then route from where it lands.
+	   See rageExitPoint. A route that cannot continue from the exit is no
+	   route, because rageWalk would report having arrived at the edge. */
+	const here = { x: character.x, y: character.y };
+	if (rageHit(map, here.x, here.y, 0)) {
+		const ex = rageExitPoint(map, here, to, margin);
+		if (ex) {
+			const rest = rageRoute(map, ex, to, margin);
+			return rest ? [[ex.x, ex.y]].concat(rest) : null;
+		}
+	}
 	const mv = (typeof CONFIG !== 'undefined' && CONFIG.movement) || {};
 	const key = map + '|' + Math.round(to.x) + '|' + Math.round(to.y);
 	const hand = (mv.approaches || {})[key];
@@ -2197,7 +2250,12 @@ async function rageGuard() {
 	if (character.c && character.c.town) return true;
 	rageLog('inside the ' + hit.type + ' rage box at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' - leaving now', 'red');
 	try { if (typeof stop === 'function') stop(); } catch (e) { }
-	const e2 = rageEscape(character.map, character.x, character.y, cfg.margin);
+	/* Toward the park point we are working, by a leg we can walk - not the
+	   nearest edge, which from the graveyard field is a wall. */
+	const ctx = ragePullCtx();
+	const aim = (ctx.map === character.map && typeof ctx.x === 'number') ? { x: ctx.x, y: ctx.y } : null;
+	const e2 = rageExitPoint(character.map, { x: character.x, y: character.y }, aim, cfg.margin)
+		|| rageEscape(character.map, character.x, character.y, cfg.margin);
 	let why = 'no xmove';
 	if (typeof xmove === 'function') {
 		try { await xmove(e2.x, e2.y); return true; } catch (err) { why = errText(err); }
@@ -2292,6 +2350,11 @@ function ragePullCtx() {
 			return { src: 'boss', map: spot.map, x: spot.x, y: spot.y,
 				types: bossMonsterTypes(trip.name) };
 		}
+		/* A TRIP TO ANOTHER MAP SERVES NO PULL HERE (v150/v83/v106). Falling
+		   back to the farm pulled booboo on spookytown while the trip walked
+		   to crabxx on main, and Dexon and MageofOz died in the west box at
+		   06:30Z 2026-10-25. */
+		return { src: 'trip', map: null, x: null, y: null, types: [] };
 	}
 	const out = [];
 	if (typeof home === 'string' && home) out.push(home);
@@ -3185,7 +3248,10 @@ async function bossPosture(mon) {
 	if (Math.abs(dist - hold) <= CONFIG.bossEvents.holdTolerance) return;
 	if (smart.moving) return;
 	const f = hold / dist;
-	await safeMove(mon.x - dx * f, mon.y - dy * f);
+	/* A REFUSED MOVE IS NOTED, NOT THROWN: "Path not found!" rejected out of
+	   bossTick 275 times on 2026-10-25, skipping the rest of the tick. */
+	try { await safeMove(mon.x - dx * f, mon.y - dy * f); }
+	catch (e) { bossNote('cannot hold off ' + mon.mtype + ': ' + ((e && (e.reason || e.message)) || e)); }
 }
 
 /* TRUE when the join is a TAXI to somewhere reachable on foot, which is the
@@ -3251,6 +3317,10 @@ function bossJoinWanted(name) {
 }
 
 async function bossApproach(name) {
+	/* THE TRIP OWNS MOVEMENT, SO A FARM WALK STILL UNDER WAY IS STOPPED HERE.
+	   12:00Z 2026-10-25, EU I: a travelTo for the farm spot outlived the
+	   goobrawl join and walked Dexon out of the event four times. */
+	if (travelCancel()) bossNote('stopped a farm walk - the ' + name + ' trip owns movement');
 	/* INSIDE THE BOX, HOLD THE FIELD SPOT AND LET THE ATTACK LOOP SHOOT FROM
 	   IT, rather than posturing off whichever monster is nearest - which on the
 	   graveyard walks the party onto the Gargoyle spawn. */
@@ -3259,7 +3329,8 @@ async function bossApproach(name) {
 		if (smart.moving) return;
 		if (Math.hypot(character.x - field.x, character.y - field.y) <= BOSS_FIELD_HOLD) return;
 		bossNote('holding the middle of ' + name);
-		await safeMove(field.x, field.y);
+		try { await safeMove(field.x, field.y); }
+		catch (e) { bossNote('cannot reach the middle of ' + name + ': ' + ((e && (e.reason || e.message)) || e)); }
 		return;
 	}
 	const mon = bossNearestMonster(name);
@@ -3700,11 +3771,22 @@ function unstickWatchdog() {
 	return true;
 }
 
+/* ORPHAN A FARM TRIP AND STOP ITS WALK. Bumping attemptId makes the late
+   resolution a no-op and does nothing to the walk itself: the game went on
+   moving Dexon toward spookytown from inside a goobrawl, 12:02Z 2026-10-25.
+   stop('smart') ends the smart_move and leaves the step under way alone. */
+function travelCancel() {
+	if (!travelState.inFlight) return false;
+	travelState.attemptId++;
+	travelState.inFlight = false;
+	try { if (typeof stop === 'function') stop('smart'); } catch (e) { }
+	return true;
+}
+
 function travelWatchdog(dest) {
 	if (!travelState.inFlight) return;
 	if (Date.now() - travelState.startedAt < TRAVEL.attemptTimeoutMs) return;
-	travelState.attemptId++;        // orphan it: the late resolution becomes a no-op
-	travelState.inFlight = false;
+	travelCancel();
 	noteTravelFailure(dest, `smart_move never returned after ${Math.round(TRAVEL.attemptTimeoutMs / 1000)}s`);
 }
 
@@ -5319,7 +5401,9 @@ function on_party_invite(name) {
 
 game.on('death', data => {
 	const mob = parent.entities[data.id];
-	if (!mob) return;
+	/* Monsters only: a player has no mtype, which logged "undefined died with
+	   undefined luck" five times on spookytown 2026-10-25. */
+	if (!mob || mob.type !== 'monster') return;
 
 	const mobName = mob.mtype;
 	const mobTarget = mob.target;
