@@ -1,4 +1,40 @@
 
+## v135
+
+**THE MERCHANT'S NPC SELL PASSES WAIT FOR A MERCHANT NPC IN REACH** -
+`sellerInReach()` and `VENDOR_REACH` 380, byte for byte Ranger v152's.
+`sellTrash()` and `sellAggressivelyIfLowOnSpace()` run on every maintenance tick
+wherever he stands. The browser session counted 84 "Get closer" in 19 minutes
+on 2026-10-25, after mluck rounds on spookytown and while he walked level1,
+where no npc buys. A pass with no merchant npc within reach now sends nothing.
+This was found from source and not recorded on him. The ceiling and cipher
+passes already sold to an NPC only at the town spot and are unchanged.
+
+**THE PONTY CEILING SKIP REACHES THE FILE ONCE PER ID AND LEVEL** - operator's
+ruling 2026-10-25. "[ponty] skipping dexbelt+N - its craft-input ceiling is
+reached" was written 31 times in 19 minutes. It now goes through `bannerEmit`,
+keyed by id and level, and is re-armed when the ceiling is seen open for that
+id. The screen is unchanged, and the [ceiling] line still records the
+transition itself.
+
+**NO "[gear] ... an operator override" LINE IS NOT A FAULT - investigated, nothing
+changed.** `gvBaseValue()` has one caller, `attemptBestPlanStep()`, and that
+values only plan candidates in the BAG that need value planning. The line
+appears when Meltymerch first holds an xhelmet, intamulet, intbelt or another
+Ponty-priced plan item at a level that needs it.
+
+**THE MINUTE ROW COUNTS ONLY THIS CHARACTER'S OWN KILLS** - GAMELOG `v: 3`, in
+the block shared by all five scripts. The browser session found every
+"[minute] kills" row written identically on Dexon, FatherToken and MageofOz
+within 1-3s. The server sends a party member's kill through `party_emit` to
+every member on the shard (`kill_monster`, upstream `2148cf25`), so each of the
+three was counting the party's total. A kill line now counts only when its
+killer is "You" or this character's name; the others are dropped from the file
+as before and still shown. The gold line is unchanged: in a party the server
+sends each member its own share of a chest, so it was never repeated. The three
+rows now add up to the party's kills. `v` moved so a page state from v2 is
+rebuilt on the next load.
+
 ## v134
 
 **THE PAGE-LOAD BANNER REACHES THE GAME-LOG FILE ONLY WHEN IT CHANGED** - the

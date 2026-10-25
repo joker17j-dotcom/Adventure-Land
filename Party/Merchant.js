@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v134
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v135
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3243,10 +3243,32 @@ potionLoop();
 // ============================================================================
 // SELLING TRASH TO AN NPC MERCHANT (not the player stand)
 // ============================================================================
+/* Can sell() be served from where we stand? The server's "sell" handler takes
+   the nearest of its map's MERCHANTS - an npc with a single `position` and an
+   `items` list - within B.sell_dist, 400, and refuses anything else with
+   "distance", printed as "Get closer". sellTrash() and the aggressive seller
+   run on every maintenance tick wherever he stands, so on spookytown after a
+   mluck round, or walking level1, every whitelist item in the bag drew one
+   refusal per tick - 84 in 19 minutes on 2026-10-25. The same function as
+   Ranger v152's, held byte-identical by Tests/suite_bosshop.js. */
+const VENDOR_REACH = 380;
+
+function sellerInReach() {
+	const map = G.maps && G.maps[character.map];
+	if (!map || !map.npcs || !G.npcs) return false;
+	for (const n of map.npcs) {
+		const def = G.npcs[n.id];
+		if (!def || !def.items || !n.position) continue;
+		if (Math.hypot(character.x - n.position[0], character.y - n.position[1]) < VENDOR_REACH) return true;
+	}
+	return false;
+}
+
 // Selling needs Gabriel in range - 129.4 from the town spot, and both buy and
 // -> MerchantComments.md#sellTrash
 function sellTrash() {
 	if (!CONFIG.selling.enabled) return;
+	if (!sellerInReach()) return;   // the whitelist waits for a merchant npc - sellerInReach()
 	const whitelist = new Set(CONFIG.selling.whitelist);
 	const held = arbHeldNames();
 	for (let i = 0; i < character.items.length; i++) {
@@ -3999,6 +4021,7 @@ function sellAggressivelyIfLowOnSpace() {
 	const cfg = CONFIG.selling;
 	if (!cfg.aggressiveEnabled) return;
 	if (freeInventorySlots() > cfg.aggressiveFreeSlotThreshold) return;
+	if (!sellerInReach()) return;   // as sellTrash()
 
 	const held = arbHeldNames();
 	const ponty = pontyWanted();
@@ -7381,10 +7404,15 @@ async function pontyBuyPass(rows) {
 		/* Level ceiling, independent of the price one - see CONFIG.pontyBuy
 		   .maxLevel for why both exist. An absent `level` is a non-upgradeable
 		   item and reads as 0, so it is never refused by this. */
+		/* The file keeps this line once per id and level until the ceiling is
+		   seen open again for it - operator's ruling 2026-10-25, after 31 in 19
+		   minutes. The [ceiling] line already records the transition. */
+		const skipKey = 'ponty_skip:' + r.name + '+' + (r.level || 0);
 		if (ceilingState(r.name).stopBuy) {
-			pontyLog('skipping ' + r.name + '+' + r.level + ' - its craft-input ceiling is reached', '#8b98ab');
+			bannerEmit(skipKey, 'held', () => pontyLog('skipping ' + r.name + '+' + r.level + ' - its craft-input ceiling is reached', '#8b98ab'));
 			continue;
 		}
+		if (ceilingCfg(r.name)) bannerChanged(skipKey, 'open');
 		const lvlCap = (cfg.maxLevel || {})[r.name];
 		if (typeof lvlCap === 'number' && (r.level || 0) > lvlCap) {
 			pontyLog('skipping ' + r.name + '+' + r.level + ' - over its +' + lvlCap + ' level cap', '#8b98ab');
@@ -11388,6 +11416,8 @@ try {
    - The party broadcasts "<X> killed a <Y>" and "N gold" become one row a
      minute per character: each monster killed with its count, and the
      window's loot gold as one total, because the gold line names no monster.
+     A kill counts only on the killer's own row and the others drop it, since
+     every member receives the broadcast; gold is each member's own share.
      Only lines the GAME wrote are summarised, never our own game_log().
      "Received N gold" is a different line and is kept.
    - A line a script sends through gamelogScreenOnly() is shown and not kept.
@@ -11400,7 +11430,7 @@ try {
 const GAMELOG = {
 	base: 'http://127.0.0.1:8787', path: '/gamelog',
 	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
-	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 2,
+	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 3,
 };
 
 /* Evaluated in whichever realm builds it - the page's by preference. Plain
@@ -11447,8 +11477,11 @@ function gamelogPageSource() {
 		'    return true;',
 		'  }',
 		'  if (source !== "game") return false;',
-		'  m = /^\\S+ killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
-		'  if (m) { if (!w.start) w.start = now; w.kills[m[1]] = (w.kills[m[1]] || 0) + 1; return true; }',
+		'  m = /^(\\S+) killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
+		'  if (m) {',
+		'    if (m[1] !== "You" && m[1] !== ((P.character && P.character.name) || "")) return true;',
+		'    if (!w.start) w.start = now; w.kills[m[2]] = (w.kills[m[2]] || 0) + 1; return true;',
+		'  }',
 		'  m = /^([\\d,]+) gold\\s*$/.exec(body);',
 		'  if (m) { if (!w.start) w.start = now; w.gold += parseInt(m[1].replace(/,/g, ""), 10) || 0; w.golds++; return true; }',
 		'  return false;',

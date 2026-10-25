@@ -250,7 +250,7 @@ module.exports = [
 	t.eq('with the usual fields', [r.character, r.server], ['Dexon', 'USII']);
 } },
 
-{ name: 'kills and loot gold from the game become one row a minute; ours and "Received" do not', async fn(t) {
+{ name: 'own kills and loot gold from the game become one row a minute; a member\'s kill, ours and "Received" do not', async fn(t) {
 	const posted = [];
 	const { w, pg } = mk({ fetch: async (u, o) => { posted.push(...JSON.parse(o.body).lines); return { json: async () => ({ ok: true }) }; } });
 	const st = w.gamelogInstall();
@@ -272,9 +272,10 @@ module.exports = [
 	await w.gamelogFlush();
 	const r = posted[0] || {};
 	t.eq('one party row', [posted.length, r.kind, r.source], [1, 'party_minute', 'summary']);
-	t.eq('each monster with its count', r.kills, { Goo: 2, 'Arctic Bee': 1, Franky: 1 });
+	t.eq('precondition: the page is Dexon', pg.P.character.name, 'Dexon');
+	t.eq('his own kills only, by name or as You - every member receives the broadcast', r.kills, { Goo: 1, 'Arctic Bee': 1 });
 	t.eq('and the gold as one total', [r.gold, r.gold_drops], [1300, 2]);
-	t.eq('readable as a line', r.message, '[minute] kills: Arctic Bee 1, Franky 1, Goo 2 | loot gold 1300 (2 drops)');
+	t.eq('readable as a line', r.message, '[minute] kills: Arctic Bee 1, Goo 1 | loot gold 1300 (2 drops)');
 } },
 
 { name: 'a minute closes before the line that falls outside it, and a hop writes the open one', fn(t) {

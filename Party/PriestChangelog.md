@@ -21,6 +21,35 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v86
+
+**THE MINUTE ROW COUNTS ONLY THIS CHARACTER'S OWN KILLS** - GAMELOG `v: 3`, in
+the block shared by all five scripts. The browser session found every
+"[minute] kills" row written identically on Dexon, FatherToken and MageofOz
+within 1-3s. The server sends a party member's kill through `party_emit` to
+every member on the shard (`kill_monster`, upstream `2148cf25`), so each of the
+three was counting the party's total. A kill line now counts only when its
+killer is "You" or this character's name; the others are dropped from the file
+as before and still shown. The gold line is unchanged: in a party the server
+sends each member its own share of a chest, so it was never repeated. The three
+rows now add up to the party's kills. `v` moved so a page state from v2 is
+rebuilt on the next load.
+
+**A BOSS IS HELD OFF FROM GROUND IT CAN REACH** - `bossHoldSpots()`, new, and
+`bossPosture()`, byte-identical in Ranger, Priest and Mage. `bossPosture()`
+moved to one point: `hold` from the boss on our bearing. The browser session
+counted "cannot hold off mrgreen: failed" 24 times in 19 minutes on
+2026-10-25, each a smart_move "Path not found". Now the ring at `hold` is tried
+every 30 degrees from our bearing outward. A point is kept only if the boss can
+walk to it in a straight line (`can_move`), which puts it on the boss's side of
+every wall. Points we can also reach in a straight line come first, and points
+inside a rage box are dropped. Each refusal moves the next try one place down
+the list, so a refused spot is not asked for again every tick. A new boss
+starts at the top. With no `can_move`, or nothing passing, it moves to the
+bearing point as before. This addresses the near side of the mrgreen failure
+only: whether the failing walk from the farm spot was this, or the two-leg
+route from v140, was not separated in the log, and the second is unchanged.
+
 ## v85
 
 **FATHERTOKEN'S CHEST, LUCK AND ABSORB LINES STAY ON SCREEN AND OUT OF THE

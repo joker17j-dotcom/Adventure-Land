@@ -431,6 +431,7 @@ function ceilWorld(over) {
 		},
 		game_log: (m) => calls.logs.push(m),
 		bannerEmit: (n, v, emit) => emit(),   // the file-on-change gate; tested in suite_gamelog
+		bannerChanged: () => true,
 		api_call: over.api_call || (async () => ({ packs: over.bankPacks || { items0: [] } })),
 		atTownSpot: () => over.atTown !== false,
 		sell: async (i) => { if (over.sellFails) throw new Error('too_far'); calls.sold.push(i); },
@@ -508,6 +509,32 @@ module.exports.push(
 	w = ceilWorld({ api_call: async () => { throw new Error('down'); } });
 	await w.pontyBuyPass(rows);
 	t.eq('an unknown count does not stop the buy', w.calls.bought.indexOf('dexbelt+0') >= 0, true);
+} },
+
+{ name: 'v135 the ceiling skip line reaches the file once per id and level, until the ceiling is seen open', async fn(t) {
+	const rows = [{ rid: 'a', name: 'dexbelt', level: 0, price: 60000 }, { rid: 'c', name: 'dexbelt', level: 1, price: 90000 }];
+	const store = {}, kept = [];
+	let quiet = false;
+	const w = ceilWorld({ bankPacks: { items0: plus2(21) } });
+	Object.assign(w, {
+		get: (k) => (k in store ? JSON.parse(store[k]) : null), set: (k, v) => { store[k] = JSON.stringify(v); },
+		BANNER_KEY: 'merch_banner', bannerSeen: null,
+		gamelogQuietly: (fn) => { quiet = true; try { return fn(); } finally { quiet = false; } },
+		pontyLog: (m) => { if (!quiet) kept.push(m); },
+	});
+	lift(w, MERCHANT, ['bannerChanged', 'bannerEmit']);
+	await w.pontyBuyPass(rows);
+	await w.pontyBuyPass(rows);
+	t.eq('two passes at 21: each level kept once', kept.filter((m) => /craft-input ceiling/.test(m)),
+		['skipping dexbelt+0 - its craft-input ceiling is reached', 'skipping dexbelt+1 - its craft-input ceiling is reached']);
+	w.bannerSeen = null;
+	await w.pontyBuyPass(rows);
+	t.eq('and a hop does not forget it', kept.filter((m) => /craft-input ceiling/.test(m)).length, 2);
+	w.ceilingNoteBank({ items0: plus2(20) });
+	await w.pontyBuyPass(rows);
+	w.ceilingNoteBank({ items0: plus2(21) });
+	await w.pontyBuyPass(rows);
+	t.eq('seen open, then reached again: kept again', kept.filter((m) => /craft-input ceiling/.test(m)).length, 4);
 } },
 
 { name: 'ceiling: at 28 dexbelts stop being compounded or retrieved for it', fn(t) {

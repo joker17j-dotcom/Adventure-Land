@@ -5599,6 +5599,9 @@ scrolling away.
   `maintenanceLoop -> sellItems -> sell` selling the whitelist wherever he stood.
   Ranger v152 / Mage v108 sell only where `sellerInReach()` finds a merchant npc
   (an npc with a single `position` and `items`, the server's own rule).
+  Merchant v135 gates `sellTrash()` and the aggressive seller the same way, after
+  84 "Get closer" in 19 minutes on Meltymerch, on spookytown and level1. Found from
+  source, not recorded on him.
 - **FOUR KINDS OF LINE STOPPED REACHING THE FILE ONE BY ONE ON 2026-10-25** -
   operator's rulings, GAMELOG `v: 2` in all five scripts; the screen is unchanged.
   The three pathfinder lines become one `[minute] pathfinder` count row; the
@@ -5611,6 +5614,12 @@ scrolling away.
   window fields sit under `extra`** in the file, because the bridge keeps only its
   named fields at the top level. A page state from an older build is rebuilt on
   the next load, so a deploy by runner restart takes the new capture too.
+  **A KILL COUNTS ONLY ON THE KILLER'S OWN ROW (`v: 3`)**: the server sends a
+  member's kill to every member on the shard through `party_emit`, so v2 wrote the
+  party's total three times. Gold was never repeated - each member is sent its own
+  share of a chest - so the three rows now add up to the party.
+  The merchant's "[ponty] skipping <id>+N - its craft-input ceiling is reached"
+  reaches the file once per id and level, re-armed when that ceiling is seen open.
 - **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
   The wrapper and buffer are built with the PAGE's `Function`, so they outlive
   the CODE iframe. A failed POST leaves its lines in the buffer, and a hop

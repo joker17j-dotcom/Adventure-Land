@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v108
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v109
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3693,18 +3693,59 @@ function bossHoldDistance(mon) {
 	return Math.max(10, hold);
 }
 
+/* Where to stand, best first. The point on our bearing at `hold` was the only
+   answer until Ranger v153 / Priest v86 / Mage v109, and from the farm side of
+   mrgreen's arena it is often ground nobody can stand on: "cannot hold off
+   mrgreen: failed" 24 times in 19 minutes on 2026-10-25, every one a
+   smart_move "Path not found". So the ring at `hold` is tried every 30 degrees
+   from our bearing outward. A point the BOSS can walk to in a straight line is
+   on its side of every wall; one we can also reach in a straight line is
+   better. A point inside a rage box is dropped. With no can_move, or nothing
+   passing, the bearing point alone - the old behaviour. */
+function bossHoldSpots(mon, hold) {
+	const map = character.map, base = character.base;
+	const a0 = Math.atan2(character.y - mon.y, character.x - mon.x);
+	const line = (a, p) => {
+		if (typeof can_move !== 'function') return null;
+		try { return !!can_move({ map: map, x: a.x, y: a.y, going_x: p.x, going_y: p.y, base: base }); }
+		catch (e) { return false; }
+	};
+	const near = [], far = [];
+	for (const k of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6]) {
+		const a = a0 + k * Math.PI / 6;
+		const p = { x: mon.x + Math.cos(a) * hold, y: mon.y + Math.sin(a) * hold };
+		if (k && rageHit(map, p.x, p.y, 0)) continue;
+		const theirs = line(mon, p);
+		if (theirs === null) return [p];
+		if (!theirs) continue;
+		(line(character, p) ? near : far).push(p);
+	}
+	const out = near.concat(far);
+	return out.length ? out : [{ x: mon.x + Math.cos(a0) * hold, y: mon.y + Math.sin(a0) * hold }];
+}
+
+/* Refusals in a row against one boss; each one moves the next try along the
+   list, so a spot the pathfinder refuses is not asked for again every tick. */
+let bossPostureMiss = { id: null, n: 0 };
+
 /* Stand at that distance, whether we are currently too close or too far. */
 async function bossPosture(mon) {
 	const hold = bossHoldDistance(mon);
 	const dx = mon.x - character.x, dy = mon.y - character.y;
 	const dist = Math.hypot(dx, dy) || 1;
-	if (Math.abs(dist - hold) <= CONFIG.bossEvents.holdTolerance) return;
+	if (Math.abs(dist - hold) <= CONFIG.bossEvents.holdTolerance) { bossPostureMiss.n = 0; return; }
 	if (smart.moving) return;
-	const f = hold / dist;
+	const id = mon.id || mon.mtype;
+	if (bossPostureMiss.id !== id) bossPostureMiss = { id: id, n: 0 };
+	const spots = bossHoldSpots(mon, hold);
+	const p = spots[bossPostureMiss.n % spots.length];
 	/* A REFUSED MOVE IS NOTED, NOT THROWN: "Path not found!" rejected out of
 	   bossTick 275 times on 2026-10-25, skipping the rest of the tick. */
-	try { await safeMove(mon.x - dx * f, mon.y - dy * f); }
-	catch (e) { bossNote('cannot hold off ' + mon.mtype + ': ' + ((e && (e.reason || e.message)) || e)); }
+	try { await safeMove(p.x, p.y); }
+	catch (e) {
+		bossPostureMiss.n++;
+		bossNote('cannot hold off ' + mon.mtype + ': ' + ((e && (e.reason || e.message)) || e));
+	}
 }
 
 /* TRUE when the join is a TAXI to somewhere reachable on foot, which is the
@@ -5688,6 +5729,8 @@ setTimeout(function caveMailLoop() {
    - The party broadcasts "<X> killed a <Y>" and "N gold" become one row a
      minute per character: each monster killed with its count, and the
      window's loot gold as one total, because the gold line names no monster.
+     A kill counts only on the killer's own row and the others drop it, since
+     every member receives the broadcast; gold is each member's own share.
      Only lines the GAME wrote are summarised, never our own game_log().
      "Received N gold" is a different line and is kept.
    - A line a script sends through gamelogScreenOnly() is shown and not kept.
@@ -5700,7 +5743,7 @@ setTimeout(function caveMailLoop() {
 const GAMELOG = {
 	base: 'http://127.0.0.1:8787', path: '/gamelog',
 	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
-	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 2,
+	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 3,
 };
 
 /* Evaluated in whichever realm builds it - the page's by preference. Plain
@@ -5747,8 +5790,11 @@ function gamelogPageSource() {
 		'    return true;',
 		'  }',
 		'  if (source !== "game") return false;',
-		'  m = /^\\S+ killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
-		'  if (m) { if (!w.start) w.start = now; w.kills[m[1]] = (w.kills[m[1]] || 0) + 1; return true; }',
+		'  m = /^(\\S+) killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
+		'  if (m) {',
+		'    if (m[1] !== "You" && m[1] !== ((P.character && P.character.name) || "")) return true;',
+		'    if (!w.start) w.start = now; w.kills[m[2]] = (w.kills[m[2]] || 0) + 1; return true;',
+		'  }',
 		'  m = /^([\\d,]+) gold\\s*$/.exec(body);',
 		'  if (m) { if (!w.start) w.start = now; w.gold += parseInt(m[1].replace(/,/g, ""), 10) || 0; w.golds++; return true; }',
 		'  return false;',

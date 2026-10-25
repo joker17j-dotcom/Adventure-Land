@@ -1,4 +1,7 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v28 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v29 (TEST BUILD)
+// v29 2026-10-25 THE SHARED GAMELOG BLOCK IS v3 - nothing else changed. A kill
+//                counts only on the killer's own minute row, because every party
+//                member receives the broadcast. See Party/RangerChangelog.md, v153.
 // v28 2026-10-25 THE SHARED GAMELOG BLOCK IS v2 - nothing else changed. The
 //                game-log FILE takes the pathfinder lines and the game's kill
 //                and gold lines as one summary row a minute, and a page state
@@ -4284,6 +4287,8 @@ launcherStart();
    - The party broadcasts "<X> killed a <Y>" and "N gold" become one row a
      minute per character: each monster killed with its count, and the
      window's loot gold as one total, because the gold line names no monster.
+     A kill counts only on the killer's own row and the others drop it, since
+     every member receives the broadcast; gold is each member's own share.
      Only lines the GAME wrote are summarised, never our own game_log().
      "Received N gold" is a different line and is kept.
    - A line a script sends through gamelogScreenOnly() is shown and not kept.
@@ -4296,7 +4301,7 @@ launcherStart();
 const GAMELOG = {
 	base: 'http://127.0.0.1:8787', path: '/gamelog',
 	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
-	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 2,
+	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 3,
 };
 
 /* Evaluated in whichever realm builds it - the page's by preference. Plain
@@ -4343,8 +4348,11 @@ function gamelogPageSource() {
 		'    return true;',
 		'  }',
 		'  if (source !== "game") return false;',
-		'  m = /^\\S+ killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
-		'  if (m) { if (!w.start) w.start = now; w.kills[m[1]] = (w.kills[m[1]] || 0) + 1; return true; }',
+		'  m = /^(\\S+) killed (?:(?:a|an|the) )?(.+?)\\s*$/.exec(body);',
+		'  if (m) {',
+		'    if (m[1] !== "You" && m[1] !== ((P.character && P.character.name) || "")) return true;',
+		'    if (!w.start) w.start = now; w.kills[m[2]] = (w.kills[m[2]] || 0) + 1; return true;',
+		'  }',
 		'  m = /^([\\d,]+) gold\\s*$/.exec(body);',
 		'  if (m) { if (!w.start) w.start = now; w.gold += parseInt(m[1].replace(/,/g, ""), 10) || 0; w.golds++; return true; }',
 		'  return false;',

@@ -2855,6 +2855,95 @@ module.exports = [
 	}
 } },
 
+{ name: 'Merchant v135 the NPC sell passes wait for a merchant npc in reach, like v152', fn(t) {
+	const { extract } = require('./lift');
+	const MER = 'Party/Merchant.js';
+	t.eq('sellerInReach is the ranger’s in the merchant, byte for byte', extract(MER, 'sellerInReach') === extract(RANGER, 'sellerInReach'), true);
+	for (const fn of ['sellTrash', 'sellAggressivelyIfLowOnSpace']) {
+		const body = extract(MER, fn);
+		t.ok(fn + ' asks sellerInReach before the loop', body.indexOf('if (!sellerInReach()) return;') > 0
+			&& body.indexOf('if (!sellerInReach()) return;') < body.indexOf('for (let i'));
+	}
+	const G = {
+		npcs: { gabriel: { items: ['hpot0'] } },
+		maps: { main: { npcs: [{ id: 'gabriel', position: [0, 0] }] }, level1: { npcs: [] } },
+	};
+	const sw = (map, x) => {
+		const sold = [];
+		const w = world({
+			G, character: { map, x, y: 0, items: [{ name: 'pstem', q: 3 }, null, { name: 'stramulet' }] },
+			CONFIG: { selling: { enabled: true, whitelist: ['pstem', 'stramulet'] } },
+			sell: (i) => { sold.push(i); }, VENDOR_REACH: 380,
+			arbHeldNames: () => ({}), isExchangeable: () => false,
+		});
+		w.sold = sold;
+		lift(w, MER, ['sellerInReach', 'sellTrash']);
+		return w;
+	};
+	let w = sw('level1', 0);
+	w.sellTrash();
+	t.eq('walking level1, nothing is sent', w.sold.length, 0);
+	w = sw('main', 500);
+	w.sellTrash();
+	t.eq('nor 500 from Gabriel', w.sold.length, 0);
+	w = sw('main', 129);
+	w.sellTrash();
+	t.eq('at the town spot the whitelist sells', JSON.stringify(w.sold), '[0,2]');
+} },
+
+{ name: 'v153 a boss is held off from ground it can reach, and a refused spot is not asked for again', async fn(t) {
+	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
+	const { extract } = require('./lift');
+	for (const n of ['bossHoldSpots', 'bossPosture'])
+		for (const f of FILES.slice(1)) t.eq(f + ': ' + n + ' is the ranger’s, byte for byte', extract(f, n) === extract(RANGER, n), true);
+	/* mrgreen at the origin, Dexon 600 to the west; a wall fills x < -60, so the
+	   bearing point (-100, 0) is ground nobody stands on. */
+	const wall = (o) => o.x >= -60 && o.going_x >= -60;
+	const mk = (over = {}) => {
+		const moves = [], notes = [];
+		const w = world(Object.assign({
+			character: { map: 'spookytown', x: -600, y: 0, base: {} }, smart: { moving: false },
+			CONFIG: { bossEvents: { holdTolerance: 10 } },
+			bossHoldDistance: () => 100,
+			can_move: wall, rageHit: () => null,
+			safeMove: async (x, y) => { moves.push([Math.round(x), Math.round(y)]); if (over.refuse) throw { reason: 'failed' }; },
+			bossNote: (m) => notes.push(m), bossPostureMiss: { id: null, n: 0 },
+		}, over.w || {}));
+		lift(w, RANGER, ['bossHoldSpots', 'bossPosture']);
+		w.moves = moves; w.notes = notes;
+		return w;
+	};
+	const mon = { id: 'g1', x: 0, y: 0, mtype: 'mrgreen' };
+	let w = mk();
+	const spots = w.bossHoldSpots(mon, 100);
+	t.eq('precondition: the bearing point is behind the wall', wall({ x: 0, y: 0, going_x: -100, going_y: 0 }), false);
+	t.ok('it is not offered', !spots.some((p) => Math.round(p.x) === -100 && Math.round(p.y) === 0));
+	t.ok('every spot offered is one the boss walks to', spots.length > 0 && spots.every((p) => wall({ x: 0, y: 0, going_x: p.x, going_y: p.y })));
+	t.ok('each at the hold distance', spots.every((p) => Math.abs(Math.hypot(p.x, p.y) - 100) < 1e-6));
+	t.eq('nearest our bearing first: 60 degrees round', [Math.round(spots[0].x), Math.abs(Math.round(spots[0].y))], [-50, 87]);
+	await w.bossPosture(mon);
+	t.eq('the move goes to the first of them', w.moves, [[-50, Math.round(spots[0].y)]]);
+
+	w = mk({ refuse: true });
+	await w.bossPosture(mon); await w.bossPosture(mon); await w.bossPosture(mon);
+	t.eq('three refusals, three different spots', new Set(w.moves.map(String)).size, 3);
+	t.eq('each refusal noted', w.notes.length, 3);
+	await w.bossPosture({ id: 'g2', x: 0, y: 0, mtype: 'mrgreen' });
+	t.eq('a new boss starts at the top of its list', String(w.moves[3]), String(w.moves[0]));
+
+	w = mk({ w: { can_move: undefined } });
+	delete w.can_move;
+	const bare = w.bossHoldSpots(mon, 100);
+	t.eq('with no can_move: the bearing point alone, as before', bare.map((p) => [Math.round(p.x), Math.round(p.y)]), [[-100, 0]]);
+	w = mk({ w: { can_move: () => false } });
+	t.eq('with nothing passing: the bearing point', w.bossHoldSpots(mon, 100).map((p) => [Math.round(p.x), Math.round(p.y)]), [[-100, 0]]);
+	w = mk({ w: { rageHit: (m, x, y) => (y > 0 ? { r: [] } : null) } });
+	t.ok('a spot inside a rage box is dropped', w.bossHoldSpots(mon, 100).every((p) => p.y <= 1e-9));
+	w = mk({ w: { can_move: (o) => !(o.x === -600 && o.going_y < -1) } });
+	const order = w.bossHoldSpots(mon, 100);
+	t.ok('a spot we walk to in a straight line comes before one we do not', order[0].y >= -1e-9);
+} },
+
 { name: 'v141 a buy is sent only where that item’s vendor is in reach', fn(t) {
 	const FILES = [RANGER, 'Party/Priest.js', 'Party/Mage.js'];
 	const fs = require('fs'), path = require('path'), ROOT = require('./lift').ROOT, { extract } = require('./lift');
@@ -3408,8 +3497,9 @@ module.exports = [
 			bossHoldDistance: () => 100,
 			safeMove: async () => { throw { reason: 'failed', place: 'smart_move' }; },
 			bossNote: (m2) => { notes.push(m2); },
+			bossPostureMiss: { id: null, n: 0 }, rageHit: () => null,
 		});
-		lift(bw, RANGER, ['bossPosture']);
+		lift(bw, RANGER, ['bossHoldSpots', 'bossPosture']);
 		let threw = false;
 		try { await bw.bossPosture({ x: 500, y: 0, mtype: 'mrgreen' }); } catch (e) { threw = true; }
 		t.eq('Path not found does not throw out of the tick', threw, false);
