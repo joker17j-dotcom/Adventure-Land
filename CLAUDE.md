@@ -6062,3 +6062,126 @@ for it in any script before Ranger v121 / Merchant v115.
 - **Code runs in the character's CODE context** (`character.*` resolves, so
   `disconnect()` is reachable) and the emit returns nothing. Round-trip results
   through `parent.localStorage` and remove the key afterwards.
+
+## On-demand: script and repo review
+
+**Both sessions. Run ONLY when the operator asks**, naming the scope ("script review: Ranger",
+"script review: all"). Never as a side task, never folded into a feature commit.
+
+### What the operator is asking for
+A review whose goal is a BETTER repo, of which a smaller script is one possible outcome. Every
+candidate for removal is first a question - "why is this not running?" - and only then a
+deletion. Dead code here has more often been a defect than clutter:
+- a flag nothing read (`bossSetSwapEnabled`);
+- an unreachable table entry because a name was wrong (`bossRank.goobrawl` before v115);
+- a limitation stated in a comment that the code beside it ignored (`CaveRun.js:227`).
+Deleting those destroys the evidence of a bug.
+
+**SINGLE-SESSION REVIEWS HAVE MISCLASSIFIED LIVE CODE AS DEAD BEFORE**, and the operator then read
+the findings as settled. So nothing reaches the operator for a ruling until BOTH sessions have
+reviewed it, and nothing is deleted before the ruling.
+
+### Phase 1 - Inventory (Claude Code session; no edits)
+At the committed revision (`git show origin/main:<path>`, never the working tree), for the named
+scripts:
+1. **Unreferenced declarations** - functions, consts, CONFIG keys, table entries with no reader.
+   AST pass, not regex: a regex counts the `// CONFIG.<path>` annotations in TOGGLES blocks as
+   readers.
+2. **Unreachable branches** - conditions that cannot be true given the code and live `G`.
+3. **Duplicates within a file** - logic written two or more times that could be one helper.
+4. **Copies across files** - these CANNOT be merged (CODE slots share no module). Report
+   whether each is on a divergence check in `Tests/`, and whether the copies already differ.
+5. **Size without behaviour** - comments that belong in `<Name>Comments.md` under the existing
+   split rule; stale comments; workarounds whose cause is gone; repeated literals.
+6. **Measurements** - UTF-8 bytes and lines per script and per category, against the CODE slot
+   ceiling.
+7. **READMEs and docs** - every README and `*Comments.md` / `*Changelog.md` checked against the
+   code: paths that moved, functions renamed or gone, `->` pointers that do not resolve,
+   commands that no longer exist, counts and versions quoted as current. Each mismatch is
+   listed with the fix.
+8. **Folder organisation** - whether the layout still fits the repo: misplaced files, folders
+   that have outgrown their purpose, stale reference material, files no longer used.
+   **FIRST REVIEW: full pass. LATER REVIEWS: a short check** - `git diff --stat
+   <last review commit>..HEAD` - and a full pass only if files were added, moved or deleted in
+   bulk since. A recommended move lists every reference that would need updating (CLAUDE.md,
+   READMEs, tests, `Codex/` paths, the slot headers) and is never done by the review itself.
+
+### Classification - every item gets exactly one, with its evidence
+- **DEFECT** - should be running and is not. Reported as a bug with a fix, never as a deletion.
+- **DEAD** - no reader, no hand-call path, no planned use. Removable after a ruling.
+- **DORMANT BY DESIGN** - looks dead and is not. These are never removed by a review:
+  - operator console commands (`achvStop()`, `mhForget()`, `caveLeash()`, `gamelogStatus()`
+    and the like);
+  - anything named in a relay message, a `window.*`/`parent.*` export or a string dispatch;
+  - flags the operator flips;
+  - seasonal entries kept year-round (horseman, dragold under `lunarnewyear`);
+  - fallbacks for a live `G` field being absent;
+  - guards already labelled inert.
+- **CONSOLIDATE** - a within-file duplicate, with the proposed helper.
+- **DIVERGENCE RISK** - a non-trivial cross-file copy with no divergence check, or copies that
+  already differ. The fix is a test, not a merge.
+- **MOVE** - comment text to `<Name>Comments.md`, keeping a `->` pointer that resolves.
+- **DOCS** - a README or doc mismatch.
+- **LAYOUT** - a folder or file recommendation.
+- **UNSURE** - cannot be decided statically.
+
+Evidence means: what was searched for, the SET searched over, and the revision. "No references
+found" without the set is not evidence.
+
+### Phase 2 - Second review (browser-driven session), before the operator sees anything
+The browser-driven session receives the inventory and tries to DISPROVE every DEAD and
+CONSOLIDATE item. For each it:
+- searches the paths a static pass misses: hand-run commands, relay messages, string dispatch,
+  slot-to-slot calls, `parent.*` readers in another script, CaveRun's `window.*` exports,
+  bridge consumers;
+- feature-detects in the live CODE context where that settles it;
+- for UNSURE items, instruments live: wrap the function and count calls over a window that
+  actually exercises the trigger (a boss trip, a graveyard, a hop, a merchant loop, a cave run).
+  Report the count AND the window; zero over a window that never hit the trigger proves nothing.
+  UNSURE items are batched into one day's observation. Anything still UNSURE after it stays in
+  place and is recorded as such.
+It returns AGREE, DISPUTE (with evidence) or UNSURE for each item. The two sessions settle
+disputes between themselves where the evidence decides it, and mark the rest DISPUTED.
+
+### Phase 3 - Operator ruling
+One Markdown report, grouped by classification. Each item carries both sessions' verdicts, bytes
+saved and a recommendation; DISPUTED items carry both arguments. The operator rules per item or
+per group. No edit happens before the ruling, and removing any CONFIG key needs a ruling on that
+key by name.
+
+### Phase 4 - Changes (Claude Code session)
+- DEFECT fixes first, in their own commits.
+- Then one commit per classification, so a regression is attributable.
+- CONSOLIDATE must not change behaviour: lift the originals and the new helper in a suite and
+  assert identical results on the same inputs before deleting the originals.
+- Cross-file copies change in every file together, or not at all.
+- Version bump and changelog entry per script, naming what was removed and why, so `git log -S`
+  finds it later.
+- LAYOUT moves only as their own commit, with every reference updated in the same commit.
+
+### Phase 5 - Verification (no "no performance loss" claim without these)
+- `node Tests/run.js` green, plus a mutation per removed guard or consolidated helper showing
+  the suite still notices what it protected.
+- Before/after UTF-8 bytes and lines per script.
+- After the operator deploys, the browser-driven session:
+  - hashes every slot against the commit;
+  - feature-detects each consolidated helper;
+  - watches one cycle of each affected behaviour;
+  - compares the game-log file's error lines against the same hours the day before.
+CaveRun's live checks need a cave run, so they wait for one.
+
+### Phase 6 - Published report
+When complete, commit `Reviews/<YYYY-MM-DD>-script-review.md` to `main`. It records:
+- scope;
+- revision reviewed;
+- each item with both sessions' verdicts and the operator's ruling;
+- DEFECTS found and fixed;
+- what was removed or moved, with bytes saved;
+- items left DORMANT and why;
+- DIVERGENCE RISKS now covered by tests;
+- DOCS fixed;
+- LAYOUT recommendations and their outcome;
+- anything still UNSURE;
+- the commit range.
+The next review starts by reading the last report and the `git diff --stat` since it. Any new
+trap hit during the review is added to CLAUDE.md as well.
