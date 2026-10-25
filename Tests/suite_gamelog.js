@@ -275,7 +275,7 @@ module.exports = [
 	t.eq('precondition: the page is Dexon', pg.P.character.name, 'Dexon');
 	t.eq('his own kills only, by name or as You - every member receives the broadcast', r.kills, { Goo: 1, 'Arctic Bee': 1 });
 	t.eq('and the gold as one total', [r.gold, r.gold_drops], [1300, 2]);
-	t.eq('readable as a line', r.message, '[minute] kills: Arctic Bee 1, Goo 1 | loot gold 1300 (2 drops)');
+	t.eq('readable as a line', r.message, '[minute] kills: Arctic Bee 1, Goo 1 | own share of loot gold 1300 (2 drops)');
 } },
 
 { name: 'a minute closes before the line that falls outside it, and a hop writes the open one', fn(t) {

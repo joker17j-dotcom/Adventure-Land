@@ -21,6 +21,21 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v110
+
+**THE MINUTE ROW'S GOLD SAYS IT IS THIS CHARACTER'S OWN SHARE** - GAMELOG `v: 4`,
+in the block shared by all five scripts; the label is the only change. The
+browser session saw the same "loot gold" figure on Dexon, FatherToken and MageofOz
+in the same minute, on rows that carried no kills, and asked whether it was one
+chest reported three times. It is not. In a party the server's chest-open path
+gives each member `chest.gold * share * goldm` and sends that member its own
+"N gold" line. `share` is the owner's output divided by the owner's character
+count and by the party's output (`node/server.js`, upstream `2148cf25`). Our three
+are one owner and the merchant counts for nothing, so each `share` is exactly a
+third. So the figures are equal shares, the party's loot is the SUM of the three
+rows, and a "kills: none" row is still a character's own gold. The row now reads
+"own share of loot gold", so it says which.
+
 ## v109
 
 **THE MINUTE ROW COUNTS ONLY THIS CHARACTER'S OWN KILLS** - GAMELOG `v: 3`, in

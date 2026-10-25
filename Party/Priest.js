@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v86
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v87
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6363,7 +6363,10 @@ setTimeout(function caveMailLoop() {
      minute per character: each monster killed with its count, and the
      window's loot gold as one total, because the gold line names no monster.
      A kill counts only on the killer's own row and the others drop it, since
-     every member receives the broadcast; gold is each member's own share.
+     every member receives the broadcast. The gold line is this member's own
+     share, sent to each member separately: the server splits a chest by
+     `share`, which is equal across one account's characters, so the party's
+     loot is the SUM of the rows and equal figures on all three are expected.
      Only lines the GAME wrote are summarised, never our own game_log().
      "Received N gold" is a different line and is kept.
    - A line a script sends through gamelogScreenOnly() is shown and not kept.
@@ -6376,7 +6379,7 @@ setTimeout(function caveMailLoop() {
 const GAMELOG = {
 	base: 'http://127.0.0.1:8787', path: '/gamelog',
 	everyMs: 3000, batch: 400, keep: 600, timeoutMs: 5000,
-	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 3,
+	unsentKey: 'gamelog_unsent_', seenKey: 'gamelog_seen_', minuteMs: 60000, v: 4,
 };
 
 /* Evaluated in whichever realm builds it - the page's by preference. Plain
@@ -6406,7 +6409,7 @@ function gamelogPageSource() {
 		'  var end = force ? now : w.start + minuteMs;',
 		'  var names = Object.keys(w.kills).sort(), parts = [];',
 		'  for (var i = 0; i < names.length; i++) parts.push(names[i] + " " + w.kills[names[i]]);',
-		'  if (parts.length || w.golds) st.row("[minute] kills: " + (parts.join(", ") || "none") + " | loot gold " + w.gold',
+		'  if (parts.length || w.golds) st.row("[minute] kills: " + (parts.join(", ") || "none") + " | own share of loot gold " + w.gold',
 		'    + " (" + w.golds + " drops)", null, "summary", { kind: "party_minute", window_start: w.start,',
 		'    window_end: end, kills: w.kills, gold: w.gold, gold_drops: w.golds });',
 		'  if (w.pfn) st.row("[minute] pathfinder: searching " + w.pf.searching + ", found " + w.pf.found',

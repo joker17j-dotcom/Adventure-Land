@@ -5618,6 +5618,11 @@ scrolling away.
   member's kill to every member on the shard through `party_emit`, so v2 wrote the
   party's total three times. Gold was never repeated - each member is sent its own
   share of a chest - so the three rows now add up to the party.
+  **EQUAL GOLD ON ALL THREE IS EXPECTED, NOT A REPEAT**: a party chest gives each
+  member `chest.gold * share * goldm`, and `share` is the owner's output over the
+  owner's character count over the party's output, so for one account's three
+  characters it is exactly a third each (the merchant counts for nothing). The row
+  reads "own share of loot gold" as of `v: 4`.
   The merchant's "[ponty] skipping <id>+N - its craft-input ceiling is reached"
   reaches the file once per id and level, re-armed when that ceiling is seen open.
 - **IT SURVIVES A RUNNER RESTART, A HOP AND A BRIDGE OUTAGE, up to 600 lines.**
