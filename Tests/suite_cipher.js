@@ -6,11 +6,14 @@
    for the first `gathering` seconds of a round, sixteen monsters carry one of
    four ingredients in their normal loot at `loot * hp / 1000` per kill; the
    round is published on its own shard as S.witchcipher with `phase` and an
-   exact `gather_end`; the season ends at S.event_ends.halloween (epoch ms).
+   exact `gather_end`.
    Operator's rulings 2026-10-24: farm only while Meltymerch holds fewer than
    25 of any one IN HIS OWN BAG, during a gathering window, nothing outranking
    it; hop to another shard's window if needed, home preferred in home's own
-   window; he keeps them in the bag until the season ends.
+   window; he keeps them in the bag. 2026-10-25: no season end - the cipher
+   stays in the daily rotation, so the farming and the bag hold run year-round;
+   up to one full stack is kept, the smaller stack beyond it sold, and never
+   bought back from Ponty.
 
    Every function under test is lifted from the committed files. */
 
@@ -67,7 +70,7 @@ const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 7, CIPHER_RANK:
 const RANGER_FNS = ['cipherLog', 'cipherSay', 'cipherRules', 'cipherIngredients', 'cipherGatherMs', 'cipherLootRate',
 	'cipherOnStock', 'cipherShort', 'cipherWindowHere', 'cipherDoorDistance', 'cipherTravelSec',
 	'cipherSpots', 'cipherOwnsSpot', 'cipherApply', 'cipherRelease', 'cipherIdleReason',
-	'cipherSeasonOpen', 'cipherTick', 'farmSpotKill', 'FARM_SEARCH', 'spotKey', 'isPermanentlyBlacklisted',
+	'cipherTick', 'farmSpotKill', 'FARM_SEARCH', 'spotKey', 'isPermanentlyBlacklisted',
 	'isMapSafeForFarming', 'dodgeMultiplier', 'mitigated', 'defenseMultiplier'];
 
 function cfg() {
@@ -142,7 +145,7 @@ function hopWorld(o = {}) {
 		'BOSS_RANK', 'bossRank', 'BOSS_JOIN_SPOTS', 'bossTaxiWalkable',
 		'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossEligible',
 		'cipherRules', 'cipherIngredients',
-		'cipherGatherMs', 'cipherOnStock', 'cipherShort', 'cipherSeasonOpen', 'bossHop']);
+		'cipherGatherMs', 'cipherOnStock', 'cipherShort', 'bossHop']);
 	w.bossCooperative = () => true;
 	w.hops = [];
 	w.bossHop.lootBeforeHop = async () => false;
@@ -173,8 +176,8 @@ function merchantWorld(o = {}) {
 	w.cipherStockSent = '';
 	w.cipherStockSentAt = 0;
 	w.CIPHER_INGREDIENTS_FALLBACK = INGREDIENTS.map((x) => x[0]);
-	lift(w, MERCHANT, ['cipherIngredientNames', 'cipherSeasonOpen',
-		'cipherHeldInBag', 'cipherStockCounts', 'cipherStockTick']);
+	lift(w, MERCHANT, ['cipherIngredientNames', 'cipherHeldInBag', 'cipherBagQty',
+		'cipherStockCounts', 'cipherStockTick', 'pontyStackCap']);
 	return w;
 }
 
@@ -318,10 +321,11 @@ module.exports = [
 	const after = rangerWorld({ S: Object.assign(gathering(NOW, 900000), { event_ends: { halloween: NOW - 1000 } }) });
 	stock(after, Object.assign({}, FULL, { verdantspore: 3 }));
 	after.cipherTick();
-	t.eq('season over: nothing farmed', after.manualOverride, null);
-	t.eq('the season end is the server\'s own, with the date as fallback',
-		[rangerWorld().cipherSeasonOpen(Date.parse('2026-11-02T23:59:00Z')),
-			rangerWorld().cipherSeasonOpen(Date.parse('2026-11-03T00:00:00Z'))], [true, false]);
+	t.eq('Halloween over: still farmed - the cipher stays in the daily rotation (2026-10-25)',
+		after.manualOverride && after.manualOverride.home, 'bee');
+	t.eq('and nothing in the file reads a season end any more', /cipherSeasonOpen|event_ends/.test(
+		text(RANGER).slice(text(RANGER).indexOf('WITCH\'S CIPHER INGREDIENT FARMING  ->'),
+			text(RANGER).indexOf('TRICK OR TREAT - the knock route.'))), false);
 } },
 
 { name: 'cipher: re-picked when the short set changes, and only then', fn(t) {
@@ -384,7 +388,7 @@ module.exports = [
 	t.eq('no count: no plan', w.bossHop.cipherPlan('USII'), null);
 	w = mk({ S: { event_ends: { halloween: NOW - 1 } } });
 	feed(w, [crow('EUI', NOW + 60000)]);
-	t.eq('after the season: no plan', w.bossHop.cipherPlan('USII'), null);
+	t.eq('after Halloween: still planned', w.bossHop.cipherPlan('USII') && w.bossHop.cipherPlan('USII').shard, 'EUI');
 	w = mk();
 	feed(w, [crow('EUI', NOW + 60000)]);
 	w.bossHop.schedAt = NOW - 400000;
@@ -491,17 +495,23 @@ module.exports = [
 	t.eq('the farm scorer reads the same kill model', /const kill = farmSpotKill\(mobData, spot, dps, healThroughput, partyEffectiveHp\);/.test(src), true);
 } },
 
-{ name: 'merchant: the four stay in the bag until Halloween ends', fn(t) {
+{ name: 'merchant: the four stay in the bag, with no season end', fn(t) {
 	const NOW = Date.now();
 	const w = merchantWorld();
-	t.eq('in season: held', ['verdantspore', 'gloomfeather'].map(w.cipherHeldInBag), [true, true]);
+	t.eq('held', ['verdantspore', 'gloomfeather'].map(w.cipherHeldInBag), [true, true]);
 	t.eq('anything else: not', w.cipherHeldInBag('essenceofether'), false);
 	const after = merchantWorld({ S: { event_ends: { halloween: NOW - 1 } } });
-	t.eq('after the season: banked like any kept material', after.cipherHeldInBag('verdantspore'), false);
+	t.eq('after Halloween: still held (2026-10-25)', after.cipherHeldInBag('verdantspore'), true);
 
 	const src = text(MERCHANT);
-	t.ok('all four are kept materials, so they bank once released',
-		/keepAndBank: \[[\s\S]*?'verdantspore', 'frostscale', 'embercoal', 'gloomfeather'\]/.test(src));
+	const kab = src.match(/keepAndBank: \[([\s\S]*?)\]/);
+	/* Block comments stripped across lines FIRST, then line comments - a
+	   "Witch's" in a comment would otherwise pair with the next quote. */
+	const kabNames = kab ? (kab[1].replace(/\/\*[\s\S]*?\*\//g, '').split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n')
+		.match(/'([^']+)'/g) || []).map((x) => x.slice(1, -1)) : null;
+	t.ok('precondition: keepAndBank parsed', !!kabNames && kabNames.indexOf('snakeoil') >= 0);
+	t.eq('and they are no longer kept-and-banked - the bag is where they live',
+		INGREDIENTS.map((x) => x[0]).filter((n) => kabNames && kabNames.indexOf(n) >= 0), []);
 	/* Every bank_store in the file sits behind the gate. Counted, so a sixth
 	   site cannot arrive unguarded without this failing. */
 	const stores = (src.match(/await bank_store\(/g) || []).length;
@@ -531,11 +541,107 @@ module.exports = [
 	t.eq('and the same count is re-sent after five minutes, so Dexon\'s copy never goes stale while we run', w.sent.length, 3);
 	const after = merchantWorld({ S: { event_ends: { halloween: Date.now() - 1 } } });
 	after.cipherStockTick();
-	t.eq('after the season nothing is sent - the bag count stops meaning anything', after.sent.length, 0);
+	t.eq('after Halloween it is still sent', after.sent.length, 1);
 	/* End to end: the merchant's body, as sent, read by the ranger's receiver. */
 	const r = rangerWorld();
 	r.cipherOnStock(w.sent[2].body);
 	t.eq('and Dexon reads what he sent', r.cipherShort(Date.now()), ['verdantspore', 'frostscale', 'embercoal', 'gloomfeather']);
+} },
+
+{ name: 'merchant: a second stack over a full one is sold, the full stack never', fn(t) {
+	const FULLQ = 9999;
+	const mk = (items, over = {}) => {
+		const w = merchantWorld({ items });
+		w.parent.G.items = { verdantspore: { s: 9999 }, gloomfeather: { s: true }, frostscale: { s: 9999 }, embercoal: { s: 9999 } };
+		w.calls = [];
+		w.parent.calculate_item_value = () => 720;
+		w.atTownSpot = () => over.atTown !== false;
+		w.ceilingBuyer = () => over.buyer || null;
+		w.sell = async (i, q) => { if (over.sellThrows) throw { reason: 'nope' }; w.calls.push('sell ' + i + ' x' + q); };
+		w.trade_sell = async (e, slot, q) => { w.calls.push('trade ' + e.name + ' ' + slot + ' x' + q); };
+		w.cipherSellPauseUntil = 0;
+		lift(w, MERCHANT, ['cipherOverflowSellPass']);
+		return w;
+	};
+	return (async () => {
+		let w = mk([{ name: 'verdantspore', q: FULLQ }, { name: 'verdantspore', q: 300 }, { name: 'gloomfeather', q: 500 }]);
+		await w.cipherOverflowSellPass();
+		t.eq('the smaller stack goes to the NPC, whole; the full one and an unfull name are left', w.calls, ['sell 1 x300']);
+
+		w = mk([{ name: 'verdantspore', q: 300 }, { name: 'verdantspore', q: FULLQ }]);
+		await w.cipherOverflowSellPass();
+		t.eq('whichever slot the full stack is in', w.calls, ['sell 0 x300']);
+
+		w = mk([{ name: 'gloomfeather', q: 4000 }, { name: 'gloomfeather', q: 3000 }]);
+		await w.cipherOverflowSellPass();
+		t.eq('two part stacks with no full one: nothing sold', w.calls, []);
+
+		w = mk([{ name: 'gloomfeather', q: FULLQ }, { name: 'gloomfeather', q: 7 }]);
+		await w.cipherOverflowSellPass();
+		t.eq('a boolean-shaped stack size reads as 9999 too', w.calls, ['sell 1 x7']);
+
+		w = mk([{ name: 'verdantspore', q: FULLQ }, { name: 'verdantspore', q: 300 }], { atTown: false });
+		await w.cipherOverflowSellPass();
+		t.eq('away from town with no buyer: waits', w.calls, []);
+
+		const buyer = { entity: { name: 'Stall', slots: { trade3: { q: 120 } } }, slot: 'trade3', price: 900 };
+		w = mk([{ name: 'verdantspore', q: FULLQ }, { name: 'verdantspore', q: 300 }], { atTown: false, buyer });
+		await w.cipherOverflowSellPass();
+		t.eq('a stand buying above NPC price takes what its order wants', w.calls, ['trade Stall trade3 x120']);
+
+		w = mk([{ name: 'verdantspore', q: FULLQ }, { name: 'verdantspore', q: 300, l: 'l' }]);
+		await w.cipherOverflowSellPass();
+		t.eq('a locked stack is never sold', w.calls, []);
+
+		w = mk([{ name: 'verdantspore', q: FULLQ }, { name: 'verdantspore', q: 300 }], { sellThrows: true });
+		await w.cipherOverflowSellPass();
+		t.ok('a failed sale backs off a minute', w.cipherSellPauseUntil > Date.now() + 50000);
+
+		const src = text(MERCHANT);
+		t.ok('it runs on the maintenance tick, beside the ceiling sale',
+			/await ceilingSellPass\(\); \}[\s\S]{0,200}?await cipherOverflowSellPass\(\);/.test(src));
+	})();
+} },
+
+{ name: 'merchant: Ponty never buys back past a full stack in the bag', fn(t) {
+	const mk = (items, bank) => {
+		const w = merchantWorld({ items });
+		w.parent.G.items = { verdantspore: { s: 9999 }, ashleaf: { s: 9999 } };
+		w.CONFIG = { pontyBuy: { enabled: true, capAtOneStack: true, maxPrice: {}, maxLevel: {} } };
+		w.bought = [];
+		w.pontyWanted = () => new Set(['verdantspore', 'ashleaf']);
+		w.pontyLog = (m) => w.logs.push(String(m));
+		w.pontyFmt = (n) => String(n);
+		w.mShardKey = () => 'USII';
+		w.pontyBankQty = async () => bank;
+		w.ceilingCfg = () => null;
+		w.ceilingRefresh = async () => {};
+		w.ceilingState = () => ({ stopBuy: false });
+		w.pontyBuyGate = () => ({ ok: true });
+		w.pontyBuyOne = async (r) => { w.bought.push(r.name); return { ok: true, spent: 1 }; };
+		w.pontyRemember = () => {};
+		w.pontyFreeSlots = () => 20;
+		lift(w, MERCHANT, ['pontyBuyPass']);
+		return w;
+	};
+	const rows = [{ rid: 'a', name: 'verdantspore', price: 1440 }, { rid: 'b', name: 'ashleaf', price: 30 }];
+	return (async () => {
+		let w = mk([{ name: 'verdantspore', q: 9999 }], {});
+		await w.pontyBuyPass(rows);
+		t.eq('a full stack in the BAG stops the cipher buy; other items unaffected', w.bought, ['ashleaf']);
+
+		w = mk([{ name: 'verdantspore', q: 9999 }], null);
+		await w.pontyBuyPass(rows);
+		t.eq('even when the bank read failed', w.bought, ['ashleaf']);
+
+		w = mk([{ name: 'verdantspore', q: 300 }], {});
+		await w.pontyBuyPass(rows);
+		t.eq('short of a stack, it buys (cheapest first, as always)', w.bought, ['ashleaf', 'verdantspore']);
+
+		w = mk([], { ashleaf: 9999 });
+		await w.pontyBuyPass(rows);
+		t.eq('the bank cap still governs everything else', w.bought, ['verdantspore']);
+	})();
 } },
 
 ];

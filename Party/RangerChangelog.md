@@ -21,6 +21,15 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v147
+
+**CIPHER FARMING HAS NO SEASON END**, operator 2026-10-25: the cipher stays in
+the daily rotation after Halloween, so the farming does too. The season gate is
+gone from `cipherIdleReason()` and `bossHop.cipherPlan()`, and
+`cipherSeasonOpen()` with it. Merchant v131 keeps the ingredients in his bag
+year-round, so the count Dexon reads stays meaningful.
+-> RangerComments.md#cipherFarm
+
 ## v146
 
 **WITCH'S CIPHER INGREDIENT FARMING**, operator's rulings 2026-10-24 18:49-18:59

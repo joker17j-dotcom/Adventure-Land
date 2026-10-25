@@ -1,4 +1,22 @@
 
+## v131
+
+**CIPHER INGREDIENTS STAY IN THE BAG YEAR-ROUND, UP TO ONE FULL STACK EACH**,
+operator 2026-10-25: "Keep in bag but only up to a full stack. After a full
+stack the smaller stack can be sold and should not be bought back from ponty."
+- `cipherHeldInBag()` no longer ends with Halloween, and the stock report keeps
+  going after it. The four are off `keepAndBank` again: the bag is where they
+  live.
+- `cipherOverflowSellPass()`, on the maintenance tick: once a FULL stack of an
+  ingredient is in the bag, any other stack of it is sold - to a stand in reach
+  buying above NPC price, else the NPC at the town spot - one per tick, a
+  minute's back-off after a failure. The full stack is never touched, and a
+  locked stack is never sold. It is the one sell path for these;
+  `PROTECTED_ITEM_NAMES` still refuses them everywhere else.
+- `pontyBuyPass` counts the BAG for these names, and applies that cap even when
+  the bank read fails, so a full stack in hand stops the buy and the sold stack
+  is not bought back. Everything else keeps the bank-only cap.
+
 ## v130
 
 **WITCH'S CIPHER INGREDIENTS STAY IN THE BAG UNTIL HALLOWEEN ENDS, AND DEXON

@@ -83,10 +83,12 @@ running on a stale number. The count is HIS BAG ONLY, by the ruling, so
 ingredients still in the party's bags awaiting muling are not counted and a
 window can overshoot.
 
-**AFTER HALLOWEEN.** The merchant banks them once the season ends
-(`S.event_ends.halloween`), so his bag count stops meaning anything; farming
-ends with the season too. witchcipher returns to the daily pool afterwards, so
-whether to keep farming then is the operator's call.
+**NO SEASON END** - operator, 2026-10-25. witchcipher rejoins the daily pool
+after Halloween, so the farming keeps going, and the merchant keeps the
+ingredients in his bag year-round - up to one full stack each, selling the
+smaller stack beyond it and never buying it back from Ponty - so his bag count
+stays the measure. v146 ended both with the season; that reading was
+superseded the next day.
 
 ## preposition
 

@@ -4573,6 +4573,11 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   every such spawn yields `loot * dps / 1000`; hp matters only where a spawn
   runs dry first. So the pick is a spawn that never runs dry, survivable, close.
   NOT YET RUN LIVE. Design in `Party/RangerComments.md#cipherFarm`.
+  **NO SEASON END, RULED 2026-10-25 (Ranger v147 / Merchant v131)**: the cipher
+  stays in the daily rotation, so farming continues after Halloween and the bag
+  hold is permanent - up to ONE FULL STACK each; the smaller stack beyond it is
+  sold (`cipherOverflowSellPass()`) and never bought back, because the Ponty buy
+  counts the bag for these names.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.

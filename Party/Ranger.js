@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v146
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v147
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4416,7 +4416,6 @@ const bossHop = {
 		const cf = CONFIG.cipherFarm, p = CONFIG.bossHop.preposition;
 		if (!cf || !cf.enabled || !cf.hop) return null;
 		const now = Date.now();
-		if (!cipherSeasonOpen(now)) return null;
 		const short = cipherShort(now);
 		if (!short || !short.length) return null;
 		if (!this.schedAt || now - this.schedAt > p.feedMaxAgeMs) return null;
@@ -7908,7 +7907,6 @@ function cipherRelease(why) {
 /* Why nothing is being farmed, or null when something should be. */
 function cipherIdleReason(short, win, now) {
 	if (!CONFIG.cipherFarm.enabled) return 'turned off';
-	if (!cipherSeasonOpen(now)) return 'Halloween has ended';
 	if (short === null) return 'no fresh count from Meltymerch';
 	if (!short.length) return 'Meltymerch holds ' + CONFIG.cipherFarm.target + ' of each';
 	if (!win) return 'no gathering window on this shard';
@@ -7916,15 +7914,9 @@ function cipherIdleReason(short, win, now) {
 	return null;
 }
 
-/* The hold on Meltymerch's bag runs to the end of Halloween, and the farming
-   with it: after the season he banks the ingredients, so his bag count stops
-   meaning anything. The end is the server's own (S.event_ends, epoch ms); the
-   date is the fallback, from design/event_flags.js at upstream 16881a27. */
-function cipherSeasonOpen(now) {
-	const e = parent.S && parent.S.event_ends && parent.S.event_ends.halloween;
-	const end = typeof e === 'number' && isFinite(e) ? e : Date.parse('2026-11-03T00:00:00Z');
-	return (now || Date.now()) < end;
-}
+/* NO SEASON END - operator 2026-10-25. The cipher stays in the daily rotation
+   after Halloween, so the farming does too, and Meltymerch keeps the
+   ingredients in his bag year-round, which keeps his count meaningful. */
 
 function cipherTick() {
 	const now = Date.now();

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v130
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v131
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -713,10 +713,9 @@ const CONFIG = {
 		keepAndBank: ['essenceofether', 'stormfeather', 'ashleaf', 'embercore', 'essenceoffire',
 			'cave_amber', 'cave_loaded_die',
 			// The only Hop Sickness cure; kept and banked since v127.
-			'snakeoil',
-			/* Witch's Cipher ingredients. Kept IN THE BAG until Halloween ends,
-			   then banked like the rest - cipherHeldInBag() is the gate. */
-			'verdantspore', 'frostscale', 'embercoal', 'gloomfeather'],
+			/* The Witch's Cipher ingredients are NOT here: they stay in the bag
+			   for good - see cipherHeldInBag(). */
+			'snakeoil'],
 	},
 
 	selling: {
@@ -3342,28 +3341,79 @@ function keptMaterialNames() {
 }
 function isKeptMaterial(name) { return !!name && keptMaterialNames().has(String(name)); }
 
-/* WITCH'S CIPHER INGREDIENTS STAY IN THIS BAG UNTIL HALLOWEEN ENDS - operator's
-   ruling 2026-10-24: "Nothing should go in the bank without first going
-   through the merchant", and he keeps them on hand for the season and banks
-   them only after. His bag count is what Dexon farms against (cipherStockTick
-   below), so an ingredient banked mid-season would read as one never farmed.
-   Every bank path that could take one asks this. The names come from live G
-   with the source's four as the fallback; the season end is the server's own
-   S.event_ends.halloween, with design/event_flags.js at upstream 16881a27 as
-   the fallback. */
+/* WITCH'S CIPHER INGREDIENTS STAY IN THIS BAG, UP TO ONE FULL STACK EACH -
+   operator's rulings 2026-10-24 and 2026-10-25. "Nothing should go in the bank
+   without first going through the merchant"; first he kept them for the
+   Halloween season, and on 2026-10-25, once it was clear the cipher stays in
+   the daily rotation after the season, the hold became permanent: "Keep in bag
+   but only up to a full stack. After a full stack the smaller stack can be sold
+   and should not be bought back from ponty." His bag count is what Dexon farms
+   against (cipherStockTick below), so an ingredient banked would read as one
+   never farmed. Every bank path asks cipherHeldInBag(); cipherOverflowSellPass()
+   sells the smaller stack; pontyBuyPass counts the bag for these names, so a
+   full stack in hand stops the buy. The names come from live G, with the
+   source's four as the fallback. */
 const CIPHER_INGREDIENTS_FALLBACK = ['verdantspore', 'frostscale', 'embercoal', 'gloomfeather'];
 function cipherIngredientNames() {
 	const e = parent.G && parent.G.events && parent.G.events.witchcipher;
 	const live = e && Array.isArray(e.ingredients) ? e.ingredients.map((x) => Array.isArray(x) ? x[0] : null).filter(Boolean) : [];
 	return live.length ? live : CIPHER_INGREDIENTS_FALLBACK;
 }
-function cipherSeasonOpen(now) {
-	const e = parent.S && parent.S.event_ends && parent.S.event_ends.halloween;
-	const end = typeof e === 'number' && isFinite(e) ? e : Date.parse('2026-11-03T00:00:00Z');
-	return (now || Date.now()) < end;
-}
 function cipherHeldInBag(name) {
-	return !!name && cipherIngredientNames().indexOf(String(name)) >= 0 && cipherSeasonOpen();
+	return !!name && cipherIngredientNames().indexOf(String(name)) >= 0;
+}
+
+/* How many of `name` the bag holds, every stack summed. */
+function cipherBagQty(name) {
+	let n = 0;
+	for (const it of (character.items || [])) if (it && it.name === name) n += (it.q || 1);
+	return n;
+}
+
+/* THE ONE PLACE A CIPHER INGREDIENT IS SOLD: a second, smaller stack, once a
+   FULL stack of the same name is in the bag. The full stack is never touched.
+   Sold the way a full dexbelt ceiling sells - a player stand in trade reach
+   buying above what an NPC pays, otherwise the NPC at the town spot - one stack
+   per tick, backing off a minute after a failure. PROTECTED_ITEM_NAMES still
+   refuses them to every other sell path. */
+let cipherSellPauseUntil = 0;
+async function cipherOverflowSellPass() {
+	if (Date.now() < cipherSellPauseUntil) return;
+	for (const name of cipherIngredientNames()) {
+		const cap = pontyStackCap(name);
+		if (!cap) continue;
+		let full = -1;
+		for (let i = 0; i < character.items.length; i++) {
+			const it = character.items[i];
+			if (it && it.name === name && (it.q || 1) >= cap) { full = i; break; }
+		}
+		if (full < 0) continue;
+		for (let i = 0; i < character.items.length; i++) {
+			const it = character.items[i];
+			if (i === full || !it || it.name !== name) continue;
+			if (it.l || it.p !== undefined) continue;
+			const q = it.q || 1;
+			let npcv = null;
+			try { npcv = parent.calculate_item_value({ name: name }); } catch (e) { }
+			const buyer = ceilingBuyer(name, npcv);
+			if (!buyer && !atTownSpot()) return;
+			try {
+				if (buyer) {
+					const want = Math.min(q, (buyer.entity.slots[buyer.slot] && buyer.entity.slots[buyer.slot].q) || 1);
+					await trade_sell(buyer.entity, buyer.slot, want);
+					game_log('[cipher] sold ' + want + ' ' + name + ' over a full stack to ' + buyer.entity.name, '#7FD98A');
+				} else {
+					await sell(i, q);
+					game_log('[cipher] sold ' + q + ' ' + name + ' over a full stack to the NPC', '#7FD98A');
+				}
+			} catch (e) {
+				cipherSellPauseUntil = Date.now() + 60000;
+				game_log('[cipher] could not sell the extra ' + name + ': ' + ((e && (e.reason || e.message)) || e)
+					+ ' - trying again in a minute', 'orange');
+			}
+			return;
+		}
+	}
 }
 
 /* What he holds of each, summed over every stack in the bag. */
@@ -3380,11 +3430,9 @@ function cipherStockCounts() {
    change and at least every five minutes - a count he has not heard in fifteen
    is unknown to him, and an unknown count farms nothing. So a merchant that
    stops reporting (another script in the slot, a dead tab) stops the farming
-   rather than leaving it running on a stale number. Only during the season:
-   afterwards the ingredients go to the bank and the count means nothing. */
+   rather than leaving it running on a stale number. */
 let cipherStockSent = '', cipherStockSentAt = 0;
 function cipherStockTick() {
-	if (!cipherSeasonOpen()) return;
 	const counts = cipherStockCounts();
 	const sig = JSON.stringify(counts);
 	if (sig === cipherStockSent && Date.now() - cipherStockSentAt < 5 * 60 * 1000) return;
@@ -3915,6 +3963,8 @@ async function maintenanceLoop() {
 			sellAggressivelyIfLowOnSpace();
 			try { await ceilingRefresh(); await ceilingSellPass(); }
 			catch (e) { ceilingLog('sell pass threw: ' + ((e && e.message) || e), 'red'); }
+			try { await cipherOverflowSellPass(); }
+			catch (e) { game_log('[cipher] overflow sell threw: ' + ((e && e.message) || e), 'red'); }
 		}
 		if (character.rip) respawn();
 		/* Containment. The merchant has no mainLoop, and this is the housekeeping
@@ -4798,7 +4848,7 @@ async function bankExchangeables() {
 	for (let i = character.items.length - 1; i >= 0; i--) {
 		const it = character.items[i];
 		if (!it || !it.name || !(names.has(it.name) || isKeptMaterial(it.name))) continue;
-		if (cipherHeldInBag(it.name)) continue;    // in the bag until Halloween ends
+		if (cipherHeldInBag(it.name)) continue;    // the bag holds these - cipherHeldInBag
 		if (it.b) continue;                        // blocked - the server refuses it
 		if (it.l === 'l') { locked++; continue; }  // the operator's own hands-off marker
 		if (arbHeldNames()[it.name]) continue;     // arbitrage owns this exit (arbBankItem)
@@ -6770,7 +6820,19 @@ async function pontyBuyPass(rows) {
 			pontyLog('skipping ' + r.name + '+' + r.level + ' - over its +' + lvlCap + ' level cap', '#8b98ab');
 			continue;
 		}
-		if (bankQty) {
+		/* A cipher ingredient lives in the BAG, not the bank, so the bag is its
+		   count - and it is applied whether or not the bank read worked: a full
+		   stack in hand must stop the buy, or the stack cipherOverflowSellPass()
+		   just sold would be bought straight back from Ponty. */
+		if (cfg.capAtOneStack && cipherHeldInBag(r.name)) {
+			const stackCap = pontyStackCap(r.name);
+			const have = cipherBagQty(r.name) + (bankQty ? (bankQty[r.name] || 0) : 0);
+			if (stackCap && have >= stackCap) {
+				pontyLog('skipping ' + r.name + ' - already holding ' + pontyFmt(have)
+					+ ' of a ' + pontyFmt(stackCap) + ' stack', '#9aa0a6');
+				continue;
+			}
+		} else if (bankQty) {
 			const stackCap = pontyStackCap(r.name);
 			const have = (bankQty[r.name] || 0) + (boughtThisPass[r.name] || 0);
 			if (stackCap && have >= stackCap) {
@@ -6807,7 +6869,7 @@ async function pontyStash(bought) {
 	if (!(await travelToBank())) { pontyLog('could not reach the bank - keeping them on hand', 'orange'); return; }
 	let stored = 0, kept = 0;
 	for (const b of bought) {
-		if (cipherHeldInBag(b.name)) continue;   // in the bag until Halloween ends
+		if (cipherHeldInBag(b.name)) continue;   // the bag holds these - cipherHeldInBag
 		const idx = pontySlotOf(b.name, b.level);
 		if (idx < 0) continue;
 		try { await bank_store(idx); stored++; await sleep(300); }
@@ -7216,7 +7278,7 @@ async function sbStash(bought) {
 	if (!(await travelToBank())) { sbLog('could not reach the bank - keeping them on hand', 'orange'); return; }
 	let stored = 0, kept = 0;
 	for (const b of bought) {
-		if (cipherHeldInBag(b.name)) continue;   // in the bag until Halloween ends
+		if (cipherHeldInBag(b.name)) continue;   // the bag holds these - cipherHeldInBag
 		const idx = pontySlotOf(b.name, b.level);
 		if (idx < 0) continue;
 		try { await bank_store(idx); stored++; await sleep(300); }
@@ -8621,10 +8683,10 @@ async function arbBankShareNow(t, share) {
 // Put an unsold item away rather than carry it. Inventory space is the scarcer
 // -> MerchantComments.md#arbBankItem
 async function arbBankItem(t) {
-	/* A cipher ingredient stays in the bag until Halloween ends. False, so the
-	   trade closes as held_in_inventory, which is what happened. */
+	/* A cipher ingredient stays in the bag. False, so the trade closes as
+	   held_in_inventory, which is what happened. */
 	if (cipherHeldInBag(t.item)) {
-		arbLog('keeping the unsold ' + t.item + ' in the bag - cipher ingredients are not banked until Halloween ends', '#9BD1FF');
+		arbLog('keeping the unsold ' + t.item + ' in the bag - cipher ingredients are never banked', '#9BD1FF');
 		return false;
 	}
 	if (CONFIG.arbitrage.dryRun) {
