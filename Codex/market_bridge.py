@@ -2067,6 +2067,142 @@ def published_schedule(store, t_now, hours_ahead=48, hours_back=1):
             "servers": servers, "occurrences": occ}
 
 
+# ---------------------------------------------------------------- witch's cipher
+# S.witchcipher off every shard's server_info push, kept per shard, with a row
+# in the boss log for each crack and each round end - BUILD 1 of the browser
+# session's 2026-10-25 09:28 EDT block, landed ahead of the merchant's brewing
+# so crack speed per shard builds up as data.
+#
+# E.witchcipher IS NEVER DELETED, so its absence is not a round ending. Read at
+# upstream 16881a2 node/logic/witch_cipher.js: witch_cipher_finish() re-publishes
+# it as Object.assign(witch_cipher_public(), {live: false}), and between rounds
+# the key holds {live: false}. A payload WITHOUT the key therefore leaves the
+# stored copy alone, as a payload without `schedule` does.
+#
+# `fit` IS LIVE-ONLY - it is not in that source - and is kept verbatim: 256 hex
+# characters, one bit per recipe, decoded by the merchant (see cipherFitSet in
+# Party/Merchant.js). The bridge does not decode it, so a change in the encoding
+# reaches one decoder, not two.
+CIPHER_EV = ("cipher_crack", "cipher_end", "cipher_mix", "cipher_slow", "cipher_watch")
+# The rows a script may POST. crack and end are the bridge's own, from the push.
+CIPHER_POST_KINDS = {"mix": "cipher_mix", "slow": "cipher_slow", "watch": "cipher_watch"}
+CIPHER_POST_FIELDS = ("round", "possible_before", "possible", "mix", "right", "fits",
+                      "cracked", "parcels", "mixes_left", "mixes", "reason",
+                      "cracked_by", "cracked_recipe", "first", "response", "ms")
+
+
+def _cipher_int(v):
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def cipher_snapshot(payload):
+    """S.witchcipher from ONE server_info payload, or None when it has no key."""
+    if not isinstance(payload, dict):
+        return None
+    w = payload.get("witchcipher")
+    if not isinstance(w, dict):
+        return None
+    cracked = w.get("cracked")
+    if isinstance(cracked, dict):
+        rec = cracked.get("recipe")
+        cracked = {"by": cracked.get("by"),
+                   "recipe": [str(x) for x in rec] if isinstance(rec, list) else None}
+    else:
+        cracked = None
+    board = []
+    for e in w.get("board") if isinstance(w.get("board"), list) else []:
+        if isinstance(e, dict) and isinstance(e.get("mix"), list):
+            board.append({"mix": [str(x) for x in e["mix"]], "right": _cipher_int(e.get("right"))})
+    fit = w.get("fit")
+    return {"id": w.get("id"), "live": bool(w.get("live")), "phase": w.get("phase"),
+            "start": parse_ts(w.get("start")), "gather_end": parse_ts(w.get("gather_end")),
+            "end": parse_ts(w.get("end")), "possible": _cipher_int(w.get("possible")),
+            "fit": fit if isinstance(fit, str) else None,
+            "mixes": _cipher_int(w.get("mixes")), "cracks": _cipher_int(w.get("cracks")),
+            "cracked": cracked, "board": board}
+
+
+def cipher_transitions(prev, cur, server, t):
+    """The log rows one push implies, against the previous push from that shard.
+
+    A first sighting writes nothing: a bridge started mid-round cannot say when
+    the cracks it finds happened. A round whose end was never seen - the id
+    moved on while the old round still read live - is closed with
+    `end_seen: false` rather than left open."""
+    rows = []
+    if not prev or not cur:
+        return rows
+    same = prev.get("id") is not None and prev.get("id") == cur.get("id")
+    if same:
+        pc, cc = prev.get("cracks"), cur.get("cracks")
+        if isinstance(pc, int) and isinstance(cc, int) and cc > pc:
+            ck = cur.get("cracked") or {}
+            st = cur.get("start")
+            rows.append({"ev": "cipher_crack", "t": iso(t), "server": server,
+                         "round": cur.get("id"), "by": ck.get("by"),
+                         "recipe": ck.get("recipe"), "cracks": cc,
+                         # More than one crack between two pushes: only the
+                         # latest is named, and the count says so.
+                         "unseen": cc - pc - 1,
+                         "since_start_sec": round(t - st) if st else None,
+                         "mixes_before": prev.get("mixes"),
+                         "possible_before": prev.get("possible")})
+        if prev.get("live") and not cur.get("live"):
+            rows.append(_cipher_end_row(cur, server, t, True))
+    elif prev.get("live"):
+        rows.append(_cipher_end_row(prev, server, t, False))
+    return rows
+
+
+def _cipher_end_row(snap, server, t, seen):
+    ck = snap.get("cracked") or {}
+    return {"ev": "cipher_end", "t": iso(t), "server": server, "round": snap.get("id"),
+            "end_seen": seen, "possible": snap.get("possible"), "mixes": snap.get("mixes"),
+            "cracks": snap.get("cracks"), "last_cracked_by": ck.get("by"),
+            "start": iso(snap["start"]) if snap.get("start") else None,
+            "end": iso(snap["end"]) if snap.get("end") else None}
+
+
+def cipher_live(store, t_now):
+    """Every shard's latest S.witchcipher, times as ISO and as epoch ms."""
+    out = {}
+    for server, snap in sorted((store or {}).items()):
+        row = {k: v for k, v in snap.items() if k not in ("start", "gather_end", "end", "received_t")}
+        for k in ("start", "gather_end", "end"):
+            v = snap.get(k)
+            row[k] = iso(v) if v else None
+            row[k + "_ms"] = int(round(v * 1000)) if v else None
+        rec = snap.get("received_t")
+        row["age_sec"] = round(t_now - rec) if rec else None
+        out[server] = row
+    return {"now": iso(t_now), "now_ms": int(round(t_now * 1000)), "servers": out}
+
+
+def cipher_row_normalise(body):
+    """Validate a POSTed cipher row. Returns (row, error). Same contract as a
+    skip row: the bridge's clock orders the log, the sender's sits beside it as
+    `t_script`, and unknown fields survive under `extra`."""
+    if not isinstance(body, dict):
+        return None, "body must be an object"
+    ev = CIPHER_POST_KINDS.get(body.get("kind"))
+    if not ev:
+        return None, f"kind must be one of {sorted(CIPHER_POST_KINDS)}"
+    server = body.get("server")
+    if not isinstance(server, str) or not server:
+        return None, "server required"
+    row = {"ev": ev, "t": iso(now()), "server": server,
+           "t_script": body.get("t") if isinstance(body.get("t"), str) else None,
+           "character": body.get("character") if isinstance(body.get("character"), str) else None}
+    for k in CIPHER_POST_FIELDS:
+        if k in body:
+            row[k] = body[k]
+    extra = {k: v for k, v in body.items()
+             if k not in CIPHER_POST_FIELDS and k not in ("kind", "server", "t", "character")}
+    if extra:
+        row["extra"] = extra
+    return row, None
+
+
 def schedule_windows(servers, path=None, hours_ahead=48, hours_back=24) -> dict:
     """Daily and nightly windows per server, as UTC instants.
 
@@ -2739,6 +2875,9 @@ class BossWatch:
         # "US II" -> schedule_snapshot() of that shard's latest payload, plus
         # received_t. Memory only: the game re-publishes on every push.
         self.schedules: dict = {}
+        # "US II" -> cipher_snapshot() of that shard's latest S.witchcipher,
+        # plus received_t. Memory only, like schedules.
+        self.ciphers: dict = {}
         self.source = source
         self.clients: list = []
         self.servers: list = []
@@ -2817,6 +2956,14 @@ class BossWatch:
             snap["received_t"] = t
             with self.lock:
                 self.schedules[f"{key[0]} {key[1]}"] = snap
+        csnap = cipher_snapshot(payload)
+        if csnap is not None:
+            csnap["received_t"] = t
+            shard = f"{key[0]} {key[1]}"
+            with self.lock:
+                for row in cipher_transitions(self.ciphers.get(shard), csnap, shard, t):
+                    self._emit(row)
+                self.ciphers[shard] = csnap
         seen = set()
         for e in entries:
             k = self._record(e)
@@ -3159,6 +3306,19 @@ class BossWatch:
         self._flush_events()
         return {"ok": True, "deduped": False}
 
+    def queue_cipher(self, body) -> dict:
+        """Accept one POSTed cipher row (a brew, a too-slow, a round watched)
+        into the boss log, through the same single writer as a skip row."""
+        row, err = cipher_row_normalise(body)
+        if err:
+            return {"ok": False, "error": err}
+        with self.lock:
+            if not self.events_path:
+                return {"ok": False, "error": "boss event log is disabled"}
+            self._emit(row)
+        self._flush_events()
+        return {"ok": True}
+
     def _flush_events(self) -> None:
         if not self._pending:
             return
@@ -3190,6 +3350,13 @@ class BossWatch:
             elif ev["ev"] == "lost":
                 say(f"[bosses] lost {ev['type']} on {ev['server']} - {ev['reason']}"
                     f" (NOT counted as a kill)")
+            elif ev["ev"] == "cipher_crack":
+                say(f"[cipher] CRACK on {ev['server']} by {ev.get('by')}"
+                    f" {ev.get('since_start_sec')}s into the round"
+                    f" (possible {ev.get('possible_before')} before)")
+            elif ev["ev"] == "cipher_end":
+                say(f"[cipher] round over on {ev['server']}: {ev.get('cracks')} crack(s),"
+                    f" {ev.get('mixes')} mixes on the board, possible {ev.get('possible')}")
             elif ev["ev"] == BOSS_SKIP_EV:
                 # `type` is None on an event-level decline, and an f-string
                 # renders that as the word "None" in the operator's console.
@@ -3887,6 +4054,10 @@ class Handler(BaseHTTPRequestHandler):
             with self.bosses.lock:
                 store = dict(self.bosses.schedules)
             self._send(published_schedule(store, now(), ahead))
+        elif path == "/cipher_live":
+            with self.bosses.lock:
+                store = dict(self.bosses.ciphers)
+            self._send(cipher_live(store, now()))
         elif path == "/schedule":
             from urllib.parse import parse_qs, urlparse
             q = parse_qs(urlparse(self.path).query)
@@ -3949,7 +4120,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path not in ("/scan", "/msg", "/trade", "/skip", "/gamelog"):
+        if path not in ("/scan", "/msg", "/trade", "/skip", "/gamelog", "/cipher"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
             return
         try:
@@ -3971,6 +4142,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send({"ok": False, "error": "game log not configured"}, 503)
                 else:
                     self._send(self.gamelog.append(body))
+            elif path == "/cipher":
+                if self.bosses is None:
+                    self._send({"ok": False, "error": "boss watch disabled"}, 503)
+                else:
+                    self._send(self.bosses.queue_cipher(body))
             elif path == "/skip":
                 # UNREACHABLE AS SHIPPED and kept as a cheap guard rather
                 # than left looking load-bearing: `Handler.bosses` is assigned

@@ -4631,6 +4631,17 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   its key held the window's exact start; it is sticky now. And the plan hopped
   into windows that horseman, ranked above it, opens inside; it now reads the
   lineup for a hop target opening there.
+- **THE BRIDGE KEEPS EVERY SHARD'S `S.witchcipher` AS OF 2026-10-25** - BUILD 1
+  of the browser session's brewing spec. `GET /cipher_live` gives each shard's
+  latest {id, live, phase, start, gather_end, end, possible, fit, mixes, cracks,
+  cracked, board, age_sec}, times as ISO and as `_ms`; the boss log gains a
+  `cipher_crack` row per crack (who, recipe, seconds into the round, the board
+  before it reset) and a `cipher_end` per round end, and `POST /cipher` takes the
+  merchant's `mix`/`slow`/`watch` rows through the same writer. **THE KEY IS NEVER
+  DELETED** (upstream `16881a2`, `witch_cipher_finish`): a round end re-publishes
+  it with `live: false`, so a payload WITHOUT the key leaves the stored copy
+  alone. `fit` is live-only and is kept verbatim; the merchant decodes it.
+  Needs a bridge RESTART to take effect.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.
