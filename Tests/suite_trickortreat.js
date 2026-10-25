@@ -164,6 +164,7 @@ function arbLoopWorld(over = {}) {
 		state: Object.assign({ busy: false, queue: [] }, over.state || {}),
 		ARB: Object.assign({ cur: null, busy: false, heldBusy: false }, over.ARB || {}),
 		totBusy: !!over.totBusy,
+		cipherBusy: !!over.cipherBusy,
 		arbFlushLedger: async () => {},
 		arbLookForWork: async () => { calls.look++; },
 		arbAdvance: async () => { calls.advance++; },
@@ -185,6 +186,7 @@ function scoutLoopWorld(over = {}) {
 		ARB: { cur: null },
 		PROBE: { hold: false },
 		totBusy: !!over.totBusy,
+		cipherBusy: !!over.cipherBusy,
 		scoutLog: () => {},
 		scoutCanRun: () => true,
 		scoutKissHoldsUsHome: () => false,
@@ -406,6 +408,18 @@ module.exports = [
 	t.eq('no look while a route runs', w.calls.look, 0);
 	t.eq('no idle restock either', w.calls.restock, 0);
 	t.eq('the route keeps state.busy', w.state.busy, true);
+} },
+
+{ name: 'Merchant: a brewing hold stands arbitrage and scouting down', async fn(t) {
+	/* The cipher's hold uses the knock route's gates - see suite_cipherbrew.js. */
+	const a = arbLoopWorld({ cipherBusy: true, state: { busy: true } });
+	await a.arbLoop();
+	t.eq('no look while a round is held', a.calls.look, 0);
+	t.eq('the hold keeps state.busy', a.state.busy, true);
+	const sc = scoutLoopWorld({ cipherBusy: true });
+	await sc.scoutLoop();
+	t.eq('no shard visit while a round is held', sc.calls.visit, 0);
+	t.eq('no trip home either', sc.calls.home, 0);
 } },
 
 { name: 'Merchant: scoutLoop never hops under a knock route', async fn(t) {

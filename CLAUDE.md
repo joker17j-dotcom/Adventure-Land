@@ -4642,6 +4642,15 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   it with `live: false`, so a payload WITHOUT the key leaves the stored copy
   alone. `fit` is live-only and is kept verbatim; the merchant decodes it.
   Needs a bridge RESTART to take effect.
+- **MELTYMERCH BREWS AS OF Merchant v133** - BUILD 2, on the operator's rulings
+  of 2026-10-25 09:18-09:21 EDT; design in the v133 changelog entry. The
+  candidates come from `fit` (LSB first, recipe n slot i = names[floor(n/4^i)%4]),
+  each mix is a new fitting makeable recipe chosen after the last answer,
+  brewing starts at a board of 8 or below (cautious first round, spend in the
+  last), and a held round stops scouting, arbitrage and every hop but its own.
+  **A REPEATED MIX STILL SPENDS ONE OF THE DAY'S FIVE** - the source pushes no
+  clue and pays nothing for it, but `claim.mixes += 1` runs regardless. NOT YET
+  RUN LIVE.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.

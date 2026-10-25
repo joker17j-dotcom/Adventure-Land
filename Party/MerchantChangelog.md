@@ -1,4 +1,38 @@
 
+## v133
+
+**MELTYMERCH BREWS THE WITCH'S CIPHER** - BUILD 2 of the browser session's
+2026-10-25 09:28 EDT spec, on the operator's rulings of 09:18-09:21 EDT. Nothing
+brewed before this; the farm only gathered. NOT YET RUN LIVE.
+- **The candidates come from `fit`**, the live-only 1024-bit map in
+  `S.witchcipher`: character h, bit b (LSB first) is recipe 4h+b, and recipe n
+  has slot i = names[floor(n / 4^i) % 4] in G's ingredient order. Pinned against
+  the browser session's US II 11:00Z fixture ({183, 379, 951}; MSB-first reads
+  {180, 376, 948}). The board is a fallback only while it is the whole history.
+- **Each mix is a new fitting recipe the bag can make, chosen after the last
+  answer**: the one whose answer splits the candidates best, lowest number on a
+  tie; above 128 candidates any fitting recipe will do. A mix already tried this
+  recipe pays nothing and is never sent.
+- **When**: chasing the crack, brew once a board is at `threshold` (8) or
+  below - cautiously in the day's first round, which may brew nothing - and in
+  the day's LAST round wait at the Witch and spend what is left once
+  `spendLastMs` remains. Once the 50 is won, spend the rest at once.
+- **Where**: US and ASIA rounds (11Z and 23Z, one UTC day). Before the first mix
+  he may pick any shard - the narrowest board, US II on a tie - reading every
+  shard's board from the bridge's `/cipher_live`; the first mix locks the day,
+  and after it only that shard counts.
+- **The hold**: a trade under way is finished first, then `cipherBusy` and
+  `state.busy` stop scouting, arbitrage, deliveries, gear and the kiss, and
+  `mHopTo` refuses any other shard. Kept in `cipher_brew_plan`, so the hop to
+  the round's shard reloads straight back into the hold. Released when the
+  round ends or no mixes remain.
+- **Rows to the bridge** (`POST /cipher`): one per mix (the first answer and
+  every refusal in full), one per "correct but too slow", one per round seen
+  and never brewed in. `cipherStatus()` shows the decision and today's record.
+- **Unmeasured**: the live brew answer's shape (the payout keys differ from the
+  source, so its fields may too), and where `character.witchcipher.server`
+  names a shard and in what form.
+
 ## v132
 
 **THE CIPHER COUNT REACHES DEXON, AND A MERGED PONTY BUY IS AN ARRIVAL**, from

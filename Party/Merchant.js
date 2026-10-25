@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v132
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v133
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -365,6 +365,7 @@ const TOGGLES = {
 	town:                     true,   // CONFIG.town.enabled
 	standBuyDryRun:           false,  // CONFIG.standBuy.dryRun
 	trickOrTreat:             true,   // CONFIG.trickOrTreat.enabled
+	cipherBrew:               true,   // CONFIG.cipherBrew.enabled
 };
 
 const CONFIG = {
@@ -1092,6 +1093,22 @@ const CONFIG = {
 		reach: 80,                  // the server's own door radius
 	},
 
+	/* Witch's Cipher brewing - operator's rulings 2026-10-25 09:18-09:21 EDT.
+	   -> WITCH'S CIPHER - BREWING */
+	cipherBrew: {
+		enabled: TOGGLES.cipherBrew,
+		threshold: 8,               // chase the crack once a board is down to this many recipes
+		regions: ['US', 'ASIA'],    // the 11Z and 23Z rounds, so both fall inside one UTC day
+		roundHours: [11, 23],       // UTC; the last of these is the day's last round
+		prefer: 'USII',             // tie-break between equally narrow boards
+		spendLastMs: 6 * 60 * 1000, // in the day's last round, brew what is left once this little remains
+		reach: 300,                 // the server's limit is 400 (B.sell_dist)
+		tickMs: 2000,
+		liveEveryMs: 5000,          // how often to read /cipher_live
+		moveMs: 120000,             // bound on one walk to the Witch
+		answerMs: 10000,            // bound on one brew's answer
+	},
+
 	// The Bank is its own map, reached via a door off 'main' - confirmed via
 	// live game data (main's doors include one to 'bank'). bank_store()
 	// rejects with "not_in_bank" unless actually standing in this map.
@@ -1099,6 +1116,12 @@ const CONFIG = {
 		map: 'bank',
 	},
 };
+
+/* Declared here, ahead of everything that hops: mHopTo reads them, and a
+   function reached during module evaluation would otherwise meet the TDZ.
+   -> WITCH'S CIPHER - BREWING */
+let cipherBusy = false;
+let cipherPlan = null;
 
 const state = {
 	queue: [],
@@ -2092,6 +2115,12 @@ function mHomeShard() {
    reliable way to know we have landed. */
 async function mHopTo(key) {
 	if (key === mShardKey()) return true;
+	/* A brewing round holds him on its shard. Every hop goes through here, so
+	   one refusal covers a delivery, a trip home and a scout alike. */
+	if (cipherBusy && cipherPlan && key !== cipherPlan.shard) {
+		game_log('[cipher] holding ' + cipherPlan.shard + ' for a brewing round - not hopping to ' + key, 'orange');
+		return false;
+	}
 	const t = mParseShard(key);
 	if (!t) { game_log(`Cannot parse shard "${key}"`, 'red'); return false; }
 	if (!mCanHop()) {
@@ -6313,6 +6342,474 @@ function totStatus(quiet) {
 	return out;
 }
 
+// ============================================================================
+// WITCH'S CIPHER - BREWING. Operator's rulings 2026-10-25 09:18-09:21 EDT, on
+// the browser session's spec of 09:28 EDT. -> CLAUDE.md "Selling, banking ..."
+//
+// Five mixes per ACCOUNT per UTC day, and the day's first mix locks the day to
+// that shard. A mix that fits every clue so far and is new this round pays one
+// Witch's Parcel; the mix that cracks the recipe pays 50 more, once a day; a
+// crack resets the recipe on a clean board. Read from upstream 16881a2
+// node/logic/witch_cipher.js plus a live read - the payout KEYS differ live
+// ({right, crack}), so nothing here reads payout at all.
+//
+// THE CANDIDATES COME FROM `fit`, a live-only field: 256 hex characters, one
+// bit per recipe (4^5 = 1024). Character h, bit b (LSB first) is recipe 4h+b,
+// and recipe n has slot i = names[floor(n / 4^i) % 4] in G's ingredient order.
+// The browser session verified that decoding against US II's 11:00Z board of
+// 2026-10-25 (candidates {183, 379, 951}); MSB-first gives the wrong set. So
+// the board, which the server truncates at 30, is only a fallback.
+//
+// WHEN: chasing the crack, brew once a board is down to `threshold` recipes,
+// cautiously in the day's first round (it may brew nothing) and spending what
+// is left in the day's last. Once the 50 is won, spend the rest quickly - still
+// one new fitting recipe each, for the parcel. Each mix is chosen AFTER the
+// previous answer, because his own mix is a clue too.
+//
+// THE HOLD: once a round is chosen he finishes any trade under way, then holds
+// state.busy and cipherBusy - deliveries, gear and the kiss wait on the first,
+// scouting and arbitrage on the second, and mHopTo refuses any other shard -
+// until the round ends or no mixes remain. The plan is stored, so a hop to the
+// round's shard reloads straight back into the hold.
+// ============================================================================
+const CIPHER_PLAN_KEY = 'cipher_brew_plan';
+const CIPHER_DAY_KEY = 'cipher_brew_day';
+const CIPHER_WATCH_KEY = 'cipher_brew_watch';
+const CIPHER_SPLIT_MAX = 128;       // above this many candidates, any fitting recipe will do
+let cipherLive = { at: 0, shards: {} };
+let cipherLast = null;              // the last decision, for cipherStatus()
+let cipherPending = null;           // the mix in flight, for the too-slow check
+let cipherLastPick = null;          // the mix chosen most recently, brewed or not
+let cipherAwaitBoard = null;        // after a brew: wait for the board to show it
+let cipherWaitWhy = null;
+const cipherSaid = {};
+
+function cipherLog(msg, color) { game_log('[cipher] ' + msg, color || '#AF6AE2'); }
+/* Once per distinct message per 10 minutes - a tick is 2s. */
+function cipherSay(msg, color) {
+	const now = Date.now();
+	if (cipherSaid[msg] && now - cipherSaid[msg] < 600000) return;
+	cipherSaid[msg] = now;
+	cipherLog(msg, color);
+}
+function cipherRules() { const g = (typeof parent !== 'undefined' && parent.G) || null; return (g && g.events && g.events.witchcipher) || null; }
+function cipherSlots() { const r = cipherRules(); return (r && r.slots) || 5; }
+/* 'US II' (the bridge's key) -> 'USII' (mShardKey's). */
+function cipherKey(name) { return String(name || '').replace(/\s+/g, ''); }
+/* 'USII' -> 'US II', the bridge's form, for a posted row. */
+function cipherBridgeName(key) { const t = mParseShard(key); return t ? t.region + ' ' + t.name : key; }
+
+/* `fit` -> the candidate recipe numbers, or null when there is no usable map. */
+function cipherFitSet(fit, total) {
+	if (typeof fit !== 'string' || !/^[0-9a-fA-F]+$/.test(fit) || fit.length * 4 < total) return null;
+	const out = [];
+	for (let h = 0; h < fit.length; h++) {
+		const v = parseInt(fit[h], 16);
+		for (let b = 0; b < 4; b++) {
+			const n = 4 * h + b;
+			if ((v & (1 << b)) && n < total) out.push(n);
+		}
+	}
+	return out;
+}
+function cipherRecipe(n, names, slots) {
+	const r = [];
+	for (let i = 0, k = n; i < slots; i++, k = Math.floor(k / names.length)) r.push(names[k % names.length]);
+	return r;
+}
+/* The Witch's clue: how many ingredients sit in the right place. */
+function cipherScore(a, b) {
+	let right = 0;
+	for (let i = 0; i < a.length; i++) if (a[i] === b[i]) right++;
+	return right;
+}
+/* From the board, when there is no `fit`, and only while the board is the whole
+   history - past `board` entries the server drops the oldest, and candidates
+   rebuilt from what is left would include recipes it already ruled out. */
+function cipherBoardCandidates(w, names, slots) {
+	const board = (w && Array.isArray(w.board)) ? w.board : null;
+	if (!board || typeof w.mixes !== 'number' || board.length !== w.mixes) return null;
+	const out = [];
+	const total = Math.pow(names.length, slots);
+	for (let n = 0; n < total; n++) {
+		const r = cipherRecipe(n, names, slots);
+		if (board.every((e) => Array.isArray(e.mix) && cipherScore(r, e.mix) === e.right)) out.push(n);
+	}
+	return out;
+}
+/* Unlocked only: the server consumes unlocked stacks and nothing else. */
+function cipherHave() {
+	const have = {};
+	for (const it of (character.items || [])) {
+		if (!it || !it.name || it.l) continue;
+		have[it.name] = (have[it.name] || 0) + (it.q || 1);
+	}
+	return have;
+}
+function cipherCanMake(recipe, have) {
+	const need = {};
+	for (const n of recipe) need[n] = (need[n] || 0) + 1;
+	for (const n in need) if ((have[n] || 0) < need[n]) return false;
+	return true;
+}
+
+/* THE NEXT MIX: a candidate (so it fits, and pays), new this round, makeable
+   from the bag. Among those, the one whose answer splits the candidates best -
+   least expected candidates left - and the lowest number on a tie. Above
+   CIPHER_SPLIT_MAX candidates nothing is narrowed much by any one mix, and
+   the first will do. */
+function cipherPick(cands, names, slots, have, tried) {
+	const pool = [];
+	for (const n of cands) {
+		const r = cipherRecipe(n, names, slots);
+		if (tried.has(r.join(','))) continue;
+		if (!cipherCanMake(r, have)) continue;
+		pool.push({ n, r });
+	}
+	if (!pool.length) return null;
+	if (cands.length > CIPHER_SPLIT_MAX) return { n: pool[0].n, r: pool[0].r, cost: null };
+	const recs = cands.map((n) => cipherRecipe(n, names, slots));
+	let best = null;
+	for (const g of pool) {
+		const buckets = {};
+		for (const c of recs) { const k = cipherScore(g.r, c); buckets[k] = (buckets[k] || 0) + 1; }
+		let cost = 0;
+		for (const k in buckets) cost += buckets[k] * buckets[k];
+		if (!best || cost < best.cost) best = { n: g.n, r: g.r, cost };
+	}
+	return best;
+}
+
+function cipherIsLastRound(startMs, cfg) {
+	const hours = (cfg && cfg.roundHours) || [];
+	return !!startMs && hours.length > 0 && new Date(startMs).getUTCHours() === Math.max.apply(null, hours);
+}
+
+/* WHAT TO DO NOW, from plain inputs so it can be tested without a game:
+   c = {now, cfg, day: {mixesLeft, lockedShard, crackedToday, elsewhere},
+        shards: {USII: {id, live, start, end, possible}, ...}, plan}.
+   'brew' and 'hold' take the hold; 'watch' and 'idle' release it. */
+function cipherDecide(c) {
+	const cfg = c.cfg || {};
+	if (!cfg.enabled) return { act: 'idle', why: 'disabled' };
+	const day = c.day || {};
+	if (day.elsewhere) return { act: 'idle', why: 'the day is locked on ' + day.elsewhere };
+	if (day.mixesLeft === 0) return { act: 'idle', why: 'no mixes left today' };
+	const today = new Date(c.now).toISOString().slice(0, 10);
+	const thr = cfg.threshold;
+	const poss = (s) => (typeof s.possible === 'number' ? s.possible : Infinity);
+	const elig = [];
+	for (const k in (c.shards || {})) {
+		const s = c.shards[k];
+		if (!s || !s.live || !s.id || !s.start || !s.end || c.now >= s.end) continue;
+		if (new Date(s.start).toISOString().slice(0, 10) !== today) continue;
+		if (!(cfg.regions || []).some((r) => k.indexOf(r) === 0)) continue;
+		if (day.lockedShard && k !== day.lockedShard) continue;
+		elig.push(Object.assign({ key: k }, s));
+	}
+	if (!elig.length) return { act: 'idle', why: day.lockedShard ? 'no live round on ' + day.lockedShard : 'no live round' };
+	elig.sort((a, b) => (poss(a) - poss(b)) || ((b.key === cfg.prefer) - (a.key === cfg.prefer)) || (a.key < b.key ? -1 : 1));
+	let t = elig[0];
+	/* A held plan stays put unless a narrow board turns up elsewhere while its
+	   own is still wide - before the first mix only, since that locks the day. */
+	const planned = c.plan ? elig.find((s) => s.key === c.plan.shard) : null;
+	if (planned && !(poss(t) <= thr && poss(planned) > thr)) t = planned;
+	const out = { shard: t.key, round: t.id, end: t.end, possible: t.possible };
+	if (day.crackedToday) return Object.assign(out, { act: 'brew', why: 'the 50 is won - spending the rest' });
+	if (poss(t) <= thr) return Object.assign(out, { act: 'brew', why: 'board at ' + t.possible });
+	const last = cipherIsLastRound(t.start, cfg);
+	if (last && t.end - c.now <= cfg.spendLastMs) return Object.assign(out, { act: 'brew', why: 'the day\'s last round is ending' });
+	if (last) return Object.assign(out, { act: 'hold', why: 'the day\'s last round - waiting at the Witch' });
+	if (planned) return Object.assign(out, { act: 'hold', why: 'holding the round' });
+	return Object.assign(out, { act: 'watch', why: 'board at ' + t.possible + ', waiting for ' + thr });
+}
+
+// ---- storage -------------------------------------------------------------
+function cipherDayLoad(today) {
+	let d = null;
+	try { d = get(CIPHER_DAY_KEY); } catch (e) { }
+	if (!d || d.day !== today) d = { day: today, mixesLeft: null, lockedShard: null, crackedToday: false, elsewhere: null, submitted: {}, cracksSeen: {}, brewed: [] };
+	return d;
+}
+function cipherDaySave(d) { try { set(CIPHER_DAY_KEY, d); } catch (e) { cipherSay('day record not saved: ' + ((e && e.message) || e), 'orange'); } }
+function cipherPlanSave(p) { cipherPlan = p; try { set(CIPHER_PLAN_KEY, p); } catch (e) { } }
+
+/* After a reload: a stored plan for a round not yet over takes the hold back
+   before scouting or arbitrage can move him, as arbRestore does for a trade. */
+function cipherRestore() {
+	let p = null;
+	try { p = get(CIPHER_PLAN_KEY); } catch (e) { }
+	if (!p || !p.shard || !p.end || Date.now() >= p.end || !CONFIG.cipherBrew.enabled) {
+		if (p) cipherPlanSave(null);
+		return;
+	}
+	cipherPlan = p;
+	cipherBusy = true;
+	state.busy = true;
+	cipherLog('resuming the hold for ' + p.round + ' on ' + p.shard);
+}
+
+/* Who is holding the merchant right now, or null when the hold can be taken.
+   An arbitrage trade under way is finished first - the operator's order. */
+function cipherHoldBlocked() {
+	if (ARB.cur || ARB.busy) return 'an arbitrage trade under way';
+	if (totBusy) return 'the knock route';
+	if (PROBE.hold) return 'the probe hold';
+	if (state.busy) return 'other merchant work';
+	if (moveLockHeld()) return 'a move in progress';
+	return null;
+}
+function cipherTakeHold(d) {
+	const why = cipherHoldBlocked();
+	if (why) {
+		if (cipherWaitWhy !== why) cipherLog('a round on ' + d.shard + ' wants brewing - waiting for ' + why);
+		cipherWaitWhy = why;
+		return false;
+	}
+	cipherWaitWhy = null;
+	cipherBusy = true;
+	state.busy = true;
+	cipherPlanSave({ shard: d.shard, round: d.round, end: d.end, at: Date.now() });
+	cipherLog('holding the merchant for ' + d.round + ' on ' + d.shard + ' (' + d.why + ')', '#F59A3C');
+	return true;
+}
+function cipherRelease(why) {
+	if (!cipherBusy) return;
+	cipherBusy = false;
+	state.busy = false;
+	cipherPlanSave(null);
+	cipherAwaitBoard = null;
+	cipherLog('released the merchant (' + why + ')', '#7FD98A');
+}
+
+// ---- the bridge ----------------------------------------------------------
+async function cipherRefreshLive() {
+	const cfg = CONFIG.cipherBrew;
+	if (Date.now() - cipherLive.at < cfg.liveEveryMs) return;
+	cipherLive.at = Date.now();
+	try {
+		const r = await scoutFetch('/cipher_live');
+		const shards = {};
+		for (const name in ((r && r.servers) || {})) {
+			const s = r.servers[name];
+			shards[cipherKey(name)] = { id: s.id, live: !!s.live, start: s.start_ms, end: s.end_ms,
+				possible: s.possible, cracks: s.cracks, mixes: s.mixes, fit: s.fit };
+		}
+		cipherLive.shards = shards;
+		cipherLive.ok = true;
+	} catch (e) {
+		cipherLive.ok = false;
+		cipherSay('the bridge is not answering /cipher_live (' + ((e && e.message) || e) + ') - deciding from this shard alone', 'orange');
+	}
+}
+/* Every shard as the bridge last saw it, with THIS shard from its own S. */
+function cipherShardsNow() {
+	const out = Object.assign({}, cipherLive.shards);
+	const w = (typeof parent !== 'undefined' && parent.S) ? parent.S.witchcipher : null;
+	if (w && w.id) out[mShardKey()] = { id: w.id, live: !!w.live, start: w.start, end: w.end,
+		possible: w.possible, cracks: w.cracks, mixes: w.mixes, fit: w.fit };
+	return out;
+}
+function cipherPost(row) {
+	try {
+		scoutFetch('/cipher', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify(Object.assign({ t: new Date().toISOString(), character: character.name }, row)) })
+			.catch(() => { });
+	} catch (e) { }
+}
+
+// ---- the game ------------------------------------------------------------
+/* One interaction and its answer, matched by request_id. The listener lives on
+   the page socket, so a runner restart replaces it rather than stacking one. */
+const cipherAnswers = {};
+function cipherHook() {
+	if (typeof parent === 'undefined' || !parent.socket) return false;
+	const fn = function (d) {
+		if (!d || d.place !== 'interaction' || d.interaction !== 'witchcipher' || !d.request_id) return;
+		const k = cipherAnswers[d.request_id];
+		if (k) { delete cipherAnswers[d.request_id]; k(d); }
+	};
+	try { if (parent.__cipherHook) parent.socket.off('game_response', parent.__cipherHook); } catch (e) { }
+	parent.socket.on('game_response', fn);
+	parent.__cipherHook = fn;
+	return true;
+}
+function cipherAsk(body) {
+	if (!parent.__cipherHook && !cipherHook()) return Promise.resolve({ failed: true, reason: 'no socket' });
+	const rid = 'cb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+	return new Promise((resolve) => {
+		const timer = setTimeout(() => { delete cipherAnswers[rid]; resolve({ failed: true, reason: 'no answer' }); }, CONFIG.cipherBrew.answerMs);
+		cipherAnswers[rid] = (d) => { clearTimeout(timer); resolve(d); };
+		try { parent.socket.emit('interaction', Object.assign({ type: 'witchcipher', request_id: rid }, body)); }
+		catch (e) { clearTimeout(timer); delete cipherAnswers[rid]; resolve({ failed: true, reason: 'emit: ' + ((e && e.message) || e) }); }
+	});
+}
+function cipherWitch() {
+	const g = (typeof parent !== 'undefined' && parent.G) || null;
+	const q = g && g.quests && g.quests.witch;
+	return (q && q.map && typeof q.x === 'number') ? { map: q.map, x: q.x, y: q.y } : { map: 'halloween', x: 858, y: -160 };
+}
+function cipherNearWitch() {
+	const w = cipherWitch();
+	const x = character.real_x != null ? character.real_x : character.x;
+	const y = character.real_y != null ? character.real_y : character.y;
+	return character.map === w.map && Math.hypot(w.x - x, w.y - y) <= CONFIG.cipherBrew.reach;
+}
+async function cipherWalk() {
+	const w = cipherWitch();
+	const pts = [{ x: w.x, y: w.y + 40 }, { x: w.x, y: w.y }, { x: w.x - 60, y: w.y + 40 }, { x: w.x + 60, y: w.y + 40 }];
+	for (const p of pts) {
+		try { await arbNoHang(moveTo({ map: w.map, x: p.x, y: p.y }), 'cipher walk', CONFIG.cipherBrew.moveMs); }
+		catch (e) { cipherSay('walk to the Witch: ' + ((e && (e.reason || e.message)) || e), 'orange'); if (e && e.moveBusy) return; }
+		if (cipherNearWitch()) return;
+		if (character.map !== w.map) return;
+	}
+}
+
+/* Someone else cracked a recipe this merchant had just sent or was about to. */
+function cipherSlowCheck(day) {
+	const w = (typeof parent !== 'undefined' && parent.S) ? parent.S.witchcipher : null;
+	if (!w || !w.id || typeof w.cracks !== 'number') return;
+	const seen = day.cracksSeen[w.id];
+	if (seen === w.cracks) return;
+	day.cracksSeen[w.id] = w.cracks;
+	cipherDaySave(day);
+	if (typeof seen !== 'number' || w.cracks <= seen) return;
+	const ck = w.cracked;
+	if (!ck || ck.by === character.name || !Array.isArray(ck.recipe)) return;
+	const key = ck.recipe.join(',');
+	const cycle = w.id + '#' + seen;
+	const mine = [cipherPending, cipherLastPick].some((p) => p && p.key === key && p.cycle === cycle);
+	if (!mine) return;
+	cipherLog('correct but too slow: ' + ck.by + ' cracked ' + key + ' on ' + mShardKey() + ' first', 'orange');
+	cipherPost({ kind: 'slow', server: cipherBridgeName(mShardKey()), round: w.id, mix: ck.recipe,
+		cracked_by: ck.by, possible: w.possible, ms: Date.now() - ((cipherPending || cipherLastPick).at || Date.now()) });
+}
+
+/* Rounds seen and never brewed in: one `watch` row each when they end. */
+function cipherWatchNote(shards, day, cfg) {
+	let watch = null;
+	try { watch = get(CIPHER_WATCH_KEY) || {}; } catch (e) { watch = {}; }
+	let changed = false;
+	for (const k in shards) {
+		const s = shards[k];
+		if (!s || !s.id || !(cfg.regions || []).some((r) => k.indexOf(r) === 0)) continue;
+		const id = s.id + '|' + k;
+		const over = !s.live || (s.end && Date.now() >= s.end);
+		/* Only a round first seen LIVE is tracked. A finished round sits in the
+		   bridge's snapshot until the next one starts, and recreating its record
+		   every tick would post its row every tick. */
+		if (!watch[id] && over) continue;
+		const rec = watch[id] || (watch[id] = { shard: k, round: s.id, min: null });
+		if (typeof s.possible === 'number' && (rec.min == null || s.possible < rec.min)) { rec.min = s.possible; changed = true; }
+		if (rec.last !== s.possible) { rec.last = s.possible; changed = true; }
+		if (!over) continue;
+		if (day.brewed.indexOf(id) < 0) cipherPost({ kind: 'watch', server: cipherBridgeName(k), round: s.id, possible: rec.last, min_possible: rec.min, mixes: s.mixes });
+		delete watch[id];
+		changed = true;
+	}
+	const ids = Object.keys(watch);
+	if (ids.length > 40) { for (const id of ids.slice(0, ids.length - 40)) delete watch[id]; changed = true; }
+	if (changed) { try { set(CIPHER_WATCH_KEY, watch); } catch (e) { } }
+}
+
+/* One mix on this shard, chosen from the live board. */
+async function cipherBrewNext(d, day) {
+	const w = parent.S && parent.S.witchcipher;
+	if (!w || !w.live || w.id !== d.round) return;
+	if (cipherAwaitBoard) {
+		const moved = w.mixes !== cipherAwaitBoard.mixes || w.cracks !== cipherAwaitBoard.cracks;
+		if (!moved && Date.now() < cipherAwaitBoard.until) return;
+		cipherAwaitBoard = null;
+	}
+	const names = cipherIngredientNames(), slots = cipherSlots();
+	const total = Math.pow(names.length, slots);
+	const cands = cipherFitSet(w.fit, total) || cipherBoardCandidates(w, names, slots);
+	if (!cands) { cipherSay('no fit map and the board is not the whole history - not guessing', 'orange'); return; }
+	const cycle = w.id + '#' + (w.cracks || 0);
+	const tried = new Set((w.board || []).map((e) => (e.mix || []).join(',')).concat(day.submitted[cycle] || []));
+	const pick = cipherPick(cands, names, slots, cipherHave(), tried);
+	if (!pick) { cipherSay('none of the ' + cands.length + ' fitting recipes can be made from the bag', 'orange'); return; }
+	const key = pick.r.join(',');
+	cipherLastPick = { key, cycle, at: Date.now() };
+	cipherPending = { key, cycle, at: Date.now() };
+	const before = { possible: w.possible, mixes: w.mixes, cracks: w.cracks };
+	const t0 = Date.now();
+	const res = await cipherAsk({ action: 'brew', items: pick.r });
+	const ms = Date.now() - t0;
+	const first = !day.firstLogged;
+	const row = { kind: 'mix', server: cipherBridgeName(mShardKey()), round: w.id, possible_before: before.possible,
+		mix: pick.r, ms, first, response: first || (res && !res.success) ? res : undefined };
+	if (res && res.success) {
+		day.firstLogged = true;
+		(day.submitted[cycle] = day.submitted[cycle] || []).push(key);
+		const bid = w.id + '|' + mShardKey();
+		if (day.brewed.indexOf(bid) < 0) day.brewed.push(bid);
+		if (!day.lockedShard) day.lockedShard = mShardKey();
+		day.mixesLeft = typeof res.mixes_left === 'number' ? res.mixes_left : (day.mixesLeft == null ? null : day.mixesLeft - 1);
+		if (res.cracked) day.crackedToday = true;
+		Object.assign(row, { right: res.right, fits: res.fits, cracked: res.cracked, parcels: res.parcels, mixes_left: res.mixes_left });
+		cipherLog((res.cracked ? 'CRACKED ' : 'brewed ') + key + ': ' + res.right + ' right, '
+			+ (res.parcels || 0) + ' parcel(s), ' + day.mixesLeft + ' mix(es) left (board was ' + before.possible + ')',
+			res.cracked ? '#F59A3C' : '#7FD98A');
+		cipherAwaitBoard = { mixes: before.mixes, cracks: before.cracks, until: Date.now() + 4000 };
+	} else {
+		const why = (res && res.reason) || 'unknown';
+		row.reason = why;
+		if (why === 'witchcipher_no_mixes') day.mixesLeft = 0;
+		if (why === 'witchcipher_elsewhere') day.elsewhere = (res && res.server) || 'another shard';
+		cipherLog('brew refused: ' + why + ' ' + JSON.stringify(res || {}).slice(0, 200), 'orange');
+	}
+	cipherDaySave(day);
+	cipherPending = null;
+	cipherPost(row);
+}
+
+async function cipherTick() {
+	const cfg = CONFIG.cipherBrew;
+	try {
+		if (!cfg || !cfg.enabled) { cipherRelease('disabled'); return; }
+		await cipherRefreshLive();
+		const now = Date.now();
+		const day = cipherDayLoad(new Date(now).toISOString().slice(0, 10));
+		/* The server's own count wins while it is here; it is sent only on a shard
+		   with a live round, so a stored count carries between rounds. */
+		const cw = character.witchcipher;
+		if (cw && typeof cw.mixes_left === 'number') {
+			if (cw.server && !day.lockedShard && cw.mixes_left === 0) {
+				if (!day.elsewhere) { day.elsewhere = String(cw.server); cipherDaySave(day); }
+			} else if (!cw.server) day.mixesLeft = cw.mixes_left;
+		}
+		const shards = cipherShardsNow();
+		cipherWatchNote(shards, day, cfg);
+		cipherSlowCheck(day);
+		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan });
+		cipherLast = d;
+		if (d.act === 'idle' || d.act === 'watch') { cipherRelease(d.why); return; }
+		if (!cipherBusy && !cipherTakeHold(d)) return;
+		if (cipherPlan && (cipherPlan.shard !== d.shard || cipherPlan.round !== d.round)) {
+			cipherPlanSave({ shard: d.shard, round: d.round, end: d.end, at: Date.now() });
+			cipherLog('moving the hold to ' + d.round + ' on ' + d.shard + ' (' + d.why + ')');
+		}
+		if (mShardKey() !== d.shard) { await mHopTo(d.shard); return; }
+		if (!cipherNearWitch()) { await cipherWalk(); return; }
+		if (d.act === 'brew') await cipherBrewNext(d, day);
+	} catch (e) {
+		cipherSay('tick threw: ' + ((e && e.message) || e), 'red');
+	} finally {
+		setTimeout(cipherTick, (cfg && cfg.tickMs) || 2000);
+	}
+}
+
+/* Why it is or is not brewing, and today's record. */
+function cipherStatus() {
+	const day = cipherDayLoad(new Date().toISOString().slice(0, 10));
+	const out = { busy: cipherBusy, plan: cipherPlan, last: cipherLast, waiting: cipherWaitWhy, bridge: !!cipherLive.ok,
+		mixesLeft: day.mixesLeft, lockedShard: day.lockedShard, crackedToday: day.crackedToday, elsewhere: day.elsewhere };
+	cipherLog(JSON.stringify(out), '#8b98ab');
+	return out;
+}
+
 // NOT called here. It now reads PROBE.hold, and PROBE is a const declared in
 // -> MerchantComments.md#not-called-here-it-now-2
 
@@ -7723,7 +8220,7 @@ async function scoutVisitNextShard() {
 async function scoutLoop() {
 	// A knock route owns the merchant: no scan, no hop, no trip home, and no
 	// stuck-cycle or error release of state.busy underneath it.
-	if (totBusy) return setTimeout(scoutLoop, CONFIG.scout.tickMs);
+	if (totBusy || cipherBusy) return setTimeout(scoutLoop, CONFIG.scout.tickMs);
 	try {
 		// Gated on `enabled`, not just spaced out. Without this the probe kept
 		// -> MerchantComments.md#gated-on-enabled-not-just
@@ -9039,7 +9536,7 @@ async function ssTick(reason) {
 async function arbLoop() {
 	try {
 		await arbFlushLedger();
-		if (CONFIG.arbitrage.enabled && !PROBE.hold && !totBusy) {
+		if (CONFIG.arbitrage.enabled && !PROBE.hold && !totBusy && !cipherBusy) {
 			if (!ARB.busy) {
 				ARB.busy = true;
 				try {
@@ -10761,6 +11258,7 @@ async function resumeInterruptedTrip() {
 // arbRestore FIRST: resumeInterruptedTrip decides whether to hop home, and it
 // can only make that call correctly once it knows a trade is in flight.
 arbRestore();
+cipherRestore();
 resumeInterruptedTrip();
 /* Pick up where the pre-hop script left off: a reload wiped every in-memory
    field, but the findings, rotation position and Ponty timers were written to
@@ -10779,6 +11277,7 @@ maintenanceLoop();
 anniversaryKissLoop();
 arbLoop();
 totLoop();
+setTimeout(cipherTick, 4000);
 /* Phase 0 only announces itself. Nothing in the probe section runs unless the
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {
