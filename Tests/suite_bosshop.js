@@ -268,7 +268,7 @@ module.exports = [
     + 'rather than a throw the guard swallowed', typeof w.rageCfg(), 'object');
 
   /* --- rank ------------------------------------------------------------- */
-  t.eq('graveyard ranks 4', w.bossRank('graveyard'), 4);
+  t.eq('graveyard ranks 5 (4 until the 2026-10-25 ruling)', w.bossRank('graveyard'), 5);
   t.eq('which TIES horseman', w.bossRank('graveyard'), w.bossRank('horseman'));
   /* A tie is normally what this table avoids, so the thing to pin is not the
      number but WHY the tie can never be exercised: horseman is realm hour 0,
@@ -847,13 +847,13 @@ module.exports = [
 	const w = ranger();
 	t.eq('dragold 1', w.bossRank('dragold'), 1);
 	t.eq('franky 2', w.bossRank('franky'), 2);
-	t.eq('crabxx, wabbit and goobrawl all 3',
-		['crabxx', 'wabbit', 'goobrawl'].map(w.bossRank), [3, 3, 3]);
-	t.eq('horseman 4, the operator\'s 2026-10-21 insertion', w.bossRank('horseman'), 4);
-	t.eq('mrgreen 5, shifted down by it', w.bossRank('mrgreen'), 5);
-	t.eq('grinch and mrpumpkin 6', ['grinch', 'mrpumpkin'].map(w.bossRank), [6, 6]);
-	t.eq('anything unranked is 7, the operator\'s "all others"', w.bossRank('phoenix'), 7);
-	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 7);
+	t.eq('goobrawl ALONE at 3, the operator\'s 2026-10-25 ruling', w.bossRank('goobrawl'), 3);
+	t.eq('crabxx and wabbit 4, below it', ['crabxx', 'wabbit'].map(w.bossRank), [4, 4]);
+	t.eq('horseman 5 (inserted at 4 on 2026-10-21)', w.bossRank('horseman'), 5);
+	t.eq('mrgreen 6', w.bossRank('mrgreen'), 6);
+	t.eq('grinch and mrpumpkin 7', ['grinch', 'mrpumpkin'].map(w.bossRank), [7, 7]);
+	t.eq('anything unranked is 8, the operator\'s "all others"', w.bossRank('phoenix'), 8);
+	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 8);
 
 	/* THE INSERTION IS ORDER-PRESERVING, WHICH IS THE OPERATOR'S ACTUAL
 	   REASONING AND NOT A SIDE EFFECT. Horseman went in at 4 rather than tying
@@ -871,7 +871,11 @@ module.exports = [
 		const now = Math.sign(w.bossRank(a) - w.bossRank(b));
 		if (was !== now) broken.push(a + ' vs ' + b);
 	}
-	t.eq('no pre-insertion pair changed order', broken.join(','), '');
+	/* 2026-10-25 REORDERED ON PURPOSE, and exactly these pairs: goobrawl stopped
+	   tying crabxx and wabbit and went above them. Listed, so any OTHER reorder
+	   still fails here. */
+	t.eq('the only pre-insertion pairs that changed order are the 2026-10-25 ruling\'s',
+		broken.sort().join(','), ['crabxx vs goobrawl', 'goobrawl vs crabxx', 'goobrawl vs wabbit', 'wabbit vs goobrawl'].sort().join(','));
 	/* AND THIS CHECK CANNOT TELL AN INSERTION FROM A TIE - state the scope or
 	   the next reader over-trusts it. A tie at 4 (horseman AND mrgreen both 4,
 	   the group below shifted to 5) preserves every pre-insertion pair too,
@@ -920,7 +924,7 @@ module.exports = [
 	   bossLiveNames() yields goobrawl, never rgoo. That was ASPIRATIONAL until
 	   v115: goobrawl publishes no `live` field, so the rank 3 entry was
 	   unreachable from the day it was written. See the block below. */
-	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), 7);
+	t.eq('goobrawl is keyed by its event name, not its monster', w.bossRank('rgoo'), w.BOSS_RANK_DEFAULT);
 	t.eq('and horseman is its own name, event and monster alike',
 		w.bossRank('horseman'), w.BOSS_RANK.horseman);
 } },
@@ -2495,7 +2499,7 @@ module.exports = [
 	t.eq('a plan elsewhere -> null', w.bossHop.holdRank('USII', { shard: 'EUI', rank: 3 }), null);
 	w.bossState.trip = { name: 'graveyard', shard: 'USII' };
 	w.parent.S.graveyard = { live: true };
-	t.eq('a live graveyard trip here -> 4', w.bossHop.holdRank('USII', null), 4);
+	t.eq('a live graveyard trip here -> its rank, 5', w.bossHop.holdRank('USII', null), 5);
 	t.eq('the better of the two', w.bossHop.holdRank('USII', { shard: 'USII', rank: 3 }), 3);
 	w.parent.S.graveyard = { live: false };
 	t.eq('its event over -> null', w.bossHop.holdRank('USII', null), null);
@@ -2510,7 +2514,7 @@ module.exports = [
 	w.parent.S.horseman = { live: true };
 	t.eq('a trip on a bossHop target does not hold - FIGHTING/localTarget own it', w.bossHop.holdRank('USII', null), null);
 	w.CONFIG.bossHop.targets.pop();
-	t.eq('precondition: the same trip, horseman not a target, does', w.bossHop.holdRank('USII', null), 4);
+	t.eq('precondition: the same trip, horseman not a target, does', w.bossHop.holdRank('USII', null), 5);
 } },
 
 { name: 'goHomeIfIdle: an event fight here is not "nothing eligible"', fn(t) {
@@ -2548,7 +2552,9 @@ module.exports = [
 	const d = mk('ASIA', 'I');
 	d.pick = { shard: 'EUI', mtype: 'franky', secsToDeath: 100 };
 	const e = mk('US', 'II');
-	e.here = 'crabxx';
+	e.here = 'goobrawl';
+	const e2 = mk('US', 'II');
+	e2.here = 'crabxx';
 	const f = mk('US', 'II');
 	f.here = 'crabxx';
 	feed(f, [row('EUI', 'franky', NOW + 100000, 2400)]);
@@ -2564,12 +2570,14 @@ module.exports = [
 		t.eq('and says so once, not per tick', b.logs.filter(l => /Holding on ASIAI/.test(l)).length, 1);
 
 		await c.bossHop.tick();
-		t.eq('an EQUAL-ranked boss elsewhere does not pull it off', c.hops, []);
+		t.eq('a lower-ranked crabxx (4) elsewhere does not pull it off - 12:09Z 2026-10-25', c.hops, []);
 		await d.bossHop.tick();
 		t.eq('a strictly better one does', d.hops, ['EUI/franky']);
 
 		await e.bossHop.tick();
-		t.eq('a live crabxx here beats an equal-ranked plan elsewhere', e.bossHop.state, 'FIGHTING');
+		t.eq('a live goobrawl here beats an equal-ranked plan elsewhere', e.bossHop.state, 'FIGHTING');
+		await e2.bossHop.tick();
+		t.eq('a live crabxx here no longer does - goobrawl alone at 3', e2.hops, ['ASIAI/goobrawl']);
 		await f.bossHop.tick();
 		t.eq('but not a strictly better plan elsewhere', f.hops, ['EUI/franky']);
 	})();

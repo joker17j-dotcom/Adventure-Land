@@ -62,7 +62,7 @@ function rangerWorld(over = {}) {
 		parent: { S: Object.assign({ halloween: true, schedule: { events: [], repeats: [] } }, over.S || {}),
 			G: { events: { trickortreat: RULES } } },
 		CONFIG: { trickOrTreat: { enabled: true, tickMs: 20000, leadMs: 300000, retryMs: 600000, moveMs: 1000, reach: 80 } },
-		BOSS_RANK_DEFAULT: 7,
+		BOSS_RANK_DEFAULT: 8,
 		state: { sellingOff: false, waitingForMerchant: false },
 		mhBusy: false, reliefRunning: false,
 		ragePull: { busy: false }, rageNav: { busy: false },
@@ -210,7 +210,7 @@ module.exports = [
 	t.ok('let totBusy = false', /^let totBusy = false;/m.test(s));
 	t.ok('let totPauseUntil = 0', /^let totPauseUntil = 0;/m.test(s));
 	t.ok('let totDoneDay = null', /^let totDoneDay = null;/m.test(s));
-	t.ok('const BOSS_RANK_DEFAULT = 7', /^const BOSS_RANK_DEFAULT = 7;/m.test(s));
+	t.ok('const BOSS_RANK_DEFAULT = 8', /^const BOSS_RANK_DEFAULT = 8;/m.test(s));
 	t.ok('the toggle exists and feeds the config', /trickOrTreat:\s+true,\s+\/\/ CONFIG\.trickOrTreat\.enabled/.test(s)
 		&& /enabled: TOGGLES\.trickOrTreat/.test(s));
 	t.ok('totStatus is a published feature', /totStatus: typeof totStatus/.test(s));

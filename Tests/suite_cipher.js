@@ -65,7 +65,7 @@ function G() {
    brace-matches from the first `{`, which for these is past the declaration),
    so they are supplied - and pinned against the source text below, so a change
    to the file cannot leave these copies stale while the suite stays green. */
-const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 7, CIPHER_RANK: 8,
+const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 8, CIPHER_RANK: 9,
 	CIPHER_INGREDIENTS_FALLBACK: INGREDIENTS, CIPHER_STOCK_KEY: 'cipher_stock' };
 const RANGER_FNS = ['cipherLog', 'cipherSay', 'cipherRules', 'cipherIngredients', 'cipherGatherMs', 'cipherLootRate',
 	'cipherOnStock', 'cipherShort', 'cipherWindowHere', 'cipherDoorDistance', 'cipherTravelSec',
@@ -461,7 +461,7 @@ module.exports = [
 		const g = mk({ S: { graveyard: { live: true } } });
 		feed(g, [crow('EUI', NOW + 12 * 60000)]);
 		g.bossState.trip = { name: 'graveyard', shard: 'USII' };
-		t.eq('precondition: the live event holds at its own rank', g.bossHop.holdRank('USII', null), 4);
+		t.eq('precondition: the live event holds at its own rank', g.bossHop.holdRank('USII', null), 5);
 		await g.bossHop.tick();
 		t.eq('a live event here is not left for a gathering window', g.hops, []);
 
@@ -494,7 +494,7 @@ module.exports = [
 		/if \(!CONFIG\.partyMembers\.includes\(name\)\) return;\n\tif \(name === 'Dexon' && data\.message === 'cipher_stock_request'\) \{ cipherStockTick\(true\); return; \}/.test(text(MERCHANT)));
 	t.ok('CIPHER_STOCK_SENT_KEY as supplied', /^const CIPHER_STOCK_SENT_KEY = 'cipher_stock_sent';$/m.test(text(MERCHANT)));
 	t.ok('the merchant reports 3s after a page loads, not 15', /^setTimeout\(cipherStockTick, 3000\);$/m.test(text(MERCHANT)));
-	t.ok('BOSS_RANK_DEFAULT as supplied', /^const BOSS_RANK_DEFAULT = 7;$/m.test(src));
+	t.ok('BOSS_RANK_DEFAULT as supplied', /^const BOSS_RANK_DEFAULT = 8;$/m.test(src));
 	t.ok('CIPHER_RANK is one below the default, as supplied', /^const CIPHER_RANK = BOSS_RANK_DEFAULT \+ 1;$/m.test(src));
 	const fb = src.match(/^const CIPHER_INGREDIENTS_FALLBACK = (\[[\s\S]*?\n\]);/m);
 	t.eq('the ranger\'s fallback list is the design file\'s, verbatim',

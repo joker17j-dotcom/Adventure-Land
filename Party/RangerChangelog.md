@@ -21,6 +21,18 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v149
+
+**GOOBRAWL ALONE AT 3, THE OPERATOR'S RULING 2026-10-25 08:17 EDT.** It tied
+crabxx and wabbit; everything below it moves down one: dragold 1, franky 2,
+goobrawl 3, crabxx and wabbit 4, horseman and graveyard 5, mrgreen 6, snowman,
+grinch and mrpumpkin 7, `BOSS_RANK_DEFAULT` 8, so `CIPHER_RANK` follows to 9.
+Prompted at 12:09Z, when a rank-3 crabxx pulled the party out of an EU I
+goobrawl. Hop settings unchanged. Every pairwise order holds except goobrawl
+now above crabxx and wabbit, and the suite lists exactly those pairs as the
+allowed change. All four copies moved together (Ranger, Priest, Mage,
+`Codex/boss_timers.html`).
+
 ## v148
 
 **THE CIPHER FARM'S THREE LIVE DEFECTS**, measured by the browser session over

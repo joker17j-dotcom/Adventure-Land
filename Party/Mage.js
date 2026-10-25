@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v104
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v105
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3489,12 +3489,13 @@ function bossEligible(name) {
 const BOSS_RANK = {
 	dragold: 1,
 	franky: 2,
-	crabxx: 3, wabbit: 3, goobrawl: 3,
-	horseman: 4, graveyard: 4,
-	mrgreen: 5,
-	snowman: 6, grinch: 6, mrpumpkin: 6,
+	goobrawl: 3,
+	crabxx: 4, wabbit: 4,
+	horseman: 5, graveyard: 5,
+	mrgreen: 6,
+	snowman: 7, grinch: 7, mrpumpkin: 7,
 };
-const BOSS_RANK_DEFAULT = 7;
+const BOSS_RANK_DEFAULT = 8;
 function bossRank(name) {
 	const r = BOSS_RANK[name];
 	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;

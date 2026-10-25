@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v148
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v149
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2037,16 +2037,25 @@ const BOSS_FIELD_HOLD = 40;   // walk back to the spot when further than this fr
    BOSS_RANK, while all three call sites pass a name that already came off a
    live candidate list. So an entry for a non-spawning boss is UNREACHABLE
    rather than merely harmless - which is what dragold at rank 1 has been
-   demonstrating for as long as `lunarnewyear` has been false. */
+   demonstrating for as long as `lunarnewyear` has been false.
+
+   GOOBRAWL ALONE AT 3, OPERATOR'S RULING 2026-10-25, AND EVERYTHING BELOW IT
+   MOVED DOWN ONE: crabxx and wabbit 4, horseman and graveyard 5, mrgreen 6,
+   snowman/grinch/mrpumpkin 7, default 8. Prompted by 12:09Z that day, when a
+   rank-3 crabxx on another shard pulled the party out of a running goobrawl
+   that tied it at 3. Order-preserving again: the only relationships that moved
+   are goobrawl over crabxx and wabbit, which used to tie. crabxx over the
+   graveyard falls out of the same table, and the operator confirmed it. */
 const BOSS_RANK = {
 	dragold: 1,
 	franky: 2,
-	crabxx: 3, wabbit: 3, goobrawl: 3,
-	horseman: 4, graveyard: 4,
-	mrgreen: 5,
-	snowman: 6, grinch: 6, mrpumpkin: 6,
+	goobrawl: 3,
+	crabxx: 4, wabbit: 4,
+	horseman: 5, graveyard: 5,
+	mrgreen: 6,
+	snowman: 7, grinch: 7, mrpumpkin: 7,
 };
-/* graveyard TIES horseman at 4 on the operator's ruling, and a tie is normally
+/* graveyard TIES horseman (5 since 2026-10-25, 4 before) on the operator's ruling, and a tie is normally
    the thing this table avoids - it falls through to `need` and then
    kills_to_rung, the mechanism the ranking exists to override. It is safe here
    because THE TWO CAN NEVER BE LIVE TOGETHER: horseman runs at realm hour 0,
@@ -2057,14 +2066,15 @@ const BOSS_RANK = {
    with an even offset would make graveyard collide with horseman and expose
    this tie, and nothing in the schedule code would have to change for that to
    happen - so re-derive it if TIMEO ever grows.
-   WHY 4 AND NOT 6: twelve graveyards a day and ~144 before the season ends is
+   WHY 4 AND NOT 6 (now 5, against the always-up 6s that moved to 7): twelve graveyards a day and ~144 before the season ends is
    an abundance argument, and abundance is the wrong axis when every window
    banks share toward a 6,000,000 cooperative boss. */
-/* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, which the insertion moved from 5
-   to 6. It is 7 rather than 6 for that reason and not as a spare gap: at 6 the
-   unranked set would TIE with snowman/grinch/mrpumpkin and sort by
-   kills_to_rung against them, which is the failure the table exists to stop. */
-const BOSS_RANK_DEFAULT = 7;
+/* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, which is 7 since 2026-10-25 (6
+   before, 5 before that). It is one past the largest for that reason and not as
+   a spare gap: equal to it, the unranked set would TIE with
+   snowman/grinch/mrpumpkin and sort by kills_to_rung against them, which is the
+   failure the table exists to stop. */
+const BOSS_RANK_DEFAULT = 8;
 function bossRank(name) {
 	const r = BOSS_RANK[name];
 	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;

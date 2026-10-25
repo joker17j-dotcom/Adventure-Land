@@ -51,10 +51,10 @@ module.exports = [{ name: 'boss_timers Schedule tab', fn(t) {
 	];
 	const rows = w.schedRows(list, SERVERS, T0 - 60e3, new Set());
 	t.eq('one row per distinct start time', rows.map((x) => x.at_ms), [T0, T0 + H, T0 + 1.5 * H]);
-	t.eq('cells by rank, ties by name (crabxx before goobrawl, both 3)',
-		rows[0].cells.map((c) => c.event), ['crabxx', 'goobrawl', 'abtesting']);
-	t.eq('the rank rides on the cell', rows[0].cells.map((c) => c.rank), [3, 3, 7]);
-	t.eq('two shards running one event share one cell', rows[0].cells[1].regions,
+	t.eq('cells by rank (goobrawl 3 before crabxx 4)',
+		rows[0].cells.map((c) => c.event), ['goobrawl', 'crabxx', 'abtesting']);
+	t.eq('the rank rides on the cell', rows[0].cells.map((c) => c.rank), [3, 4, 8]);
+	t.eq('two shards running one event share one cell', rows[0].cells[0].regions,
 		[{ region: 'US', shards: ['II', 'V'], all: false }]);
 
 	/* -- "all" means every reporting shard of that region ---------------- */
@@ -70,7 +70,7 @@ module.exports = [{ name: 'boss_timers Schedule tab', fn(t) {
 		w.schedRows(list, SERVERS, T0 - 60e3, new Set(['goobrawl']))[0].cells.map((c) => c.event), ['crabxx', 'abtesting']);
 	t.eq('schedEvents lists a hidden event so it can be switched back on',
 		w.schedEvents([occ('US I', 'crabxx', T0)], new Set(['horseman'])), ['crabxx', 'horseman']);
-	t.eq('schedEvents is by rank', w.schedEvents(list, new Set()), ['crabxx', 'goobrawl', 'graveyard', 'horseman', 'abtesting']);
+	t.eq('schedEvents is by rank, ties by name (graveyard and horseman, both 5)', w.schedEvents(list, new Set()), ['goobrawl', 'crabxx', 'graveyard', 'horseman', 'abtesting']);
 
 	/* -- live and ended ------------------------------------------------------ */
 	const at10 = w.schedRows(list, SERVERS, T0 + 10 * 60e3, new Set());

@@ -950,11 +950,16 @@ in v97, and it had never EXECUTED at all, because Dexon was running
 `Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
 this ranking until a Ranger build is actually running on him.
 
-- **The table, as of the operator's 2026-10-21 insertion (Ranger v107).**
-  dragold 1; franky 2; crabxx, wabbit and goobrawl 3; **horseman 4**; mrgreen 5;
-  snowman, grinch and mrpumpkin 6; `BOSS_RANK_DEFAULT = 7` for everything else,
-  icegolem included. It read mrgreen 4 / snowman group 5 / default 6 until then,
-  so a note quoting those is reading the pre-horseman table.
+- **The table, as of the operator's 2026-10-25 ruling (Ranger v149 / Priest v82
+  / Mage v105).** dragold 1; franky 2; **goobrawl 3, alone**; crabxx and wabbit 4;
+  horseman and graveyard 5; mrgreen 6; snowman, grinch and mrpumpkin 7;
+  `BOSS_RANK_DEFAULT = 8` for everything else, icegolem included; the cipher farm
+  9. Prompted at 12:09Z when a rank-3 crabxx pulled the party out of an EU I
+  goobrawl. From 2026-10-21 (Ranger v107) to then it read crabxx, wabbit and
+  goobrawl 3 / horseman 4 / mrgreen 5 / snowman group 6 / default 7, and before
+  that mrgreen 4 / snowman group 5 / default 6 - a note quoting either is reading
+  a superseded table. The rank NUMBERS in the bullets below are as of their
+  dates; the ORDER they argue is unchanged except goobrawl over crabxx/wabbit.
   **THE RULE THE INSERTION EXPRESSES, which is the part that stops it being
   re-derived wrong: PERISHABLE-BUT-FREQUENT SITS BELOW RARE-AND-PERMANENT AND
   ABOVE ALWAYS-AVAILABLE.** Horseman ends with Halloween, which argues for
@@ -1350,7 +1355,7 @@ this ranking until a Ranger build is actually running on him.
   and `bossEligible()` refuses the event outright. Nothing about "fight types"
   suggests that, and the row looks like a nicety until you delete it. Pinned by
   the inverted assertion.
-- **`bossRank.graveyard` IS 4, TYING HORSEMAN, AND THE TIE IS UNREACHABLE RATHER
+- **`bossRank.graveyard` TIES HORSEMAN (4 then, 5 since 2026-10-25), AND THE TIE IS UNREACHABLE RATHER
   THAN MERELY UNLIKELY.** horseman is realm hour 0 - UTC 23/05/17, all ODD -
   while graveyard is odd realm hours minus odd offsets, landing on EVEN UTC at
   :30; minimum separation 20 minutes. So the fall-through to `need` and
