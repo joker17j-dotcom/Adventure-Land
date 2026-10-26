@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v157
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v158
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4623,15 +4623,31 @@ const bossHop = {
 		const homeAge = this.lineupAgeSec(home, now);
 		if (homeAge === null || homeAge > p.lineupMaxAgeSec) return null;
 		const gather = cipherGatherMs();
+		const usable = (o) => {
+			if (o.event !== CIPHER_EVENT) return false;
+			if (o.status && o.status !== 'scheduled' && o.status !== 'live') return false;
+			const age = this.lineupAgeSec(o.shard, now);
+			if (age === null || age > p.lineupMaxAgeSec) return false;
+			return now < o.at + gather - cf.minUsefulMs;
+		};
+		/* Home's window, whether or not it is due yet. A hop is due from
+		   about 13 minutes out and home only from walkLeadMaxMs, so without
+		   this a foreign window won for those minutes even when home ran the
+		   same gathering - 2026-10-26 10:49Z, a hop to ASIA II, then home
+		   eight minutes later: two hops for one window. */
+		let homeWin = null;
+		for (const o of this.schedRows) {
+			if (o.shard !== home || !usable(o)) continue;
+			if (!homeWin || o.at < homeWin.at) homeWin = o;
+		}
 		let best = null;
 		for (const o of this.schedRows) {
-			if (o.event !== CIPHER_EVENT) continue;
-			if (o.status && o.status !== 'scheduled' && o.status !== 'live') continue;
-			const age = this.lineupAgeSec(o.shard, now);
-			if (age === null || age > p.lineupMaxAgeSec) continue;
+			if (!usable(o)) continue;
 			const end = o.at + gather;
-			if (now >= end - cf.minUsefulMs) continue;
 			const here = o.shard === cur, isHome = !!home && o.shard === home;
+			/* A foreign window that home's own window overlaps is never
+			   hopped for: home will be due before it closes. */
+			if (!here && !isHome && homeWin && homeWin.at < end && o.at < homeWin.at + gather) continue;
 			/* Going home clears hop sickness at once, so home leads like here. */
 			const lead = (here || isHome) ? cf.walkLeadMaxMs
 				: this.hopsickMs() + cf.marginMs + CONFIG.bossHop.hopLatencyMs;

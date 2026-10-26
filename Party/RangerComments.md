@@ -122,6 +122,19 @@ Opening only: a target already live was weighed by `pickTarget()`, and one it
 declined must not block. Home and here are exempt, because farming there costs
 no hop and the boss can still call the party away.
 
+**HOME'S WINDOW, WHEN IT OVERLAPS, SHUTS OUT EVERY FOREIGN HOP** (v158, from
+the 11:00Z window of 2026-10-26). The two leads differ: a hop is due about 13
+minutes out (sickness 12 + margin 1), home only `walkLeadMaxMs` (10) out. So
+for three minutes before any gathering home also runs, a foreign window was the
+only due candidate and won. At 10:49:52Z Dexon hopped from ASIA I to ASIA II.
+Home came due at 10:50:00Z, held off only by the mrgreen trip there, and the
+party hopped home at 10:57:40Z: two hops for one window, sickness and fatigue
+taken for nothing. "Home preferred" was applied only among candidates already
+due. Now home's usable window is found first, due or not, and a foreign window
+it overlaps is skipped. The plan says nothing until home is due, and then says
+home, so it is one hop. Here is not affected: it has home's lead, so the two
+come due together and the existing home-first tie-break decides.
+
 ## preposition
 
 **WHY IT EXISTS.** Operator, 2026-10-24: why did the party not preposition for

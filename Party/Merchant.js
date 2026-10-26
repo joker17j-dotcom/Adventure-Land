@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v137
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v138
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6431,8 +6431,10 @@ function totStatus(quiet) {
 //
 // Five mixes per ACCOUNT per UTC day, and the day's first mix locks the day to
 // that shard. A mix that fits every clue so far and is new this round pays one
-// Witch's Parcel; the mix that cracks the recipe pays 50 more, once a day; a
-// crack resets the recipe on a clean board. Read from upstream 16881a2
+// Witch's Parcel per slot it gets right - measured 2026-10-26, right 3 paid 3
+// and right 2 paid 2. The mix that cracks the recipe pays 50 instead, once a
+// day: right 5 cracked and paid 50, not 55. A crack resets the recipe on a
+// clean board. Read from upstream 16881a2
 // node/logic/witch_cipher.js plus a live read - the payout KEYS differ live
 // ({right, crack}), so nothing here reads payout at all.
 //
@@ -6446,7 +6448,7 @@ function totStatus(quiet) {
 // WHEN: chasing the crack, brew once a board is down to `threshold` recipes,
 // cautiously in the day's first round (it may brew nothing) and spending what
 // is left in the day's last. Once the 50 is won, spend the rest quickly - still
-// one new fitting recipe each, for the parcel. Each mix is chosen AFTER the
+// one new fitting recipe each, for its parcels. Each mix is chosen AFTER the
 // previous answer, because his own mix is a clue too.
 //
 // THE HOLD: once a round is chosen he finishes any trade under way, then holds

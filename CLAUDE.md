@@ -4643,6 +4643,12 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   ranked above it as it should. The farm got only the last 3 minutes, on
   boar@winterland. So the plan and the pick worked and the rank decided the rest.
   11:00Z is the one window no `bossHop` target overlaps, so it is the clean test.
+  **THE CLEAN TEST PASSED, 11:00Z 2026-10-26**: arcticbee@winterland on US II
+  from 10:57:49 to 11:20:07Z, no boss lines, 19 frostscale in Dexon's bag. One
+  fault: two hops for one window (ASIA I to ASIA II at 10:49:52, then home at
+  10:57:40). A foreign window comes due 13 minutes out and home only 10, so it
+  won the gap. Ranger v158 skips a foreign window that home's own window
+  overlaps.
   **NO SEASON END, RULED 2026-10-25 (Ranger v147 / Merchant v131)**: the cipher
   stays in the daily rotation, so farming continues after Halloween and the bag
   hold is permanent - up to ONE FULL STACK each; the smaller stack beyond it is
@@ -4679,6 +4685,11 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   0). Merchant v137 ranks shards by makeable fitting recipes first. In the last
   round it falls through to any shard with something makeable, while no mix has
   locked the day. It logs "board at N, M makeable".
+  **FIRST CRACK, 11:23Z 2026-10-26 on ASIA II**: three mixes, board 7 then 4,
+  right 3 / 5 (cracked) / 2, parcels 3 / 50 / 2. **SO A FITTING MIX PAYS ONE
+  PARCEL PER RIGHT SLOT, AND THE CRACK PAYS 50 FLAT, NOT 50 PLUS ITS FIVE.** The
+  floor stop then fired with two mixes left. Merchant v138 corrects the comment
+  that said one parcel per fitting mix.
   **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
   USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
   the day stops (`stoppedFloor`).

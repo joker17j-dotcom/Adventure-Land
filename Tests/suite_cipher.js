@@ -480,6 +480,21 @@ module.exports = [
 	w = mk();
 	feed(w, [crow('EUI', NOW - 60000, 'live'), crow('USII', NOW + 30 * 60000)]);
 	t.eq('but not outside home\'s own window', w.bossHop.cipherPlan('ASIAI').shard, 'EUI');
+	/* v158: the 10:49Z 2026-10-26 double hop. ASIA II and home open the
+	   same gathering; 10 min 8 s out the foreign hop is due and home is not. */
+	w = mk();
+	feed(w, [crow('ASIAII', NOW + 608000), crow('USII', NOW + 608000)]);
+	t.ok('precondition: home is not yet due (walkLeadMaxMs 10 min)', NOW + 608000 - w.CONFIG.cipherFarm.walkLeadMaxMs > NOW);
+	t.eq('home running the same window: no foreign hop while home is not yet due', w.bossHop.cipherPlan('ASIAI'), null);
+	w = mk();
+	feed(w, [crow('ASIAII', NOW + 608000)]);
+	t.eq('precondition: alone, that foreign window is planned', w.bossHop.cipherPlan('ASIAI') && w.bossHop.cipherPlan('ASIAI').shard, 'ASIAII');
+	w = mk();
+	feed(w, [crow('ASIAII', NOW + 9 * 60000), crow('USII', NOW + 9 * 60000)]);
+	t.eq('once home is due it is home, one hop', w.bossHop.cipherPlan('ASIAI') && w.bossHop.cipherPlan('ASIAI').shard, 'USII');
+	w = mk();
+	feed(w, [crow('ASIAII', NOW + 608000), crow('USII', NOW + 608000)]);
+	t.eq('standing on the foreign shard is not a hop: it still plans nothing early', w.bossHop.cipherPlan('ASIAII'), null);
 	w = mk();
 	feed(w, [crow('EUI', NOW - 60000, 'live'), crow('ASIAI', NOW - 120000, 'live')]);
 	t.eq('two foreign windows: the one we stand on', w.bossHop.cipherPlan('ASIAI').shard, 'ASIAI');

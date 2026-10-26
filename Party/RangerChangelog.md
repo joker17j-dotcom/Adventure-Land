@@ -21,6 +21,18 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v158
+
+**ONE HOP FOR A WINDOW HOME ALSO RUNS** - from the browser session's read of the
+11:00Z window of 2026-10-26. The cipher farm worked at rank 6, but Dexon hopped
+twice for one window: ASIA I to ASIA II at 10:49:52Z, then home to US II at
+10:57:40Z. A foreign window is due 13 minutes out and home only 10, so for three
+minutes the foreign one was the only candidate. `cipherPlan()` now finds home's
+usable window first, due or not, and skips any foreign window it overlaps.
+Five assertions in `Tests/suite_cipher.js`. Removing the guard fails the one
+that says no foreign hop is planned while home is not yet due.
+-> RangerComments.md#cipherFarm
+
 ## v157
 
 **NO HOP GOES TO A PVP SHARD, WHATEVER PLANNED IT** - the operator's standing

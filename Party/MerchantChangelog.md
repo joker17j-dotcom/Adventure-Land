@@ -1,4 +1,14 @@
 
+## v138
+
+**COMMENT ONLY - THE PARCEL PAYOUT IS PER RIGHT SLOT.** The brewing block said a
+fitting new mix pays one Witch's Parcel. The browser session read the first live
+brews, ASIA II at 11:23Z 2026-10-26: right 3 paid 3 parcels, right 2 paid 2, and
+the cracking mix (right 5) paid 50, not 55. Live `G.events.witchcipher.payout` is
+`{right: 1, crack: 50}`, so the 1 is per right slot. Nothing in the script reads
+the payout, so behaviour is unchanged and deploying it is optional. Until it is,
+Meltymerch's slot reads v137 against a v138 repo, and that is expected.
+
 ## v137
 
 **THE SHARD IS CHOSEN BY WHAT THE BAG CAN MAKE** - from the browser session's
