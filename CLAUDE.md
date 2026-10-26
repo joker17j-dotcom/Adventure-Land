@@ -4632,7 +4632,13 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   kills/s is `dps / hp` and the chance is `loot * hp / 1000`, so hp cancels and
   every such spawn yields `loot * dps / 1000`; hp matters only where a spawn
   runs dry first. So the pick is a spawn that never runs dry, survivable, close.
-  NOT YET RUN LIVE. Design in `Party/RangerComments.md#cipherFarm`.
+  Design in `Party/RangerComments.md#cipherFarm`.
+  **FIRST LIVE WINDOW, 23:00Z 2026-10-25 (Ranger v154), read by the browser
+  session from the game-log file.** The plan hopped home at 22:52:55 and picked
+  arcticbee@winterland for frostscale, then horseman took the window at 23:00:08,
+  ranked above it as it should. The farm got only the last 3 minutes, on
+  boar@winterland. So the plan and the pick worked and the rank decided the rest.
+  11:00Z is the one window no `bossHop` target overlaps, so it is the clean test.
   **NO SEASON END, RULED 2026-10-25 (Ranger v147 / Merchant v131)**: the cipher
   stays in the daily rotation, so farming continues after Halloween and the bag
   hold is permanent - up to ONE FULL STACK each; the smaller stack beyond it is
