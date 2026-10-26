@@ -21,7 +21,10 @@ function pageWorld() {
 	if (m) vm.runInContext('globalThis.SCHED_SHARD_ORDER = ' + m[1], w);
 	w.Map = Map; w.Set = Set;
 	lift(w, PAGE, ['SCHED_RANK', 'schedRank', 'schedShardKey', 'schedRegionShards', 'schedRows', 'schedEvents']);
-	w.SCHED_RANK_DEFAULT = Number(/^const SCHED_RANK_DEFAULT = (\d+);$/m.exec(src)[1]);
+	/* The default is derived on the page, and a scalar initialiser is not
+	   liftable, so the committed line is evaluated as written. */
+	const d = /^const SCHED_RANK_DEFAULT = (.*);$/m.exec(src);
+	if (d) vm.runInContext('globalThis.SCHED_RANK_DEFAULT = ' + d[1], w);
 	return { w, src, hasOrder: !!m };
 }
 
@@ -39,7 +42,12 @@ module.exports = [{ name: 'boss_timers Schedule tab', fn(t) {
 	lift(r, 'Party/Ranger.js', ['BOSS_RANK']);
 	const ranger = JSON.parse(JSON.stringify(r.BOSS_RANK));
 	t.eq('SCHED_RANK is identical to Party/Ranger.js BOSS_RANK', JSON.parse(JSON.stringify(w.SCHED_RANK)), ranger);
-	const rangerDefault = Number(/^const BOSS_RANK_DEFAULT = (\d+);$/m.exec(require('fs').readFileSync(require('path').join(__dirname, '..', 'Party/Ranger.js'), 'utf8'))[1]);
+	/* Both defaults are DERIVED now, one past the largest entry, so the copy is
+	   checked by the same rule rather than by a literal parsed out of the file. */
+	const rsrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'Party/Ranger.js'), 'utf8');
+	t.ok('precondition: the Ranger derives its default', /^const BOSS_RANK_DEFAULT = Math\.max\.apply\(null, Object\.values\(BOSS_RANK\)\) \+ 1;$/m.test(rsrc));
+	t.ok('and so does the page', /^const SCHED_RANK_DEFAULT = Math\.max\.apply\(null, Object\.values\(SCHED_RANK\)\) \+ 1;$/m.test(src));
+	const rangerDefault = Math.max.apply(null, Object.values(ranger)) + 1;
 	t.eq('SCHED_RANK_DEFAULT equals BOSS_RANK_DEFAULT', w.SCHED_RANK_DEFAULT, rangerDefault);
 	t.eq('an unranked event takes the default', w.schedRank('abtesting'), rangerDefault);
 
@@ -53,7 +61,7 @@ module.exports = [{ name: 'boss_timers Schedule tab', fn(t) {
 	t.eq('one row per distinct start time', rows.map((x) => x.at_ms), [T0, T0 + H, T0 + 1.5 * H]);
 	t.eq('cells by rank (goobrawl 3 before crabxx 4)',
 		rows[0].cells.map((c) => c.event), ['goobrawl', 'crabxx', 'abtesting']);
-	t.eq('the rank rides on the cell', rows[0].cells.map((c) => c.rank), [3, 4, 8]);
+	t.eq('the rank rides on the cell', rows[0].cells.map((c) => c.rank), [3, 4, 9]);
 	t.eq('two shards running one event share one cell', rows[0].cells[0].regions,
 		[{ region: 'US', shards: ['II', 'V'], all: false }]);
 

@@ -21,6 +21,53 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v155
+
+**witchcipher IS IN THE RANK TABLE AT 6, ABOVE mrgreen** - operator's ruling
+2026-10-25 20:00 EDT. The table now reads dragold 1, franky 2, goobrawl 3, crabxx
+and wabbit 4, horseman and graveyard 5, witchcipher 6, mrgreen 7, snowman, grinch
+and mrpumpkin 8, everything else 9. The only pairs that changed order are the
+cipher against mrgreen, snowman, grinch, mrpumpkin and the unranked set, which it
+used to sit below. `CIPHER_RANK` (a constant one past the default) is gone;
+cipherPlan, holdRank and the hold labels read `bossRank(CIPHER_EVENT)`.
+
+**THE DEFAULT IS DERIVED**: `BOSS_RANK_DEFAULT` is one past the largest entry,
+so an insertion can no longer leave it tied with the bottom group. That line is
+the one place the table is enumerated; the suite allows it and no other.
+
+**IT IS NEVER APPROACHED AS A BOSS.** `parent.S.witchcipher` is live, so
+bossLiveNames() yields it, but it has no `G.monsters` entry and bossEligible()
+refuses it as not cooperative. prepCandidate goes through the same gate.
+
+**WHILE THE CIPHER OWNS THE FARM SPOT IT OUTRANKS A BOSS RANKED BELOW IT.** Before
+this the rank decided nothing there: a live mrgreen or mrpumpkin made bossPick()
+non-null, shouldHandleEvents() gave movement to the boss layer, and the farm spot
+was never walked to. The leader now reads `bossPickRanked()`, which drops its own
+pick when `cipherOutranks()` it. A trip under way ends with "the cipher gathering
+outranks it", which bossEnd does not count as a give-up. bossPick() itself is
+unchanged and still identical in all three scripts. A forced pick is never
+dropped. The followers do not know the cipher, so `cipherBeat()` repeats the
+leader's "no boss" every 8s while the farm holds the spot and no trip exists.
+Their own pick would otherwise take the same mrgreen 20s after the leader's
+last word. bossBeat() repeats only while a trip exists. holdRank takes the
+stronger of the cipher window and a trip here.
+
+**totBossSoon() asks the table directly** - an entry in `BOSS_RANK`, not "below
+the default" - and skips witchcipher by name, so the knock route does not wait on
+a gathering window. Every other entry the lineup does not name (mrgreen,
+mrpumpkin, snowman, grinch, wabbit) has no schedule row, so the test cannot
+reach it either way.
+
+**A CIPHER SPOT IS SCORED BY WHAT THE BAG CAN STILL USE**: each spot's expected
+drops are capped at `target` minus Meltymerch's count of that ingredient
+(`useful`), and the held pick is kept or dropped by the same measure. At 23:00Z
+on 2026-10-25 he held embercoal 6 and frostscale 0. By raw quantity an embercoal
+spot could win on drops the bag could not use, while every recipe left needed
+frostscale.
+
+The comments around the table quote no rank numbers now; the table is the only
+place the numbers are stated.
+
 ## v154
 
 **THE MINUTE ROW'S GOLD SAYS IT IS THIS CHARACTER'S OWN SHARE** - GAMELOG `v: 4`,

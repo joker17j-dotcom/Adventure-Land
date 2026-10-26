@@ -59,9 +59,13 @@ here (or close enough that the walk lands at the opening) and Meltymerch is
 short - pinned the way the queue and the hunt pin theirs. A hand-set override
 outranks it; the queue's and the hunt's do not, and both wait while it holds
 the spot rather than reading it as a hand move. `bossHop.cipherPlan()` owns the
-shard: a hold at `CIPHER_RANK` (one below `BOSS_RANK_DEFAULT`) when the window
-is here, so ANY boss hop is strictly better and gets through - tonight's EU
-horseman over the US/ASIA window is that case - and a hop to another shard's
+shard: a hold at witchcipher's rank in `BOSS_RANK` when the window is here, so
+a hop for any boss ranked above the cipher gets through - tonight's EU horseman
+over the US/ASIA window is that case. (Until Ranger v155 the hold was a constant
+one past `BOSS_RANK_DEFAULT`, below every boss.) While the cipher owns the farm
+spot, the leader also drops an own boss-event pick ranked below it, and repeats
+"no boss" to the followers (`bossPickRanked`, `cipherBeat`). There is also a hop
+to another shard's
 window as the very last branch of IDLE, behind a boss pick, a boss preposition
 and any hold. Off-shard it hops once the hop would still clear hop sickness by
 the opening (sickness + margin + latency); home and here lead by the walk only,

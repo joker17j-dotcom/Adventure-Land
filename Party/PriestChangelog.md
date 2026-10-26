@@ -21,6 +21,14 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v88
+
+**The rank table copy follows Ranger v155**: witchcipher 6, mrgreen 7, snowman,
+grinch and mrpumpkin 8, and `BOSS_RANK_DEFAULT` derived as one past the largest
+entry. The priest never approaches witchcipher, because bossEligible() refuses it
+as not cooperative. Byte-identical to the Ranger's copy; Tests/suite_bosshop.js
+fails if they drift.
+
 ## v87
 
 **THE MINUTE ROW'S GOLD SAYS IT IS THIS CHARACTER'S OWN SHARE** - GAMELOG `v: 4`,

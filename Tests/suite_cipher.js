@@ -65,11 +65,11 @@ function G() {
    brace-matches from the first `{`, which for these is past the declaration),
    so they are supplied - and pinned against the source text below, so a change
    to the file cannot leave these copies stale while the suite stays green. */
-const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 8, CIPHER_RANK: 9,
+const CONSTS = { CIPHER_EVENT: 'witchcipher', BOSS_RANK_DEFAULT: 9,
 	CIPHER_INGREDIENTS_FALLBACK: INGREDIENTS, CIPHER_STOCK_KEY: 'cipher_stock' };
 const RANGER_FNS = ['cipherLog', 'cipherSay', 'cipherRules', 'cipherIngredients', 'cipherGatherMs', 'cipherLootRate',
 	'cipherOnStock', 'cipherShort', 'cipherWindowHere', 'cipherDoorDistance', 'cipherTravelSec',
-	'cipherSpots', 'cipherOwnsSpot', 'cipherApply', 'cipherRelease', 'cipherIdleReason',
+	'cipherSpots', 'cipherHeld', 'cipherUseful', 'cipherOwnsSpot', 'cipherApply', 'cipherRelease', 'cipherIdleReason',
 	'cipherTick', 'cipherStockLoad', 'cipherAskForStock', 'scopeKey', 'scopedSet', 'scopedGet', 'farmSpotKill', 'FARM_SEARCH', 'spotKey', 'isPermanentlyBlacklisted',
 	'isMapSafeForFarming', 'dodgeMultiplier', 'mitigated', 'defenseMultiplier'];
 
@@ -273,6 +273,108 @@ module.exports = [
 	t.eq('the stored and coded blacklists still apply', b, ['goo']);
 } },
 
+{ name: 'v155 cipher: a spot is scored by what the bag can still use, and a held pick by the same', fn(t) {
+	const NOW = Date.now();
+	const w = rangerWorld();
+	stock(w, Object.assign({}, FULL, { verdantspore: 20, gloomfeather: 15 }));
+	const spots = w.cipherSpots(['verdantspore', 'gloomfeather'], NOW, NOW + 1200000, NOW);
+	const bee = spots.find((s) => s.home === 'bee'), snake = spots.find((s) => s.home === 'snake');
+	/* The 23:00Z shape: the scarcer ingredient's spot expects FEWER drops. */
+	t.ok('precondition: by raw quantity the verdantspore spot would win', bee.qty > snake.qty);
+	t.eq('useful is capped at the deficit - 5 verdantspore wanted', bee.useful, 5);
+	t.eq('and 10 gloomfeather', snake.useful, 10);
+	t.eq('so the gloomfeather spot goes first', spots[0].home, 'snake');
+	t.eq('the count held rides on the spot', snake.held, 15);
+	t.eq('below the deficit, useful is the quantity itself', w.cipherUseful(3.5, 0), 3.5);
+	t.eq('at or past the target nothing is useful', w.cipherUseful(9, 30), 0);
+
+	/* STICKY BY THE SAME MEASURE. Held: bee for verdantspore. Re-scored with
+	   gloomfeather now short and needing twice what the bee can still give:
+	   10 against 5 clears switchFactor 1.25, so the pick moves. */
+	const s = rangerWorld({ S: gathering(NOW, 1200000) });
+	stock(s, Object.assign({}, FULL, { verdantspore: 20 }));
+	s.cipherTick();
+	t.eq('precondition: the bee spot was taken for verdantspore', s.cipherFarm.pick && s.cipherFarm.pick.home, 'bee');
+	stock(s, Object.assign({}, FULL, { verdantspore: 20, gloomfeather: 15 }));
+	s.cipherTick();
+	t.eq('a spot worth twice as much to the bag takes over', s.cipherFarm.pick && s.cipherFarm.pick.home, 'snake');
+	/* And a near-tie keeps it: gloomfeather short by 6 against the bee's 5. */
+	const k = rangerWorld({ S: gathering(NOW, 1200000) });
+	stock(k, Object.assign({}, FULL, { verdantspore: 20 }));
+	k.cipherTick();
+	stock(k, Object.assign({}, FULL, { verdantspore: 20, gloomfeather: 19 }));
+	k.cipherTick();
+	t.eq('precondition: the other spot does score higher', k.cipherSpots(['verdantspore', 'gloomfeather'], NOW, NOW + 1200000, NOW)[0].home, 'snake');
+	t.eq('but within switchFactor the held pick stays', k.cipherFarm.pick && k.cipherFarm.pick.home, 'bee');
+} },
+
+{ name: 'v155 the cipher outranks a lower-ranked boss while it owns the spot, and is never a boss itself', fn(t) {
+	const mk = (o = {}) => {
+		const w = world({
+			character: { name: o.name || 'Dexon' },
+			CONFIG: { bossEvents: { enabled: true, exclude: new Set(['abtesting', 'slenderman']), include: [],
+				cooperativeOnly: true, leaderName: 'Dexon', leaderTrustMs: 20000 } },
+			parent: { G: { monsters: { mrgreen: { cooperative: true }, franky: { cooperative: true } } },
+				server_region: 'US', server_identifier: 'II' },
+			bossLog: () => {}, cipherLog: () => {},
+			CIPHER_EVENT: 'witchcipher', BOSS_RECAST_MS: 8000, BOSS_TYPE_GIVEUP_MAX: 3,
+		});
+		w.parent.S = o.S || { witchcipher: { live: true, phase: 'gathering' }, mrgreen: { live: true, hp: 5, max_hp: 10 } };
+		w.casts = [];
+		w.bossBroadcast = (n) => w.casts.push(n);
+		w.cipherFarm = { pick: o.owns === false ? null : { home: 'bee', mobMap: 'main' } };
+		w.manualOverride = o.owns === false ? null : { home: 'bee', mobMap: 'main' };
+		lift(w, RANGER, ['bossState', 'bossIsLeader', 'BOSS_RANK', 'BOSS_RANK_DEFAULT', 'bossRank',
+			'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'bossLiveNames', 'BOSS_FIGHT_TYPES', 'bossMonsterTypes',
+			'bossCooperative', 'bossShard', 'bossCooldownKey', 'bossCooledDown', 'bossEligible', 'bossPick',
+			'bossPickRanked', 'cipherOwnsSpot', 'cipherOutranks', 'cipherBeat']);
+		if (o.trip) w.bossState.trip = o.trip;
+		return w;
+	};
+	let w = mk();
+	t.eq('witchcipher is live in S, so the scan sees it', w.bossLiveNames().includes('witchcipher'), true);
+	t.eq('and is refused as a boss - no cooperative monster', w.bossEligible('witchcipher').why, 'not cooperative');
+	t.eq('so the plain pick is mrgreen, though the cipher ranks above it', w.bossPick() && w.bossPick().name, 'mrgreen');
+	t.ok('precondition: the cipher owns the spot', w.cipherOwnsSpot());
+	t.eq('the leader\'s ranked pick yields it', w.bossPickRanked(), null);
+	t.ok('because mrgreen ranks below the cipher', w.cipherOutranks('mrgreen'));
+	t.eq('a boss ranked above the cipher is not yielded',
+		(w = mk({ S: { witchcipher: { live: true }, franky: { live: true, hp: 5, max_hp: 10 } } }), w.bossPickRanked() && w.bossPickRanked().name), 'franky');
+	t.eq('without the spot owned, mrgreen is taken as before', (w = mk({ owns: false }), w.bossPickRanked() && w.bossPickRanked().name), 'mrgreen');
+	w = mk();
+	w.bossState.forced = { name: 'mrgreen' };
+	t.eq('a forced pick is never overruled', w.bossPickRanked() && w.bossPickRanked().src, 'command');
+
+	/* The followers do not know the cipher, so the leader says "no boss". */
+	w = mk();
+	w.cipherBeat();
+	t.eq('the leader repeats the null while the farm holds it', JSON.stringify(w.casts), '[null]');
+	w.cipherBeat();
+	t.eq('not inside the recast gap', w.casts.length, 1);
+	w.bossState.lastCast = Date.now() - 9000;
+	w.cipherBeat();
+	t.eq('and again once it has passed', w.casts.length, 2);
+	w = mk({ trip: { name: 'franky' } });
+	w.cipherBeat();
+	t.eq('a live trip is the boss beat\'s to announce, not this', w.casts.length, 0);
+	w = mk({ owns: false });
+	w.cipherBeat();
+	t.eq('nothing owned, nothing said', w.casts.length, 0);
+	w = mk({ name: 'MageofOz' });
+	w.cipherBeat();
+	t.eq('a follower never casts', w.casts.length, 0);
+
+	/* The wiring, checked on the source: both leader-side readers go through
+	   the ranked pick, and the trip ends with a reason that is not a give-up. */
+	const src = require('fs').readFileSync(require('path').join(ROOT, RANGER), 'utf8');
+	t.ok('shouldHandleEvents reads the ranked pick', /return holidaySpirit \|\| !!bossPickRanked\(\) \|\| !!bossState\.trip;/.test(src));
+	t.ok('so does bossTick', /\tconst pick = bossPickRanked\(\);\n\tif \(!pick\) \{/.test(src));
+	t.ok('and its end reason names the cipher', /'the cipher gathering outranks it'/.test(src));
+	t.eq('which bossEnd does not read as a give-up', /death|cap|by hand/.test('the cipher gathering outranks it'), false);
+	t.ok('the beat runs on its own timer', /setInterval\(\(\) => \{ try \{ cipherBeat\(\);/.test(src));
+	t.eq('bossPick itself is untouched by the cipher', /cipher/i.test(require('./lift').extract(RANGER, 'bossPick')), false);
+} },
+
 { name: 'cipher: the tick farms, waits, stands aside and releases', fn(t) {
 	const NOW = Date.now();
 	const w = rangerWorld({ S: gathering(NOW, 900000) });
@@ -358,7 +460,8 @@ module.exports = [
 	feed(w, [crow('EUI', NOW + 13 * 60000)]);
 	const p = w.bossHop.cipherPlan('USII');
 	t.eq('13 minutes out it is', p && p.shard, 'EUI');
-	t.eq('ranked below every boss', p && p.rank, w.BOSS_RANK_DEFAULT + 1);
+	t.eq('at the cipher\'s own rank in the table', p && p.rank, w.BOSS_RANK.witchcipher);
+	t.eq('which is 6', w.BOSS_RANK.witchcipher, 6);
 
 	/* Home's window ENDS FIRST here, so the later tie-breaks would pick the
 	   foreign one - only the home preference can put home on top. */
@@ -407,10 +510,22 @@ module.exports = [
 
 	w = mk();
 	feed(w, [crow('USII', NOW - 60000, 'live')]);
-	t.eq('a window here holds the party at the cipher rank', w.bossHop.holdRank('USII', null), w.BOSS_RANK_DEFAULT + 1);
+	t.eq('a window here holds the party at the cipher rank', w.bossHop.holdRank('USII', null), w.BOSS_RANK.witchcipher);
 	w = mk();
 	feed(w, [crow('EUI', NOW - 60000, 'live')]);
 	t.eq('a window elsewhere holds nothing here', w.bossHop.holdRank('USII', null), null);
+
+	/* v155: the cipher is ranked in the table, so beside a trip the STRONGER of
+	   the two holds - mrgreen's trip at 7 gives way to the window's 6, and a
+	   goobrawl trip at 3 is not weakened by it. */
+	w = mk({ S: { mrgreen: { live: true, hp: 5, max_hp: 10 } } });
+	feed(w, [crow('USII', NOW - 60000, 'live')]);
+	w.bossState.trip = { name: 'mrgreen', shard: 'USII' };
+	t.eq('a window here and a mrgreen trip: the cipher\'s rank holds', w.bossHop.holdRank('USII', null), 6);
+	w = mk({ S: { goobrawl: { end: NOW + 300000 } } });
+	feed(w, [crow('USII', NOW - 60000, 'live')]);
+	w.bossState.trip = { name: 'goobrawl', shard: 'USII' };
+	t.eq('beside a goobrawl trip the goobrawl\'s rank holds', w.bossHop.holdRank('USII', null), 3);
 } },
 
 { name: 'cipher plan: the tick hops for it last, holds for it, and never FIGHTS it', fn(t) {
@@ -494,8 +609,11 @@ module.exports = [
 		/if \(!CONFIG\.partyMembers\.includes\(name\)\) return;\n\tif \(name === 'Dexon' && data\.message === 'cipher_stock_request'\) \{ cipherStockTick\(true\); return; \}/.test(text(MERCHANT)));
 	t.ok('CIPHER_STOCK_SENT_KEY as supplied', /^const CIPHER_STOCK_SENT_KEY = 'cipher_stock_sent';$/m.test(text(MERCHANT)));
 	t.ok('the merchant reports 3s after a page loads, not 15', /^setTimeout\(cipherStockTick, 3000\);$/m.test(text(MERCHANT)));
-	t.ok('BOSS_RANK_DEFAULT as supplied', /^const BOSS_RANK_DEFAULT = 8;$/m.test(src));
-	t.ok('CIPHER_RANK is one below the default, as supplied', /^const CIPHER_RANK = BOSS_RANK_DEFAULT \+ 1;$/m.test(src));
+	t.ok('BOSS_RANK_DEFAULT is derived from the table', /^const BOSS_RANK_DEFAULT = Math\.max\.apply\(null, Object\.values\(BOSS_RANK\)\) \+ 1;$/m.test(src));
+	const tw = world({});
+	lift(tw, RANGER, ['BOSS_RANK']);
+	t.eq('and the value supplied here is what it derives', CONSTS.BOSS_RANK_DEFAULT, Math.max.apply(null, Object.values(tw.BOSS_RANK)) + 1);
+	t.eq('CIPHER_RANK is gone - the rank is the table\'s', /\bCIPHER_RANK\b/.test(src), false);
 	const fb = src.match(/^const CIPHER_INGREDIENTS_FALLBACK = (\[[\s\S]*?\n\]);/m);
 	t.eq('the ranger\'s fallback list is the design file\'s, verbatim',
 		fb ? JSON.parse(fb[1].replace(/'/g, '"').replace(/,\s*\]/g, ']')) : null, INGREDIENTS);

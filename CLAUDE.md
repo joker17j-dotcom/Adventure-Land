@@ -950,16 +950,23 @@ in v97, and it had never EXECUTED at all, because Dexon was running
 `Party/Mage.js` out of the Ranger slot until 2026-10-19. Nothing plans against
 this ranking until a Ranger build is actually running on him.
 
-- **The table, as of the operator's 2026-10-25 ruling (Ranger v149 / Priest v82
-  / Mage v105).** dragold 1; franky 2; **goobrawl 3, alone**; crabxx and wabbit 4;
-  horseman and graveyard 5; mrgreen 6; snowman, grinch and mrpumpkin 7;
-  `BOSS_RANK_DEFAULT = 8` for everything else, icegolem included; the cipher farm
-  9. Prompted at 12:09Z when a rank-3 crabxx pulled the party out of an EU I
-  goobrawl. From 2026-10-21 (Ranger v107) to then it read crabxx, wabbit and
-  goobrawl 3 / horseman 4 / mrgreen 5 / snowman group 6 / default 7, and before
-  that mrgreen 4 / snowman group 5 / default 6 - a note quoting either is reading
-  a superseded table. The rank NUMBERS in the bullets below are as of their
-  dates; the ORDER they argue is unchanged except goobrawl over crabxx/wabbit.
+- **The table, as of the operator's 2026-10-25 20:00 EDT ruling (Ranger v155 /
+  Priest v88 / Mage v111).** dragold 1; franky 2; **goobrawl 3, alone**; crabxx and
+  wabbit 4; horseman and graveyard 5; **witchcipher 6**; mrgreen 7; snowman, grinch
+  and mrpumpkin 8; everything else, icegolem included, takes the default, which
+  is DERIVED as one past the largest entry (9). The cipher is an entry rather than
+  a constant, so it ranks the gathering hold against a boss hop. While it owns the
+  farm spot, the leader also drops an own pick of a boss ranked below it
+  (`bossPickRanked`, `cipherBeat` - Ranger v155). Before that a live mrgreen took
+  movement from the farm whatever the rank said. It is never approached as a
+  boss: bossEligible() refuses it as not cooperative. Earlier tables: 12:09Z
+  the same day put goobrawl alone at 3 over crabxx and wabbit (mrgreen 6,
+  snowman group 7, default 8, cipher 9). 2026-10-21 (Ranger v107) read crabxx,
+  wabbit and goobrawl 3 / horseman 4 / mrgreen 5 / snowman group 6 / default 7.
+  Before that it read mrgreen 4 / snowman group 5 / default 6. A note quoting any
+  of these is reading a superseded table. The rank NUMBERS in the bullets below
+  are as of their dates; the ORDER they argue is unchanged except goobrawl over
+  crabxx/wabbit and the cipher over mrgreen and below.
   **THE RULE THE INSERTION EXPRESSES, which is the part that stops it being
   re-derived wrong: PERISHABLE-BUT-FREQUENT SITS BELOW RARE-AND-PERMANENT AND
   ABOVE ALWAYS-AVAILABLE.** Horseman ends with Halloween, which argues for
@@ -4613,7 +4620,8 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   his BAG until Halloween ends (all five `bank_store` sites gated) and sends
   Dexon `cipher_stock` counts; while any is under 25 and a gathering window is
   open, Dexon points the farm spot at the best spawn and `bossHop` holds or hops
-  for the window, ranked below every boss. An unknown or stale count farms
+  for the window, at witchcipher's rank in the table (6 since Ranger v155,
+  below every boss before it). An unknown or stale count farms
   nothing. **THE MONSTER BARELY MATTERS WHERE THE PARTY'S DAMAGE IS THE LIMIT**:
   kills/s is `dps / hp` and the chance is `loot * hp / 1000`, so hp cancels and
   every such spawn yields `loot * dps / 1000`; hp matters only where a spawn
@@ -4649,8 +4657,19 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   brewing starts at a board of 8 or below (cautious first round, spend in the
   last), and a held round stops scouting, arbitrage and every hop but its own.
   **A REPEATED MIX STILL SPENDS ONE OF THE DAY'S FIVE** - the source pushes no
-  clue and pays nothing for it, but `claim.mixes += 1` runs regardless. NOT YET
-  RUN LIVE.
+  clue and pays nothing for it, but `claim.mixes += 1` runs regardless.
+  **FIRST LIVE ROUND, 23:00Z 2026-10-25: NO MIX, AND THE CAUSE WAS SHARD CHOICE.**
+  The narrowest board, ASIA I at 6, had no recipe the bag could make (frostscale
+  0). Merchant v137 ranks shards by makeable fitting recipes first. In the last
+  round it falls through to any shard with something makeable, while no mix has
+  locked the day. It logs "board at N, M makeable".
+  **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
+  USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
+  the day stops (`stoppedFloor`).
+  **A FARM SPOT IS SCORED BY WHAT THE BAG CAN STILL USE** (Ranger v155):
+  expected drops are capped at 25 minus the count held, so a spot for an
+  ingredient the bag is nearly full of no longer beats one for the ingredient
+  every recipe is waiting on.
 - **MELTYMERCH WAS FOUND IN JAIL OVERNIGHT, CAUSE UNKNOWN.** Online and fine
   afterwards; his tab hops too fast to hold a reading. Recorded because nothing
   in the repo addresses it and the next session should not read it as new.

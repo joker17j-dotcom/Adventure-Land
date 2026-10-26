@@ -62,7 +62,7 @@ function rangerWorld(over = {}) {
 		parent: { S: Object.assign({ halloween: true, schedule: { events: [], repeats: [] } }, over.S || {}),
 			G: { events: { trickortreat: RULES } } },
 		CONFIG: { trickOrTreat: { enabled: true, tickMs: 20000, leadMs: 300000, retryMs: 600000, moveMs: 1000, reach: 80 } },
-		BOSS_RANK_DEFAULT: 8,
+		BOSS_RANK_DEFAULT: 9, CIPHER_EVENT: 'witchcipher',
 		state: { sellingOff: false, waitingForMerchant: false },
 		mhBusy: false, reliefRunning: false,
 		ragePull: { busy: false }, rageNav: { busy: false },
@@ -212,7 +212,8 @@ module.exports = [
 	t.ok('let totBusy = false', /^let totBusy = false;/m.test(s));
 	t.ok('let totPauseUntil = 0', /^let totPauseUntil = 0;/m.test(s));
 	t.ok('let totDoneDay = null', /^let totDoneDay = null;/m.test(s));
-	t.ok('const BOSS_RANK_DEFAULT = 8', /^const BOSS_RANK_DEFAULT = 8;/m.test(s));
+	t.ok('BOSS_RANK_DEFAULT is derived from the table', /^const BOSS_RANK_DEFAULT = Math\.max\.apply\(null, Object\.values\(BOSS_RANK\)\) \+ 1;/m.test(s));
+	t.ok('CIPHER_EVENT as supplied', /^const CIPHER_EVENT = 'witchcipher';$/m.test(s));
 	t.ok('the toggle exists and feeds the config', /trickOrTreat:\s+true,\s+\/\/ CONFIG\.trickOrTreat\.enabled/.test(s)
 		&& /enabled: TOGGLES\.trickOrTreat/.test(s));
 	t.ok('totStatus is a published feature', /totStatus: typeof totStatus/.test(s));
@@ -244,6 +245,13 @@ module.exports = [
 	t.eq('and in the array form the creator\'s test pins',
 		Math.round(mk({ repeats: [['horseman', now - 600000, 3600000]] }).totBossSoon(now) / 60000), 50);
 	t.eq('a past one-off occurrence is ignored', mk({ events: [{ event: 'franky', at: now - 1000 }] }).totBossSoon(now), Infinity);
+	/* v155 put the cipher in the table above mrgreen, and a gathering window is
+	   not a fight: the route knocks through it. Precondition first, or a table
+	   without the entry would pass this for the wrong reason. */
+	const w = mk({ events: [{ event: 'witchcipher', at: now + 60000 }] });
+	t.ok('precondition: witchcipher IS in the table', Object.prototype.hasOwnProperty.call(w.BOSS_RANK, 'witchcipher'));
+	t.eq('a cipher round does not hold the route', w.totBossSoon(now), Infinity);
+	t.eq('icegolem, unranked, does not either', mk({ events: [{ event: 'icegolem', at: now + 60000 }] }).totBossSoon(now), Infinity);
 } },
 
 { name: 'Ranger: totBlocked names each reason, and is null when clear', fn(t) {

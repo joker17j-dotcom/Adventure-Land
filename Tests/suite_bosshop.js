@@ -893,10 +893,13 @@ module.exports = [
 	t.eq('goobrawl ALONE at 3, the operator\'s 2026-10-25 ruling', w.bossRank('goobrawl'), 3);
 	t.eq('crabxx and wabbit 4, below it', ['crabxx', 'wabbit'].map(w.bossRank), [4, 4]);
 	t.eq('horseman 5 (inserted at 4 on 2026-10-21)', w.bossRank('horseman'), 5);
-	t.eq('mrgreen 6', w.bossRank('mrgreen'), 6);
-	t.eq('grinch and mrpumpkin 7', ['grinch', 'mrpumpkin'].map(w.bossRank), [7, 7]);
-	t.eq('anything unranked is 8, the operator\'s "all others"', w.bossRank('phoenix'), 8);
-	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 8);
+	t.eq('horseman and graveyard tie at 5', w.bossRank('graveyard'), 5);
+	t.eq('witchcipher 6, the operator\'s 2026-10-25 20:00 EDT ruling', w.bossRank('witchcipher'), 6);
+	t.eq('mrgreen 7, below it', w.bossRank('mrgreen'), 7);
+	t.eq('snowman, grinch and mrpumpkin 8', ['snowman', 'grinch', 'mrpumpkin'].map(w.bossRank), [8, 8, 8]);
+	t.eq('anything unranked is 9, the operator\'s "all others"', w.bossRank('phoenix'), 9);
+	t.eq('and so is a name the game does not have', w.bossRank('nonsense'), 9);
+	t.eq('icegolem is unranked', w.bossRank('icegolem'), 9);
 
 	/* THE INSERTION IS ORDER-PRESERVING, WHICH IS THE OPERATOR'S ACTUAL
 	   REASONING AND NOT A SIDE EFFECT. Horseman went in at 4 rather than tying
@@ -919,6 +922,26 @@ module.exports = [
 	   still fails here. */
 	t.eq('the only pre-insertion pairs that changed order are the 2026-10-25 ruling\'s',
 		broken.sort().join(','), ['crabxx vs goobrawl', 'goobrawl vs crabxx', 'goobrawl vs wabbit', 'wabbit vs goobrawl'].sort().join(','));
+
+	/* AND THE 20:00 EDT RULING THE SAME DAY MOVED THE CIPHER AND NOTHING ELSE: it
+	   rose above mrgreen, snowman, grinch and mrpumpkin, and - because it used to
+	   sit one past the default and now sits above it - above every UNRANKED name
+	   too, icegolem standing in for that set. Against the table as it stood just
+	   before, with the cipher at the constant it held then, so any OTHER reorder
+	   fails here. */
+	const PRE_CIPHER = { dragold: 1, franky: 2, goobrawl: 3, crabxx: 4, wabbit: 4,
+	                     horseman: 5, graveyard: 5, mrgreen: 6, snowman: 7, grinch: 7, mrpumpkin: 7,
+	                     witchcipher: 9, icegolem: 8 };
+	const pn = Object.keys(PRE_CIPHER);
+	const moved = [];
+	for (const a of pn) for (const b of pn) {
+		if (a >= b) continue;
+		if (Math.sign(PRE_CIPHER[a] - PRE_CIPHER[b]) !== Math.sign(w.bossRank(a) - w.bossRank(b))) moved.push(a + ' vs ' + b);
+	}
+	t.eq('the cipher ruling reorders only the cipher, against mrgreen, snowman, grinch, mrpumpkin and the unranked',
+		moved.sort(), ['grinch vs witchcipher', 'icegolem vs witchcipher', 'mrgreen vs witchcipher', 'mrpumpkin vs witchcipher', 'snowman vs witchcipher']);
+	t.ok('and the cipher still sits below every Halloween event and every hop target',
+		['dragold', 'franky', 'goobrawl', 'crabxx', 'horseman', 'graveyard'].every((n) => w.bossRank(n) < w.bossRank('witchcipher')));
 	/* AND THIS CHECK CANNOT TELL AN INSERTION FROM A TIE - state the scope or
 	   the next reader over-trusts it. A tie at 4 (horseman AND mrgreen both 4,
 	   the group below shifted to 5) preserves every pre-insertion pair too,
@@ -958,8 +981,14 @@ module.exports = [
 	   own Object.values above runs on the LIFTED copy, not in the script.) */
 	const rs = require('fs').readFileSync(
 		require('path').join(require('./lift').ROOT, 'Party/Ranger.js'), 'utf8');
-	t.eq('nothing in Ranger.js enumerates BOSS_RANK',
-		/(for\s*\([^)]*\bin\s+BOSS_RANK\b)|Object\.(keys|values|entries)\s*\(\s*BOSS_RANK\s*\)/.test(rs),
+	/* ONE ENUMERATION IS ALLOWED AND IT IS THE DEFAULT'S DERIVATION, which reads
+	   only the largest value - a stale seasonal entry can raise the default and
+	   do nothing else. Stripped by its exact text, so a second enumeration
+	   anywhere, or a reworded derivation, still fails. */
+	const DERIVE = 'const BOSS_RANK_DEFAULT = Math.max.apply(null, Object.values(BOSS_RANK)) + 1;';
+	t.eq('the default is derived from the table, once', rs.split(DERIVE).length - 1, 1);
+	t.eq('nothing else in Ranger.js enumerates BOSS_RANK',
+		/(for\s*\([^)]*\bin\s+BOSS_RANK\b)|Object\.(keys|values|entries)\s*\(\s*BOSS_RANK\s*\)/.test(rs.split(DERIVE).join('')),
 		false);
 	t.ok('and bossRank is a plain keyed lookup with a default',
 		/const r = BOSS_RANK\[name\];/.test(rs));

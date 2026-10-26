@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v154
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v155
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -2014,18 +2014,18 @@ const BOSS_FIELD_HOLD = 40;   // walk back to the spot when further than this fr
    allBosses, so it can never reach these selectors today; the entry is
    harmless and costs nothing if it is ever added.
 
-   HORSEMAN IS RANK 4, OPERATOR'S RULING 2026-10-21, AND EVERYTHING AT OR BELOW
-   SHIFTED DOWN ONE. The rule it expresses, so it is not re-derived wrong:
+   HORSEMAN WENT IN ABOVE mrgreen, OPERATOR'S RULING 2026-10-21, AND EVERYTHING
+   AT OR BELOW SHIFTED DOWN ONE. The rule it expresses, so it is not re-derived wrong:
    PERISHABLE-BUT-FREQUENT SITS BELOW RARE-AND-PERMANENT AND ABOVE
    ALWAYS-AVAILABLE. Horseman ends with Halloween, which argues for urgency -
    but it runs NIGHTLY across three regions and about six shards, so the season
    holds dozens of chances at it. wabbit is rare and does not expire, so when
-   both are up wabbit (3) is the right grab. mrgreen is always available and
-   will still be there in January, so it moved to 5.
+   both are up wabbit is the right grab. mrgreen is always available and will
+   still be there in January, so it sits below both.
    A DEADLINE IS NOT THE SAME THING AS SCARCITY, and ranking by "ends soonest"
    would have put horseman above wabbit on exactly that confusion.
 
-   IT IS AN ORDER-PRESERVING INSERTION, which a TIE AT 4 WOULD NOT HAVE BEEN.
+   IT IS AN ORDER-PRESERVING INSERTION, which a TIE WITH mrgreen WOULD NOT HAVE BEEN.
    Every pairwise relationship that held before still holds; only horseman is
    new in the order. A tie would have fallen through to `need` and then
    `kills_to_rung`, and neither of those knows a deadline exists - so the tie
@@ -2037,26 +2037,41 @@ const BOSS_FIELD_HOLD = 40;   // walk back to the spot when further than this fr
    `bossRank()` below is a pure lookup with a default and NOTHING iterates
    BOSS_RANK, while all three call sites pass a name that already came off a
    live candidate list. So an entry for a non-spawning boss is UNREACHABLE
-   rather than merely harmless - which is what dragold at rank 1 has been
+   rather than merely harmless - which is what dragold at the top has been
    demonstrating for as long as `lunarnewyear` has been false.
 
-   GOOBRAWL ALONE AT 3, OPERATOR'S RULING 2026-10-25, AND EVERYTHING BELOW IT
-   MOVED DOWN ONE: crabxx and wabbit 4, horseman and graveyard 5, mrgreen 6,
-   snowman/grinch/mrpumpkin 7, default 8. Prompted by 12:09Z that day, when a
-   rank-3 crabxx on another shard pulled the party out of a running goobrawl
-   that tied it at 3. Order-preserving again: the only relationships that moved
-   are goobrawl over crabxx and wabbit, which used to tie. crabxx over the
-   graveyard falls out of the same table, and the operator confirmed it. */
+   GOOBRAWL ALONE, OPERATOR'S RULING 2026-10-25, AND EVERYTHING BELOW IT MOVED
+   DOWN ONE. Prompted by 12:09Z that day, when a crabxx on another shard pulled
+   the party out of a running goobrawl it tied with. Order-preserving again:
+   the only relationships that moved are goobrawl over crabxx and wabbit, which
+   used to tie. crabxx over the graveyard falls out of the same table, and the
+   operator confirmed it.
+
+   witchcipher IS IN THE TABLE, OPERATOR'S RULING 2026-10-25 20:00 EDT, BETWEEN
+   THE HALLOWEEN EVENTS AND mrgreen. Before it the cipher held at a constant one
+   past the default, below every boss. The only relationships that moved are the
+   cipher over mrgreen, snowman, grinch and mrpumpkin. IT IS NEVER APPROACHED AS
+   A BOSS: parent.S.witchcipher is live, so bossLiveNames() yields it, but it has
+   no G.monsters entry, bossCooperative() is false and bossEligible() refuses it
+   under cooperativeOnly - so the entry only ranks the gathering hold (holdRank,
+   cipherPlan) against a boss hop. totBossSoon() names it as unranked, because
+   the knock route must not wait on a gathering window.
+
+   NO RANK NUMBER IS QUOTED IN THESE COMMENTS ANY MORE, because every ruling
+   above moved some of them and the quotes went stale each time. The table is
+   the only statement of the numbers; the comments say why the ORDER is what it
+   is. */
 const BOSS_RANK = {
 	dragold: 1,
 	franky: 2,
 	goobrawl: 3,
 	crabxx: 4, wabbit: 4,
 	horseman: 5, graveyard: 5,
-	mrgreen: 6,
-	snowman: 7, grinch: 7, mrpumpkin: 7,
+	witchcipher: 6,
+	mrgreen: 7,
+	snowman: 8, grinch: 8, mrpumpkin: 8,
 };
-/* graveyard TIES horseman (5 since 2026-10-25, 4 before) on the operator's ruling, and a tie is normally
+/* graveyard TIES horseman on the operator's ruling, and a tie is normally
    the thing this table avoids - it falls through to `need` and then
    kills_to_rung, the mechanism the ranking exists to override. It is safe here
    because THE TWO CAN NEVER BE LIVE TOGETHER: horseman runs at realm hour 0,
@@ -2067,15 +2082,21 @@ const BOSS_RANK = {
    with an even offset would make graveyard collide with horseman and expose
    this tie, and nothing in the schedule code would have to change for that to
    happen - so re-derive it if TIMEO ever grows.
-   WHY 4 AND NOT 6 (now 5, against the always-up 6s that moved to 7): twelve graveyards a day and ~144 before the season ends is
-   an abundance argument, and abundance is the wrong axis when every window
-   banks share toward a 6,000,000 cooperative boss. */
-/* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, which is 7 since 2026-10-25 (6
-   before, 5 before that). It is one past the largest for that reason and not as
-   a spare gap: equal to it, the unranked set would TIE with
-   snowman/grinch/mrpumpkin and sort by kills_to_rung against them, which is the
-   failure the table exists to stop. */
-const BOSS_RANK_DEFAULT = 8;
+   WHY WITH HORSEMAN AND NOT WITH THE ALWAYS-UP BOSSES BELOW: twelve graveyards
+   a day and ~144 before the season ends is an abundance argument, and
+   abundance is the wrong axis when every window banks share toward a 6,000,000
+   cooperative boss. */
+/* MUST STAY ABOVE THE LARGEST ASSIGNED RANK, so it is DERIVED as one past it -
+   operator's approval 2026-10-25 - rather than written as a literal that every
+   insertion has to remember to bump. Equal to the largest, the unranked set
+   would TIE with the bottom group and sort by kills_to_rung against it, which
+   is the failure the table exists to stop.
+   THIS IS THE ONE PLACE THE TABLE IS ENUMERATED, and it reads only the largest
+   value: an entry for a boss that never spawns can still raise the default, and
+   nothing else. bossRank() below stays a keyed lookup, which is what keeps a
+   seasonal entry unreachable. Tests/suite_bosshop.js allows this line and no
+   other. */
+const BOSS_RANK_DEFAULT = Math.max.apply(null, Object.values(BOSS_RANK)) + 1;
 function bossRank(name) {
 	const r = BOSS_RANK[name];
 	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;
@@ -4043,10 +4064,11 @@ async function bossTick() {
 			bossSave();
 		}
 	}
-	const pick = bossPick();
+	const pick = bossPickRanked();
 	if (!pick) {
 		rageEntrySet(false, 'no boss trip');
-		if (bossState.trip) bossEnd('nothing eligible is live');
+		if (bossState.trip) bossEnd(cipherOutranks(bossState.trip.name)
+			? 'the cipher gathering outranks it' : 'nothing eligible is live');
 		return false;
 	}
 	if (!bossState.trip || bossState.trip.name !== pick.name) {
@@ -4139,7 +4161,19 @@ function shouldHandleEvents() {
 	   mrgreen and mrpumpkin UNCONDITIONALLY - so the farm was dropped for any
 	   of the three the moment it spawned, with no question of whether the party
 	   could contribute, and nothing to bring it home. */
-	return holidaySpirit || !!bossPick() || !!bossState.trip;
+	return holidaySpirit || !!bossPickRanked() || !!bossState.trip;
+}
+
+/* bossPick() AS THE LEADER ACTS ON IT: an own pick the cipher gathering
+   outranks is no pick - v155, operator's ruling 2026-10-25 20:00 EDT, cipher
+   above mrgreen. bossPick() itself is byte-identical in all three files and
+   knows nothing of the cipher, so the rule lives here, on the leader, and the
+   followers hear it as the leader's "no boss" (cipherBeat). A forced pick and
+   a follower's leader-word pick are never overruled. */
+function bossPickRanked() {
+	const p = bossPick();
+	if (p && p.src === 'own' && cipherOutranks(p.name)) return null;
+	return p;
 }
 
 function handleEvents() {
@@ -4605,7 +4639,7 @@ const bossHop = {
 			   EU against ASIA, 23:00Z US and ASIA against EU). Home and here
 			   need no hop, so they farm until the boss pulls the party off. */
 			if (!here && !isHome && this.targetOpensWithin(now, end)) continue;
-			const x = { shard: o.shard, event: CIPHER_EVENT, at: o.at, end, home: isHome, here, rank: CIPHER_RANK };
+			const x = { shard: o.shard, event: CIPHER_EVENT, at: o.at, end, home: isHome, here, rank: bossRank(CIPHER_EVENT) };
 			if (!best) { best = x; continue; }
 			if (x.home !== best.home) { if (x.home) best = x; continue; }
 			if (x.here !== best.here) { if (x.here) best = x; continue; }
@@ -4648,10 +4682,14 @@ const bossHop = {
 			const tr = bossRank(trip.name);
 			if (r === null || tr < r) r = tr;
 		}
-		/* A third, below every boss: a cipher window here that Meltymerch's bag
-		   still wants. At CIPHER_RANK any boss hop is strictly better. */
+		/* A third: a cipher window here that Meltymerch's bag still wants, at
+		   its own rank in the table. A hop is admitted only for a boss ranked
+		   above the cipher, and the stronger of this and a trip holds. */
 		const cp = this.cipherPlan(cur);
-		if (cp && cp.shard === cur && r === null) r = CIPHER_RANK;
+		if (cp && cp.shard === cur) {
+			const c = bossRank(CIPHER_EVENT);
+			if (r === null || c < r) r = c;
+		}
 		return r;
 	},
 
@@ -5296,13 +5334,13 @@ const bossHop = {
 				} else if (hold !== null) {
 					this.idleSince = 0;
 					const why = prep && prep.shard === cur ? prep.event + '|' + prep.at
-						: (hold === CIPHER_RANK ? 'cipher' : 'trip');
+						: (hold === bossRank(CIPHER_EVENT) ? 'cipher' : 'trip');
 					const key = cur + '|' + why;
 					if (this.prepSaid !== key) {
 						this.prepSaid = key;
 						game_log(prep && prep.shard === cur
 							? `🐉 Holding on ${cur} for ${prep.event} at ${new Date(prep.at).toISOString().slice(11, 16)}Z`
-							: hold === CIPHER_RANK
+							: hold === bossRank(CIPHER_EVENT)
 								? `🐉 Holding on ${cur} for the cipher gathering`
 								: `🐉 Holding on ${cur} - an event fight is live here`, '#FFD700');
 					}
@@ -7912,12 +7950,14 @@ setInterval(() => {
    What this owns: the farm spot, while a window is open here and Meltymerch is
    short, and a hold on this shard while that is true. What it never owns:
    movement while a boss layer has it. A window elsewhere is bossHop's to act
-   on, through cipherPlan() - ranked below every boss, so any boss outranks it.
+   on, through cipherPlan(), at the cipher's own rank in BOSS_RANK. And while it
+   owns the spot it outranks a boss-event trip the table ranks below it - see
+   cipherOutranks().
    ============================================================================ */
 const CIPHER_EVENT = 'witchcipher';
-/* Below BOSS_RANK_DEFAULT on purpose: "bosses and events first". A hold at this
-   rank admits any boss hop, ranked or not. */
-const CIPHER_RANK = BOSS_RANK_DEFAULT + 1;
+/* ITS RANK IS BOSS_RANK.witchcipher, read through bossRank(CIPHER_EVENT) at
+   every use - operator's ruling 2026-10-25 20:00 EDT. Until v155 it was a
+   constant one past the default, below every boss. */
 const CIPHER_INGREDIENTS_FALLBACK = [
 	['verdantspore', ['goo', 'bee', 'spider', 'croc']],
 	['frostscale', ['arcticbee', 'boar', 'wolfie', 'iceroamer']],
@@ -8112,19 +8152,64 @@ function cipherSpots(short, start, end, now) {
 			const travelSec = cipherTravelSec(mapName, x, y);
 			const from = Math.max(now + travelSec * 1000, start);
 			const qty = perSec * Math.max(0, (end - from) / 1000);
+			const held = cipherHeld(ing);
 			out.push({ home: spot.type, mobMap: mapName, x, y, ingredient: ing, perSec, travelSec, qty,
-				uptimeFraction: kill.uptimeFraction });
+				held, useful: cipherUseful(qty, held), uptimeFraction: kill.uptimeFraction });
 		}
 	}
-	out.sort((a, b) => (b.qty - a.qty) || (b.perSec - a.perSec)
+	/* BY WHAT THE BAG STILL NEEDS - v155. By raw qty a spot could win on drops
+	   the bag cannot use: 2026-10-25 23:00Z Meltymerch held embercoal 6 and
+	   frostscale 0, so an embercoal spot expecting 40 would beat a frostscale
+	   one expecting 30, though only 19 embercoal were wanted and every recipe
+	   left needed frostscale. Capped at the deficit they read 19 against 25.
+	   No tie-break on the count held: two different ingredients tie on `useful`
+	   only when both are capped at equal deficits, which means equal counts. */
+	out.sort((a, b) => (b.useful - a.useful) || (b.qty - a.qty) || (b.perSec - a.perSec)
 		|| (spotKey(a.home, a.mobMap) < spotKey(b.home, b.mobMap) ? -1 : 1));
 	return out;
+}
+
+/* Meltymerch's count of one ingredient, 0 when unknown - cipherShort() has
+   already refused a stale or partial reading before any spot is scored. */
+function cipherHeld(name) {
+	const n = cipherFarm.stock && cipherFarm.stock[name];
+	return typeof n === 'number' ? n : 0;
+}
+
+/* The part of a spot's expected drops the bag can use: no more than it is
+   short of the target. */
+function cipherUseful(qty, held) {
+	return Math.min(qty, Math.max(0, CONFIG.cipherFarm.target - held));
 }
 
 function cipherOwnsSpot() {
 	const p = cipherFarm.pick;
 	return !!(p && manualOverride && manualOverride.home === p.home && manualOverride.mobMap === p.mobMap);
 }
+
+/* THE CIPHER OUTRANKS A BOSS THE TABLE RANKS BELOW IT, while it owns the spot -
+   which is from the walk-in before a window opens to the window's end, the
+   same span cipherTick holds it. Without this the rank was decoration: a live
+   mrgreen or mrpumpkin made bossPick() non-null, shouldHandleEvents() handed
+   movement to the boss layer, and the farm spot was never walked to. */
+function cipherOutranks(name) {
+	return !!name && cipherOwnsSpot() && bossRank(CIPHER_EVENT) < bossRank(name);
+}
+
+/* THE FOLLOWERS HEAR IT AS THE LEADER'S "NO BOSS". Their own bossPick() would
+   otherwise take the same mrgreen 20s after the leader's last word - they do
+   not know the cipher - and split the party. bossBeat() repeats only while a
+   trip exists, so this repeats the null while the farm holds us and no trip
+   does. A higher-ranked boss starts a trip, which stops this and broadcasts
+   that boss instead. */
+function cipherBeat() {
+	if (!bossIsLeader() || bossState.trip || !cipherOwnsSpot()) return;
+	const now = Date.now();
+	if (now - (bossState.lastCast || 0) < BOSS_RECAST_MS) return;
+	bossState.lastCast = now;
+	bossBroadcast(null);
+}
+setInterval(() => { try { cipherBeat(); } catch (e) { cipherLog('beat threw: ' + ((e && e.message) || e), 'red'); } }, BOSS_BEAT_MS);
 
 /* Pinned the way the achievement queue and the hunt pin theirs, for the same
    reason: checkFarmEconomics would otherwise judge a spot chosen for a reason
@@ -8196,7 +8281,7 @@ function cipherTick() {
 		   noise against a walk already made. */
 		const held = cipherFarm.pick
 			&& spots.find((s) => s.home === cipherFarm.pick.home && s.mobMap === cipherFarm.pick.mobMap);
-		const keep = !!held && !(spots[0].qty > held.qty * CONFIG.cipherFarm.switchFactor);
+		const keep = !!held && !(spots[0].useful > held.useful * CONFIG.cipherFarm.switchFactor);
 		cipherFarm.pick = keep ? held : spots[0];
 		cipherFarm.key = key;
 	}
@@ -8317,11 +8402,19 @@ function totRemainingDoors() {
    the published lineup. graveyard is skipped: it opens in spookytown, which is
    where this route ends, so a knock run just before it is "on the way to a
    graveyard trip" in the operator's words. Both arrays are read, because a
-   repeat slot (graveyard) appears ONLY in `repeats`. */
+   repeat slot (graveyard) appears ONLY in `repeats`.
+   RANKED MEANS AN ENTRY IN BOSS_RANK, asked of the table directly rather than
+   as "below the default", which said the same thing only while the default sat
+   above every entry. witchcipher is skipped by name since v155 put it in the
+   table: it is a gathering window, not a fight, and the merchant knocks
+   through it. The other entries the lineup never names - mrgreen, mrpumpkin,
+   snowman, grinch, wabbit - are respawn or seasonal bosses with no schedule
+   row, so this test cannot reach them either way. */
 function totBossSoon(now) {
 	const sch = (typeof parent !== 'undefined' && parent.S && parent.S.schedule) || null;
 	if (!sch) return Infinity;
-	const ranked = (name) => !!name && name !== 'graveyard' && bossRank(name) < BOSS_RANK_DEFAULT;
+	const ranked = (name) => !!name && name !== 'graveyard' && name !== CIPHER_EVENT
+		&& Object.prototype.hasOwnProperty.call(BOSS_RANK, name);
 	let soon = Infinity;
 	for (const o of (Array.isArray(sch.events) ? sch.events : [])) {
 		if (!o || !ranked(o.event) || typeof o.at !== 'number') continue;

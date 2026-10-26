@@ -1,4 +1,24 @@
 
+## v137
+
+**THE SHARD IS CHOSEN BY WHAT THE BAG CAN MAKE** - from the browser session's
+read of the first live round, 2026-10-25 23:00Z. No mix was brewed. The merchant
+took the narrowest board, ASIA I at 6. Every one of its six fitting recipes needed
+frostscale, and he held none. Each live shard now carries `makeable`, the count of
+its fitting recipes the unlocked bag covers (`cipherMakeable`). A shard where that
+is 0 sorts behind every shard where it is not. A held plan gives way when its
+shard has nothing makeable and another does. In the last round the spend falls
+through to any shard with something makeable, as long as no mix has locked the
+day. A day locked to a shard with nothing makeable waits rather than moving.
+Every decision line reads "board at N, M makeable".
+
+**AFTER THE DAY'S 50-PARCEL CRACK, EACH MIX KEEPS 25 OF WHAT IT USES** - operator's
+ruling 2026-10-25 19:57 EDT, `CONFIG.cipherBrew.floorAfterCrack`. A recipe is
+made only if it leaves at least that many of every ingredient it consumes. An
+ingredient the recipe does not use is not tested. When no fitting recipe on the
+chosen shard qualifies, the day stops (`stoppedFloor`, in the day record and in
+`cipherStatus()`). Before the crack any makeable recipe goes, as before.
+
 ## v136
 
 **THE MINUTE ROW'S GOLD SAYS IT IS THIS CHARACTER'S OWN SHARE** - GAMELOG `v: 4`,

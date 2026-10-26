@@ -20,7 +20,7 @@ const H = 3600e3;
 const R11 = Date.parse('2026-10-25T11:00:00Z');
 const R23 = Date.parse('2026-10-25T23:00:00Z');
 const CFG = { enabled: true, threshold: 8, regions: ['US', 'ASIA'], roundHours: [11, 23], prefer: 'USII',
-	spendLastMs: 6 * 60e3, reach: 300, tickMs: 2000, liveEveryMs: 5000, moveMs: 120000, answerMs: 10000 };
+	spendLastMs: 6 * 60e3, floorAfterCrack: 25, reach: 300, tickMs: 2000, liveEveryMs: 5000, moveMs: 120000, answerMs: 10000 };
 
 function fitOf(set, total) {
 	const chars = [];
@@ -51,7 +51,7 @@ function mk(over = {}) {
 	}, over));
 	w.posts = posts;
 	lift(w, MERCHANT, ['cipherLog', 'cipherSay', 'cipherRules', 'cipherSlots', 'cipherKey', 'cipherBridgeName',
-		'cipherFitSet', 'cipherRecipe', 'cipherScore', 'cipherBoardCandidates', 'cipherHave', 'cipherCanMake',
+		'cipherFitSet', 'cipherRecipe', 'cipherScore', 'cipherBoardCandidates', 'cipherHave', 'cipherCanMake', 'cipherMakeable',
 		'cipherPick', 'cipherIsLastRound', 'cipherDecide', 'cipherDayLoad', 'cipherDaySave', 'cipherPlanSave',
 		'cipherRestore', 'cipherHoldBlocked', 'cipherTakeHold', 'cipherRelease', 'cipherShardsNow', 'cipherPost',
 		'cipherSlowCheck', 'cipherWatchNote', 'cipherBrewNext', 'cipherIngredientNames', 'mShardKey', 'mParseShard']);
@@ -234,6 +234,64 @@ module.exports = [
 		other.cipherAsk = async () => { throw new Error('should not ask'); };
 		await other.cipherBrewNext({ round: 'USII-r' }, other.cipherDayLoad('2026-10-25'));
 		t.eq('a different round on this shard is not brewed into', posted(other, 'mix').length, 0);
+	})();
+} },
+
+{ name: 'v137 the shard is chosen by what the bag can make, and after the 50 each mix keeps 25 of what it uses', fn(t) {
+	const w = mk();
+	t.ok('the committed floor is the ruling', /floorAfterCrack: 25,/.test(SRC));
+	/* The 23:00Z 2026-10-25 round: ASIA I down to 6, every one needing
+	   frostscale; the bag held none; US II untouched at 1024. */
+	const bag = { verdantspore: 25, embercoal: 6, gloomfeather: 52 };
+	const all = new Set(Array.from({ length: 1024 }, (_, i) => i));
+	const frost = Array.from({ length: 1024 }, (_, i) => i).filter((n) => w.cipherRecipe(n, NAMES, 5).indexOf('frostscale') >= 0);
+	const six = new Set(frost.slice(0, 6));
+	t.eq('precondition: the six all need frostscale', [...six].every((n) => w.cipherRecipe(n, NAMES, 5).indexOf('frostscale') >= 0), true);
+	t.eq('nothing on ASIA I can be made', w.cipherMakeable(fitOf(six, 1024), NAMES, 5, bag, 0), 0);
+	const full = w.cipherMakeable(fitOf(all, 1024), NAMES, 5, bag, 0);
+	t.ok('on an empty board something can', full > 0);
+	t.eq('no fit is not a count', w.cipherMakeable(undefined, NAMES, 5, bag, 0), null);
+	const d = (shards, day = {}, now = R23 + 2 * 60e3, plan = null) =>
+		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan });
+	const tonight = { ASIAI: round('a', R23, { possible: 6, makeable: 0 }), USII: round('u', R23, { possible: 1024, makeable: full }) };
+	const hold = d(tonight);
+	t.eq('the narrow board with nothing makeable does not take the hold', [hold.shard, hold.act], ['USII', 'hold']);
+	t.eq('it says how many it can make', /1024, \d+ makeable/.test(hold.why), true);
+	t.eq('a held plan on the dead board gives way', d(tonight, {}, R23 + 2 * 60e3, { shard: 'ASIAI' }).shard, 'USII');
+	t.eq('and spends there at the end of the last round', d(tonight, {}, R23 + 23 * 60e3, { shard: 'ASIAI' }).act + '@' + d(tonight, {}, R23 + 23 * 60e3, { shard: 'ASIAI' }).shard, 'brew@USII');
+	t.eq('a narrow board that CAN be made still wins', d({ ASIAI: round('a', R23, { possible: 6, makeable: 2 }), USII: tonight.USII }).shard, 'ASIAI');
+	t.eq('an unknown count is not ruled out', d({ ASIAI: round('a', R23, { possible: 6 }), USII: tonight.USII }).shard, 'ASIAI');
+	const none = d({ ASIAI: tonight.ASIAI });
+	t.eq('nothing makeable anywhere: no hold', none.act, 'watch');
+	t.eq('locked on the dead shard: nothing elsewhere is open', d(tonight, { lockedShard: 'ASIAI' }).act, 'watch');
+	const stop = d({ USII: round('u', R23, { possible: 40, makeable: 0 }) }, { crackedToday: true, lockedShard: 'USII' });
+	t.eq('after the 50, nothing keeps the floor: stop for the day', [stop.act, !!stop.stopDay], ['idle', true]);
+	t.eq('and a stopped day stays stopped', d({ USII: round('u', R23, { possible: 40, makeable: 9 }) }, { crackedToday: true, stoppedFloor: true }).act, 'idle');
+	/* The floor: what is LEFT of each ingredient the recipe uses. */
+	const five = w.cipherRecipe(0, NAMES, 5);   // five verdantspore
+	t.eq('30 less 5 leaves 25: allowed', w.cipherCanMake(five, { verdantspore: 30 }, 25), true);
+	t.eq('29 less 5 leaves 24: refused', w.cipherCanMake(five, { verdantspore: 29 }, 25), false);
+	t.eq('an ingredient the recipe does not use is not tested', w.cipherCanMake(five, { verdantspore: 30, frostscale: 0 }, 25), true);
+	t.eq('before the 50 the floor is 0', w.cipherCanMake(five, { verdantspore: 5 }, 0), true);
+	const b = mk();
+	b.character.items = NAMES.map((n) => ({ name: n, q: 26 }));
+	b.parent.S.witchcipher = { id: 'USII-r', live: true, start: R23, end: R23 + 28 * 60e3, possible: 3, mixes: 1, cracks: 1, board: [],
+		fit: fitOf(new Set([0, 1, 2]), 1024) };
+	b.cipherAsk = async () => { throw new Error('should not ask'); };
+	const bd = b.cipherDayLoad('2026-10-25');
+	bd.crackedToday = true;
+	t.eq('precondition: recipe 0 is five of one name', b.cipherRecipe(0, NAMES, 5).every((n) => n === NAMES[0]), true);
+	return (async () => {
+		await b.cipherBrewNext({ round: 'USII-r' }, bd);
+		t.eq('after the 50, no candidate keeps 25 of what it uses: it stops for the day', bd.stoppedFloor, true);
+		t.ok('and says why', b.logs.some((l) => /keeping 25 of each/.test(l)));
+		const c = mk();
+		c.character.items = NAMES.map((n) => ({ name: n, q: 26 }));
+		c.parent.S.witchcipher = Object.assign({}, b.parent.S.witchcipher);
+		const asked = [];
+		c.cipherAsk = async (body) => { asked.push(body); return { success: true, right: 1, fits: true, cracked: false, parcels: 1, mixes_left: 2 }; };
+		await c.cipherBrewNext({ round: 'USII-r' }, c.cipherDayLoad('2026-10-25'));
+		t.eq('before the 50 the same bag brews', asked.length, 1);
 	})();
 } },
 

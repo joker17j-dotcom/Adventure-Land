@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v87
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v88
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3196,10 +3196,11 @@ const BOSS_RANK = {
 	goobrawl: 3,
 	crabxx: 4, wabbit: 4,
 	horseman: 5, graveyard: 5,
-	mrgreen: 6,
-	snowman: 7, grinch: 7, mrpumpkin: 7,
+	witchcipher: 6,
+	mrgreen: 7,
+	snowman: 8, grinch: 8, mrpumpkin: 8,
 };
-const BOSS_RANK_DEFAULT = 8;
+const BOSS_RANK_DEFAULT = Math.max.apply(null, Object.values(BOSS_RANK)) + 1;
 function bossRank(name) {
 	const r = BOSS_RANK[name];
 	return typeof r === 'number' ? r : BOSS_RANK_DEFAULT;

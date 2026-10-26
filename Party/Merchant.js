@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v136
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v137
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1133,6 +1133,10 @@ const CONFIG = {
 		roundHours: [11, 23],       // UTC; the last of these is the day's last round
 		prefer: 'USII',             // tie-break between equally narrow boards
 		spendLastMs: 6 * 60 * 1000, // in the day's last round, brew what is left once this little remains
+		/* After the day's 50-parcel crack, a mix may only use a recipe that
+		   leaves at least this many of each ingredient it consumes - operator's
+		   ruling 2026-10-25 19:57 EDT. Before the crack any makeable recipe goes. */
+		floorAfterCrack: 25,
 		reach: 300,                 // the server's limit is 400 (B.sell_dist)
 		tickMs: 2000,
 		liveEveryMs: 5000,          // how often to read /cipher_live
@@ -6525,11 +6529,29 @@ function cipherHave() {
 	}
 	return have;
 }
-function cipherCanMake(recipe, have) {
+/* `floor` is what must be LEFT of each ingredient the recipe uses - 0 before
+   the day's crack, CONFIG.cipherBrew.floorAfterCrack after it. An ingredient
+   the recipe does not use is not touched by it, so it is not tested. */
+function cipherCanMake(recipe, have, floor) {
+	const keep = floor || 0;
 	const need = {};
 	for (const n of recipe) need[n] = (need[n] || 0) + 1;
-	for (const n in need) if ((have[n] || 0) < need[n]) return false;
+	for (const n in need) if ((have[n] || 0) - need[n] < keep) return false;
 	return true;
+}
+/* How many of a shard's fitting recipes the bag can make, or null when its
+   `fit` is missing and the count cannot be known. A fitting recipe is never
+   one already tried, since a tried recipe that missed cannot fit its own
+   answer. Ranked on in cipherDecide, so a narrow board with nothing makeable
+   does not take the hold from a wide one that has something - the 23:00Z
+   2026-10-25 round, where ASIA I's 6 all needed frostscale and the bag had
+   none while US II sat at 1024. */
+function cipherMakeable(fit, names, slots, have, floor) {
+	const set = cipherFitSet(fit, Math.pow(names.length, slots));
+	if (!set) return null;
+	let n = 0;
+	for (const c of set) if (cipherCanMake(cipherRecipe(c, names, slots), have, floor)) n++;
+	return n;
 }
 
 /* THE NEXT MIX: a candidate (so it fits, and pays), new this round, makeable
@@ -6537,12 +6559,12 @@ function cipherCanMake(recipe, have) {
    least expected candidates left - and the lowest number on a tie. Above
    CIPHER_SPLIT_MAX candidates nothing is narrowed much by any one mix, and
    the first will do. */
-function cipherPick(cands, names, slots, have, tried) {
+function cipherPick(cands, names, slots, have, tried, floor) {
 	const pool = [];
 	for (const n of cands) {
 		const r = cipherRecipe(n, names, slots);
 		if (tried.has(r.join(','))) continue;
-		if (!cipherCanMake(r, have)) continue;
+		if (!cipherCanMake(r, have, floor)) continue;
 		pool.push({ n, r });
 	}
 	if (!pool.length) return null;
@@ -6565,15 +6587,19 @@ function cipherIsLastRound(startMs, cfg) {
 }
 
 /* WHAT TO DO NOW, from plain inputs so it can be tested without a game:
-   c = {now, cfg, day: {mixesLeft, lockedShard, crackedToday, elsewhere},
-        shards: {USII: {id, live, start, end, possible}, ...}, plan}.
-   'brew' and 'hold' take the hold; 'watch' and 'idle' release it. */
+   c = {now, cfg, day: {mixesLeft, lockedShard, crackedToday, elsewhere, stoppedFloor},
+        shards: {USII: {id, live, start, end, possible, makeable}, ...}, plan}.
+   'brew' and 'hold' take the hold; 'watch' and 'idle' release it. `makeable`
+   is cipherMakeable()'s count, null when unknown: a shard where it is 0 is
+   ranked below every other and never brewed on, and a held plan there gives
+   way. `stopDay` on the answer tells the caller to stop for the day. */
 function cipherDecide(c) {
 	const cfg = c.cfg || {};
 	if (!cfg.enabled) return { act: 'idle', why: 'disabled' };
 	const day = c.day || {};
 	if (day.elsewhere) return { act: 'idle', why: 'the day is locked on ' + day.elsewhere };
 	if (day.mixesLeft === 0) return { act: 'idle', why: 'no mixes left today' };
+	if (day.stoppedFloor) return { act: 'idle', why: 'stopped for the day - no fitting recipe keeps ' + cfg.floorAfterCrack + ' of each' };
 	const today = new Date(c.now).toISOString().slice(0, 10);
 	const thr = cfg.threshold;
 	const poss = (s) => (typeof s.possible === 'number' ? s.possible : Infinity);
@@ -6587,27 +6613,34 @@ function cipherDecide(c) {
 		elig.push(Object.assign({ key: k }, s));
 	}
 	if (!elig.length) return { act: 'idle', why: day.lockedShard ? 'no live round on ' + day.lockedShard : 'no live round' };
-	elig.sort((a, b) => (poss(a) - poss(b)) || ((b.key === cfg.prefer) - (a.key === cfg.prefer)) || (a.key < b.key ? -1 : 1));
+	const dead = (s) => s.makeable === 0;
+	elig.sort((a, b) => (dead(a) - dead(b)) || (poss(a) - poss(b)) || ((b.key === cfg.prefer) - (a.key === cfg.prefer)) || (a.key < b.key ? -1 : 1));
 	let t = elig[0];
 	/* A held plan stays put unless a narrow board turns up elsewhere while its
-	   own is still wide - before the first mix only, since that locks the day. */
+	   own is still wide - before the first mix only, since that locks the day -
+	   or nothing on its board can be made and something elsewhere can. */
 	const planned = c.plan ? elig.find((s) => s.key === c.plan.shard) : null;
-	if (planned && !(poss(t) <= thr && poss(planned) > thr)) t = planned;
-	const out = { shard: t.key, round: t.id, end: t.end, possible: t.possible };
-	if (day.crackedToday) return Object.assign(out, { act: 'brew', why: 'the 50 is won - spending the rest' });
-	if (poss(t) <= thr) return Object.assign(out, { act: 'brew', why: 'board at ' + t.possible });
+	if (planned && !(poss(t) <= thr && poss(planned) > thr) && !(dead(planned) && !dead(t))) t = planned;
+	const board = 'board at ' + t.possible + (typeof t.makeable === 'number' ? ', ' + t.makeable + ' makeable' : '');
+	const out = { shard: t.key, round: t.id, end: t.end, possible: t.possible, makeable: t.makeable };
+	if (dead(t)) {
+		if (day.crackedToday) return Object.assign(out, { act: 'idle', stopDay: true, why: 'the 50 is won and no fitting recipe keeps ' + cfg.floorAfterCrack + ' of each' });
+		return Object.assign(out, { act: 'watch', why: 'nothing on any live board can be made from the bag (' + board + ')' });
+	}
+	if (day.crackedToday) return Object.assign(out, { act: 'brew', why: 'the 50 is won - spending the rest (' + board + ')' });
+	if (poss(t) <= thr) return Object.assign(out, { act: 'brew', why: board });
 	const last = cipherIsLastRound(t.start, cfg);
-	if (last && t.end - c.now <= cfg.spendLastMs) return Object.assign(out, { act: 'brew', why: 'the day\'s last round is ending' });
-	if (last) return Object.assign(out, { act: 'hold', why: 'the day\'s last round - waiting at the Witch' });
-	if (planned) return Object.assign(out, { act: 'hold', why: 'holding the round' });
-	return Object.assign(out, { act: 'watch', why: 'board at ' + t.possible + ', waiting for ' + thr });
+	if (last && t.end - c.now <= cfg.spendLastMs) return Object.assign(out, { act: 'brew', why: 'the day\'s last round is ending (' + board + ')' });
+	if (last) return Object.assign(out, { act: 'hold', why: 'the day\'s last round - waiting at the Witch (' + board + ')' });
+	if (planned) return Object.assign(out, { act: 'hold', why: 'holding the round (' + board + ')' });
+	return Object.assign(out, { act: 'watch', why: board + ', waiting for ' + thr });
 }
 
 // ---- storage -------------------------------------------------------------
 function cipherDayLoad(today) {
 	let d = null;
 	try { d = get(CIPHER_DAY_KEY); } catch (e) { }
-	if (!d || d.day !== today) d = { day: today, mixesLeft: null, lockedShard: null, crackedToday: false, elsewhere: null, submitted: {}, cracksSeen: {}, brewed: [] };
+	if (!d || d.day !== today) d = { day: today, mixesLeft: null, lockedShard: null, crackedToday: false, elsewhere: null, stoppedFloor: false, submitted: {}, cracksSeen: {}, brewed: [] };
 	return d;
 }
 function cipherDaySave(d) { try { set(CIPHER_DAY_KEY, d); } catch (e) { cipherSay('day record not saved: ' + ((e && e.message) || e), 'orange'); } }
@@ -6807,8 +6840,15 @@ async function cipherBrewNext(d, day) {
 	if (!cands) { cipherSay('no fit map and the board is not the whole history - not guessing', 'orange'); return; }
 	const cycle = w.id + '#' + (w.cracks || 0);
 	const tried = new Set((w.board || []).map((e) => (e.mix || []).join(',')).concat(day.submitted[cycle] || []));
-	const pick = cipherPick(cands, names, slots, cipherHave(), tried);
-	if (!pick) { cipherSay('none of the ' + cands.length + ' fitting recipes can be made from the bag', 'orange'); return; }
+	const floor = day.crackedToday ? (CONFIG.cipherBrew.floorAfterCrack || 0) : 0;
+	const pick = cipherPick(cands, names, slots, cipherHave(), tried, floor);
+	if (!pick) {
+		cipherSay('none of the ' + cands.length + ' fitting recipes can be made from the bag'
+			+ (floor ? ' keeping ' + floor + ' of each' : ''), 'orange');
+		/* The operator's rule after the 50: no recipe that keeps the floor, stop for the day. */
+		if (floor) { day.stoppedFloor = true; cipherDaySave(day); }
+		return;
+	}
 	const key = pick.r.join(',');
 	cipherLastPick = { key, cycle, at: Date.now() };
 	cipherPending = { key, cycle, at: Date.now() };
@@ -6862,8 +6902,12 @@ async function cipherTick() {
 		const shards = cipherShardsNow();
 		cipherWatchNote(shards, day, cfg);
 		cipherSlowCheck(day);
+		const names = cipherIngredientNames(), slots = cipherSlots(), have = cipherHave();
+		const floor = day.crackedToday ? (cfg.floorAfterCrack || 0) : 0;
+		for (const k in shards) if (shards[k]) shards[k].makeable = cipherMakeable(shards[k].fit, names, slots, have, floor);
 		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan });
 		cipherLast = d;
+		if (d.stopDay && !day.stoppedFloor) { day.stoppedFloor = true; cipherDaySave(day); cipherLog(d.why, 'orange'); }
 		if (d.act === 'idle' || d.act === 'watch') { cipherRelease(d.why); return; }
 		if (!cipherBusy && !cipherTakeHold(d)) return;
 		if (cipherPlan && (cipherPlan.shard !== d.shard || cipherPlan.round !== d.round)) {
@@ -6884,7 +6928,7 @@ async function cipherTick() {
 function cipherStatus() {
 	const day = cipherDayLoad(new Date().toISOString().slice(0, 10));
 	const out = { busy: cipherBusy, plan: cipherPlan, last: cipherLast, waiting: cipherWaitWhy, bridge: !!cipherLive.ok,
-		mixesLeft: day.mixesLeft, lockedShard: day.lockedShard, crackedToday: day.crackedToday, elsewhere: day.elsewhere };
+		mixesLeft: day.mixesLeft, lockedShard: day.lockedShard, crackedToday: day.crackedToday, elsewhere: day.elsewhere, stoppedFloor: !!day.stoppedFloor };
 	cipherLog(JSON.stringify(out), '#8b98ab');
 	return out;
 }
