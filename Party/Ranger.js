@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v155
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v156
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -8201,9 +8201,18 @@ function cipherOutranks(name) {
    not know the cipher - and split the party. bossBeat() repeats only while a
    trip exists, so this repeats the null while the farm holds us and no trip
    does. A higher-ranked boss starts a trip, which stops this and broadcasts
-   that boss instead. */
+   that boss instead.
+   ONLY WHILE THE RANKING IS SUPPRESSING SOMETHING - v156, on the operator's
+   condition for accepting v155: "actions below the ranking do not stop actions
+   above the ranking". With nothing lower-ranked live, the null would still have
+   overridden a follower's own pick of a boss ranked ABOVE the cipher once the
+   leader's last word went stale. So it is said only while the leader's own pick
+   is one the cipher outranks, and otherwise the followers keep the behaviour
+   they had before the cipher was ranked. */
 function cipherBeat() {
 	if (!bossIsLeader() || bossState.trip || !cipherOwnsSpot()) return;
+	const p = bossPick();
+	if (!p || p.src !== 'own' || !cipherOutranks(p.name)) return;
 	const now = Date.now();
 	if (now - (bossState.lastCast || 0) < BOSS_RECAST_MS) return;
 	bossState.lastCast = now;

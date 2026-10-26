@@ -357,6 +357,14 @@ module.exports = [
 	w = mk({ trip: { name: 'franky' } });
 	w.cipherBeat();
 	t.eq('a live trip is the boss beat\'s to announce, not this', w.casts.length, 0);
+	/* v156, the operator's condition: below-rank actions never stop above-rank
+	   ones. The null is said only while it is suppressing a lower-ranked pick. */
+	w = mk({ S: { witchcipher: { live: true } } });
+	w.cipherBeat();
+	t.eq('nothing lower-ranked live: no null, the followers keep their own picks', w.casts.length, 0);
+	w = mk({ S: { witchcipher: { live: true }, franky: { live: true, hp: 5, max_hp: 10 } } });
+	w.cipherBeat();
+	t.eq('the leader\'s pick ranks above the cipher: no null either', w.casts.length, 0);
 	w = mk({ owns: false });
 	w.cipherBeat();
 	t.eq('nothing owned, nothing said', w.casts.length, 0);

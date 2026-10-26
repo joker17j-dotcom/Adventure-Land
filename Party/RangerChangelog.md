@@ -21,6 +21,20 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v156
+
+**THE OPERATOR ACCEPTED v155 ON ONE CONDITION, AND `cipherBeat()` NOW MEETS IT** -
+2026-10-25 21:14 EDT: "As long as the ranking is followed and actions below the
+ranking do not stop actions above the ranking your proposed method is accepted."
+Every other part of v155 already met it: `bossPickRanked()` drops only a pick ranked
+below the cipher, a cipher hold admits a hop for anything ranked above it, and a
+higher-ranked trip stops the beat. The beat did not. It repeated the leader's "no
+boss" whenever the farm held the spot, so with nothing lower-ranked live it would
+still override a follower's own pick of a boss ranked ABOVE the cipher once the
+leader's last word went stale. It now speaks only while the leader's own pick is one
+the cipher outranks. Otherwise followers behave as they did before the cipher was
+ranked.
+
 ## v155
 
 **witchcipher IS IN THE RANK TABLE AT 6, ABOVE mrgreen** - operator's ruling

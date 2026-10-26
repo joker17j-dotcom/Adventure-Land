@@ -959,7 +959,13 @@ this ranking until a Ranger build is actually running on him.
   farm spot, the leader also drops an own pick of a boss ranked below it
   (`bossPickRanked`, `cipherBeat` - Ranger v155). Before that a live mrgreen took
   movement from the farm whatever the rank said. It is never approached as a
-  boss: bossEligible() refuses it as not cooperative. Earlier tables: 12:09Z
+  boss: bossEligible() refuses it as not cooperative. **ACCEPTED BY THE OPERATOR
+  2026-10-25 21:14 EDT ON ONE CONDITION: "as long as the ranking is followed and
+  actions below the ranking do not stop actions above the ranking".** That makes
+  it a rule for every lower-ranked layer, not only the cipher: a lower rank may
+  yield, hold or stay silent, and must never block a higher one. Ranger v156 holds
+  `cipherBeat()`'s "no boss" to the moments it is actually suppressing a
+  lower-ranked pick, which is the one place v155 broke that rule. Earlier tables: 12:09Z
   the same day put goobrawl alone at 3 over crabxx and wabbit (mrgreen 6,
   snowman group 7, default 8, cipher 9). 2026-10-21 (Ranger v107) read crabxx,
   wabbit and goobrawl 3 / horseman 4 / mrgreen 5 / snowman group 6 / default 7.
