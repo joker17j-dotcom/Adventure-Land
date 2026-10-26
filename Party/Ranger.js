@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v156
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v157
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4504,6 +4504,11 @@ const bossHop = {
 				const shard = String(o && o.server || '').replace(/\s+/g, '');
 				const at = typeof o?.at_ms === 'number' ? o.at_ms : Date.parse(o?.at);
 				if (!shard || !o.event || !isFinite(at)) continue;
+				/* NO PVP SHARD IS A PLACE TO GO - operator's ruling, CLAUDE.md
+				   "Server hopping". The socket scanner has always skipped PVP, but
+				   the bridge watches every shard, so until v157 a goobrawl or a
+				   cipher window on EU PVP or US PVP could be prepositioned for. */
+				if (/PVP$/.test(shard)) continue;
 				rows.push({
 					shard, event: o.event, at,
 					windowSec: typeof o.window_sec === 'number' ? o.window_sec : null,
@@ -5221,6 +5226,12 @@ const bossHop = {
 		const parsed = this.parseShard(shard);
 		if (!parsed) {
 			game_log(`bossHop: can't parse shard "${shard}"`, 'red');
+			return false;
+		}
+		/* The last guard on the one exit every hop takes: whatever planned it,
+		   a PVP shard is refused here. */
+		if (parsed.name === 'PVP') {
+			game_log(`bossHop: refusing to hop to ${shard} - PVP shards are off the table`, 'orange');
 			return false;
 		}
 		game_log(`🐉 Hopping to ${shard} for ${mtype}`, '#FFD700');

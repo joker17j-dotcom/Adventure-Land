@@ -21,6 +21,20 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v157
+
+**NO HOP GOES TO A PVP SHARD, WHATEVER PLANNED IT** - the operator's standing
+ruling (CLAUDE.md "Server hopping": PVP is off the table). Found while confirming,
+for the browser session, why the 23:07Z horseman chain did not hop to EU PVP. That
+chain was safe by construction: the reactive scanner opens no PVP socket, and
+`record()` is fed only by those sockets. The lineup paths were not safe. The bridge
+watches every shard, so `/schedule_live` carries EU PVP and US PVP rows, and
+neither `prepCandidate()` nor `cipherPlan()` filtered them. A goobrawl preposition
+or a cipher window on a PVP shard could have hopped the party there. Now:
+`refreshSchedule()` drops PVP rows as it reads them, and `changeServer()` - the one
+exit every hop takes - refuses a PVP shard, logs why, and tells no follower to hop.
+Removing the first guard fails 2 assertions; removing the second fails 5.
+
 ## v156
 
 **THE OPERATOR ACCEPTED v155 ON ONE CONDITION, AND `cipherBeat()` NOW MEETS IT** -

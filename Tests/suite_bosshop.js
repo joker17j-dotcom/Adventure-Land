@@ -2661,13 +2661,15 @@ module.exports = [
 	let answer = { occurrences: [
 		{ server: 'ASIA I', event: 'goobrawl', at: '2026-10-24T13:00:00Z', at_ms: 1792846800000, window_sec: 540, status: 'scheduled' },
 		{ server: '', event: 'crabxx', at_ms: 1 },
+		{ server: 'EU PVP', event: 'goobrawl', at_ms: 1792846800000, window_sec: 540, status: 'scheduled' },
+		{ server: 'US PVP', event: 'witchcipher', at_ms: 1792846800000, window_sec: 1680, status: 'scheduled' },
 	], servers: { 'ASIA I': { age_sec: 12 }, 'US II': { age_sec: 30 } } };
 	let fail = false;
 	w.plFetch = (p) => { w.lastPath = p; return fail ? Promise.reject(new Error('down')) : Promise.resolve(answer); };
 	w.bossHop.refreshSchedule();
 	return Promise.resolve().then(() => Promise.resolve()).then(() => {
 		t.eq('asks /schedule_live for a short horizon', w.lastPath, '/schedule_live?hours=3');
-		t.eq('one usable row, shard without the space', w.bossHop.schedRows.map(r => r.shard + '/' + r.event), ['ASIAI/goobrawl']);
+		t.eq('one usable row, shard without the space - no PVP shard (v157)', w.bossHop.schedRows.map(r => r.shard + '/' + r.event), ['ASIAI/goobrawl']);
 		t.eq('at is the epoch ms', w.bossHop.schedRows[0].at, 1792846800000);
 		t.eq('server ages keyed the same way', w.bossHop.schedServers.USII && w.bossHop.schedServers.USII.ageSec, 30);
 		const at = w.bossHop.schedAt;
@@ -2678,6 +2680,24 @@ module.exports = [
 			t.eq('and does not advance schedAt, so they age out instead', w.bossHop.schedAt, at);
 			t.ok('and records why', /down/.test(w.bossHop.schedErr || ''));
 		});
+	});
+} },
+
+{ name: 'v157 no hop ever goes to a PVP shard, whatever planned it', fn(t) {
+	const w = prepWorld();
+	const hops = [], sent = [];
+	w.change_server = (r, n) => hops.push(r + n);
+	w.plSend = (to, m) => sent.push(m);
+	return w.bossHop.changeServer('EUPVP', 'goobrawl').then((ok) => {
+		t.eq('a PVP shard is refused', ok, false);
+		t.eq('no change_server is called', hops, []);
+		t.eq('and the followers are not told to hop', sent.length, 0);
+		t.ok('it says why', w.logs.some((m) => /refusing to hop to EUPVP/.test(m)));
+		w.bossHop.hopping = false;
+		return w.bossHop.changeServer('EUII', 'goobrawl');
+	}).then((ok) => {
+		t.eq('precondition: an ordinary shard still hops', hops, ['EUII']);
+		t.ok('and reports success', ok !== false);
 	});
 } },
 

@@ -610,7 +610,11 @@ first - this section is what it was learned on.
   - and monster deaths, instances (`generated_entry` bails first) and
   self-kills are all exempt. Verified from source 2026-10-18. Operator's
   call: PVP is off the table, so do not read the sickness exemption as a
-  free staging shard.
+  free staging shard. **ENFORCED IN THE CODE SINCE Ranger v157**: the lineup
+  the preposition and the cipher plan read is filtered of PVP shards, and
+  `bossHop.changeServer()` refuses one. Before that only the reactive scanner
+  skipped PVP, so a goobrawl or cipher window on EU PVP or US PVP could have
+  been hopped for.
 - **Two cures, and both are instant.** Snakeoil, and `set_home` - which does
   `delete player.s.hopsickness` outright, but carries a 36-hour cooldown
   (`p.dt.last_homeset`, refused under `hsince < 36`), so it is not a routine
