@@ -21,6 +21,19 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v159
+
+**A HOP IS PRICED AT THE SICKNESS IT LEAVES** - from the browser session's read
+of 2026-10-26 22:38-22:40Z. The EU III franky was live where the party stood.
+`localTarget()` refused it, because Dexon was sick there and the dwell was five
+times larger. 90s later the party went home, which cleared the sickness. From
+home `pickTarget()` priced the same franky with the CURRENT sickness, now clean,
+and hopped straight back. Two hops for nothing. `sickOnArrival(shard)` is sick
+anywhere but home (level 60 and up), and the picker and the 🐉 panel price with
+it. Six assertions in `Tests/suite_bosshop.js`. Pricing at the current sickness
+again fails two of them.
+-> RangerComments.md#sickOnArrival
+
 ## v158
 
 **ONE HOP FOR A WINDOW HOME ALSO RUNS** - from the browser session's read of the

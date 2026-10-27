@@ -3977,6 +3977,14 @@ reading.
   RETURN ABOVE IT** - the v118 fix added the beat and did not ask what could
   stop the loop carrying it. Source-read cause matching the measurement; the
   first live graveyard on v140 confirms or refutes it.
+- **A SIXTH SHAPE: THE TWO MACHINES PRICE ONE FIGHT IN DIFFERENT STATES.**
+  Ranger v159, from 2026-10-26 22:38-22:40Z. `localTarget()` priced EU III
+  franky at the sickness Dexon carried there, sick, and refused it.
+  `pickTarget()` priced the same franky from home at the sickness he carried
+  THERE, clean, and hopped back for it. A hop re-stamps the sickness, so the
+  picker was pricing a state the hop itself destroys. **A COST ESTIMATED
+  BEFORE AN ACTION MUST USE THE STATE AFTER IT.** `sickOnArrival()` is that
+  state, and with it the picker is the stricter of the two again.
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from

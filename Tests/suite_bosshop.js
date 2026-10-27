@@ -833,6 +833,37 @@ module.exports = [
 	t.eq('only 60s of sickness LEFT: goobrawl now fits', (b.pickTarget() || {}).mtype, 'goobrawl');
 } },
 
+{ name: 'v159 pickTarget prices the dwell at the sickness the hop leaves, not the one carried now', fn(t) {
+	/* 2026-10-26 22:38-22:40Z: EU III franky refused by localTarget while
+	   sick, home 90s later, then a hop straight back for it - because from
+	   home the picker charged the clean dwell for a fight it lands sick for. */
+	const mk = (cand, ch) => {
+		const w = ranger({ character: Object.assign({ name: 'Dexon', home: 'USII', level: 75, s: {} }, ch || {}) });
+		const b = w.bossHop;
+		b.contributors = () => 40;
+		const c = CFG().bossHop, arrive = (c.hopLatencyMs + c.safetyMarginMs) / 1000;
+		const clean = b.requiredDwellSec(cand.maxHp, 40, false, cand.mtype);
+		const sick = b.requiredDwellSec(cand.maxHp, 40, true, cand.mtype);
+		/* Between the two: clean passes, sick does not. */
+		cand.secsToDeath = arrive + (clean + sick) / 2;
+		b.candidates = () => [Object.assign({}, cand)];
+		return { b, clean, sick };
+	};
+	const franky = (shard) => ({ shard, mtype: 'franky', hp: 60000000, maxHp: 120000000, live: true, kills_to_rung: 10 });
+
+	let r = mk(franky('EUIII'));
+	t.ok('precondition: the sick dwell is larger than the clean one', r.sick > r.clean);
+	t.eq('sickOnArrival: a foreign shard re-stamps the sickness', r.b.sickOnArrival('EUIII'), true);
+	t.eq('sickOnArrival: home clears it', r.b.sickOnArrival('USII'), false);
+	t.eq('clean at home, franky on EU III with only the clean dwell left: not hopped for', r.b.pickTarget(), null);
+
+	r = mk(franky('USII'), { s: { hopsickness: { ms: 600000 } } });
+	t.eq('sick away, the same fight at HOME: hopped for, because home clears it', (r.b.pickTarget() || {}).shard, 'USII');
+
+	r = mk(franky('EUIII'), { level: 59 });
+	t.eq('below level 60 no sickness is applied, so the clean dwell holds', (r.b.pickTarget() || {}).shard, 'EUIII');
+} },
+
 { name: 'the walk-in-sick probe survives the reload a hop causes', fn(t) {
 	const w = ranger();
 	w.taxiProbeNote('crabxx', { walkedAt: 1000, sickMsAtWalk: 600000 });

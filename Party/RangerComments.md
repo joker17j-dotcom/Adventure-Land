@@ -267,6 +267,41 @@ G's 720000 whatever the clock says, so every gate using it charged a character
 2026-10-17 - and falls back to the full duration when the field is absent,
 which is the conservative direction.
 
+## sickOnArrival
+
+**A DWELL PRICED BEFORE A HOP HAS TO USE THE SICKNESS THE HOP LEAVES** (v159,
+from the browser session's read of 2026-10-26 22:38-22:40Z). The EU III
+graveyard ended at 22:38:03 and the nightly franky was live there; both
+followers took it. Dexon did not. `candidates()` skips the shard he stands on,
+so only `localTarget()` could have taken it, and it declined. It skips a boss
+for two reasons only, the give-up cooldown or the dwell test, and the cooldown
+gates `pickTarget()` too, which chose the same franky 33s later. So it was the
+dwell. Both tests read the same bridge dps and contributor count. They differ
+in the sickness: `localTarget()` reads `isHopsick()`, the sickness carried,
+and he was sick on EU III. So it needed five times the dwell and refused. 90s
+later `goHomeIfIdle()` took the party home, which cleared the sickness. From
+home `pickTarget()` priced the same franky with `isHopsick()` again, now
+clean, passed it, and hopped back to EU III, where the hop re-stamped the
+sickness. Two hops, and fatigue for nothing. The browser session's guess, a
+pick taken while dead, was ruled out: `goHomeIfIdle()` never reads `bossPick()`.
+
+`sickOnArrival(shard)` is the server's gate (home, level 60; PVP is never a
+target): sick after a hop anywhere but home. `pickTarget()` and the 🐉 panel
+use it. `localTarget()` keeps `isHopsick()`, because there no hop happens and
+the sickness carried is the one that applies. The picker is still the stricter
+of the two, since it also subtracts the arrival latency, so the two cannot now
+disagree in the direction that hops.
+
+**THE NON-TAXI JOIN WAIT HAS THE SAME SHAPE AND IS LEFT ALONE.** The window test
+charges `hopsickRemainingMs()`, the sickness left now, although a hop re-stamps
+the full twelve minutes. It reaches only a join with no walkable entrance
+(goobrawl, abtesting). Neither is in `CONFIG.bossHop.targets`, which names
+dragold, franky, crabxx and horseman, and goobrawl's real path is the
+preposition, which already leads by the full sickness. So it is unreachable
+today and recorded rather than changed. dragold is the one to re-check when
+`lunarnewyear` opens: whether its event is a join without a walkable entrance
+was not read.
+
 ## bossFightTypes
 
 Why the event-to-monster mapping is one-to-many, and which of its three call

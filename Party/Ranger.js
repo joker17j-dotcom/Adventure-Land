@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v158
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v159
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4942,6 +4942,23 @@ const bossHop = {
 		return !!s.hopsickness;
 	},
 
+	/* The sickness a hop to `shard` LEAVES us with, which is what a dwell
+	   priced before the hop has to use. A hop re-stamps the full twelve
+	   minutes on any shard but home, and home clears it - the server's gate
+	   is home, level 60 and PVP, and PVP is never a hop target. pickTarget
+	   priced the dwell at isHopsick() instead, so from home it charged the
+	   clean 1x for a fight it would land 5x sick for, and localTarget, which
+	   reads the sickness actually carried, refused the same boss on arrival.
+	   Measured 2026-10-26 22:38-22:40Z: EU III franky refused there while
+	   sick, home 90s later, then hopped straight back for it.
+	   -> RangerComments.md#sickOnArrival */
+	sickOnArrival(shard) {
+		const ch = (typeof character !== 'undefined' && character) || {};
+		if (ch.home && shard === ch.home) return false;
+		if (typeof ch.level === 'number' && ch.level < 60) return false;
+		return true;
+	},
+
 	/* What is ACTUALLY left, not the full duration. hopsickMs() returns G's
 	   720000 whatever the clock says, so a character 80% of the way through
 	   was being charged the whole twelve minutes by every gate that used it.
@@ -5126,7 +5143,6 @@ const bossHop = {
 	   catch the whole fight. */
 	pickTarget() {
 		const c = CONFIG.bossHop;
-		const hopsick = this.isHopsick();
 		const arriveSec = (c.hopLatencyMs + c.safetyMarginMs) / 1000;
 
 		const eligible = this.candidates().filter(x => {
@@ -5140,7 +5156,7 @@ const bossHop = {
 			   shard, so this only fires for a shard we abandoned and left. */
 			if (bossCooledDown(x.mtype, x.shard)) return false;
 			const k = this.contributors(x.shard, x.mtype);
-			x.requiredDwellSec = this.requiredDwellSec(x.maxHp, k, hopsick, x.mtype);
+			x.requiredDwellSec = this.requiredDwellSec(x.maxHp, k, this.sickOnArrival(x.shard), x.mtype);
 			x.contributors = k;
 			// (1) a LIVE boss has to outlast the trip. A pending one does not.
 			if (x.live && x.secsToDeath < arriveSec) return false;
@@ -6963,7 +6979,7 @@ function topButtons() {
 					.sort((a, b) => a.secsToDeath - b.secsToDeath || a.kills_to_rung - b.kills_to_rung)
 					.map(x => {
 						const k = bossHop.contributors(x.shard, x.mtype);
-						const need = bossHop.requiredDwellSec(x.maxHp, k, hopsick, x.mtype);
+						const need = bossHop.requiredDwellSec(x.maxHp, k, bossHop.sickOnArrival(x.shard), x.mtype);
 						const outlasts = !x.live || x.secsToDeath >= arriveSec;
 						const remaining = x.live ? x.secsToDeath - arriveSec : x.secsToDeath;
 						return {
