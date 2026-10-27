@@ -4698,6 +4698,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   PARCEL PER RIGHT SLOT, AND THE CRACK PAYS 50 FLAT, NOT 50 PLUS ITS FIVE.** The
   floor stop then fired with two mixes left. Merchant v138 corrects the comment
   that said one parcel per fitting mix.
+  **A HELD ROUND WENT UNBREWED, 11:00Z 2026-10-27 on US I, AND THE LOG COULD NOT
+  SAY WHY.** He took the hold on a bridge board of 2 that a crack had reset six
+  seconds earlier; the board narrowed to 1 by 11:24:03 while he held it, and he
+  released at 11:28:03 with no mix. Nothing in the code read stops a brew there;
+  nothing was logged between hold and release either. Merchant v139 logs the
+  board after the hop, arrival at the Witch, cracks and each hold/brew change,
+  and the watch row carries `min_by_board`. **A ROUND MINIMUM MIXES BOARDS**: the
+  row said 2, read before the crack.
   **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
   USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
   the day stops (`stoppedFloor`).

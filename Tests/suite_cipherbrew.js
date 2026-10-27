@@ -40,7 +40,7 @@ function mk(over = {}) {
 		CIPHER_SPLIT_MAX: 128,
 		CIPHER_PLAN_KEY: 'cipher_brew_plan', CIPHER_DAY_KEY: 'cipher_brew_day', CIPHER_WATCH_KEY: 'cipher_brew_watch',
 		cipherBusy: false, cipherPlan: null, cipherLive: { at: 0, shards: {} }, cipherLast: null,
-		cipherPending: null, cipherLastPick: null, cipherAwaitBoard: null, cipherWaitWhy: null,
+		cipherPending: null, cipherLastPick: null, cipherAwaitBoard: null, cipherWaitWhy: null, cipherHeldSeen: null,
 		cipherSaid: {}, cipherAnswers: {},
 		state: { busy: false, queue: [] }, ARB: { cur: null, busy: false }, PROBE: { hold: false }, totBusy: false,
 		moveLockHeld: () => false,
@@ -54,7 +54,8 @@ function mk(over = {}) {
 		'cipherFitSet', 'cipherRecipe', 'cipherScore', 'cipherBoardCandidates', 'cipherHave', 'cipherCanMake', 'cipherMakeable',
 		'cipherPick', 'cipherIsLastRound', 'cipherDecide', 'cipherDayLoad', 'cipherDaySave', 'cipherPlanSave',
 		'cipherRestore', 'cipherHoldBlocked', 'cipherTakeHold', 'cipherRelease', 'cipherShardsNow', 'cipherPost',
-		'cipherSlowCheck', 'cipherWatchNote', 'cipherBrewNext', 'cipherIngredientNames', 'mShardKey', 'mParseShard']);
+		'cipherSlowCheck', 'cipherWatchNote', 'cipherBrewNext', 'cipherIngredientNames', 'mShardKey', 'mParseShard',
+		'cipherHeldLine']);
 	return w;
 }
 const posted = (w, kind) => w.posts.filter((p) => p[0] === '/cipher' && p[1] && p[1].kind === kind).map((p) => p[1]);
@@ -344,5 +345,54 @@ module.exports = [
 	fresh.parent.S.witchcipher = { id: 'USII-r', cracks: 1, cracked: { by: 'X', recipe: rec } };
 	fresh.cipherSlowCheck(fresh.cipherDayLoad('2026-10-25'));
 	t.eq('a first sighting cannot say when the crack happened', posted(fresh, 'slow').length, 0);
+} },
+
+{ name: 'v139 the hold says what it sees: the board after a hop, a crack, the Witch, brew', fn(t) {
+	/* US I, 11:00Z 2026-10-27: held on a stale board of 2 at 11:17:30, reset by a
+	   crack at 11:17:24, narrowed to 1 by 11:24:03, released at 11:28:03 - and
+	   no line in between said whether the merchant was at the Witch. */
+	const w = mk();
+	const d = (act, possible, round = 'USI-r') => ({ shard: 'USI', round, act, why: 'board at ' + possible });
+	const s = (cracks, possible, by) => ({ cracks, possible, cracked: by ? { by } : undefined });
+	let r = w.cipherHeldLine(null, d('brew', 2), s(0, 2), false, false);
+	t.eq('before the hop: silent - the take-hold line said it', r.line, null);
+	r = w.cipherHeldLine(null, d('hold', 1024), s(1, 1024), true, false);
+	t.eq('first tick on the shard after the hop names the board it really sees', r.line, 'on USI: hold (board at 1024)');
+	const arrived = w.cipherHeldLine(r.note, d('hold', 1024), s(1, 1024), true, true);
+	t.eq('arriving at the Witch is logged', arrived.line, 'at the Witch on USI (board at 1024)');
+	t.eq('and only once', w.cipherHeldLine(arrived.note, d('hold', 900), s(1, 900), true, true).line, null);
+	const narrow = w.cipherHeldLine(arrived.note, d('brew', 6), s(1, 6), true, true);
+	t.eq('the board reaching the threshold is logged', narrow.line, 'now brew on USI (board at 6)');
+	const cracked = w.cipherHeldLine(narrow.note, d('hold', 1024), s(2, 1024, 'CrownMerch'), true, true);
+	t.eq('a crack on the held round is logged with who and the reset board', cracked.line,
+		'USI was cracked by CrownMerch - the board is back to 1024; now hold on USI (board at 1024)');
+	const far = w.cipherHeldLine(r.note, d('brew', 6), s(1, 6), true, false);
+	t.eq('brew while away from the Witch says so', far.line, 'now brew on USI (board at 6); not at the Witch yet');
+	t.eq('once', w.cipherHeldLine(far.note, d('brew', 5), s(1, 5), true, false).line, null);
+	const moved = w.cipherHeldLine(arrived.note, d('hold', 40, 'USI-other'), s(0, 40), true, true);
+	t.eq('a different round reads as a fresh hold', moved.line, 'on USI: hold (board at 40); at the Witch on USI (board at 40)');
+	w.cipherBusy = true; w.cipherHeldSeen = narrow.note;
+	w.cipherRelease('done');
+	t.eq('release forgets the held round', w.cipherHeldSeen, null);
+	t.ok('the tick logs it before hopping or walking',
+		/cipherHeldSeen = held\.note;\s*if \(held\.line\) cipherLog\(held\.line\);\s*if \(!here\) \{ await mHopTo/.test(SRC));
+	t.ok('the declaration as supplied', /^let cipherHeldSeen = null;/m.test(SRC));
+
+	const NOW = Date.now() - 5 * 60e3;
+	const v = mk();
+	const day = v.cipherDayLoad('2026-10-27');
+	v.cipherWatchNote({ USI: round('a', NOW, { possible: 2, cracks: 0 }) }, day, CFG);
+	v.cipherWatchNote({ USI: round('a', NOW, { possible: 1024, cracks: 1 }) }, day, CFG);
+	v.cipherWatchNote({ USI: round('a', NOW, { possible: 5, cracks: 1 }) }, day, CFG);
+	v.cipherWatchNote({ USI: round('a', NOW, { possible: 300, cracks: 2, live: false }) }, day, CFG);
+	const row = posted(v, 'watch')[0] || {};
+	t.eq('the round minimum is unchanged', row.min_possible, 2);
+	t.eq('and each board has its own', row.min_by_board, { 0: 2, 1: 5, 2: 300 });
+	const n = mk();
+	const nd = n.cipherDayLoad('2026-10-27');
+	n.cipherWatchNote({ USI: round('a', NOW, { possible: 7 }) }, nd, CFG);
+	n.cipherWatchNote({ USI: round('a', NOW, { possible: 7, live: false }) }, nd, CFG);
+	t.eq('no crack count, no per-board record', (posted(n, 'watch')[0] || {}).min_by_board, null);
+	t.ok('the own shard carries who cracked it', /fit: w\.fit, cracked: w\.cracked \};/.test(SRC));
 } },
 ];

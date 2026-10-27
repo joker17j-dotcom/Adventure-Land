@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v138
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v139
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6467,6 +6467,7 @@ let cipherPending = null;           // the mix in flight, for the too-slow check
 let cipherLastPick = null;          // the mix chosen most recently, brewed or not
 let cipherAwaitBoard = null;        // after a brew: wait for the board to show it
 let cipherWaitWhy = null;
+let cipherHeldSeen = null;          // the held round as the last tick saw it, for cipherHeldLine()
 const cipherSaid = {};
 
 function cipherLog(msg, color) { game_log('[cipher] ' + msg, color || '#AF6AE2'); }
@@ -6693,6 +6694,7 @@ function cipherRelease(why) {
 	state.busy = false;
 	cipherPlanSave(null);
 	cipherAwaitBoard = null;
+	cipherHeldSeen = null;
 	cipherLog('released the merchant (' + why + ')', '#7FD98A');
 }
 
@@ -6721,7 +6723,7 @@ function cipherShardsNow() {
 	const out = Object.assign({}, cipherLive.shards);
 	const w = (typeof parent !== 'undefined' && parent.S) ? parent.S.witchcipher : null;
 	if (w && w.id) out[mShardKey()] = { id: w.id, live: !!w.live, start: w.start, end: w.end,
-		possible: w.possible, cracks: w.cracks, mixes: w.mixes, fit: w.fit };
+		possible: w.possible, cracks: w.cracks, mixes: w.mixes, fit: w.fit, cracked: w.cracked };
 	return out;
 }
 function cipherPost(row) {
@@ -6817,14 +6819,50 @@ function cipherWatchNote(shards, day, cfg) {
 		const rec = watch[id] || (watch[id] = { shard: k, round: s.id, min: null });
 		if (typeof s.possible === 'number' && (rec.min == null || s.possible < rec.min)) { rec.min = s.possible; changed = true; }
 		if (rec.last !== s.possible) { rec.last = s.possible; changed = true; }
+		/* The narrowest reading PER BOARD, keyed by the crack count it was read
+		   under. One minimum over the round mixes boards: on 2026-10-27 US I's
+		   row said 2, a reading taken before a crack reset the board, and could
+		   not say what the merchant saw of the board that came after it. */
+		if (typeof s.possible === 'number' && typeof s.cracks === 'number') {
+			const mb = rec.byBoard || (rec.byBoard = {});
+			const kb = String(s.cracks);
+			if (mb[kb] == null || s.possible < mb[kb]) { mb[kb] = s.possible; changed = true; }
+		}
 		if (!over) continue;
-		if (day.brewed.indexOf(id) < 0) cipherPost({ kind: 'watch', server: cipherBridgeName(k), round: s.id, possible: rec.last, min_possible: rec.min, mixes: s.mixes });
+		if (day.brewed.indexOf(id) < 0) cipherPost({ kind: 'watch', server: cipherBridgeName(k), round: s.id, possible: rec.last, min_possible: rec.min, min_by_board: rec.byBoard || null, mixes: s.mixes });
 		delete watch[id];
 		changed = true;
 	}
 	const ids = Object.keys(watch);
 	if (ids.length > 40) { for (const id of ids.slice(0, ids.length - 40)) delete watch[id]; changed = true; }
 	if (changed) { try { set(CIPHER_WATCH_KEY, watch); } catch (e) { } }
+}
+
+/* What changed on the held round since the last tick, as one log line or null,
+   with the state to keep for the next tick. Without it the hold is silent from
+   taking it to releasing it: US I's 11:00Z round on 2026-10-27 was held from
+   11:17:30 to 11:28:03, its board was reset by a crack and narrowed to 1, and
+   nothing in the log could say whether the merchant was at the Witch while it
+   was narrow. `s` is the held shard's entry from cipherShardsNow(). */
+function cipherHeldLine(prev, d, s, here, near) {
+	s = s || {};
+	const cur = { shard: d.shard, round: d.round, act: d.act, cracks: s.cracks, here: !!here, near: !!near };
+	const same = prev && prev.shard === cur.shard && prev.round === cur.round;
+	const parts = [];
+	if (!same) {
+		/* The take-hold line already said this before the hop; after one, the
+		   page is new and this is the first reading of the board itself. */
+		if (cur.here) parts.push('on ' + cur.shard + ': ' + d.act + ' (' + d.why + ')');
+	} else {
+		if (typeof cur.cracks === 'number' && typeof prev.cracks === 'number' && cur.cracks > prev.cracks)
+			parts.push(cur.shard + ' was cracked' + (s.cracked && s.cracked.by ? ' by ' + s.cracked.by : '')
+				+ ' - the board is back to ' + s.possible);
+		if (cur.act !== prev.act) parts.push('now ' + cur.act + ' on ' + cur.shard + ' (' + d.why + ')');
+	}
+	if (cur.near && !(same && prev.near)) parts.push('at the Witch on ' + cur.shard + ' (board at ' + s.possible + ')');
+	if (cur.act === 'brew' && cur.here && !cur.near && !(same && prev.act === 'brew' && prev.here))
+		parts.push('not at the Witch yet');
+	return { note: cur, line: parts.length ? parts.join('; ') : null };
 }
 
 /* One mix on this shard, chosen from the live board. */
@@ -6916,8 +6954,12 @@ async function cipherTick() {
 			cipherPlanSave({ shard: d.shard, round: d.round, end: d.end, at: Date.now() });
 			cipherLog('moving the hold to ' + d.round + ' on ' + d.shard + ' (' + d.why + ')');
 		}
-		if (mShardKey() !== d.shard) { await mHopTo(d.shard); return; }
-		if (!cipherNearWitch()) { await cipherWalk(); return; }
+		const here = mShardKey() === d.shard, near = here && cipherNearWitch();
+		const held = cipherHeldLine(cipherHeldSeen, d, shards[d.shard], here, near);
+		cipherHeldSeen = held.note;
+		if (held.line) cipherLog(held.line);
+		if (!here) { await mHopTo(d.shard); return; }
+		if (!near) { await cipherWalk(); return; }
 		if (d.act === 'brew') await cipherBrewNext(d, day);
 	} catch (e) {
 		cipherSay('tick threw: ' + ((e && e.message) || e), 'red');

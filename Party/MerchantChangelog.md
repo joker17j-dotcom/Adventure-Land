@@ -1,4 +1,24 @@
 
+## v139
+
+**THE HOLD NOW SAYS WHAT IT SEES, BECAUSE A MISSED ROUND COULD NOT BE EXPLAINED.**
+From the browser session's read of 11:00Z 2026-10-27. Meltymerch took the hold for
+US I at 11:17:30 on a bridge board of 2. DragonWagon had cracked US I six seconds
+earlier, so the real board was back to 1024. CrownMerch cracked it again at
+11:24:03 at 1, and the merchant released at 11:28:03 with no mix. The code re-reads
+the held shard's own `S.witchcipher` every 2s tick once he is there, and brews at 8
+or below once he is at the Witch. Nothing found in the code stops that. But
+nothing was logged between the two lines either, so whether he reached the Witch
+before the board narrowed, and how long it stayed at 8 or below, cannot be told.
+
+`cipherHeldLine()` logs, once each: the first board read on the held shard after a
+hop, arriving at the Witch, a crack on the held round (who, and the board it
+reset to), and each change between hold and brew. A brew decided before the
+merchant is at the Witch logs "not at the Witch yet". The watch row gains
+`min_by_board`, the narrowest reading per crack count. `min_possible` was one
+minimum over the round, so on US I it reported the stale 2 and said nothing about
+the board after the crack. Behaviour is unchanged.
+
 ## v138
 
 **COMMENT ONLY - THE PARCEL PAYOUT IS PER RIGHT SLOT.** The brewing block said a
