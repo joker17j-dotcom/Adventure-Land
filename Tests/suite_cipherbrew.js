@@ -41,6 +41,7 @@ function mk(over = {}) {
 		CIPHER_PLAN_KEY: 'cipher_brew_plan', CIPHER_DAY_KEY: 'cipher_brew_day', CIPHER_WATCH_KEY: 'cipher_brew_watch',
 		cipherBusy: false, cipherPlan: null, cipherLive: { at: 0, shards: {} }, cipherLast: null,
 		cipherPending: null, cipherLastPick: null, cipherAwaitBoard: null, cipherWaitWhy: null, cipherHeldSeen: null,
+		cipherTickTimer: null, cipherTickRunning: false, cipherKickPending: false, cipherLiveHooked: false,
 		cipherSaid: {}, cipherAnswers: {},
 		state: { busy: false, queue: [] }, ARB: { cur: null, busy: false }, PROBE: { hold: false }, totBusy: false,
 		moveLockHeld: () => false,
@@ -55,7 +56,7 @@ function mk(over = {}) {
 		'cipherPick', 'cipherIsLastRound', 'cipherDecide', 'cipherDayLoad', 'cipherDaySave', 'cipherPlanSave',
 		'cipherRestore', 'cipherHoldBlocked', 'cipherTakeHold', 'cipherRelease', 'cipherShardsNow', 'cipherPost',
 		'cipherSlowCheck', 'cipherWatchNote', 'cipherBrewNext', 'cipherIngredientNames', 'mShardKey', 'mParseShard',
-		'cipherHeldLine']);
+		'cipherHeldLine', 'cipherKickWanted', 'cipherKick', 'cipherLiveHook']);
 	return w;
 }
 const posted = (w, kind) => w.posts.filter((p) => p[0] === '/cipher' && p[1] && p[1].kind === kind).map((p) => p[1]);
@@ -394,5 +395,57 @@ module.exports = [
 	n.cipherWatchNote({ USI: round('a', NOW, { possible: 7, live: false }) }, nd, CFG);
 	t.eq('no crack count, no per-board record', (posted(n, 'watch')[0] || {}).min_by_board, null);
 	t.ok('the own shard carries who cracked it', /fit: w\.fit, cracked: w\.cracked \};/.test(SRC));
+} },
+
+{ name: 'v140 the brew decision runs on the publish, not only on the 2s tick', fn(t) {
+	/* US I, 11:00Z 2026-10-27: 1024 to 1 in six mixes, at 8 or below only
+	   between the fifth and the sixth, with the merchant on the Witch's map. */
+	const w = mk();
+	const plan = { shard: 'USI', round: 'USI-r' };
+	const S = (possible, over = {}) => Object.assign({ id: 'USI-r', live: true, possible }, over);
+	t.eq('the held round at the threshold', w.cipherKickWanted(S(8), plan, true, 8), true);
+	t.eq('below it', w.cipherKickWanted(S(1), plan, true, 8), true);
+	t.eq('above it: the tick will do', w.cipherKickWanted(S(9), plan, true, 8), false);
+	t.eq('not holding', w.cipherKickWanted(S(3), plan, false, 8), false);
+	t.eq('no plan', w.cipherKickWanted(S(3), null, true, 8), false);
+	t.eq('another round on this shard', w.cipherKickWanted(S(3, { id: 'USI-other' }), plan, true, 8), false);
+	t.eq('a finished round', w.cipherKickWanted(S(3, { live: false }), plan, true, 8), false);
+	t.eq('no board count', w.cipherKickWanted({ id: 'USI-r', live: true }, plan, true, 8), false);
+	t.eq('a null board count - null <= 8 is true in JS', w.cipherKickWanted(S(null), plan, true, 8), false);
+	t.eq('no cipher in the payload', w.cipherKickWanted(undefined, plan, true, 8), false);
+
+	/* The kick: mid-tick it is held for the end of the tick, otherwise it runs now. */
+	let ran = 0;
+	w.cipherTick = () => { ran++; };
+	w.cipherTickRunning = true;
+	w.cipherKick();
+	t.eq('mid-tick: not run over the top of it', ran, 0);
+	t.eq('but remembered', w.cipherKickPending, true);
+	w.cipherTickRunning = false;
+	w.cipherTickTimer = setTimeout(() => { ran += 100; }, 60000);
+	w.cipherKick();
+	t.eq('between ticks: run now', ran, 1);
+	t.eq('and the waiting tick is cancelled', w.cipherTickTimer, null);
+
+	/* The listener is on the page socket and replaces its predecessor. */
+	const handlers = {};
+	const sock = { on: (ev, fn) => { (handlers[ev] = handlers[ev] || []).push(fn); },
+		off: (ev, fn) => { handlers[ev] = (handlers[ev] || []).filter((f) => f !== fn); } };
+	w.parent.socket = sock;
+	t.eq('installed', w.cipherLiveHook(), true);
+	w.cipherLiveHook();
+	t.eq('a second install replaces the first', (handlers.server_info || []).length, 1);
+	t.eq('and it is the one the page keeps', handlers.server_info[0] === w.parent.__cipherLiveHook, true);
+	const wd = mk();
+	t.eq('no socket: not installed', wd.cipherLiveHook(), false);
+
+	t.ok('the tick refuses to run twice at once',
+		/async function cipherTick\(\) \{\s*const cfg = CONFIG\.cipherBrew;\s*if \(cipherTickRunning\) return;\s*cipherTickRunning = true;/.test(SRC));
+	t.ok('it installs the listener once per runtime', /if \(cfg && cfg\.enabled && !cipherLiveHooked\) cipherLiveHooked = cipherLiveHook\(\);/.test(SRC));
+	t.ok('and a held kick runs at the end of the tick',
+		/cipherTickRunning = false;\s*const soon = cipherKickPending;\s*cipherKickPending = false;\s*cipherTickTimer = setTimeout\(cipherTick, soon \? 0 :/.test(SRC));
+	t.ok('the publish listener asks the threshold', /cipherKickWanted\(d && d\.witchcipher, cipherPlan, cipherBusy, cfg\.threshold\)\) setTimeout\(cipherKick, 0\)/.test(SRC));
+	t.ok('the declarations as supplied', ['cipherTickTimer = null', 'cipherTickRunning = false', 'cipherKickPending = false', 'cipherLiveHooked = false']
+		.every((d) => new RegExp('^let ' + d + ';', 'm').test(SRC)));
 } },
 ];

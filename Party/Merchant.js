@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v139
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v140
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6468,6 +6468,10 @@ let cipherLastPick = null;          // the mix chosen most recently, brewed or n
 let cipherAwaitBoard = null;        // after a brew: wait for the board to show it
 let cipherWaitWhy = null;
 let cipherHeldSeen = null;          // the held round as the last tick saw it, for cipherHeldLine()
+let cipherTickTimer = null;         // the next scheduled tick, so a publish can bring it forward
+let cipherTickRunning = false;
+let cipherKickPending = false;      // a publish arrived mid-tick: run again as soon as it ends
+let cipherLiveHooked = false;
 const cipherSaid = {};
 
 function cipherLog(msg, color) { game_log('[cipher] ' + msg, color || '#AF6AE2'); }
@@ -6750,6 +6754,39 @@ function cipherHook() {
 	parent.__cipherHook = fn;
 	return true;
 }
+/* A narrow board can last only seconds. US I, 11:00Z 2026-10-27: reset by a
+   crack at 11:17:24, then 1024 to 1 in six mixes and cracked at 11:24:03, so it
+   sat at 8 or below only between the fifth and sixth. The merchant was on the
+   Witch's map and reading that board, and a 2s tick never saw it there. The
+   server publishes S.witchcipher on every mix, so the decision runs on the
+   publish: when the held round's board on this shard is at the threshold or
+   below, the next tick runs now. */
+function cipherKickWanted(w, plan, busy, thr) {
+	return !!(busy && plan && w && w.live && w.id === plan.round
+		&& typeof w.possible === 'number' && w.possible <= thr);
+}
+function cipherKick() {
+	if (cipherTickRunning) { cipherKickPending = true; return; }
+	if (cipherTickTimer) clearTimeout(cipherTickTimer);
+	cipherTickTimer = null;
+	cipherTick();
+}
+/* On the page socket, like cipherHook: a runner restart replaces it rather than
+   stacking one. The game's own server_info listener sets S; this one runs after
+   it in the same dispatch, and defers a turn so S is current either way. */
+function cipherLiveHook() {
+	if (typeof parent === 'undefined' || !parent.socket) return false;
+	const fn = function (d) {
+		try {
+			const cfg = CONFIG.cipherBrew;
+			if (cfg && cipherKickWanted(d && d.witchcipher, cipherPlan, cipherBusy, cfg.threshold)) setTimeout(cipherKick, 0);
+		} catch (e) { }
+	};
+	try { if (parent.__cipherLiveHook) parent.socket.off('server_info', parent.__cipherLiveHook); } catch (e) { }
+	parent.socket.on('server_info', fn);
+	parent.__cipherLiveHook = fn;
+	return true;
+}
 function cipherAsk(body) {
 	if (!parent.__cipherHook && !cipherHook()) return Promise.resolve({ failed: true, reason: 'no socket' });
 	const rid = 'cb' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -6926,7 +6963,14 @@ async function cipherBrewNext(d, day) {
 
 async function cipherTick() {
 	const cfg = CONFIG.cipherBrew;
+	if (cipherTickRunning) return;
+	cipherTickRunning = true;
+	if (cipherTickTimer) clearTimeout(cipherTickTimer);
+	cipherTickTimer = null;
 	try {
+		/* Once per runtime, not per page: after a runner restart the page still
+		   holds the old runtime's listener, and cipherLiveHook() replaces it. */
+		if (cfg && cfg.enabled && !cipherLiveHooked) cipherLiveHooked = cipherLiveHook();
 		if (!cfg || !cfg.enabled) { cipherRelease('disabled'); return; }
 		await cipherRefreshLive();
 		const now = Date.now();
@@ -6964,7 +7008,10 @@ async function cipherTick() {
 	} catch (e) {
 		cipherSay('tick threw: ' + ((e && e.message) || e), 'red');
 	} finally {
-		setTimeout(cipherTick, (cfg && cfg.tickMs) || 2000);
+		cipherTickRunning = false;
+		const soon = cipherKickPending;
+		cipherKickPending = false;
+		cipherTickTimer = setTimeout(cipherTick, soon ? 0 : ((cfg && cfg.tickMs) || 2000));
 	}
 }
 

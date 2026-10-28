@@ -4706,6 +4706,12 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   board after the hop, arrival at the Witch, cracks and each hold/brew change,
   and the watch row carries `min_by_board`. **A ROUND MINIMUM MIXES BOARDS**: the
   row said 2, read before the crack.
+  **ANSWERED BY THE BROWSER SESSION'S READS: HE WAS THERE AND THE WINDOW WAS
+  SECONDS.** On halloween from 11:18:33, watch `possible` 243 (a post-crack
+  board), and CrownMerch's crack read `mixes_before` 6 at `possible_before` 1, so
+  the board was at 8 or below only between two back-to-back mixes. Merchant v140
+  runs the brew decision on the `server_info` publish rather than only on the 2s
+  tick.
   **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
   USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
   the day stops (`stoppedFloor`).

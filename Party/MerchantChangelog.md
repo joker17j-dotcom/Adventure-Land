@@ -1,4 +1,27 @@
 
+## v140
+
+**THE BREW DECISION RUNS ON THE PUBLISH, NOT ONLY ON THE 2s TICK.** The browser
+session's reads of US I, 11:00Z 2026-10-27, settle what v139 could not. Meltymerch
+was on halloween from 11:18:33. The watch row's last board was 243, the board one
+mix after CrownMerch's 11:24:03 crack, so he was reading US I after the hop.
+CrownMerch's crack row reads `mixes_before` 6 and `possible_before` 1, so the
+board went from 1024 to 1 in six mixes and sat at 8 or below only between the
+fifth and the sixth. A fast solver brewing back to back makes that seconds, and a
+2s tick did not land inside it.
+
+The server publishes `S.witchcipher` on every mix (upstream `16881a2`,
+`witch_cipher_brew` ends in `witch_cipher_publish()`). `cipherLiveHook()` listens
+for `server_info` on the page socket. When the held round on this shard is at the
+threshold or below (`cipherKickWanted`), it runs the next tick at once
+(`cipherKick`). A publish that arrives mid-tick is held and runs as that tick
+ends. `cipherTick` refuses to run twice at once. The listener replaces its
+predecessor after a runner restart, as `cipherHook` does. The threshold, the
+hold and what is brewed are unchanged. Only the reaction time is.
+
+Whether this beats a bot that waits for a board of 1 is not known. A board at 1
+is the answer, and whoever's brew reaches the server first cracks it.
+
 ## v139
 
 **THE HOLD NOW SAYS WHAT IT SEES, BECAUSE A MISSED ROUND COULD NOT BE EXPLAINED.**
