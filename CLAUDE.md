@@ -4712,6 +4712,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   the board was at 8 or below only between two back-to-back mixes. Merchant v140
   runs the brew decision on the `server_info` publish rather than only on the 2s
   tick.
+  **FIRST CRACK ON THE v139 LINES, 11:00Z 2026-10-28 on US II**: held at 11:01:56,
+  reached the Witch at 11:02:35 to a board of 1 (others had narrowed the recipe
+  that Yayy's crack started, 1024 to 1 in four mixes in ~36s) and cracked it at
+  once for 50; then two post-crack mixes, right 2 and right 0, and the floor stop.
+  **A FITTING MIX WITH 0 RIGHT PAYS 0 PARCELS**, which the per-right-slot rule
+  already implies. So a post-crack mix is worth its EXPECTED right count, about
+  1.25 at a fresh board of 1024, against up to five ingredients. Whether to spend
+  the post-crack mixes at all is the operator's call; nothing assumed a floor.
   **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
   USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
   the day stops (`stoppedFloor`).
