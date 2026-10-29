@@ -86,6 +86,39 @@ chk("an id-less pair never reads as a crack",
                                                b.cipher_snapshot({"witchcipher": {"live": True, "cracks": 3}}), "US II", T0)
      if r.get("ev") == "cipher_crack"], [])
 
+# ------------------------------------------------------------ when it happened
+# 2026-10-29: crack rows at possible_before 1024 / mixes_before 0, the same
+# second on two shards, and Meltymerch's ASIA II crack logged 2.5 minutes late
+# against a "before" board older than his own mixes. The diff was right - one
+# round id, count up - and the timing was whatever the last push said. So every
+# row carries the bracket, and a reconnect inside it is marked, never vetoed.
+SA, SB = T0 - 3000.0, T0 + 300.0
+Pt = dict(P, received_t=T0 + 140, session_t=SA)
+Cs = dict(C, received_t=T0 + 296, session_t=SA)
+Cr = dict(C, received_t=T0 + 437, session_t=SB)
+r1 = nth(b.cipher_transitions(Pt, Cs, "ASIA II", T0 + 296), 0)
+chk("the crack row says when the last push before it came", r1.get("before_t"), b.iso(T0 + 140))
+chk("and how wide the bracket is", r1.get("bracket_sec"), 156.0)
+chk("since_start_lo_sec is the bracket's start, since_start_sec its end",
+    (r1.get("since_start_lo_sec"), r1.get("since_start_sec")), (140, 296))
+chk("one socket throughout reads False, not None", r1.get("across_reconnect"), False)
+chk("with the socket's opening time", r1.get("socket_opened"), b.iso(SA))
+r2 = nth(b.cipher_transitions(Pt, Cr, "US I", T0 + 437), 0)
+chk("a crack first seen on a NEW socket is marked across_reconnect", r2.get("across_reconnect"), True)
+chk("and is still written - the count rose within one round", (r2.get("ev"), r2.get("by")), ("cipher_crack", "Red_Merch"))
+chk("unstamped pushes read None, never False",
+    (r0.get("across_reconnect"), r0.get("before_t"), r0.get("bracket_sec"), r0.get("since_start_lo_sec")),
+    (None, None, None, None))
+chk("half-stamped is still unknown",
+    nth(b.cipher_transitions(dict(P, session_t=SA), C, "US II", T0 + 437), 0).get("across_reconnect"), None)
+Et = dict(E, received_t=T0 + 1690, session_t=SB)
+chk("a seen end carries the bracket too",
+    (nth(b.cipher_transitions(Pt, Et, "US II", T0 + 1690), 0).get("ev"),
+     nth(b.cipher_transitions(Pt, Et, "US II", T0 + 1690), 0).get("across_reconnect")), ("cipher_end", True))
+Nt = dict(N, received_t=T0 + 43300, session_t=SA)
+chk("so does an end never seen",
+    nth(b.cipher_transitions(Pt, Nt, "US II", T0 + 43300), 0).get("bracket_sec"), 43160.0)
+
 # ------------------------------------------------------------ /cipher_live
 store = {"US II": dict(P, received_t=T0 + 590), "EU I": dict(E, received_t=T0 + 600)}
 live = b.cipher_live(store, T0 + 600)
@@ -95,6 +128,9 @@ chk("and ISO for a reader", str(live["servers"]["US II"].get("end", "")).endswit
 chk("age per shard", live["servers"]["US II"].get("age_sec"), 10)
 chk("fit carried", live["servers"]["US II"].get("fit"), FIT)
 chk("received_t is not leaked", "received_t" in live["servers"]["US II"], False)
+live2 = b.cipher_live({"US II": dict(P, received_t=T0 + 590, session_t=SA)}, T0 + 600)
+chk("session_t is published as socket_opened, not raw",
+    ("session_t" in live2["servers"]["US II"], live2["servers"]["US II"].get("socket_opened")), (False, b.iso(SA)))
 chk("now_ms for a clock check", live.get("now_ms"), MS(T0 + 600))
 
 # ------------------------------------------------------------ POST /cipher rows
@@ -116,16 +152,27 @@ srv = {"region": "US", "name": "II"}
 w._on_server_info(srv, wc())
 chk("a payload with the key is stored under 'REGION NAME'", sorted(w.ciphers), ["US II"])
 chk("stored with received_t", isinstance(w.ciphers.get("US II", {}).get("received_t"), float), True)
+chk("no client for the server -> session_t None", w.ciphers.get("US II", {}).get("session_t", "absent"), None)
+class _Cl:
+    pass
+cl = _Cl(); cl.server = srv2 = {"region": "US", "name": "IV"}; cl.session_t = T0 - 50.0
+w.clients.append(cl)
+w._on_server_info(srv2, wc(id="USIV-r"))
+chk("the hook stamps the delivering socket's session_t", w.ciphers.get("US IV", {}).get("session_t"), T0 - 50.0)
+cl.session_t = T0 + 10.0
+w._on_server_info(srv2, wc(id="USIV-r", cracks=1, possible=1024, mixes=0, board=[], cracked={"by": "Riff", "recipe": REC}))
 w._on_server_info(srv, {"crabxx": {"live": False}})
 chk("a payload WITHOUT the key leaves the stored one alone", w.ciphers.get("US II", {}).get("possible"), 40)
 w._on_server_info(srv, wc(cracks=1, possible=1024, mixes=0, board=[], cracked={"by": "Red_Merch", "recipe": REC}))
 w._on_server_info(srv, wc(live=False, cracks=1, possible=900, mixes=2))
 logged = [json.loads(l) for l in tmp.read_text().splitlines()] if tmp.exists() else []
-chk("the crack and the end reach the boss log", [r.get("ev") for r in logged], ["cipher_crack", "cipher_end"])
+chk("the crack and the end reach the boss log", [r.get("ev") for r in logged if r.get("server") == "US II"], ["cipher_crack", "cipher_end"])
+riff = next((r for r in logged if r.get("by") == "Riff"), {})
+chk("a reconnect between two pushes reaches the log as across_reconnect", riff.get("across_reconnect"), True)
 r = w.queue_cipher({"kind": "watch", "server": "US II", "round": "r", "possible": 12})
 logged = [json.loads(l) for l in tmp.read_text().splitlines()] if tmp.exists() else []
 chk("a posted row goes through the same writer", (r.get("ok"), nth(logged, -1).get("ev")), (True, "cipher_watch"))
-chk("a refused post writes nothing", (w.queue_cipher({"kind": "nope", "server": "x"}).get("ok"), len(logged)), (False, 3))
+chk("a refused post writes nothing", (w.queue_cipher({"kind": "nope", "server": "x"}).get("ok"), len(logged)), (False, 4))
 off = b.BossWatch(["crabxx"], interval=45, enabled=False, events_path=None)
 chk("with the log disabled a post is refused, not dropped", off.queue_cipher({"kind": "mix", "server": "US II"}).get("ok"), False)
 

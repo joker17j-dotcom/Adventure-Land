@@ -4680,6 +4680,18 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   it with `live: false`, so a payload WITHOUT the key leaves the stored copy
   alone. `fit` is live-only and is kept verbatim; the merchant decodes it.
   Needs a bridge RESTART to take effect.
+  **A CRACK ROW'S `t` IS WHEN THE BRIDGE SAW THE CRACK, AND ITS `_before`
+  FIGURES ARE THE LAST PUSH IT HELD, HOWEVER OLD.** The diff is within one round
+  id and was right; the timing was not. The server sends no `server_info` on
+  connect, so a stalled or reconnected socket diffs the next broadcast against a
+  snapshot minutes old. That gave the 2026-10-29 rows at 1024/0, the same second
+  on two shards, and Meltymerch's 11:14:34 ASIA II crack logged at 11:17:10.
+  Since then every cipher row carries `before_t`, `bracket_sec` and
+  `since_start_lo_sec` (the crack happened between `before_t` and `t`), plus
+  `across_reconnect` and `socket_opened`, and `/cipher_live` carries
+  `socket_opened`. These fields mark a row and never veto it, and a pre-change
+  row reads them as absent. The merchant's `cipher_mix` rows stay the precise
+  record of his own mixes.
 - **MELTYMERCH BREWS AS OF Merchant v133** - BUILD 2, on the operator's rulings
   of 2026-10-25 09:18-09:21 EDT; design in the v133 changelog entry. The
   candidates come from `fit` (LSB first, recipe n slot i = names[floor(n/4^i)%4]),

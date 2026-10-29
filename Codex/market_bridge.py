@@ -2122,13 +2122,37 @@ def cipher_snapshot(payload):
             "cracked": cracked, "board": board}
 
 
+def _cipher_seen(prev, cur, t):
+    """When the change in a cipher row happened, as far as the bridge can say.
+
+    A row's `t` is when the push SHOWING the change arrived, not when the change
+    happened, and the `_before` figures are the last push before it - however
+    old that is. The server sends no server_info on connect (upstream 16881a2:
+    broadcast_e() is its only sender), so a socket that stalled or reconnected
+    diffs the next broadcast against a snapshot minutes old. Measured
+    2026-10-29 by the browser session: Meltymerch's ASIA II crack at 11:14:34
+    logged at 11:17:10 with possible_before 10 against his own 2, and three
+    pairs of rows at 1024/0, the same second on two shards. So the row carries
+    the bracket the change happened in, `before_t` to `t`, and whether a socket
+    reconnect sits inside it. Marked, never vetoed: the crack itself is real,
+    because the count rose within one round id."""
+    pt, ps, cs = prev.get("received_t"), prev.get("session_t"), cur.get("session_t")
+    return {"before_t": iso(pt) if pt else None,
+            "bracket_sec": round(t - pt, 1) if pt else None,
+            # None when either push came without a socket stamp (a test, or a
+            # snapshot from before this field), never False: unknown is not same.
+            "across_reconnect": (ps != cs) if (ps and cs) else None,
+            "socket_opened": iso(cs) if cs else None}
+
+
 def cipher_transitions(prev, cur, server, t):
     """The log rows one push implies, against the previous push from that shard.
 
     A first sighting writes nothing: a bridge started mid-round cannot say when
     the cracks it finds happened. A round whose end was never seen - the id
     moved on while the old round still read live - is closed with
-    `end_seen: false` rather than left open."""
+    `end_seen: false` rather than left open. Every row carries
+    `_cipher_seen()`'s bracket, because `t` is when the bridge SAW the change."""
     rows = []
     if not prev or not cur:
         return rows
@@ -2138,19 +2162,24 @@ def cipher_transitions(prev, cur, server, t):
         if isinstance(pc, int) and isinstance(cc, int) and cc > pc:
             ck = cur.get("cracked") or {}
             st = cur.get("start")
-            rows.append({"ev": "cipher_crack", "t": iso(t), "server": server,
+            pt = prev.get("received_t")
+            rows.append(dict({"ev": "cipher_crack", "t": iso(t), "server": server,
                          "round": cur.get("id"), "by": ck.get("by"),
                          "recipe": ck.get("recipe"), "cracks": cc,
                          # More than one crack between two pushes: only the
                          # latest is named, and the count says so.
                          "unseen": cc - pc - 1,
+                         # The crack happened between these two: since_start_sec
+                         # is when we SAW it, since_start_lo_sec the last push
+                         # before. They differ by bracket_sec.
                          "since_start_sec": round(t - st) if st else None,
+                         "since_start_lo_sec": round(pt - st) if (st and pt) else None,
                          "mixes_before": prev.get("mixes"),
-                         "possible_before": prev.get("possible")})
+                         "possible_before": prev.get("possible")}, **_cipher_seen(prev, cur, t)))
         if prev.get("live") and not cur.get("live"):
-            rows.append(_cipher_end_row(cur, server, t, True))
+            rows.append(dict(_cipher_end_row(cur, server, t, True), **_cipher_seen(prev, cur, t)))
     elif prev.get("live"):
-        rows.append(_cipher_end_row(prev, server, t, False))
+        rows.append(dict(_cipher_end_row(prev, server, t, False), **_cipher_seen(prev, cur, t)))
     return rows
 
 
@@ -2167,13 +2196,16 @@ def cipher_live(store, t_now):
     """Every shard's latest S.witchcipher, times as ISO and as epoch ms."""
     out = {}
     for server, snap in sorted((store or {}).items()):
-        row = {k: v for k, v in snap.items() if k not in ("start", "gather_end", "end", "received_t")}
+        row = {k: v for k, v in snap.items()
+               if k not in ("start", "gather_end", "end", "received_t", "session_t")}
         for k in ("start", "gather_end", "end"):
             v = snap.get(k)
             row[k] = iso(v) if v else None
             row[k + "_ms"] = int(round(v * 1000)) if v else None
         rec = snap.get("received_t")
         row["age_sec"] = round(t_now - rec) if rec else None
+        st = snap.get("session_t")
+        row["socket_opened"] = iso(st) if st else None
         out[server] = row
     return {"now": iso(t_now), "now_ms": int(round(t_now * 1000)), "servers": out}
 
@@ -2956,9 +2988,11 @@ class BossWatch:
             snap["received_t"] = t
             with self.lock:
                 self.schedules[f"{key[0]} {key[1]}"] = snap
+        client = next((c for c in self.clients if c.server is server), None)
         csnap = cipher_snapshot(payload)
         if csnap is not None:
             csnap["received_t"] = t
+            csnap["session_t"] = (client.session_t or None) if client is not None else None
             shard = f"{key[0]} {key[1]}"
             with self.lock:
                 for row in cipher_transitions(self.ciphers.get(shard), csnap, shard, t):
@@ -2969,7 +3003,6 @@ class BossWatch:
             k = self._record(e)
             if k:
                 seen.add(k)
-        client = next((c for c in self.clients if c.server is server), None)
         with self.lock:
             if client is not None and client.session_t:
                 self._session_t[key] = client.session_t
@@ -3353,7 +3386,9 @@ class BossWatch:
             elif ev["ev"] == "cipher_crack":
                 say(f"[cipher] CRACK on {ev['server']} by {ev.get('by')}"
                     f" {ev.get('since_start_sec')}s into the round"
-                    f" (possible {ev.get('possible_before')} before)")
+                    f" (possible {ev.get('possible_before')} before"
+                    + (f", seen {ev['bracket_sec']}s after the last push" if ev.get("bracket_sec") else "")
+                    + (", across a reconnect" if ev.get("across_reconnect") else "") + ")")
             elif ev["ev"] == "cipher_end":
                 say(f"[cipher] round over on {ev['server']}: {ev.get('cracks')} crack(s),"
                     f" {ev.get('mixes')} mixes on the board, possible {ev.get('possible')}")
