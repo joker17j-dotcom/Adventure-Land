@@ -5251,6 +5251,20 @@ a day.
   launcher's hand-back branch rests on source until it is.
   The client's `G` carries `G.events.dreams.encounters` with every effect (G
   version 18183), and v26 votes from it when present.
+  **THE RUNNER'S `load_code()` RUNS A SLOT WITHOUT ENGAGING IT, so after the
+  hand-back every hop ran CaveRun again** - the browser session's read of the
+  2026-10-29 game log: four hops, 20s of launcher each, until the slot was
+  loaded by hand. In the CODE context `load_code` is `runner_functions.js`'s: it
+  fetches the slot and evaluates it in that iframe. The PAGE's
+  `load_code(name, log)` is a different function: it asks the server, and the
+  answer sets the editor and `code_slot` and logs "Loaded <slot name>". Neither
+  persists the engaged slot. `get_code_slot()` reads `code_cache`, and only
+  `code_persistence_logic()` writes it, which `start_runner()`/`stop_runner()`
+  call (client `js/functions.js`, upstream `16881a2`). CaveRun v31's
+  `engageMainSlot()` calls the page's `load_code`, waits for the answer, calls
+  `code_persistence_logic()`, then logs what `get_code_slot()` reads, red if it
+  is not the character slot. Source-derived; the next cave run is the live
+  test.
 - **THE CAVE LEADER DRIVES ITSELF AS OF CaveRun v27** - operator's ruling
   2026-10-24, "from leader manually driven to a fully automated cave run". It
   makes the call the objective buttons make: a stair goal's onclick is

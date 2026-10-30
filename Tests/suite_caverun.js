@@ -767,7 +767,7 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	const s = src();
 	t.ok('exitTick runs every tick', /\t\tlootTick\(\);\n\t\texitTick\(\);/.test(s));
 	t.ok('the leader hold is gated on active()', /if \(active\(\)\) warnOutrun\(\);/.test(s));
-	t.ok('hand-back is on, by the character\'s own slot name', /handback: true \}/.test(s) && /load_code\(slot\)/.test(s));
+	t.ok('hand-back is on, by the character\'s own slot name', /\bhandback: true\b/.test(s) && /load_code\(slot\)/.test(s));
 }
 
 },
@@ -934,6 +934,78 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	w.dieTick();
 	w.onCaveResponse({ interaction: 'cave', request_id: w.sent[0].request_id, failed: true, reason: 'sold_out' });
 	t.eq('sold_out settles it too', w.dieShops.r1.done, true);
+} },
+
+{ name: 'v31 the hand-back ENGAGES the main slot, so a hop no longer reloads CaveRun', fn(t) {
+	/* 2026-10-29, the browser session's read of the game log: after the cave
+	   hand-back every hop ran CaveRun's 20s launcher again, because the runner's
+	   load_code() runs a slot without engaging it. The page below models the
+	   client at upstream 16881a2: get_code_slot() reads code_cache, only
+	   code_persistence_logic() writes it, and the page's load_code(name, log)
+	   answers LATER by setting the editor and code_slot. */
+	const ID = '6011', CAVE = '11';
+	const mk = (o = {}) => {
+		const w = world({ CFG: { exit: { engageMs: 15000 } } });
+		let clock = 1000;
+		w.Date = { now: () => clock };
+		w.tick = (ms) => { clock += ms; };
+		w.q = [];
+		w.setTimeout = (f) => { w.q.push(f); };
+		w.flush = () => { const q = w.q.splice(0); q.forEach((f) => f()); };
+		w.lines = []; w.clog = (m, c) => w.lines.push([m, c]);
+		w.evs = []; w.ev = (k, d) => w.evs.push([k, d]);
+		const cache = { slot_6011: CAVE, run_6011: '1' };
+		let buffer = '// CaveRun.js - one script ... - v31 (TEST BUILD)\n...';
+		const P = w.parent;
+		P.real_id = ID; P.code_slot = CAVE;
+		P.storage_get = (k) => (k === 'code_cache' ? JSON.stringify(cache) : null);
+		P.storage_set = (k, v) => { if (k === 'code_cache') { const d = JSON.parse(v); Object.keys(d).forEach((x) => { cache[x] = d[x]; }); } };
+		P.get_code_slot = () => (o.explicit || cache['slot_' + ID] || ID);
+		P.code_persistence_logic = () => { if (o.explicit) return; cache['slot_' + ID] = P.code_slot; };
+		P.codemirror_render = { getValue: () => buffer };
+		P.started = 0; P.start_runner = () => { P.started++; };
+		P.loads = []; P.answer = null;
+		P.load_code = (n, log) => { P.loads.push([n, log]); P.answer = () => { buffer = '// Dexon (Ranger) - v160'; P.code_slot = ID; }; };
+		if (o.noPersist) delete P.code_persistence_logic;
+		w.cache = cache;
+		lift(w, 'CaveRun.js', ['engageMainSlot']);
+		return w;
+	};
+
+	let w = mk();
+	t.eq('precondition: the engaged slot is the Cave slot', w.parent.get_code_slot(), CAVE);
+	t.eq('it asks the PAGE to load the character slot by name, with the log line', JSON.stringify(w.engageMainSlot('Dexon')) + JSON.stringify(w.parent.loads), 'true[["Dexon",true]]');
+	w.flush();
+	t.eq('before the answer arrives nothing is recorded', [w.cache.slot_6011, w.q.length].join(), CAVE + ',1');
+	w.parent.answer(); w.flush();
+	t.eq('once the editor holds the slot, it is the ENGAGED slot', w.parent.get_code_slot(), ID);
+	t.eq('the run flag is left alone, so a page load still runs it', w.cache.run_6011, '1');
+	t.ok('and it says so', /engaged slot is now 6011 \(was 11, via code_persistence_logic\)/.test((w.lines[w.lines.length - 1] || [])[0]));
+	t.eq('the runner is never restarted - start_runner saves the editor into the viewed slot', w.parent.started, 0);
+
+	w = mk();
+	w.engageMainSlot('Dexon');
+	w.tick(16000); w.flush();
+	t.eq('no answer inside engageMs: the slot stays Cave and nothing loops on', [w.parent.get_code_slot(), w.q.length].join(), CAVE + ',0');
+	t.ok('and that is a red line naming the hand fix', (w.lines[w.lines.length - 1] || [])[1] === 'red' && /engage Dexon by hand/.test(w.lines[w.lines.length - 1][0]));
+
+	w = mk({ noPersist: true });
+	w.engageMainSlot('Dexon'); w.parent.answer(); w.flush();
+	t.eq('without code_persistence_logic the code_cache entry is written directly', [w.parent.get_code_slot(), w.cache.run_6011].join(), ID + ',1');
+
+	w = mk({ explicit: CAVE });
+	w.engageMainSlot('Dexon'); w.parent.answer(); w.flush();
+	t.ok('a slot the page will not record is reported, never claimed', (w.lines[w.lines.length - 1] || [])[1] === 'red' && /still reads 11 \(wanted 6011/.test(w.lines[w.lines.length - 1][0]));
+
+	w = mk();
+	delete w.parent.load_code;
+	t.eq('a page with no load_code: refused with a red line, nothing scheduled', [w.engageMainSlot('Dexon'), w.q.length, (w.lines[0] || [])[1]].join(), 'false,0,red');
+
+	const s = src();
+	const body = (s.match(/\nfunction engageMainSlot\(name\) \{[\s\S]*?\n\}\n/) || [''])[0];
+	t.ok('precondition: the body was found', body.length > 500);
+	t.eq('engageMainSlot never starts or toggles the runner', /start_runner|toggle_runner/.test(body.replace(/\/\*[\s\S]*?\*\//g, '')), false);
+	t.ok('handBack runs the slot, THEN engages it', /\ttry \{ load_code\(slot\); \}[^\n]*\n\tengageMainSlot\(slot\);\n\}/.test(s));
 } },
 
 { name: 'v26 the launcher stages when today\'s cave is open and hands back when it is spent', fn(t) {

@@ -1,4 +1,10 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v30 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v31 (TEST BUILD)
+// v31 2026-10-30 THE HAND-BACK ENGAGES THE MAIN SLOT, NOT ONLY RUNS IT. The
+//                runner's load_code() evaluates a slot inside this iframe and
+//                leaves the page's engaged slot on the Cave slot, so every later
+//                hop reloaded CaveRun for its 20s launcher. handBack() now also
+//                loads the character slot into the editor and persists it as
+//                the engaged slot, then checks get_code_slot() and logs either way.
 // v30 2026-10-25 THE SHARED GAMELOG BLOCK IS v4 - nothing else changed. The minute
 //                row's gold reads "own share of loot gold". See Party/RangerChangelog.md, v154.
 // v29 2026-10-25 THE SHARED GAMELOG BLOCK IS v3 - nothing else changed. A kill
@@ -414,8 +420,9 @@ const CFG = {
 	   handback: on leaving the cave, by exit or by the clock, write the final
 	   dump to the game log and load this character's own main slot by name -
 	   load_code(character.name), measured by the browser session to resolve
-	   the character slot by its name. */
-	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000, handback: true },
+	   the character slot by its name. engageMs bounds the wait for the page
+	   to load that slot into its editor - see engageMainSlot(). */
+	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000, handback: true, engageMs: 15000 },
 	/* THE LAUNCHER - v26. On load outside the cave, ask the server whether
 	   today's visit is spent (interaction `info`, which answers
 	   {visit: {available, resets, resume}}). Available: restock and walk to
@@ -3121,6 +3128,60 @@ function handBack(why) {
 	clog('handing back to the main script (' + slot + ') - ' + why, '#7FD98A');
 	ev('handBack', { slot: slot, why: why });
 	try { load_code(slot); } catch (e) { clog('hand back failed: ' + e + ' - engage the main script by hand', 'red'); }
+	engageMainSlot(slot);
+}
+/* RUNNING A SLOT IS NOT ENGAGING IT - v31. The load_code() above is the
+   runner's: it fetches the slot and evaluates it in this iframe, and touches
+   neither the page's code_slot nor the code_cache entry that get_code_slot()
+   reads (client js/functions.js and js/runner_functions.js, upstream 16881a2).
+   A page load runs THAT slot, so after a hand-back every hop brought CaveRun
+   back - measured on the 2026-10-29 game log at four hops, 20s each, until the
+   slot was loaded by hand. The page's own load_code(name, log) asks the server
+   for the slot by name; its answer sets the editor and code_slot, and
+   code_persistence_logic() - what start_runner()/stop_runner() call - records
+   code_slot as the engaged slot. NOT start_runner(): it saves the editor into
+   the viewed slot and restarts the runner. No timer here is gated on alive(),
+   because handBack() retires every CaveRun loop before this runs. */
+function engageMainSlot(name) {
+	let P = null;
+	try { P = parent; } catch (e) {}
+	const slotOf = (f) => { try { return String(f()); } catch (e) { return null; } };
+	const before = P && typeof P.get_code_slot === 'function' ? slotOf(() => P.get_code_slot()) : null;
+	if (!P || typeof P.load_code !== 'function') {
+		clog('hand back: the page has no load_code - a hop will run slot ' + before + ' again; engage ' + name + ' by hand', 'red');
+		return false;
+	}
+	const viewedBefore = slotOf(() => P.code_slot);
+	try { P.load_code(name, true); }
+	catch (e) { clog('hand back: loading ' + name + ' into the editor failed (' + e + ') - engage it by hand', 'red'); return false; }
+	const t0 = Date.now(), limit = (CFG.exit && CFG.exit.engageMs) || 15000;
+	const caveBuffer = () => { try { return /^\/\/ CaveRun\.js\b/.test(P.codemirror_render.getValue()); } catch (e) { return true; } };
+	const poll = () => {
+		const viewed = slotOf(() => P.code_slot);
+		if (!(viewed && viewed !== viewedBefore) && caveBuffer()) {
+			if (Date.now() - t0 < limit) { setTimeout(poll, 250); return; }
+			clog('hand back: the editor never loaded ' + name + ' - the engaged slot is still ' + before
+				+ ', so a hop runs CaveRun again; engage ' + name + ' by hand', 'red');
+			return;
+		}
+		let how = 'code_persistence_logic';
+		try {
+			if (typeof P.code_persistence_logic === 'function') P.code_persistence_logic();
+			else {
+				how = 'code_cache';
+				const data = JSON.parse(P.storage_get('code_cache') || '{}');
+				data['slot_' + P.real_id] = viewed;
+				P.storage_set('code_cache', JSON.stringify(data));
+			}
+		} catch (e) { clog('hand back: recording slot ' + viewed + ' as engaged failed (' + e + ')', 'red'); }
+		const after = typeof P.get_code_slot === 'function' ? slotOf(() => P.get_code_slot()) : null;
+		if (after && after === viewed) clog('hand back: engaged slot is now ' + after + ' (was ' + before + ', via ' + how + ')', '#7FD98A');
+		else clog('hand back: engaged slot still reads ' + after + ' (wanted ' + viewed + ', was ' + before
+			+ ') - a hop will run it; engage ' + name + ' by hand', 'red');
+		ev('engage', { before: before, viewed: viewed, after: after, how: how });
+	};
+	setTimeout(poll, 250);
+	return true;
 }
 
 let launcher = { rid: null, askedAt: 0, answered: false, handBackAt: 0, said: false };
