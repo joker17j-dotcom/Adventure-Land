@@ -42,6 +42,7 @@ function mk(over = {}) {
 		cipherBusy: false, cipherPlan: null, cipherLive: { at: 0, shards: {} }, cipherLast: null,
 		cipherPending: null, cipherLastPick: null, cipherAwaitBoard: null, cipherWaitWhy: null, cipherHeldSeen: null,
 		cipherTickTimer: null, cipherTickRunning: false, cipherKickPending: false, cipherLiveHooked: false,
+		cipherTickGen: 0, cipherTickStartedAt: 0, CIPHER_SEEN_KEY: 'cipher_brew_seen',
 		cipherSaid: {}, cipherAnswers: {},
 		state: { busy: false, queue: [] }, ARB: { cur: null, busy: false }, PROBE: { hold: false }, totBusy: false,
 		moveLockHeld: () => false,
@@ -447,5 +448,80 @@ module.exports = [
 	t.ok('the publish listener asks the threshold', /cipherKickWanted\(d && d\.witchcipher, cipherPlan, cipherBusy, cfg\.threshold\)\) setTimeout\(cipherKick, 0\)/.test(SRC));
 	t.ok('the declarations as supplied', ['cipherTickTimer = null', 'cipherTickRunning = false', 'cipherKickPending = false', 'cipherLiveHooked = false']
 		.every((d) => new RegExp('^let ' + d + ';', 'm').test(SRC)));
+} },
+{ name: 'v141 a round can no longer pass in silence: bounded awaits, a watchdog, and a line per decision', async fn(t) {
+	/* 23:00Z 2026-10-30: the day's last round, five mixes, and not one [cipher]
+	   line - no hold, no watch row. A watch row is posted by a tick that saw the
+	   round live, so the tick was most likely not running at all. */
+	const flush = () => new Promise((r) => setImmediate(r));
+
+	// scoutFetch: the body is inside the race now.
+	const w0 = mk({ CONFIG: { cipherBrew: Object.assign({}, CFG), scout: { bridge: 'http://b', timeoutMs: 20 } },
+		AbortController: function () { this.signal = {}; this.abort = () => { }; } });
+	lift(w0, MERCHANT, ['scoutFetch']);
+	w0.fetch = () => Promise.resolve({ ok: true, json: () => new Promise(() => { }) });
+	let err = null;
+	await w0.scoutFetch('/cipher_live').catch((e) => { err = e; });
+	t.eq('a response whose body stalls is a timeout, not a hang', err && err.message, 'timeout');
+	w0.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve({ servers: { 'US II': {} } }) });
+	t.eq('a whole response still arrives', Object.keys((await w0.scoutFetch('/cipher_live')).servers), ['US II']);
+	w0.fetch = () => Promise.resolve({ ok: false, status: 500 });
+	err = null; await w0.scoutFetch('/x').catch((e) => { err = e; });
+	t.eq('and an HTTP error is still an error', err && err.message, 'HTTP 500');
+
+	// ensureStandClosed: bounded, so a hop cannot hang on it.
+	const w1 = mk({ state: { busy: false, queue: [], standOpen: true }, console: { error: () => { } } });
+	lift(w1, MERCHANT, ['ensureStandClosed', 'arbNoHang']);
+	w1.close_stand = () => new Promise(() => { });
+	w1.setTimeout = (f) => { f(); return 0; };
+	let done = false;
+	// Raced against a real turn of the loop, so a hang reports as a failure instead of stopping the suite.
+	await Promise.race([w1.ensureStandClosed().then(() => { done = true; }), new Promise((r) => setImmediate(r))]);
+	t.eq('a close_stand that never answers is given up on', [done, w1.state.standOpen].join(), 'true,true');
+
+	// The watchdog, and the generation guard against two loops.
+	const w = mk();
+	lift(w, MERCHANT, ['cipherTick', 'cipherTickWatch', 'cipherNoteDecision', 'cipherDecisionKey']);
+	const timers = [];
+	w.setTimeout = (f, ms) => { timers.push(ms); return timers.length; };
+	w.clearTimeout = () => { };
+	w.CONFIG.cipherBrew.tickStallMs = 600000;
+	let hang = null, refreshes = 0;
+	w.cipherRefreshLive = () => { refreshes++; return refreshes === 1 ? new Promise((r) => { hang = r; }) : Promise.resolve(); };
+	w.cipherShardsNow = () => ({});
+	w.cipherDecide = () => ({ act: 'idle', why: 'no live round' });
+	w.cipherTick();
+	await flush();
+	t.eq('precondition: the first tick is stuck inside an await', [w.cipherTickRunning, timers.length].join(), 'true,0');
+	t.eq('a tick inside tickStallMs is left alone', w.cipherTickWatch(), false);
+	w.cipherTickStartedAt = Date.now() - 600001;
+	t.eq('past it, the watchdog abandons the tick and restarts the loop', w.cipherTickWatch(), true);
+	await flush(); await flush();
+	t.ok('saying so in red', w.logs.some((l) => /a tick has not finished in 600s - abandoning it/.test(l)));
+	t.eq('the new tick ran and set the next one', [refreshes, w.cipherTickRunning, timers.length].join(), '2,false,1');
+	hang(); await flush(); await flush();
+	t.eq('the abandoned tick, finishing late, sets no second timer', timers.length, 1);
+
+	// One line per change of decision, kept across a hop.
+	const v = mk();
+	lift(v, MERCHANT, ['cipherNoteDecision', 'cipherDecisionKey']);
+	const lines = () => v.logs.filter((l) => /^\[cipher\] now /.test(l));
+	v.cipherNoteDecision({ act: 'idle', why: 'no live round' });
+	v.cipherNoteDecision({ act: 'idle', why: 'no live round' });
+	t.eq('an idle decision is said once', lines(), ['[cipher] now idle: no live round']);
+	v.logs.length = 0;
+	v.cipherNoteDecision({ act: 'idle', why: 'no live round' });
+	t.eq('and not again after a reload, since the key is stored', lines(), []);
+	v.cipherNoteDecision({ act: 'watch', shard: 'USII', round: 'r1', why: 'board at 40, waiting for 8' });
+	v.cipherNoteDecision({ act: 'watch', shard: 'USII', round: 'r1', why: 'board at 22, waiting for 8' });
+	t.eq('a watch is said once per round, not per board', lines(), ['[cipher] now watch on USII: board at 40, waiting for 8']);
+	t.eq('a hold keeps its own lines', v.cipherNoteDecision({ act: 'hold', shard: 'USII', round: 'r1', why: 'x' }), null);
+	t.ok('and the idle after it is said again', /now idle/.test(v.cipherNoteDecision({ act: 'idle', why: 'no live round' }) || ''));
+
+	t.ok('the tick notes every decision', /cipherLast = d;\n\t\tcipherNoteDecision\(d\);/.test(SRC));
+	t.ok('the watchdog runs on its own timer', /\nsetInterval\(cipherTickWatch, 15000\);\n/.test(SRC));
+	t.ok('cipherStatus reports the tick', /tick: \{ running: cipherTickRunning, sinceStartSec:/.test(SRC));
+	t.ok('the declarations as supplied', /^let cipherTickGen = 0;/m.test(SRC) && /^let cipherTickStartedAt = 0;/m.test(SRC)
+		&& /^const CIPHER_SEEN_KEY = 'cipher_brew_seen';/m.test(SRC));
 } },
 ];

@@ -176,6 +176,52 @@ chk("a refused post writes nothing", (w.queue_cipher({"kind": "nope", "server": 
 off = b.BossWatch(["crabxx"], interval=45, enabled=False, events_path=None)
 chk("with the log disabled a post is refused, not dropped", off.queue_cipher({"kind": "mix", "server": "US II"}).get("ok"), False)
 
+# ------------------------------------------------------------ the reconnect back-off
+# 2026-10-30/31: every US IV cipher row across a reconnect carried a 317-319s
+# bracket. `fails` reset only when a session ended with a clean close, so a
+# shard whose sessions kept ending in an error sat at SI_RECONNECT_MAX (300s)
+# for every drop. Drives the real run() and _session() with a stubbed transport.
+class _Stop:
+    def __init__(self, n): self.waits, self.n = [], n
+    def is_set(self): return len(self.waits) >= self.n
+    def wait(self, t): self.waits.append(t)
+
+def _client(stop, opens=True):
+    c = b.ServerInfoClient({"region": "US", "name": "IV", "address": "x", "path": "/"}, lambda s, p: None, stop)
+    def get(url, timeout):
+        if "sid=" not in url:
+            if not opens: raise OSError("handshake refused")
+            return '0{"sid":"abc","pingTimeout":20000}'
+        raise OSError("connection reset")      # an established session dies
+    c._get = get
+    c._post = lambda url, payload, timeout: "ok"
+    return c
+
+said = []
+_say = b.say
+b.say = lambda m: said.append(m)
+st = _Stop(1); c = _client(st); c.fails = 6
+c.run()
+chk("precondition: the session was established before it dropped", c.session_t > 0, True)
+chk("an established session that drops reconnects on the short wait, not the cap", st.waits, [10])
+chk("and counts as the first failure of a new streak", c.fails, 1)
+st = _Stop(3); c = _client(st)
+c.run()
+chk("three drops of established sessions: three short waits", st.waits, [10, 10, 10])
+chk("drops counts every one of them", c.drops, 3)
+chk("the console hears about the first only, inside SI_DROP_SAY_SEC", [m for m in said if "drop" in m and "US IV" in m][-1:], ["[bosses] US IV: OSError: connection reset (drop 1)"])
+st = _Stop(4); c = _client(st, opens=False)
+c.run()
+chk("a refused handshake still backs off", st.waits, [10, 20, 40, 80])
+st = _Stop(9); c = _client(st, opens=False)
+c.run()
+chk("up to the cap", st.waits[-1], b.SI_RECONNECT_MAX)
+b.say = _say
+w2 = b.BossWatch(["crabxx"], interval=45, enabled=False, events_path=None)
+c2 = _client(_Stop(1)); c2.run(); w2.clients = [c2]
+sock = nth(w2.health().get("sockets"), 0)
+chk("/bosses sockets carries drops and when the session opened", (sock.get("drops"), str(sock.get("session_opened", "")).endswith("Z")), (1, True))
+
 # ------------------------------------------------------------ the allowlists
 chk("cipher rows are not boss transitions", [b.boss_ev_is_transition(e) for e in b.CIPHER_EV], [False] * len(b.CIPHER_EV))
 chk("nor terminals", [b.boss_ev_is_terminal(e) for e in b.CIPHER_EV], [False] * len(b.CIPHER_EV))

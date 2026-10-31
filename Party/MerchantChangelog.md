@@ -1,4 +1,35 @@
 
+## v141
+
+**A ROUND CAN NO LONGER PASS IN SILENCE.** The browser session's read of 23:00Z
+2026-10-30: the day's last round, five mixes, and not one `[cipher]` line from
+22:40 to 23:35 while scouting, arbitrage and the stand all ran. No watch row was
+posted either. `cipherWatchNote()` runs at the top of every tick and posts a row
+for any round it saw live, so the tick was most likely not running at all. A tick
+that never finishes ends the loop with nothing logged: `cipherTickRunning` stays
+true, every later tick returns at its first line, and no timer is set again. The
+cause is not established, and the fixes close the ways it could have happened:
+
+- `scoutFetch()` raced only the headers against its timeout and then read the
+  body unbounded, with the abort timer already cleared. A stalled body never
+  settled. The body read is inside the race now. This affects every caller,
+  `/cipher_live` among them.
+- `ensureStandClosed()` awaited `close_stand()` unbounded, and `mHopTo` awaits
+  it. It is bounded at 10s now.
+- `cipherTickWatch()` runs on its own 15s timer. A tick still running after
+  `CONFIG.cipherBrew.tickStallMs` (10 minutes, past four 120s walk legs and a
+  hop) is abandoned with a red line and the loop is restarted. Each tick takes a
+  number, and only the current one sets the next timer, so a late finisher
+  cannot start a second loop.
+- `cipherNoteDecision()` logs each change of an idle or watch decision once
+  ("now watch on USII: board at 40, waiting for 8"), keyed on the act, shard,
+  round and an idle reason, and stored so a hop does not repeat it. A silent
+  round now says either what it decided or nothing at all, and nothing at all
+  means the tick is not running.
+- `cipherStatus()` reports `tick: {running, sinceStartSec}`.
+
+What is brewed, when, and where are unchanged.
+
 ## v140
 
 **THE BREW DECISION RUNS ON THE PUBLISH, NOT ONLY ON THE 2s TICK.** The browser

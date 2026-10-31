@@ -938,6 +938,7 @@ SI_HTTP_TIMEOUT = 15
 SI_READ_SLACK = 5           # added to pingTimeout for the long-poll read
 SI_RECONNECT_BASE = 5
 SI_RECONNECT_MAX = 5 * 60
+SI_DROP_SAY_SEC = 10 * 60   # a dropped socket is reported at most this often, per socket
 SI_SERVER_LIST_URL = "https://adventure.land"
 # Seed list. The live list is fetched from the page first - that is where the
 # browser gets it, so it follows a new server - and this is the fallback when
@@ -2671,7 +2672,11 @@ class ServerInfoClient(threading.Thread):
         self.events = 0
         self.last_event = 0.0
         self.last_error: str | None = None
+        # Consecutive failures since a session was last ESTABLISHED, not since one
+        # last ended cleanly - see _session(). `drops` counts every failure.
         self.fails = 0
+        self.drops = 0
+        self._said_t = 0.0
 
     def _url(self, sid=None):
         s = self.server
@@ -2701,10 +2706,13 @@ class ServerInfoClient(threading.Thread):
             except Exception as e:
                 self.connected = False
                 self.fails += 1
+                self.drops += 1
                 self.last_error = "%s: %s" % (type(e).__name__, e)
-                if self.fails == 1:
-                    say("[bosses] %s %s: %s" % (self.server["region"],
-                                                self.server["name"], self.last_error))
+                if self.fails == 1 and now() - self._said_t >= SI_DROP_SAY_SEC:
+                    self._said_t = now()
+                    say("[bosses] %s %s: %s (drop %d)" % (self.server["region"],
+                                                          self.server["name"], self.last_error,
+                                                          self.drops))
             # Backoff on a dropped or refused socket, capped.
             if not self._stop.is_set():
                 self._stop.wait(min(SI_RECONNECT_BASE * (2 ** min(self.fails, 6)),
@@ -2724,6 +2732,14 @@ class ServerInfoClient(threading.Thread):
         self._post(self._url(sid), "40", SI_HTTP_TIMEOUT)
         self.session_t = now()
         self.connected = True
+        # ESTABLISHED, so the back-off starts again. It used to reset only when a
+        # session ended with a clean close, so a shard whose sessions kept ending
+        # in an error climbed to SI_RECONNECT_MAX and stayed there: every drop
+        # then cost 300s dark. Measured by the browser session 2026-10-30/31: US
+        # IV's cipher rows across a reconnect all carried brackets of 317-319s,
+        # which is that wait plus the first push. A shard that refuses the
+        # handshake itself still backs off, because this line is never reached.
+        self.fails = 0
         read_to = (float(ping_timeout or 12000) / 1000.0) + SI_READ_SLACK
 
         while not self._stop.is_set():
@@ -3823,7 +3839,9 @@ class BossWatch:
                              "connected": c.connected, "events": c.events,
                              "silent_for_sec": (round(now() - c.last_event)
                                                 if c.last_event else None),
-                             "fails": c.fails, "last_error": c.last_error}
+                             "fails": c.fails, "drops": c.drops,
+                             "session_opened": iso(c.session_t) if c.session_t else None,
+                             "last_error": c.last_error}
                             for c in self.clients],
             }
 

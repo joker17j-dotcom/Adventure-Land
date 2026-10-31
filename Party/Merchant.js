@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v140
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v141
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1142,6 +1142,10 @@ const CONFIG = {
 		liveEveryMs: 5000,          // how often to read /cipher_live
 		moveMs: 120000,             // bound on one walk to the Witch
 		answerMs: 10000,            // bound on one brew's answer
+		/* A tick still running after this long is abandoned and the loop
+		   restarted - v141. Longer than any tick can legitimately take: four
+		   walk legs of moveMs, a hop and a brew's answer. */
+		tickStallMs: 10 * 60 * 1000,
 	},
 
 	// The Bank is its own map, reached via a door off 'main' - confirmed via
@@ -1186,7 +1190,8 @@ async function ensureStandClosed() {
 	// -> MerchantComments.md#character-stand-is-the-game
 	if (!state.standOpen && !character.stand) return;
 	try {
-		await close_stand();
+		// Bounded - v141: mHopTo awaits this, and a hold's hop awaits mHopTo.
+		await arbNoHang(close_stand(), 'close_stand', 10000);
 		state.standOpen = false;
 	} catch (e) {
 		console.error('close_stand failed:', e);
@@ -6460,6 +6465,7 @@ function totStatus(quiet) {
 const CIPHER_PLAN_KEY = 'cipher_brew_plan';
 const CIPHER_DAY_KEY = 'cipher_brew_day';
 const CIPHER_WATCH_KEY = 'cipher_brew_watch';
+const CIPHER_SEEN_KEY = 'cipher_brew_seen';
 const CIPHER_SPLIT_MAX = 128;       // above this many candidates, any fitting recipe will do
 let cipherLive = { at: 0, shards: {} };
 let cipherLast = null;              // the last decision, for cipherStatus()
@@ -6472,6 +6478,8 @@ let cipherTickTimer = null;         // the next scheduled tick, so a publish can
 let cipherTickRunning = false;
 let cipherKickPending = false;      // a publish arrived mid-tick: run again as soon as it ends
 let cipherLiveHooked = false;
+let cipherTickGen = 0;              // the current tick's number; only that tick may set the next
+let cipherTickStartedAt = 0;
 const cipherSaid = {};
 
 function cipherLog(msg, color) { game_log('[cipher] ' + msg, color || '#AF6AE2'); }
@@ -6961,10 +6969,54 @@ async function cipherBrewNext(d, day) {
 	cipherPost(row);
 }
 
+/* What the tick decided, as a key that changes only when the decision does:
+   the act, its shard and round, and an idle decision's reason. A 'watch'
+   reason carries the board, which moves every mix, so it is left out. */
+function cipherDecisionKey(d) {
+	return d.act + '|' + (d.shard || '') + '|' + (d.round || '') + (d.act === 'idle' ? '|' + d.why : '');
+}
+/* An idle or watching tick used to say nothing at all, so a round that passed
+   unbrewed could not be told from a tick that never ran - 23:00Z 2026-10-30,
+   the day's last round, five mixes, not one [cipher] line. Each change of
+   decision is logged once; the key is stored, so a hop does not repeat it.
+   Taking and releasing the hold keep their own lines. */
+function cipherNoteDecision(d) {
+	const k = cipherDecisionKey(d);
+	let seen = null;
+	try { seen = get(CIPHER_SEEN_KEY); } catch (e) { }
+	if (k === seen) return null;
+	try { set(CIPHER_SEEN_KEY, k); } catch (e) { }
+	if (d.act !== 'idle' && d.act !== 'watch') return null;
+	const line = 'now ' + d.act + (d.shard ? ' on ' + d.shard : '') + ': ' + d.why;
+	cipherLog(line, '#8b98ab');
+	return line;
+}
+/* A tick that never finishes ends the loop: every later tick returns at its
+   first line while cipherTickRunning stays true, and no timer is set again.
+   Every await inside a tick is bounded, and this is the backstop for the one
+   that is not yet known. The replacement tick takes a new number, so an
+   abandoned tick that does finish later finds its own superseded and leaves
+   the loop alone. */
+function cipherTickWatch() {
+	const cfg = CONFIG.cipherBrew;
+	const lim = (cfg && cfg.tickStallMs) || 600000;
+	if (!cipherTickRunning || Date.now() - cipherTickStartedAt <= lim) return false;
+	cipherLog('a tick has not finished in ' + Math.round((Date.now() - cipherTickStartedAt) / 1000)
+		+ 's - abandoning it and restarting the loop', 'red');
+	cipherTickRunning = false;
+	cipherKickPending = false;
+	if (cipherTickTimer) clearTimeout(cipherTickTimer);
+	cipherTickTimer = null;
+	cipherTick();
+	return true;
+}
+
 async function cipherTick() {
 	const cfg = CONFIG.cipherBrew;
 	if (cipherTickRunning) return;
 	cipherTickRunning = true;
+	const gen = ++cipherTickGen;
+	cipherTickStartedAt = Date.now();
 	if (cipherTickTimer) clearTimeout(cipherTickTimer);
 	cipherTickTimer = null;
 	try {
@@ -6991,6 +7043,7 @@ async function cipherTick() {
 		for (const k in shards) if (shards[k]) shards[k].makeable = cipherMakeable(shards[k].fit, names, slots, have, floor);
 		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan });
 		cipherLast = d;
+		cipherNoteDecision(d);
 		if (d.stopDay && !day.stoppedFloor) { day.stoppedFloor = true; cipherDaySave(day); cipherLog(d.why, 'orange'); }
 		if (d.act === 'idle' || d.act === 'watch') { cipherRelease(d.why); return; }
 		if (!cipherBusy && !cipherTakeHold(d)) return;
@@ -7008,10 +7061,12 @@ async function cipherTick() {
 	} catch (e) {
 		cipherSay('tick threw: ' + ((e && e.message) || e), 'red');
 	} finally {
-		cipherTickRunning = false;
-		const soon = cipherKickPending;
-		cipherKickPending = false;
-		cipherTickTimer = setTimeout(cipherTick, soon ? 0 : ((cfg && cfg.tickMs) || 2000));
+		if (gen === cipherTickGen) {
+			cipherTickRunning = false;
+			const soon = cipherKickPending;
+			cipherKickPending = false;
+			cipherTickTimer = setTimeout(cipherTick, soon ? 0 : ((cfg && cfg.tickMs) || 2000));
+		}
 	}
 }
 
@@ -7019,6 +7074,7 @@ async function cipherTick() {
 function cipherStatus() {
 	const day = cipherDayLoad(new Date().toISOString().slice(0, 10));
 	const out = { busy: cipherBusy, plan: cipherPlan, last: cipherLast, waiting: cipherWaitWhy, bridge: !!cipherLive.ok,
+		tick: { running: cipherTickRunning, sinceStartSec: cipherTickStartedAt ? Math.round((Date.now() - cipherTickStartedAt) / 1000) : null },
 		mixesLeft: day.mixesLeft, lockedShard: day.lockedShard, crackedToday: day.crackedToday, elsewhere: day.elsewhere, stoppedFloor: !!day.stoppedFloor };
 	cipherLog(JSON.stringify(out), '#8b98ab');
 	return out;
@@ -7110,14 +7166,18 @@ function scoutFetch(path, opts) {
 		o.signal = ac.signal;
 		stop = setTimeout(() => { try { ac.abort(); } catch (e) { } }, CONFIG.scout.timeoutMs);
 	}
+	/* The BODY is read inside the race too - v141. It used to be read after the
+	   race had resolved on the headers, with the abort timer already cleared,
+	   so a response whose body stalled never settled, and an awaiting loop -
+	   cipherTick among them - never ticked again. */
 	return Promise.race([
-		fetch(CONFIG.scout.bridge + path, o),
+		fetch(CONFIG.scout.bridge + path, o).then((r) => {
+			if (!r.ok) throw new Error('HTTP ' + r.status);
+			return r.json();
+		}),
 		new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), CONFIG.scout.timeoutMs + 200)),
-	]).then((r) => {
-		if (stop) clearTimeout(stop);
-		if (!r.ok) throw new Error('HTTP ' + r.status);
-		return r.json();
-	}, (e) => { if (stop) clearTimeout(stop); throw e; });
+	]).then((v) => { if (stop) clearTimeout(stop); return v; },
+		(e) => { if (stop) clearTimeout(stop); throw e; });
 }
 
 async function scoutProbe() {
@@ -11504,6 +11564,7 @@ anniversaryKissLoop();
 arbLoop();
 totLoop();
 setTimeout(cipherTick, 4000);
+setInterval(cipherTickWatch, 15000);
 /* Phase 0 only announces itself. Nothing in the probe section runs unless the
    operator calls it by hand - see Codex/PHASE0_PROBE.md. */
 try {

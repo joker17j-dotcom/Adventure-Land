@@ -4692,6 +4692,16 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   `socket_opened`. These fields mark a row and never veto it, and a pre-change
   row reads them as absent. The merchant's `cipher_mix` rows stay the precise
   record of his own mixes.
+  **CONFIRMED 2026-10-30/31 BY THE BROWSER SESSION**: every 1024/0 crack row
+  read `across_reconnect` true with a 317-319s bracket, and every ordinary crack
+  was on one socket with a sub-second bracket. **THE 318s WAS THE BRIDGE'S OWN
+  BACK-OFF.** `fails` reset only when a session ended with a clean close, so a
+  shard whose sessions kept ending in an error stayed at `SI_RECONNECT_MAX`
+  (300s) and went dark for five minutes on every drop. Since 2026-10-31 it
+  resets once a session is established; a refused handshake still backs off.
+  `/bosses` `sockets` carries `drops` and `session_opened`, and the console
+  names a dropped socket's error at most once per 10 minutes. Why US IV drops at
+  all is still unknown. Needs a bridge RESTART.
 - **MELTYMERCH BREWS AS OF Merchant v133** - BUILD 2, on the operator's rulings
   of 2026-10-25 09:18-09:21 EDT; design in the v133 changelog entry. The
   candidates come from `fit` (LSB first, recipe n slot i = names[floor(n/4^i)%4]),
@@ -4735,6 +4745,15 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   **AFTER THE DAY'S 50-PARCEL CRACK EACH MIX KEEPS 25 OF EVERY INGREDIENT IT
   USES**, operator's ruling 19:57 EDT (`floorAfterCrack`). With none qualifying
   the day stops (`stoppedFloor`).
+  **A WHOLE ROUND PASSED IN SILENCE, 23:00Z 2026-10-30**: the day's last round,
+  five mixes, no `[cipher]` line and no watch row. A watch row is posted by any
+  tick that saw the round live, so the tick was most likely not running: one
+  await that never settles leaves `cipherTickRunning` true, and the loop ends
+  with nothing logged. Cause NOT established. Merchant v141 bounds the two
+  unbounded awaits found (the `scoutFetch` body read and `close_stand`), adds a
+  watchdog that restarts a stuck loop with a red line, and logs each change of
+  an idle or watch decision. So a silent round now means the tick is not
+  running; `cipherStatus().tick` says so.
   **A FARM SPOT IS SCORED BY WHAT THE BAG CAN STILL USE** (Ranger v155):
   expected drops are capped at 25 minus the count held, so a spot for an
   ingredient the bag is nearly full of no longer beats one for the ingredient
