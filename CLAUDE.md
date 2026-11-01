@@ -4754,6 +4754,10 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   watchdog that restarts a stuck loop with a red line, and logs each change of
   an idle or watch decision. So a silent round now means the tick is not
   running; `cipherStatus().tick` says so.
+  **A BOARD AT 2 OR BELOW ON ANOTHER SHARD IS NOT HOPPED TO**, operator's ruling
+  2026-11-01 (`farMin`, Merchant v142): twice on 2026-10-31 the hold moved to
+  one and the round was cracked first. The shard he stands on and the one he
+  already holds are exempt.
   **A FARM SPOT IS SCORED BY WHAT THE BAG CAN STILL USE** (Ranger v155):
   expected drops are capped at 25 minus the count held, so a spot for an
   ingredient the bag is nearly full of no longer beats one for the ingredient

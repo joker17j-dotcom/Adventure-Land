@@ -1,4 +1,24 @@
 
+## v142
+
+**A NARROW BOARD ON ANOTHER SHARD IS NOT HOPPED TO** - operator's ruling
+2026-11-01, N = 2. On 2026-10-31 at 11:00Z the hold moved twice to a shard whose
+board was already very narrow. Such a board is usually cracked before he
+arrives: CrownMerch cracked in the same second, and he brewed 3 right for 3
+parcels with 4 mixes left.
+
+- `cipherDecide()` drops any shard whose board is at or below
+  `CONFIG.cipherBrew.farMin` (2) unless it is the shard he stands on or the one
+  he already holds. A narrow board on his own shard is still taken.
+- If only such boards are live, the answer is `watch`, naming them: "only boards
+  at 2 or below elsewhere (USIII 1) - not worth the hop".
+- The tick passes `here` only when `parent.server_region` and
+  `parent.server_identifier` both read as strings. `mShardKey()` of an
+  unreadable shard is "undefinedundefined", which would drop every narrow board.
+  An unknown `here`, or no `farMin`, drops nothing.
+- A board that stays at 2 for minutes is never hopped to either. That is the
+  ruling as given.
+
 ## v141
 
 **A ROUND CAN NO LONGER PASS IN SILENCE.** The browser session's read of 23:00Z

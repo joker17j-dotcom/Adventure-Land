@@ -116,6 +116,30 @@ module.exports = [
 	t.eq('a locked stack is not counted - the server will not consume it', w.cipherHave(), { frostscale: 2 });
 } },
 
+{ name: 'v142 a board at farMin or below on another shard is not hopped to (operator 2026-11-01, N = 2)', fn(t) {
+	const w = mk();
+	const C2 = Object.assign({}, CFG, { farMin: 2 });
+	const d = (shards, here, plan = null, cfg = C2) =>
+		w.cipherDecide({ now: R11 + 5 * 60e3, cfg, day: { mixesLeft: 5 }, shards, plan, here });
+	const two = { USII: round('a', R11, { possible: 40 }), USIII: round('b', R11, { possible: 2 }) };
+	t.eq('precondition: without the rule the narrow board elsewhere is brewed', d(two, 'USII', null, CFG).shard, 'USIII');
+	const r = d(two, 'USII');
+	t.eq('a board at 2 on another shard is dropped', r.shard, 'USII');
+	t.eq('and the wide board here is watched', r.act, 'watch');
+	t.eq('a board at 3 elsewhere is still taken', d({ USII: round('a', R11, { possible: 40 }), USIII: round('b', R11, { possible: 3 }) }, 'USII').shard, 'USIII');
+	t.eq('a board at 2 on the shard he stands on is taken', d(two, 'USIII').shard, 'USIII');
+	t.eq('and brewed', d(two, 'USIII').act, 'brew');
+	t.eq('a board at 2 on the shard he already holds is taken', d(two, 'USII', { shard: 'USIII', round: 'b' }).shard, 'USIII');
+	const only = d({ USIII: round('b', R11, { possible: 1 }) }, 'USII');
+	t.eq('only narrow boards elsewhere -> watch', only.act, 'watch');
+	t.ok('and it says why', /at 2 or below elsewhere \(USIII 1\)/.test(only.why));
+	t.eq('an unknown here drops nothing', d(two, null).shard, 'USIII');
+	t.eq('no farMin in the config drops nothing', d(two, 'USII', null, CFG).shard, 'USIII');
+	t.ok('farMin 2 as committed', /\bfarMin: 2,/.test(SRC));
+	t.ok('the tick passes here only when both halves of the shard read as strings',
+		/here: \(typeof parent\.server_region === 'string' && typeof parent\.server_identifier === 'string'\) \? mShardKey\(\) : null/.test(SRC));
+} },
+
 { name: 'when to brew: the threshold, the first and last rounds, the lock', fn(t) {
 	const w = mk();
 	const d = (shards, day = {}, now = R11 + 5 * 60e3, plan = null) =>

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v141
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v142
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1137,6 +1137,10 @@ const CONFIG = {
 		   leaves at least this many of each ingredient it consumes - operator's
 		   ruling 2026-10-25 19:57 EDT. Before the crack any makeable recipe goes. */
 		floorAfterCrack: 25,
+		/* A board at or below this on another shard is not hopped to - v142,
+		   operator's ruling 2026-11-01. Not the shard he stands on, nor the one
+		   he already holds. */
+		farMin: 2,
 		reach: 300,                 // the server's limit is 400 (B.sell_dist)
 		tickMs: 2000,
 		liveEveryMs: 5000,          // how often to read /cipher_live
@@ -6628,6 +6632,18 @@ function cipherDecide(c) {
 		elig.push(Object.assign({ key: k }, s));
 	}
 	if (!elig.length) return { act: 'idle', why: day.lockedShard ? 'no live round on ' + day.lockedShard : 'no live round' };
+	/* A board at or below cfg.farMin on a shard he is neither standing on nor
+	   already holding is dropped - v142, operator's ruling 2026-11-01 (N = 2).
+	   Such a board is usually cracked before he arrives: twice on 2026-10-31
+	   the hold moved to one and lost. Unknown `here` drops nothing. */
+	const farMin = cfg.farMin;
+	const held = c.plan ? c.plan.shard : null;
+	const tooFar = (s) => typeof farMin === 'number' && !!c.here && s.key !== c.here && s.key !== held && poss(s) <= farMin;
+	const far = elig.filter(tooFar);
+	if (far.length) {
+		for (const s of far) elig.splice(elig.indexOf(s), 1);
+		if (!elig.length) return { act: 'watch', why: 'only boards at ' + farMin + ' or below elsewhere (' + far.map((s) => s.key + ' ' + s.possible).join(', ') + ') - not worth the hop' };
+	}
 	const dead = (s) => s.makeable === 0;
 	elig.sort((a, b) => (dead(a) - dead(b)) || (poss(a) - poss(b)) || ((b.key === cfg.prefer) - (a.key === cfg.prefer)) || (a.key < b.key ? -1 : 1));
 	let t = elig[0];
@@ -7041,7 +7057,10 @@ async function cipherTick() {
 		const names = cipherIngredientNames(), slots = cipherSlots(), have = cipherHave();
 		const floor = day.crackedToday ? (cfg.floorAfterCrack || 0) : 0;
 		for (const k in shards) if (shards[k]) shards[k].makeable = cipherMakeable(shards[k].fit, names, slots, have, floor);
-		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan });
+		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan,
+			/* mShardKey() of an unreadable shard is "undefinedundefined", truthy
+			   and unequal to every shard, so it would drop every narrow board. */
+			here: (typeof parent.server_region === 'string' && typeof parent.server_identifier === 'string') ? mShardKey() : null });
 		cipherLast = d;
 		cipherNoteDecision(d);
 		if (d.stopDay && !day.stoppedFloor) { day.stoppedFloor = true; cipherDaySave(day); cipherLog(d.why, 'orange'); }
