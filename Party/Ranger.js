@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v159
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v160
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1074,7 +1074,7 @@ const CONFIG = {
 			{ m: 'squig',      map: 'main',        x:-1175, y:   422, rung: 100000 },
 			{ m: 'tortoise',   map: 'main',        x:-1124, y:  1118, rung: 100000 },
 			{ m: 'bbpompom',   map: 'winter_cave', x:  -82, y:  -949, rung: 100000 },
-			{ m: 'bat',        map: 'batcave',     x:   66, y:     8, rung: 100000 }, 
+			{ m: 'bat',        map: 'cave',        x: 1201, y:  -782, rung: 100000 }, 
 			{ m: 'boar',       map: 'winterland',  x:   20, y: -1109, rung: 100000 },
 			{ m: 'cgoo',       map: 'level2s',     x:   34, y:   503, rung: 100000 },
 			{ m: 'spider',     map: 'main',        x:  948, y:  -144, rung: 100000 },
