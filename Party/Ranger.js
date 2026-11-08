@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v162
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v163
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -5774,6 +5774,24 @@ function speedWithoutFear(speed, fear) {
 	return speed + FEAR_SPEED_REDUX[Math.min(FEAR_SPEED_REDUX.length - 1, f)];
 }
 
+/* The server finishes with speed = round(max(SPEED_FLOOR, speed)), so once a
+   fear step takes more than is left the live speed reads 5 and adding the step
+   back overshoots: measured 2026-11-08 on FatherToken, 63 clean read 5 at fear
+   3 and 4, so 75 and 85 came back and his ring grew by a third. Above the floor
+   the reconstruction is exact; AT it, the last speed read at fear 0 stands in,
+   and the reconstruction is used only when there is none - it overshoots, so
+   the ring errs outward. Read every tick a radius is needed, which is also what
+   keeps speedClean current. */
+const SPEED_FLOOR = 5;
+let speedClean = null;
+function restingSpeed() {
+	const s = character.speed, f = character.fear;
+	if (!(typeof s === 'number' && s > 0)) return s;
+	if (!(typeof f === 'number' && f > 0)) { speedClean = s; return s; }
+	if (s <= SPEED_FLOOR && typeof speedClean === 'number') return speedClean;
+	return speedWithoutFear(s, f);
+}
+
 /* Between waves nothing of the home type is alive, and the movement chain sent
    everyone to handleReturnHome(), which parks on the destination - the entry's
    centre, where the next wave spawns on top of the party. While an entry on
@@ -5844,7 +5862,7 @@ function circleWord() {
 	if (!p.entry) return { v: 1, on: true };
 	const e = p.entry;
 	return {
-		v: 1, on: true, rD: p.rD, sD: Math.round(speedWithoutFear(character.speed, character.fear)),
+		v: 1, on: true, rD: p.rD, sD: Math.round(restingSpeed()),
 		entry: { m: e.m, map: e.map, x: e.x, y: e.y, r: e.r, rBy: e.rBy || null, noKite: !!e.noKite },
 	};
 }

@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v113
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v114
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4381,6 +4381,24 @@ function speedWithoutFear(speed, fear) {
 	return speed + FEAR_SPEED_REDUX[Math.min(FEAR_SPEED_REDUX.length - 1, f)];
 }
 
+/* The server finishes with speed = round(max(SPEED_FLOOR, speed)), so once a
+   fear step takes more than is left the live speed reads 5 and adding the step
+   back overshoots: measured 2026-11-08 on FatherToken, 63 clean read 5 at fear
+   3 and 4, so 75 and 85 came back and his ring grew by a third. Above the floor
+   the reconstruction is exact; AT it, the last speed read at fear 0 stands in,
+   and the reconstruction is used only when there is none - it overshoots, so
+   the ring errs outward. Read every tick a radius is needed, which is also what
+   keeps speedClean current. */
+const SPEED_FLOOR = 5;
+let speedClean = null;
+function restingSpeed() {
+	const s = character.speed, f = character.fear;
+	if (!(typeof s === 'number' && s > 0)) return s;
+	if (!(typeof f === 'number' && f > 0)) { speedClean = s; return s; }
+	if (s <= SPEED_FLOOR && typeof speedClean === 'number') return speedClean;
+	return speedWithoutFear(s, f);
+}
+
 /* Between waves nothing of the home type is alive, and the movement chain sent
    everyone to handleReturnHome(), which parks on the destination - the entry's
    centre, where the next wave spawns on top of the party. While an entry on
@@ -4446,13 +4464,13 @@ function circlePlan() {
 
 /* rBy[name] when set, else Dexon's radius scaled by speed so both cover the
    same angle per second; capped at the wall limit. Both speeds are taken with
-   fear removed - ours from character.fear, his from the sD he sends - or a
+   fear removed - ours from restingSpeed(), his from the sD he sends - or a
    frightened follower's ring shrinks into the pack it is frightened of. A word
    without sD falls back to his live entity speed. Buffs still count, so this
    is recomputed every tick. */
 function circleFollowerRadius(p, dexSpeed) {
 	const by = p.entry.rBy ? p.entry.rBy[character.name] : null;
-	const mine = speedWithoutFear(character.speed || 0, character.fear);
+	const mine = restingSpeed() || 0;
 	const his = (typeof p.sD === 'number' && p.sD > 0) ? p.sD : dexSpeed;
 	let r = (typeof by === 'number' && by > 0) ? by
 		: p.rD * (mine / (his > 0 ? his : (mine || 1)));

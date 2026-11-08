@@ -4000,6 +4000,9 @@ reading.
   self-only property list - so Dexon sends his fear-free speed as `sD`, and a
   follower's radius scales by the two fear-free speeds (Ranger v162 / Priest v90
   / Mage v113). Before that a frightened follower's ring shrank into the pack.
+  **THE SERVER FLOORS SPEED AT 5 AFTER THE FEAR STEP** (`round(max(5, speed))`),
+  so at fear 3+ the step cannot be added back; `restingSpeed()` uses the last
+  fear-0 reading there (Ranger v163 / Priest v91 / Mage v114).
   The same builds keep the party circling between waves rather than parking on
   the entry centre (`circleHoldsSpot()`).
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The

@@ -21,6 +21,26 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Priest.js, and bump the version
 on that line in the same commit.
 
+## v91
+
+**THE FEAR-FREE RADIUS NO LONGER OVERSHOOTS AT THE SPEED FLOOR (Ranger v163).**
+
+- **AT THE SPEED FLOOR THE LAST FEAR-FREE READING STANDS IN.** Measured by the
+  browser session 2026-11-08 on FatherToken, 1/s: 63 clean, 43 at fear 1, 23 at
+  fear 2 - the v162 radius held at 37.6 through all three - and then 5 at fear 3
+  AND at fear 4, where it grew to 44.8 and 50.7. The server ends with
+  `player.speed = round(max(5, player.speed))` (node/server.js, upstream
+  a5c133dc), so once a fear step takes more than is left the live speed reads 5
+  and adding 70 or 80 back gives 75 or 85. `restingSpeed()` keeps the last speed
+  read at fear 0 (`speedClean`) and uses it AT the floor; above the floor the
+  reconstruction is exact and still wins, so a buff gained while frightened
+  counts. With no clean reading yet it falls back to the reconstruction, which
+  errs outward. The follower radius and Dexon's `sD` both read it now.
+- **The ring did grow outward, not inward, so this was the safe direction of
+  wrong.** No deaths in that window; hp 81-97.
+- **Operator's ruling recorded: `noKite` keeps the courage disengage off too**
+  (option A). No code change, since v161 already behaves that way.
+
 ## v90
 
 **TWO CIRCLE DEFECTS FROM THE FIRST LIVE LAPS (Ranger v162).**
