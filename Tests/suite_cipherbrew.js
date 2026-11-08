@@ -19,8 +19,13 @@ const H = 3600e3;
 /* 2026-10-25 11:00Z, the day's first US/ASIA round. */
 const R11 = Date.parse('2026-10-25T11:00:00Z');
 const R23 = Date.parse('2026-10-25T23:00:00Z');
-const CFG = { enabled: true, threshold: 8, regions: ['US', 'ASIA'], roundHours: [11, 23], prefer: 'USII',
-	spendLastMs: 6 * 60e3, floorAfterCrack: 25, reach: 300, tickMs: 2000, liveEveryMs: 5000, moveMs: 120000, answerMs: 10000 };
+const CFG = { enabled: true, threshold: 8, regions: ['US', 'ASIA'], prefer: 'USII',
+	spendLastMs: 6 * 60e3, floorAfterCrack: 25, reach: 300, tickMs: 2000, liveEveryMs: 5000, moveMs: 120000, answerMs: 10000,
+	schedEveryMs: 60000, schedHours: 26, schedMaxAgeMs: 10 * 60e3 };
+/* The Halloween lineup these tests were written against, now passed as data
+   (v143): later rounds at 23:00Z on US II and ASIA I, so an 11:00Z round is not
+   the day's last and a 23:00Z one is. */
+const LINEUP = [{ key: 'USII', at: R23 }, { key: 'ASIAI', at: R23 }];
 
 function fitOf(set, total) {
 	const chars = [];
@@ -37,7 +42,7 @@ function mk(over = {}) {
 	const w = world(Object.assign({
 		character: { name: 'Meltymerch', map: 'halloween', x: 858, y: -120, items: [] },
 		CONFIG: { cipherBrew: Object.assign({}, CFG) },
-		CIPHER_SPLIT_MAX: 128,
+		CIPHER_SPLIT_MAX: 128, CIPHER_SAME_SLOT_MS: 10 * 60e3, cipherSched: { at: 0, okAt: 0, rows: null },
 		CIPHER_PLAN_KEY: 'cipher_brew_plan', CIPHER_DAY_KEY: 'cipher_brew_day', CIPHER_WATCH_KEY: 'cipher_brew_watch',
 		cipherBusy: false, cipherPlan: null, cipherLive: { at: 0, shards: {} }, cipherLast: null,
 		cipherPending: null, cipherLastPick: null, cipherAwaitBoard: null, cipherWaitWhy: null, cipherHeldSeen: null,
@@ -54,7 +59,7 @@ function mk(over = {}) {
 	w.posts = posts;
 	lift(w, MERCHANT, ['cipherLog', 'cipherSay', 'cipherRules', 'cipherSlots', 'cipherKey', 'cipherBridgeName',
 		'cipherFitSet', 'cipherRecipe', 'cipherScore', 'cipherBoardCandidates', 'cipherHave', 'cipherCanMake', 'cipherMakeable',
-		'cipherPick', 'cipherIsLastRound', 'cipherDecide', 'cipherDayLoad', 'cipherDaySave', 'cipherPlanSave',
+		'cipherPick', 'cipherShardEligible', 'cipherLastChance', 'cipherRefreshSched', 'cipherLaterRounds', 'cipherDecide', 'cipherDayLoad', 'cipherDaySave', 'cipherPlanSave',
 		'cipherRestore', 'cipherHoldBlocked', 'cipherTakeHold', 'cipherRelease', 'cipherShardsNow', 'cipherPost',
 		'cipherSlowCheck', 'cipherWatchNote', 'cipherBrewNext', 'cipherIngredientNames', 'mShardKey', 'mParseShard',
 		'cipherHeldLine', 'cipherKickWanted', 'cipherKick', 'cipherLiveHook']);
@@ -120,7 +125,7 @@ module.exports = [
 	const w = mk();
 	const C2 = Object.assign({}, CFG, { farMin: 2 });
 	const d = (shards, here, plan = null, cfg = C2) =>
-		w.cipherDecide({ now: R11 + 5 * 60e3, cfg, day: { mixesLeft: 5 }, shards, plan, here });
+		w.cipherDecide({ now: R11 + 5 * 60e3, cfg, day: { mixesLeft: 5 }, shards, plan, here, later: LINEUP });
 	const two = { USII: round('a', R11, { possible: 40 }), USIII: round('b', R11, { possible: 2 }) };
 	t.eq('precondition: without the rule the narrow board elsewhere is brewed', d(two, 'USII', null, CFG).shard, 'USIII');
 	const r = d(two, 'USII');
@@ -143,7 +148,7 @@ module.exports = [
 { name: 'when to brew: the threshold, the first and last rounds, the lock', fn(t) {
 	const w = mk();
 	const d = (shards, day = {}, now = R11 + 5 * 60e3, plan = null) =>
-		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan });
+		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan, later: LINEUP });
 	t.eq('disabled', w.cipherDecide({ now: R11, cfg: Object.assign({}, CFG, { enabled: false }), day: {}, shards: {} }).act, 'idle');
 	t.eq('no live round', d({}).act, 'idle');
 	t.eq('no mixes left', d({ USII: round('a', R11, { possible: 3 }) }, { mixesLeft: 0 }).act, 'idle');
@@ -279,7 +284,7 @@ module.exports = [
 	t.ok('on an empty board something can', full > 0);
 	t.eq('no fit is not a count', w.cipherMakeable(undefined, NAMES, 5, bag, 0), null);
 	const d = (shards, day = {}, now = R23 + 2 * 60e3, plan = null) =>
-		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan });
+		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan, later: LINEUP });
 	const tonight = { ASIAI: round('a', R23, { possible: 6, makeable: 0 }), USII: round('u', R23, { possible: 1024, makeable: full }) };
 	const hold = d(tonight);
 	t.eq('the narrow board with nothing makeable does not take the hold', [hold.shard, hold.act], ['USII', 'hold']);
@@ -547,5 +552,62 @@ module.exports = [
 	t.ok('cipherStatus reports the tick', /tick: \{ running: cipherTickRunning, sinceStartSec:/.test(SRC));
 	t.ok('the declarations as supplied', /^let cipherTickGen = 0;/m.test(SRC) && /^let cipherTickStartedAt = 0;/m.test(SRC)
 		&& /^const CIPHER_SEEN_KEY = 'cipher_brew_seen';/m.test(SRC));
+} },
+
+{ name: 'v143 the day\'s last chance comes from the published lineup, not fixed hours; PVP is never brewed on', async fn(t) {
+	const w = mk();
+	/* Off-season: witchcipher is a dailies pool member, so a US round opens at
+	   18:00Z and the next eligible one may be tomorrow. Measured live by the
+	   browser session 2026-11-08 on US II: 18:00Z done, then 2026-11-11 01:00Z. */
+	const R18 = Date.parse('2026-11-08T18:00:00Z');
+	const d = (shards, later, day = {}, now = R18 + 5 * 60e3, plan = null) =>
+		w.cipherDecide({ now, cfg: CFG, day: Object.assign({ mixesLeft: 5 }, day), shards, plan, later });
+	const us = { USII: round('a', R18, { possible: 900 }) };
+	t.eq('nothing later today: hold at the Witch', d(us, [{ key: 'USII', at: Date.parse('2026-11-11T01:00:00Z') }]).act, 'hold');
+	t.eq('and spend once little is left', d(us, [], {}, R18 + 23 * 60e3).act, 'brew');
+	t.eq('a later round today on an eligible shard: watch', d(us, [{ key: 'ASIAI', at: R18 + 5 * H }]).act, 'watch');
+	t.eq('the next UTC day does not count', d(us, [{ key: 'ASIAI', at: Date.parse('2026-11-09T06:00:00Z') }]).act, 'hold');
+	t.eq('nor does an ineligible region', d(us, [{ key: 'EUI', at: R18 + H }]).act, 'hold');
+	t.eq('nor a PVP shard', d(us, [{ key: 'USPVP', at: R18 + 2 * H }]).act, 'hold');
+	t.eq('nor the same slot on another shard', d(us, [{ key: 'USIII', at: R18 + 60e3 }]).act, 'hold');
+	t.eq('one just past the slot does', d(us, [{ key: 'USIII', at: R18 + 10 * 60e3 + 1 }]).act, 'watch');
+	t.eq('locked: a later round elsewhere does not count', d(us, [{ key: 'USIII', at: R18 + 2 * H }], { lockedShard: 'USII' }).act, 'hold');
+	t.eq('locked: a later round on the locked shard does', d(us, [{ key: 'USII', at: R18 + 2 * H }], { lockedShard: 'USII' }).act, 'watch');
+	const unknown = d(us, null);
+	t.eq('an unknown lineup is not the last round', unknown.act, 'watch');
+	t.ok('and says so', /the lineup is unknown/.test(unknown.why));
+	t.eq('nor is it spent at the end', d(us, null, {}, R18 + 23 * 60e3).act, 'watch');
+	t.eq('a narrow board is brewed whatever the lineup', d({ USII: round('a', R18, { possible: 5 }) }, null).act, 'brew');
+	// PVP, live.
+	t.eq('a live PVP round is never brewed in', d({ USPVP: round('p', R18, { possible: 3 }) }, []).act, 'idle');
+	t.eq('cipherShardEligible', ['USII', 'USPVP', 'ASIAI', 'EUI', 'ASIAPVP', undefined].map((k) => w.cipherShardEligible(k, CFG)),
+		[true, false, true, false, false, false]);
+	// The fetch.
+	const rows = { occurrences: [
+		{ server: 'US II', event: 'witchcipher', at_ms: R18 + 7 * H, status: 'scheduled' },
+		{ server: 'ASIA I', event: 'witchcipher', at_ms: R18 + 2 * H },
+		{ server: 'US III', event: 'witchcipher', at_ms: R18, status: 'live' },
+		{ server: 'US I', event: 'witchcipher', at_ms: R18 - H, status: 'missed' },
+		{ server: 'US V', event: 'franky', at_ms: R18 + H, status: 'scheduled' },
+		{ server: 'EU I', event: 'witchcipher', at: '2026-11-08T19:00:00Z', status: 'scheduled' } ] };
+	const f = mk({ scoutFetch: (p) => { f.asked = p; return Promise.resolve(rows); } });
+	t.eq('nothing read yet: unknown', f.cipherLaterRounds(Date.now()), null);
+	await f.cipherRefreshSched();
+	t.eq('it asks far enough ahead to pass the end of any UTC day', f.asked, '/schedule_live?hours=26');
+	t.eq('witchcipher rounds still to come, keyed as /cipher_live is', f.cipherLaterRounds(Date.now()),
+		[{ key: 'USII', at: R18 + 7 * H }, { key: 'ASIAI', at: R18 + 2 * H }]);
+	t.eq('a read older than schedMaxAgeMs is unknown', f.cipherLaterRounds(Date.now() + 10 * 60e3 + 1), null);
+	const g = mk({ scoutFetch: () => Promise.reject(new Error('down')) });
+	await g.cipherRefreshSched();
+	t.eq('a failed read is unknown', g.cipherLaterRounds(Date.now()), null);
+	t.ok('and says so', g.logs.some((l) => /not answering \/schedule_live \(down\)/.test(l)));
+	// Wiring and the committed config.
+	t.ok('no fixed round hours remain', SRC.indexOf('roundHours') < 0 && SRC.indexOf('cipherIsLastRound') < 0);
+	t.ok('the tick reads the lineup', /await cipherRefreshLive\(\);\s*await cipherRefreshSched\(\);/.test(SRC)
+		&& /cipherDecide\(\{ now, cfg, day, shards, plan: cipherPlan, later: cipherLaterRounds\(now\),/.test(SRC));
+	t.ok('the watch rows use the same eligibility', /if \(!s \|\| !s\.id \|\| !cipherShardEligible\(k, cfg\)\) continue;/.test(SRC));
+	t.ok('the constants as supplied', /^const CIPHER_SAME_SLOT_MS = 10 \* 60 \* 1000;/m.test(SRC)
+		&& /^let cipherSched = \{ at: 0, okAt: 0, rows: null \};/m.test(SRC)
+		&& /schedEveryMs: 60000,/.test(SRC) && /schedHours: 26,/.test(SRC) && /schedMaxAgeMs: 10 \* 60 \* 1000,/.test(SRC));
 } },
 ];

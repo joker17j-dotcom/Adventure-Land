@@ -1,4 +1,40 @@
 
+## v143
+
+**THE CIPHER'S LAST ROUND COMES FROM THE PUBLISHED LINEUP, NOT FIXED HOURS - AND
+NO PVP SHARD IS EVER BREWED ON.**
+
+- **Why.** Halloween is over and the cipher left its seasonal slot (realm 6/18,
+  so 11:00Z and 23:00Z on US and ASIA) for the rotating dailies pool (realm
+  13/20, so 18:00Z and 01:00Z on US, 06:00Z and 13:00Z on ASIA). Measured live by
+  the browser session 2026-11-08 on US II: `event_flags.halloween` false, the
+  witchcipher entries carry no season, 18:00Z done, the next on 2026-11-11 at
+  01:00Z. `roundHours: [11, 23]` was the only thing that said which round was
+  the day's last, so post-Halloween no round ever was - the US II 18:00Z round
+  passed with five mixes unspent. And with a rotating pool the number of rounds
+  in a UTC day varies by shard and by day, so no fixed list could be right.
+- **`roundHours` is gone. `cipherLastChance()` reads the lineup instead**: round
+  t is the day's last chance when `/schedule_live` holds no later witchcipher
+  round starting on the same UTC date (a round belongs to the day it started
+  on - upstream `witch_cipher_claim`) on a shard he could brew on: an eligible
+  one, and once the first mix locks the day, the locked one. An occurrence within
+  10 minutes of t's start is t's own slot on another shard. A later round on
+  another region, on PVP, or tomorrow does not count.
+- **An unknown lineup is NOT the last round.** No read yet, a failed read, or one
+  older than `schedMaxAgeMs` (10 minutes) makes `later` null; the round is then
+  only brewed on the threshold, and the decision line says "the lineup is
+  unknown". That direction wastes at most a day's spare mixes, where the other
+  would spend them before a later round could crack. `cipherRefreshSched()`
+  reads `/schedule_live?hours=26` every 60s, keeping the witchcipher rows whose
+  status is `scheduled`; a live round is read from `/cipher_live` as before.
+  `cipherStatus()` shows `lineup`, the number of rounds known to come, or null.
+- **PVP is refused by name.** `regions` was a prefix test, so `USPVP` passed as
+  `US` - a hop to a PVP shard for a cipher round, against the operator's
+  ruling. `cipherShardEligible()` refuses any key containing `PVP` and is used
+  by the decision, the lineup check and the watch rows alike.
+- **`regions` is unchanged: US and ASIA.** Whether EU rounds (12:00Z and 19:00Z
+  off-season) should be brewed in is the operator's call.
+
 ## v142
 
 **A NARROW BOARD ON ANOTHER SHARD IS NOT HOPPED TO** - operator's ruling

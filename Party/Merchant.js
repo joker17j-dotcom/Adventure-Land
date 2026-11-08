@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v142
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v143
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1129,10 +1129,19 @@ const CONFIG = {
 	cipherBrew: {
 		enabled: TOGGLES.cipherBrew,
 		threshold: 8,               // chase the crack once a board is down to this many recipes
-		regions: ['US', 'ASIA'],    // the 11Z and 23Z rounds, so both fall inside one UTC day
-		roundHours: [11, 23],       // UTC; the last of these is the day's last round
+		/* The regions whose rounds are brewed in. A PVP shard never is, whatever
+		   this says (cipherShardEligible). */
+		regions: ['US', 'ASIA'],
 		prefer: 'USII',             // tie-break between equally narrow boards
-		spendLastMs: 6 * 60 * 1000, // in the day's last round, brew what is left once this little remains
+		/* In the day's LAST CHANCE - no later round today on a shard he could
+		   brew on, read from the bridge's /schedule_live - brew what is left
+		   once this little remains. The lineup decides, not fixed hours: the
+		   cipher's slot moved from the Halloween hours into the rotating dailies
+		   pool, and the number of rounds in a UTC day varies by shard and day. */
+		spendLastMs: 6 * 60 * 1000,
+		schedEveryMs: 60000,        // how often to read /schedule_live
+		schedHours: 26,             // how far ahead to read it - past the end of any UTC day
+		schedMaxAgeMs: 10 * 60 * 1000, // an older lineup is unknown, and no round is the last
 		/* After the day's 50-parcel crack, a mix may only use a recipe that
 		   leaves at least this many of each ingredient it consumes - operator's
 		   ruling 2026-10-25 19:57 EDT. Before the crack any makeable recipe goes. */
@@ -6471,7 +6480,9 @@ const CIPHER_DAY_KEY = 'cipher_brew_day';
 const CIPHER_WATCH_KEY = 'cipher_brew_watch';
 const CIPHER_SEEN_KEY = 'cipher_brew_seen';
 const CIPHER_SPLIT_MAX = 128;       // above this many candidates, any fitting recipe will do
+const CIPHER_SAME_SLOT_MS = 10 * 60 * 1000;  // occurrences this close to a round's start are its slot
 let cipherLive = { at: 0, shards: {} };
+let cipherSched = { at: 0, okAt: 0, rows: null };  // the lineup's scheduled witchcipher rounds
 let cipherLast = null;              // the last decision, for cipherStatus()
 let cipherPending = null;           // the mix in flight, for the too-slow check
 let cipherLastPick = null;          // the mix chosen most recently, brewed or not
@@ -6600,14 +6611,39 @@ function cipherPick(cands, names, slots, have, tried, floor) {
 	return best;
 }
 
-function cipherIsLastRound(startMs, cfg) {
-	const hours = (cfg && cfg.roundHours) || [];
-	return !!startMs && hours.length > 0 && new Date(startMs).getUTCHours() === Math.max.apply(null, hours);
+/* A shard whose rounds he may brew in: one of cfg.regions, and never PVP -
+   the operator ruled PVP off the table (CLAUDE.md, "Server hopping"), and a
+   bare prefix test let 'USPVP' through as 'US'. */
+function cipherShardEligible(key, cfg) {
+	if (typeof key !== 'string' || key.indexOf('PVP') >= 0) return false;
+	return ((cfg && cfg.regions) || []).some((r) => key.indexOf(r) === 0);
+}
+
+/* Is round t today's last chance? True when the lineup holds no later round
+   whose start falls on the same UTC date - a round belongs to the day it
+   started on (upstream witch_cipher_claim) - on a shard he could brew on: an
+   eligible one, and once the day is locked, the locked one. An occurrence
+   within CIPHER_SAME_SLOT_MS of t's start is t's own slot on another shard.
+   null when the lineup is unknown, which the caller reads as "not the last". */
+function cipherLastChance(t, c) {
+	if (!Array.isArray(c.later) || !t || typeof t.start !== 'number') return null;
+	const cfg = c.cfg || {}, day = c.day || {};
+	const date = new Date(t.start).toISOString().slice(0, 10);
+	for (const o of c.later) {
+		if (!o || typeof o.at !== 'number' || o.at <= t.start + CIPHER_SAME_SLOT_MS) continue;
+		if (new Date(o.at).toISOString().slice(0, 10) !== date) continue;
+		if (!cipherShardEligible(o.key, cfg)) continue;
+		if (day.lockedShard && o.key !== day.lockedShard) continue;
+		return false;
+	}
+	return true;
 }
 
 /* WHAT TO DO NOW, from plain inputs so it can be tested without a game:
    c = {now, cfg, day: {mixesLeft, lockedShard, crackedToday, elsewhere, stoppedFloor},
-        shards: {USII: {id, live, start, end, possible, makeable}, ...}, plan}.
+        shards: {USII: {id, live, start, end, possible, makeable}, ...}, plan,
+        later: [{key, at}, ...] or null}, `later` being the lineup's scheduled
+   witchcipher rounds (cipherLaterRounds) - null when it is unknown.
    'brew' and 'hold' take the hold; 'watch' and 'idle' release it. `makeable`
    is cipherMakeable()'s count, null when unknown: a shard where it is 0 is
    ranked below every other and never brewed on, and a held plan there gives
@@ -6627,7 +6663,7 @@ function cipherDecide(c) {
 		const s = c.shards[k];
 		if (!s || !s.live || !s.id || !s.start || !s.end || c.now >= s.end) continue;
 		if (new Date(s.start).toISOString().slice(0, 10) !== today) continue;
-		if (!(cfg.regions || []).some((r) => k.indexOf(r) === 0)) continue;
+		if (!cipherShardEligible(k, cfg)) continue;
 		if (day.lockedShard && k !== day.lockedShard) continue;
 		elig.push(Object.assign({ key: k }, s));
 	}
@@ -6660,11 +6696,12 @@ function cipherDecide(c) {
 	}
 	if (day.crackedToday) return Object.assign(out, { act: 'brew', why: 'the 50 is won - spending the rest (' + board + ')' });
 	if (poss(t) <= thr) return Object.assign(out, { act: 'brew', why: board });
-	const last = cipherIsLastRound(t.start, cfg);
-	if (last && t.end - c.now <= cfg.spendLastMs) return Object.assign(out, { act: 'brew', why: 'the day\'s last round is ending (' + board + ')' });
-	if (last) return Object.assign(out, { act: 'hold', why: 'the day\'s last round - waiting at the Witch (' + board + ')' });
-	if (planned) return Object.assign(out, { act: 'hold', why: 'holding the round (' + board + ')' });
-	return Object.assign(out, { act: 'watch', why: board + ', waiting for ' + thr });
+	const last = cipherLastChance(t, c);
+	if (last === true && t.end - c.now <= cfg.spendLastMs) return Object.assign(out, { act: 'brew', why: 'the day\'s last round is ending (' + board + ')' });
+	if (last === true) return Object.assign(out, { act: 'hold', why: 'the day\'s last round - waiting at the Witch (' + board + ')' });
+	const unknown = last === null ? ' - the lineup is unknown, so this is not taken for the day\'s last round' : '';
+	if (planned) return Object.assign(out, { act: 'hold', why: 'holding the round (' + board + ')' + unknown });
+	return Object.assign(out, { act: 'watch', why: board + ', waiting for ' + thr + unknown });
 }
 
 // ---- storage -------------------------------------------------------------
@@ -6745,6 +6782,30 @@ async function cipherRefreshLive() {
 		cipherLive.ok = false;
 		cipherSay('the bridge is not answering /cipher_live (' + ((e && e.message) || e) + ') - deciding from this shard alone', 'orange');
 	}
+}
+/* The published lineup, every shard: its witchcipher rounds still to come, as
+   {key, at}. A running round is not in it - its status is 'live' - and is
+   read from /cipher_live instead. */
+async function cipherRefreshSched() {
+	const cfg = CONFIG.cipherBrew;
+	if (Date.now() - cipherSched.at < cfg.schedEveryMs) return;
+	cipherSched.at = Date.now();
+	try {
+		const r = await scoutFetch('/schedule_live?hours=' + cfg.schedHours);
+		if (!r || !Array.isArray(r.occurrences)) throw new Error('no occurrences in the answer');
+		cipherSched.rows = r.occurrences
+			.filter((o) => o && o.event === 'witchcipher' && (o.status == null || o.status === 'scheduled') && typeof o.at_ms === 'number')
+			.map((o) => ({ key: cipherKey(o.server), at: o.at_ms }));
+		cipherSched.okAt = Date.now();
+	} catch (e) {
+		cipherSay('the bridge is not answering /schedule_live (' + ((e && e.message) || e) + ') - no round is taken for the day\'s last', 'orange');
+	}
+}
+/* The rounds to come, or null when the last good read is older than
+   cfg.schedMaxAgeMs or there has been none. */
+function cipherLaterRounds(now) {
+	if (!cipherSched.rows || now - cipherSched.okAt > CONFIG.cipherBrew.schedMaxAgeMs) return null;
+	return cipherSched.rows;
 }
 /* Every shard as the bridge last saw it, with THIS shard from its own S. */
 function cipherShardsNow() {
@@ -6870,7 +6931,7 @@ function cipherWatchNote(shards, day, cfg) {
 	let changed = false;
 	for (const k in shards) {
 		const s = shards[k];
-		if (!s || !s.id || !(cfg.regions || []).some((r) => k.indexOf(r) === 0)) continue;
+		if (!s || !s.id || !cipherShardEligible(k, cfg)) continue;
 		const id = s.id + '|' + k;
 		const over = !s.live || (s.end && Date.now() >= s.end);
 		/* Only a round first seen LIVE is tracked. A finished round sits in the
@@ -7041,6 +7102,7 @@ async function cipherTick() {
 		if (cfg && cfg.enabled && !cipherLiveHooked) cipherLiveHooked = cipherLiveHook();
 		if (!cfg || !cfg.enabled) { cipherRelease('disabled'); return; }
 		await cipherRefreshLive();
+		await cipherRefreshSched();
 		const now = Date.now();
 		const day = cipherDayLoad(new Date(now).toISOString().slice(0, 10));
 		/* The server's own count wins while it is here; it is sent only on a shard
@@ -7057,7 +7119,7 @@ async function cipherTick() {
 		const names = cipherIngredientNames(), slots = cipherSlots(), have = cipherHave();
 		const floor = day.crackedToday ? (cfg.floorAfterCrack || 0) : 0;
 		for (const k in shards) if (shards[k]) shards[k].makeable = cipherMakeable(shards[k].fit, names, slots, have, floor);
-		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan,
+		const d = cipherDecide({ now, cfg, day, shards, plan: cipherPlan, later: cipherLaterRounds(now),
 			/* mShardKey() of an unreadable shard is "undefinedundefined", truthy
 			   and unequal to every shard, so it would drop every narrow board. */
 			here: (typeof parent.server_region === 'string' && typeof parent.server_identifier === 'string') ? mShardKey() : null });
@@ -7092,7 +7154,9 @@ async function cipherTick() {
 /* Why it is or is not brewing, and today's record. */
 function cipherStatus() {
 	const day = cipherDayLoad(new Date().toISOString().slice(0, 10));
+	const later = cipherLaterRounds(Date.now());
 	const out = { busy: cipherBusy, plan: cipherPlan, last: cipherLast, waiting: cipherWaitWhy, bridge: !!cipherLive.ok,
+		lineup: later ? later.length : null,
 		tick: { running: cipherTickRunning, sinceStartSec: cipherTickStartedAt ? Math.round((Date.now() - cipherTickStartedAt) / 1000) : null },
 		mixesLeft: day.mixesLeft, lockedShard: day.lockedShard, crackedToday: day.crackedToday, elsewhere: day.elsewhere, stoppedFloor: !!day.stoppedFloor };
 	cipherLog(JSON.stringify(out), '#8b98ab');

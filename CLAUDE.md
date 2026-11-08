@@ -4778,6 +4778,12 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   2026-11-01 (`farMin`, Merchant v142): twice on 2026-10-31 the hold moved to
   one and the round was cracked first. The shard he stands on and the one he
   already holds are exempt.
+  **THE LAST ROUND COMES FROM THE LINEUP SINCE Merchant v143**: off-season the
+  cipher is a dailies pool member (US 18:00Z/01:00Z, ASIA 06:00Z/13:00Z), so the
+  fixed `roundHours: [11, 23]` it replaced named no round at all after
+  Halloween. A round is the day's last when `/schedule_live` has no later one
+  that UTC day on a shard he could brew on; an unknown lineup is never the last.
+  The same build refuses PVP shards, which the `regions` prefix test let in.
   **A FARM SPOT IS SCORED BY WHAT THE BAG CAN STILL USE** (Ranger v155):
   expected drops are capped at 25 minus the count held, so a spot for an
   ingredient the bag is nearly full of no longer beats one for the ingredient
@@ -5306,8 +5312,9 @@ a day.
   call (client `js/functions.js`, upstream `16881a2`). CaveRun v31's
   `engageMainSlot()` calls the page's `load_code`, waits for the answer, calls
   `code_persistence_logic()`, then logs what `get_code_slot()` reads, red if it
-  is not the character slot. Source-derived; the next cave run is the live
-  test.
+  is not the character slot. **VERIFIED LIVE** by the browser session on the
+  2026-11-04 and 2026-11-08 runs: all three logged the engaged slot as the
+  character slot, and the boss hops of 2026-11-05 loaded no CaveRun.
 - **THE CAVE LEADER DRIVES ITSELF AS OF CaveRun v27** - operator's ruling
   2026-10-24, "from leader manually driven to a fully automated cave run". It
   makes the call the objective buttons make: a stair goal's onclick is
