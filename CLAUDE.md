@@ -3595,6 +3595,17 @@ Claude Code session stops after `browser_code_eval`.
   the top and nothing selected. So the operator-side recipe is **SELECT ALL IN
   THE SLOT BEFORE PASTING**, then hash: two appends in two deploys is a habit
   of the editor, not a one-off.
+  **A THIRD APPEND DEFEATED THE LINE-START CHECK, AND A FOURTH PASTE CARRIED THE
+  WRONG CLIPBOARD** - the browser session's reads of slot 11 during the CaveRun
+  v33 deploy, 2026-11-08 17:04 EST. First, v32 twice (545,356 B, 10,721 lines,
+  blob `268ae69d`) with the second copy appended with NO line break, so its
+  header sat after `})();` on line 5,361 and a count of headers at line start
+  read 1. Then, save version 42: the slot held the 17:01 paste block as plain
+  text and no code at all. Engaging either would have run two CaveRuns or
+  thrown a syntax error. The third save matched `70aae57` exactly.
+  **So the post-paste check is the byte size against the commit, plus a count
+  of the header text ANYWHERE in the slot - never a line-start count**, and the
+  hash settles both; a version probe sees neither.
 - **A LIVE SLOT CAN BE AHEAD OF THE REPO, AND NOTHING RECORDS IT.** The
   deployment markers in the version header only ever say the repo is ahead of
   the slot. There is no marker for the reverse, and the reverse is the one that
