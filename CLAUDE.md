@@ -5365,9 +5365,11 @@ a day.
 
 ## The crypt run
 
-**Both sessions.** CaveRun v32, on the operator's spec of 2026-11-08. The
-design is in the CRYPT RUN block of `CaveRun.js`; this records what is not
-obvious from it. NOT YET RUN LIVE.
+**Both sessions.** CaveRun v32, on the operator's spec of 2026-11-08, revised in
+v34 on the first live run's defects and rulings R1-R6. The design is in the
+CRYPT RUN block of `CaveRun.js`; this records what is not obvious from it. FIRST
+RUN LIVE on v33, 2026-11-08 17:59-18:28 EST: cleared, one wipe, two manual
+interventions. v34 is not yet run live.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5375,13 +5377,19 @@ obvious from it. NOT YET RUN LIVE.
   which runs only in cave mode, stays out. `cryptStop()` hands everything
   back; `cryptNav(false)` hands back the driving only; an operator's own move
   pauses the autopilot 45s, as in the cave.
-- **THE CRYPT'S GEOMETRY IS IN THE SERVER SOURCE, SO NO SPOT WAS GUESSED.**
-  `node/precomputed_map_data.js` carries `smap_data.crypt`, the server's
-  reachability grid at 10 units, 31,401 cells (upstream `a5c133dc`). Every
-  point in `CRYPT_RUN` is a walkable cell in it. Path lengths from the
-  entrance (0,0): a7 1,900, a2 2,430, the vbat box 2,610, a3 3,130. a7's hall
-  leads to a2's room and a2's room to the vbat box, so the fight order is also
-  the route. Read the grid before choosing a new spot.
+- **THE CRYPT'S GEOMETRY IS IN THE SERVER SOURCE - BUT ONLY ITS LEVEL-0
+  CELLS ARE WALKABLE, AND v32 READ ALL EIGHT LEVELS AS WALKABLE.**
+  `node/precomputed_map_data.js` carries `smap_data.crypt` at 10 units, 31,401
+  cells (upstream `a5c133dc`), and the value of each cell is a LEVEL:
+  `server_bfs` pushes `level + 1` for a step `can_move` refuses, so levels
+  1-7 are cells up to seven steps PAST A WALL. 13,222 are level 0. v32 took
+  every key, so its a3 search point (1470,-1400) was a level-5 cell in a sealed
+  pocket, retried about 104 times live until the 4-minute give-up. **A GRID'S
+  KEYS ARE NOT ITS WALKABLE SET WHEN ITS VALUES MEAN SOMETHING** - read what the
+  builder pushes before treating a key as a cell. Level-0 path lengths from the
+  entrance (0,0): pull spot 730, a7 2,170, a2 2,980, the vbat box 3,310, a3
+  3,630; a7 to a2 830, a2 to the box 330, a7 to a3 2,140. Every fixed point in
+  `CRYPT_RUN` is a level-0 cell, asserted in `Tests/suite_crypt.js`.
 - **ENTRY AND RESPAWN, FROM SOURCE.** `enter("crypt")` is refused beyond 120
   of cave spawn 2 (-193,-1296), consumes one `cryptkey` when no instance name
   is given, and the instance name is the opener's `character.in`. A death in
@@ -5411,9 +5419,38 @@ obvious from it. NOT YET RUN LIVE.
   follower engaged before `cryptRun()` reaches it runs the cave launcher, which
   after 05:00Z walks it to Dorr for the cave; the leader's `cryptrun` message
   then switches it over.
-- **WHETHER THE PARKED MERCHANT ANSWERS DEXON'S `needsMluck` IS UNMEASURED**
-  (`CONFIG.scout.parked` holds the shard; its jobs should still run). Until a
-  run shows it, mluck the three by hand before entering.
+- **THE PARKED MERCHANT DOES ANSWER DEXON'S `needsMluck`** - measured on the
+  first live run. The run-2 gate waited on all three lacking mluck; Meltymerch,
+  parked, logged "Starting batch: 1 job(s) across 1 recipient(s)", "Visiting
+  Dexon: mluck", then refreshes on Dexon and FatherToken, and all three read 57
+  minutes. So `CONFIG.scout.parked` does not stop the answer, and the
+  opportunistic pass reaches the other two at the door.
+- **SEARCHING IS A TOUR OF THE MAP, NOT FIXED POINTS** (v34, R4 and R5). A
+  stage target not in view is looked for where any member last saw it, then
+  where a member died to it, then at its home, then over 15 tour points that
+  cover every walkable cell left of the line and outside the zone. Each tab
+  publishes its sightings in its beacon (`cs`) and the leader merges them, so
+  three tabs never write the shared run record for it. A point near a monster
+  of another stage, near the home of a plan monster still to come, inside the
+  zone or past the line, or whose walk failed twice, is skipped.
+- **A TARGET NOT FOUND IN 5 MINUTES IS GIVEN UP, NOT HANDED TO THE OPERATOR**
+  (v34, R6). It goes into the run's `givenUp` and the run moves on; one seen
+  again after it was given up, by any member, is taken back - the operator chose
+  that over a distance rule. The done line names what was given up.
+- **THE NO-GO ZONE IS x > 1850, y > -1235, AND IT GROWS** - read from the
+  operator's screenshot and confirmed on the level-0 grid: a8, a5, a4 and a1
+  are inside it; a6 and a3 are not. A zone monster seen outside it grows it to
+  cover the sighting plus 100. Only a member kiting a stray goes in: the line
+  is now x 1860, and the middle crossing (1880,-880) is about 160 west of a8's
+  spawn, by the operator's leave.
+- **a2 IS PULLED TO (-270,-465) WITH NO FOLLOWER HOLD ON THE WAY** (R1, R2) -
+  2,430 by path from his spawn. The leader also no longer holds through any
+  fight, and a hold for a follower's gap alone gives up after 20s; a hold for a
+  dead, outside or kiting follower does not.
+- **A STATIONARY LEADER OUT OF COMBAT IS JOINED ON HIS EXACT SPOT** (R3, cave
+  and crypt, `MOVE.joinStationary`). "Out of combat" is that nothing in view is
+  on a party member - deliberately not `engaged()`, whose timer counts the
+  leader's own `target`. In combat the 2026-10-23 ruling stands.
 
 ## The published event schedule - upstream's new mechanism
 

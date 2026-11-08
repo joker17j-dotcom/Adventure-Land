@@ -1304,6 +1304,67 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	t.eq('a guide finishes in the room - no escort', w.navEscort, null);
 	w.navNoteResolved({ id: 'c2', resolved: true, result: 'e23_0' });
 	t.eq('an escort makes the goal room an escort', w.navEscort, '0:1');
+} },{ name: 'v34 R3: a stationary leader out of combat is joined ON HIS SPOT - cave and crypt', fn(t) {
+	/* The operator's ruling R3, 2026-11-08. In combat nothing changes - the
+	   2026-10-23 ruling stands - so the test is as much that the join stays out
+	   of the way while anything is on the party as that it fires when not. */
+	const s = src();
+	const moved = [], smarts = [];
+	function w(o) {
+		o = o || {};
+		const x = world({
+			character: { name: 'Dexon', map: 'cave', real_x: 0, real_y: 0 },
+			move: (mx, my) => moved.push([Math.round(mx), Math.round(my)]),
+			can_move_to: o.blocked ? () => false : () => true,
+			isFn: (f) => typeof f === 'function',
+			bump: () => {}, ev: () => {},
+			smartFlight: 0,
+			smart_move: (p) => { smarts.push([p.x, p.y]); return Promise.resolve(); },
+			threats: () => o.monsters || [],
+			partyNames: () => ['Dexon', 'FatherToken', 'MageofOz'],
+			caveFriendly: (m) => !!m.friendly,
+		});
+		lift(x, 'CaveRun.js', ['MOVE', 'noteLeaderMotion', 'leaderMoving', 'partyFighting', 'joinWanted', 'joinStep']);
+		x.leaderSeen = null; x.leaderMovedAt = 0;
+		return x;
+	}
+	let x = w();
+	t.eq('leader still, nothing on the party, 60 away: join', x.joinWanted(60), true);
+	t.eq('already on the spot: nothing', x.joinWanted(x.MOVE.joinAt), false);
+	x.noteLeaderMotion({ x: 0, y: 0 }); x.noteLeaderMotion({ x: 30, y: 0 });
+	t.eq('leader moving: no join - the band and followStep as before', x.joinWanted(60), false);
+	x = w({ monsters: [{ mtype: 'goo', target: 'MageofOz' }] });
+	t.eq('a monster on ANY member: in combat, no join', x.joinWanted(60), false);
+	x = w({ monsters: [{ mtype: 'goo' }] });
+	t.eq('a monster near but on nobody: out of combat, join', x.joinWanted(60), true);
+	x = w({ monsters: [{ mtype: 'npc', target: 'Dexon', friendly: true }] });
+	t.eq('a friendly with a target is not combat', x.joinWanted(60), true);
+	x.MOVE.joinStationary = false;
+	t.eq('the toggle turns it off', x.joinWanted(60), false);
+
+	x = w(); moved.length = 0;
+	x.joinStep({ x: 137, y: -42 }, 143);
+	t.eq('straight onto the EXACT spot, not a band short of it', JSON.stringify(moved), JSON.stringify([[137, -42]]));
+	x = w({ blocked: true }); moved.length = 0; smarts.length = 0;
+	return (async () => {
+		await x.joinStep({ x: 137, y: -42 }, 143);
+		t.eq('blocked: one smart_move round it', JSON.stringify(smarts), JSON.stringify([[137, -42]]));
+		t.eq('and no straight move', moved.length, 0);
+
+		/* Placement: after everything that holds a follower still, before the
+		   latch, and partyFighting must not read engaged() - its timer counts the
+		   leader's own target, which can name a long-dead monster. */
+		const tick = s.slice(s.indexOf('async function moveTick()'), s.indexOf('/* The driver is the only one who can fix'));
+		const iDown = tick.indexOf('if (leaderDown())'), iRest = tick.indexOf('if (resting || deathLoop)');
+		const iJoin = tick.indexOf('if (joinWanted(gap))'), iLatch = tick.indexOf('// --- the latch ---');
+		t.ok('after the resting and leader-down holds', iRest > 0 && iDown > iRest && iJoin > iDown);
+		t.ok('before the latch', iJoin > 0 && iJoin < iLatch);
+		t.ok('and before the kite step', iJoin < tick.indexOf('const k = kiteStep(lp);', iLatch));
+		const pf = s.slice(s.indexOf('function partyFighting()'), s.indexOf('function joinWanted('));
+		t.eq('partyFighting does not read engaged()', /engaged\(\)/.test(pf), false);
+		t.ok('the crypt follower falls through to it while the leader is up inside',
+			/if \(!crInside\(lb, run\) \|\| lb\.rip \|\| lb\.kite\) \{ crHoldPlace\(\); return true; \}\n\treturn false;/.test(s));
+	})();
 } },
 ];
 

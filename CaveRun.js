@@ -1,4 +1,19 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v33 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v34 (TEST BUILD)
+// v34 2026-11-08 THE FIRST LIVE CRYPT RUN'S DEFECTS AND THE OPERATOR'S RULINGS.
+//                The crypt map is now the server grid's LEVEL-0 cells only -
+//                levels 1-7 are cells past a wall, which is why (1470,-1400)
+//                was a sealed pocket. A stage target not in view is searched
+//                for over a tour of that map, from where any member last saw
+//                it or died to it first, avoiding other monsters, the no-go
+//                zone (x>1850, y>-1235, grown by sightings of a8/a5/a4/a1) and
+//                the far side of the line; one not found in 5 min is given up
+//                and the run moves on, and one that reappears is taken back.
+//                a2 is pulled to (-270,-465) with no follower hold on the way;
+//                the leader never holds through a fight, and a gap hold gives
+//                up after 20s. The stray line moves to x 1860. A stationary
+//                leader, out of combat, is joined ON HIS SPOT by the followers
+//                - cave and crypt. A re-sent walk no longer reports itself as
+//                an interruption.
 // v33 2026-11-08 crypt_auto LAPSES 2 HOURS AFTER THE LAST CRYPT TICK, so a
 //                crypt run left on cannot turn a later cave day in slot 11 into
 //                crypt mode; a lapsed one says so on load. cryptNew() abandons
@@ -576,6 +591,17 @@ const MOVE = {
 	stationaryCloseAt: 90,
 	stationaryReleaseAt: 30,
 	stationaryCeiling: 135,
+
+	/* JOINING A STATIONARY LEADER - v34, the operator's ruling R3 of
+	   2026-11-08, cave and crypt alike. While the leader is not moving and
+	   nothing is fighting the party, a follower walks onto the leader's EXACT
+	   spot rather than parking anywhere inside a band. In combat nothing
+	   changes - the 2026-10-23 ruling stands, kiting and backing away as
+	   normal - and once the fight ends the follower walks back onto the spot.
+	   It replaces the crypt's 135u standoff: a follower inside the 180 at
+	   which the latch closes, a leader holding for a 120 release. */
+	joinStationary: true,
+	joinAt: 8,
 };
 
 /* ---------------------------------------------------------------- v14 -----
@@ -799,6 +825,8 @@ function beaconWrite() {
 			kite: !!crKite,
 			muled: !!crMuled,
 			room: !!crRoom,
+			/* v34: this member's crypt sightings, for the leader's search. */
+			cs: character.map === 'crypt' ? crCs : null,
 		}));
 	} catch (e) { bump('beaconWriteFail'); }
 }
@@ -1513,6 +1541,30 @@ async function followFloor() {
 	return true;
 }
 
+/* OUT OF COMBAT, for R3: nothing in view is on a party member. Deliberately
+   not engaged(), whose hold timer also counts the leader's own `target` - a
+   field that can name a monster long dead, which the first live crypt run
+   suspected of keeping the followers in the combat band. */
+function partyFighting() {
+	const names = partyNames();
+	return threats().some((m) => m.target && names.indexOf(m.target) >= 0 && !caveFriendly(m));
+}
+function joinWanted(gap) {
+	return !!MOVE.joinStationary && gap > MOVE.joinAt && !leaderMoving() && !partyFighting();
+}
+/* Straight onto the spot where nothing is in the way; round an obstacle once,
+   under the same in-flight watchdog as recoverStep. */
+async function joinStep(lp, gap) {
+	try {
+		if (!isFn(can_move_to) || can_move_to(lp.x, lp.y)) { move(lp.x, lp.y); bump('joinSteps'); return; }
+	} catch (e) { return; }
+	if (smartFlight && Date.now() - smartFlight < MOVE.smartMoveMaxMs) return;
+	smartFlight = Date.now();
+	bump('joinSmart');
+	try { await smart_move({ map: character.map, x: lp.x, y: lp.y }); } catch (e) { ev('joinSmartFail', String((e && (e.reason || e.message)) || e)); }
+	smartFlight = 0;
+}
+
 async function recoverStep(lp, gap) {
 	if (!aim || Math.hypot(aim.x - lp.x, aim.y - lp.y) > MOVE.staleSlack) aim = { x: lp.x, y: lp.y };
 	const direct = !isFn(can_move_to) || can_move_to(aim.x, aim.y);
@@ -1589,6 +1641,15 @@ async function moveTick() {
 	const gap = Math.hypot(lp.x - character.real_x, lp.y - character.real_y);
 	tel.maxDistLeader = Math.max(tel.maxDistLeader, Math.round(gap));
 	if (gap > L.closeAt) tel.msBeyondLeash += CFG.tickMs;
+
+	/* v34, R3: a stationary leader out of combat is joined on his spot. Ahead
+	   of the latch, which it replaces in this state; behind everything that
+	   holds a follower still. */
+	if (joinWanted(gap)) {
+		if (recovering) { recovering = false; aim = null; }
+		await joinStep(lp, gap);
+		return;
+	}
 
 	// --- the latch ---
 	if (!recovering && gap > L.closeAt) { recovering = true; aim = null; bump('recoveries'); ev('recover', { gap: Math.round(gap), leash: L.mode }); }
@@ -4329,8 +4390,12 @@ function caveEnter() {
    instance; kills are recorded by monster id from the game's death event,
    shared through the run record so all three tabs agree. Only the current
    stage is hunted; any plan monster that starts a fight is answered. a2 is
-   pulled: once he is on the party the leader walks back toward pullSpot, in
-   the hall between his room and the entrance, unless someone is low.
+   pulled: once he is on the party the leader walks back toward pullSpot, the
+   left wing of the room south of the entrance corridor, unless someone is
+   low, and holds for nobody on the way (v34, R1 and R2). A stage target not
+   in view is searched for (v34, see `homes` and `tour` below); one not found
+   in searchMaxMs is given up and the run moves on, and taken back if anyone
+   sees it again (R6).
 
    STRAYS - anything that is not a2, a3, a7 or vbat. Never hunted. If one
    comes at a member, that member alone keeps it: it walks it right of the
@@ -4347,11 +4412,13 @@ function caveEnter() {
    fewer than muleMinFree slots. The leader opens the next run once everyone is
    at the door, muled, mlucked and roomy, and he holds a key.
 
-   THE MAP. Every point below is a walkable cell in the server's own
-   reachability grid for the crypt (precomputed_map_data.js smap_data.crypt,
-   upstream a5c133dc). Path lengths from the entrance, read off that grid:
-   a7 1,900, a2 2,430, the vbat box 2,610, a3 3,130. a7's hall leads to a2's
-   room, and a2's room to the vbat box, so the order is also the route. */
+   THE MAP. Every point below is a LEVEL-0 cell of the server's reachability
+   grid for the crypt (precomputed_map_data.js smap_data.crypt, upstream
+   a5c133dc). v34: only level 0 is walkable - server_bfs pushes level + 1 for
+   a step can_move refuses, so levels 1-7 are cells past a wall, and v32's a3
+   point (1470,-1400) was one of them, in a sealed pocket. Path lengths from
+   the entrance on level 0: a7 2,170, a2 2,980, the vbat box 3,310, a3 3,630;
+   a7 to a2 830, a2 to the box 330, a7 to a3 2,140. */
 const CRYPT_RUN = {
 	mule: 'Dexon',
 	merchant: 'Meltymerch',
@@ -4360,26 +4427,48 @@ const CRYPT_RUN = {
 	entrance: { x: 0, y: 0 },                    // the crypt's spawn: entry, re-entry and use_town all land here
 	stages: [['a3', 'a7'], ['a2'], ['vbat']],
 	need: { a3: 1, a7: 1, a2: 1, vbat: 7 },
-	/* Where to look for a roamer not in view. a7's own spawn, then the top
-	   hall a3 roams in and his spawn at its east end. */
-	search: { a7: [[727, -1076]], a3: [[1470, -1400], [1790, -1480]], a2: [[1110, -630]] },
-	searchMaxMs: 240000,        // a stage with nothing found this long hands the driving back
-	/* a2's fight spot: the hall junction west of his room, 1,740 by path from
-	   the entrance, so a respawned member can regroup at the entrance and walk
-	   in. The operator's to move - cryptSpot('pull', x, y). */
-	pullSpot: { x: 570, y: -1080 },   // clear of walls for 40 units each way in the grid
+	/* SEARCHING - v34, the operator's rulings R4 and R5. A stage target not in
+	   view is looked for where any member last saw it, then where a member
+	   died to it, then at its home, then over `tour`: fifteen points whose
+	   300-unit path neighbourhoods cover every walkable cell left of the line
+	   and outside the zone, in nearest-next order from the entrance. A point
+	   near a monster that is not this stage's, inside the zone, past the line,
+	   or near the home of a plan monster still to come is skipped, and so is
+	   one whose walk failed searchFailSkip times. homes are the spawns, in the
+	   order a7 then a3 - a7's hall is on the way to the top hall. */
+	homes: { a7: [[730, -1080]], a3: [[1790, -1480]], a2: [[1110, -630]], vbat: [[1190, -380]] },
+	tour: [[0, 0], [-40, -460], [-180, -520], [-180, -1040], [380, -1100], [600, -1080], [740, -660], [1100, -440],
+		[1140, -340], [1440, -560], [1500, -860], [420, -1480], [940, -1480], [1240, -1480], [1760, -1520]],
+	homeAvoid: 250,
+	avoidR: 220,
+	avoidMs: 120000,            // a monster seen this recently keeps its neighbourhood off the search
+	searchFailSkip: 2,
+	searchMaxMs: 300000,        // a stage target not found this long is given up, and the run moves on
+	seenEveryMs: 2000,
+	/* a2's fight spot: the left wing of the room south of the entrance
+	   corridor - the operator's ruling R2, 2026-11-08. A dead end on three
+	   sides, 730 by path from the entrance and 2,430 from a2's spawn. The
+	   operator's to move - cryptSpot('pull', x, y). */
+	pullSpot: { x: -270, y: -465 },
 	pullHpStop: 0.40,           // anyone this low and the pull stops where it is
 	vbatSpot: { x: 1190, y: -380 },
 	vbatClearMs: 20000,         // standing at vbatSpot with no vbat in view this long, after one kill, is a clear box
-	lineX: 1780,                // right of the operator's line everywhere
-	kiteTop: { x: 1800, y: -1480 },
-	kiteMid: { x: 1800, y: -900 },
+	/* THE NO-GO ZONE - R6. x > zone.x and y > zone.y; it holds a8, a5, a4 and
+	   a1. One of those seen outside it grows it to cover the sighting, plus
+	   zoneMargin. Nothing walks into it but a member kiting a stray. */
+	zone: { x: 1850, y: -1235 },
+	zoneMonsters: ['a8', 'a5', 'a4', 'a1'],
+	zoneMargin: 100,
+	lineX: 1860,                // right of the operator's line everywhere - past the zone's edge, R6
+	kiteTop: { x: 1900, y: -1760 }, // the top strip, east of the corridor up from a3's spawn
+	kiteMid: { x: 1880, y: -880 },  // inside the zone, ~160 west of a8's spawn; the operator allows a stray to be dragged there
 	kiteLostMs: 4000,           // the stray off me this long and the kiter goes home anyway
 	kiteMaxMs: 60000,
 	regroupWithin: 150,
 	fightWithin: 250,
 	holdAt: 180,
 	holdReleaseAt: 120,
+	holdMaxMs: 20000,           // a hold for a follower's gap alone gives up after this
 	absorbAt: 0.45,
 	scareHpAt: 0.40,
 	mluckMinMs: 10 * 60 * 1000, // less than this left counts as lacking it
@@ -4407,11 +4496,16 @@ const CRYPT_AUTO_KEY = 'crypt_auto';
 let cryptAuto = false, cryptNavOn = true, cryptRelayId = null, crAutoAt = 0;
 let crunRaw = null, crunMemo = null;
 let crSaid = {}, crSeen = {}, crKite = null, crHolding = false, crHoldSince = 0;
-let crSearch = { stage: -1, i: 0, since: 0 }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
+let crSearch = { stage: -1, i: 0, since: 0, done: {} }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
 let crMuled = false, crMuleRun = undefined, crMuleSince = 0, crMuleAt = 0, crRoom = true, crPushAt = 0, crAskAt = {}, crMluckSince = 0;
+/* v34: what this tab has seen, published in its beacon as `cs` so the leader
+   can merge all three without anyone writing the shared run record for it. */
+let crCs = { run: null, seen: {}, died: [], zav: [] }, crAvoid = {}, crOnMe = null, crWasRip = false;
+let crHoldGapSince = 0, crHoldWaived = false;
 
 /* The run record, shared by every tab: {id, at, leader, dead: {monster id:
-   mtype}, cleared: {mtype: true}, done, doneAt, regroupAll, lost}. */
+   mtype}, cleared: {mtype: true}, done, doneAt, regroupAll, lost}. v34 adds
+   givenUp {mtype: when} and zone {x, y}, both written by the leader alone. */
 function crunRead() {
 	let raw = null;
 	try { raw = parent.localStorage.getItem(CRUN_KEY); } catch (e) { return null; }
@@ -4469,16 +4563,62 @@ function crKills(run) {
 }
 /* The first stage with anything left: {i, types}, or null once all are done. */
 function cryptStage(run) {
-	const k = crKills(run), cl = (run && run.cleared) || {};
+	const k = crKills(run), cl = (run && run.cleared) || {}, gu = (run && run.givenUp) || {};
 	for (let i = 0; i < CRYPT_RUN.stages.length; i++) {
-		const left = CRYPT_RUN.stages[i].filter((t) => !cl[t] && (k[t] || 0) < (CRYPT_RUN.need[t] || 1));
+		const left = CRYPT_RUN.stages[i].filter((t) => !cl[t] && !gu[t] && (k[t] || 0) < (CRYPT_RUN.need[t] || 1));
 		if (left.length) return { i: i, types: left };
 	}
 	return null;
 }
-function cryptSeeTick() {
-	if (character.map !== 'crypt') return;
-	for (const m of threats()) if (m.id && m.mtype) crSeen[m.id] = m.mtype;
+/* ---- the no-go zone ---- */
+function crZone(run) { const z = run && run.zone; return (z && typeof z.x === 'number' && typeof z.y === 'number') ? z : CRYPT_RUN.zone; }
+function crInZone(p, run) { const z = crZone(run); return p.x > z.x && p.y > z.y; }
+
+/* What this tab sees, every tick. The id map feeds the death count; the rest
+   is published in the beacon (`cs`) for the leader to merge - R5: the last
+   place each plan monster was seen, the places this member died to one, and
+   sightings of the zone's monsters. A member's own death is noted here too. */
+function cryptSeeTick(now) {
+	if (character.map !== 'crypt') { crWasRip = false; return; }
+	if (now === undefined) now = Date.now();
+	const run = crunRead();
+	const id = character.in || null;
+	if (crCs.run !== id) { crCs = { run: id, seen: {}, died: [], zav: [] }; crAvoid = {}; crOnMe = null; }
+	for (const m of threats()) {
+		if (!m.id || !m.mtype) continue;
+		crSeen[m.id] = m.mtype;
+		if (caveFriendly(m)) continue;
+		const p = crPos(m);
+		if (CRYPT_RUN.need[m.mtype]) {
+			const o = crCs.seen[m.mtype];
+			if (!o || now - o.t >= CRYPT_RUN.seenEveryMs) crCs.seen[m.mtype] = { x: Math.round(p.x), y: Math.round(p.y), t: now };
+			if (m.target === character.name) crOnMe = { mtype: m.mtype, t: now };
+		}
+		crAvoid[m.id] = { x: p.x, y: p.y, t: now, mtype: m.mtype };
+		if (CRYPT_RUN.zoneMonsters.indexOf(m.mtype) >= 0 && !crInZone(p, run)) {
+			crCs.zav = crCs.zav.filter((z) => z.id !== m.id).concat([{ id: m.id, mtype: m.mtype, x: Math.round(p.x), y: Math.round(p.y), t: now }]).slice(-6);
+		}
+	}
+	for (const k in crAvoid) if (now - crAvoid[k].t > CRYPT_RUN.avoidMs) delete crAvoid[k];
+	if (character.rip && !crWasRip) {
+		const by = crOnMe && now - crOnMe.t < 5000 ? crOnMe.mtype : null;
+		crCs.died = crCs.died.concat([{ x: Math.round(character.real_x), y: Math.round(character.real_y), t: now, by: by }]).slice(-5);
+		if (by) crSay('diedTo-' + now, 'died to ' + by + ' - the search starts here', 'orange', 0);
+	}
+	crWasRip = !!character.rip;
+}
+/* Every member's sightings of this run, merged: the newest per type, every
+   death point, every zone sighting. bs is beacons() with this tab's own. */
+function crSightings(bs, run) {
+	const out = { seen: {}, died: [], zav: [] };
+	for (const n in bs) {
+		const cs = bs[n] && bs[n].cs;
+		if (!cs || !run || cs.run !== run.id) continue;
+		for (const t in cs.seen || {}) { const s = cs.seen[t]; if (!out.seen[t] || s.t > out.seen[t].t) out.seen[t] = s; }
+		for (const d of cs.died || []) out.died.push(Object.assign({ who: n }, d));
+		for (const z of cs.zav || []) out.zav.push(z);
+	}
+	return out;
 }
 /* Every tab that saw it records it, keyed by the monster's id, so three
    reports of one death count once. */
@@ -4556,15 +4696,20 @@ function cryptMayRespawn(now) {
 
 /* ---- moving: shared helpers ---- */
 /* smart_move without awaiting it, so the tick keeps fighting and checking
-   deaths while the walk runs. One walk per key; a failed one retries in 10s. */
+   deaths while the walk runs. One walk per key; a failed one retries in 10s.
+   v34: a walk still moving is never re-sent, and one this function replaced
+   rejects as `interrupted` - that is our own doing and is not reported. The
+   first live run logged "path to door failed: interrupted" every 30s. */
 function crWalk(p, key) {
 	const now = Date.now();
-	if (crWalkFlight && crWalkFlight.key === key && now - crWalkFlight.at < 30000) return;
-	const f = { key: key, at: now };
+	if (crWalkFlight && crWalkFlight.key === key && (now - crWalkFlight.at < 30000 || character.moving)) return;
+	if (crWalkFlight) crWalkFlight.replaced = true;
+	const f = { key: key, at: now, replaced: false };
 	crWalkFlight = f;
 	try {
 		const pr = smart_move({ map: p.map || character.map, x: p.x, y: p.y });
 		if (pr && typeof pr.then === 'function') pr.then(() => { if (crWalkFlight === f) crWalkFlight = null; }, (e) => {
+			if (f.replaced) return;
 			if (crWalkFlight === f) crWalkFlight = { key: key, at: Date.now() - 20000 };
 			crSay('walk-' + key, 'path to ' + key + ' failed: ' + String((e && (e.reason || e.message)) || e), 'orange', 15000);
 		});
@@ -4584,10 +4729,11 @@ function crHalt(why) { if (navFlight) navHalt(why); }
 function crStraysOnMe() {
 	return threats().filter((m) => m.target === character.name && !CRYPT_RUN.need[m.mtype] && !caveFriendly(m));
 }
-/* From a2's room or the vbat box the middle crossing is nearest; from
-   anywhere else - the entrance corridor, a7's hall, the top hall - the top
-   one, which also keeps a stray out of a2's room. */
-function cryptKitePoint(x, y) { return (x >= 400 && y > -950) ? CRYPT_RUN.kiteMid : CRYPT_RUN.kiteTop; }
+/* Whichever crossing is nearer by path. Measured over every walkable cell
+   left of the zone on the level-0 grid: this rule picks the nearer one for
+   7,509 of 7,551 - the middle one from a7's east end, a2's room and the vbat
+   box, the top one from everywhere else. */
+function cryptKitePoint(x, y) { return (x >= 600 && y > -1300) ? CRYPT_RUN.kiteMid : CRYPT_RUN.kiteTop; }
 async function cryptKiteTick(now) {
 	if (character.map !== 'crypt' || character.rip) { crKite = null; return false; }
 	if (!crKite) {
@@ -4633,12 +4779,24 @@ function cryptPartyHold(run, bs, now) {
 		if (g > worst) { worst = g; who = n; }
 	}
 	crHolding = crHolding ? worst > CRYPT_RUN.holdReleaseAt : worst > CRYPT_RUN.holdAt;
-	return crHolding ? who + ' is ' + Math.round(worst) + 'u back' : null;
+	/* v34: a hold for a gap alone gives up after holdMaxMs and stays given up
+	   until the gap closes. The first live run held for MageofOz at 135u - past
+	   the 120 release, short of the 180 at which she would close - with no end. */
+	if (!crHolding) { crHoldGapSince = 0; crHoldWaived = false; return null; }
+	if (!crHoldGapSince) crHoldGapSince = now;
+	if (!crHoldWaived && now - crHoldGapSince > CRYPT_RUN.holdMaxMs) {
+		crHoldWaived = true;
+		crSay('holdWaived', 'held ' + Math.round(CRYPT_RUN.holdMaxMs / 1000) + 's for ' + who + ' at ' + Math.round(worst) + 'u - going on', 'orange', 0);
+	}
+	return crHoldWaived ? null : who + ' is ' + Math.round(worst) + 'u back';
 }
-function crNearest(types) {
+/* A target inside the no-go zone is not gone after - unless it is already on
+   the party, when the fight comes to us. */
+function crNearest(types, run) {
 	let best = null, bd = Infinity;
 	for (const m of threats()) {
 		if (types.indexOf(m.mtype) < 0 || caveFriendly(m)) continue;
+		if (run && crInZone(crPos(m), run) && !crOnParty(m)) continue;
 		const d = dist(character, m);
 		if (d < bd) { bd = d; best = m; }
 	}
@@ -4660,25 +4818,31 @@ async function cryptLeaderInside(run, now) {
 		crSay('regrouped', 'regrouped - re-engaging', '#7FD98A', 0);
 		return;
 	}
-	const why = cryptPartyHold(run, bs, now);
-	if (why) { crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return; }
+	cryptLeaderBook(run, bs, now);
 	const st = cryptStage(run);
 	if (!st) {
+		const gu = Object.keys(run.givenUp || {});
 		crunPatch((c) => { if (!c.done) { c.done = true; c.doneAt = Date.now(); } });
-		crSay('done', 'crypt cleared - leaving', '#7FD98A', 0);
+		crSay('done', 'crypt cleared - leaving' + (gu.length ? ' (given up: ' + gu.join(', ') + ')' : ''), '#7FD98A', 0);
 		return;
 	}
 	if (crSearch.stage !== st.i) {
-		crSearch = { stage: st.i, i: 0, since: now };
+		crSearch = { stage: st.i, i: 0, since: now, done: {} };
 		crSay('stage-' + st.i, 'stage ' + (st.i + 1) + ': ' + st.types.join(', '), '#7FD1FF', 0);
 	}
-	const tgt = crNearest(st.types);
+	const tgt = crNearest(st.types, run);
 	const pulling = st.types.indexOf('a2') >= 0 && tgt && tgt.mtype === 'a2' && crOnParty(tgt);
 	/* A plan monster already on the party is fought where it is - except a2,
-	   who is pulled. */
+	   who is pulled. v34: both come BEFORE the follower hold. The first live
+	   run held through the vbat fight, and held on the way back with a2 on the
+	   leader, which is the wipe. R1: no follower hold during the pull. */
 	const fight = threats().some((m) => CRYPT_RUN.need[m.mtype] && crOnParty(m) && !caveFriendly(m)
 		&& dist(character, m) <= CRYPT_RUN.fightWithin && !(pulling && m.mtype === 'a2'));
 	if (fight) { engagedUntil = now + CFG.engageHoldMs; crHalt('fight'); return; }
+	if (!pulling) {
+		const why = cryptPartyHold(run, bs, now);
+		if (why) { crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return; }
+	}
 	if (tgt) {
 		crSearch.since = now;
 		engagedUntil = now + CFG.engageHoldMs;
@@ -4695,6 +4859,15 @@ async function cryptLeaderInside(run, now) {
 		else crHalt('in-range');
 		return;
 	}
+	/* Nothing of this stage in view this long: give it up and move on - R6. */
+	if (now - crSearch.since > CRYPT_RUN.searchMaxMs) {
+		crunPatch((c) => { c.givenUp = c.givenUp || {}; for (const t of st.types) c.givenUp[t] = now; });
+		crHalt('search');
+		crSay('gaveUp-' + st.types.join('-'), 'no ' + st.types.join('/') + ' found in ' + Math.round(CRYPT_RUN.searchMaxMs / 60000)
+			+ ' min - given up, moving on; ' + (st.types.length > 1 ? 'they are' : 'it is') + ' taken back if seen again', 'red', 0);
+		crSearch = { stage: -1, i: 0, since: now, done: {} };
+		return;
+	}
 	if (st.types.indexOf('vbat') >= 0) {
 		if (crDist(crPos(character), CRYPT_RUN.vbatSpot) > NAV.arriveAt) { crVbatEmptySince = 0; crGo(CRYPT_RUN.vbatSpot, 'vbat'); return; }
 		if (!crVbatEmptySince) crVbatEmptySince = now;
@@ -4704,21 +4877,73 @@ async function cryptLeaderInside(run, now) {
 		}
 		return;
 	}
-	/* Nothing of this stage in view: search. */
-	if (now - crSearch.since > CRYPT_RUN.searchMaxMs) {
-		cryptNavOn = false;
+	/* Nothing of this stage in view: search - R4 and R5. */
+	const pts = cryptSearchPoints(run, st, bs, now);
+	if (!pts.length) {
 		crHalt('search');
-		crSay('searchGaveUp', 'no ' + st.types.join('/') + ' found in ' + Math.round(CRYPT_RUN.searchMaxMs / 60000) + ' min - the driving is yours; cryptNav(true) resumes', 'red', 0);
+		crSay('searchBlocked', 'searching for ' + st.types.join('/') + ' - every point is blocked by a monster or a failed walk; waiting', 'orange');
 		return;
 	}
-	const pts = [];
-	/* In the order CRYPT_RUN.search lists them, not the stage's: a7's hall is
-	   on the way to the top hall, so a7 is looked for first. */
-	for (const t in CRYPT_RUN.search) if (st.types.indexOf(t) >= 0) for (const p of CRYPT_RUN.search[t]) pts.push({ x: p[0], y: p[1] });
-	if (!pts.length) return;
-	const p = pts[crSearch.i % pts.length];
-	if (crDist(crPos(character), p) <= NAV.arriveAt) { crSearch.i++; return; }
-	crGo(p, 'search');
+	const p = pts[0];
+	if (crDist(crPos(character), p) <= NAV.arriveAt) { crSearch.done[p.key] = true; crSearch.i++; return; }
+	crSay('search-' + p.key, 'looking for ' + st.types.join('/') + ' at ' + p.x + ',' + p.y + ' (' + p.why + ')', '#8b98ab', 60000);
+	crGo(p, 'crs-' + p.key);
+}
+/* The leader's bookkeeping, every tick inside: merge the members' sightings;
+   grow the zone over a zone monster seen outside it; take back a given-up
+   plan monster that has been seen since it was given up. */
+function cryptLeaderBook(run, bs, now) {
+	const s = crSightings(bs, run);
+	const z0 = crZone(run);
+	let z = { x: z0.x, y: z0.y };
+	for (const a of s.zav) if (!(a.x > z.x && a.y > z.y)) z = { x: Math.min(z.x, a.x - CRYPT_RUN.zoneMargin), y: Math.min(z.y, a.y - CRYPT_RUN.zoneMargin) };
+	if (z.x !== z0.x || z.y !== z0.y) {
+		crunPatch((c) => { c.zone = z; });
+		run.zone = z;
+		crSay('zone-' + z.x + ',' + z.y, 'a zone monster seen outside the zone - the no-go zone is now x > ' + z.x + ', y > ' + z.y, 'orange', 0);
+	}
+	const back = Object.keys(run.givenUp || {}).filter((t) => s.seen[t] && s.seen[t].t > run.givenUp[t]);
+	if (back.length) {
+		crunPatch((c) => { for (const t of back) if (c.givenUp) delete c.givenUp[t]; });
+		for (const t of back) delete run.givenUp[t];
+		crSay('back-' + back.join('-') + '-' + now, back.join('/') + ' seen again - going back for ' + (back.length > 1 ? 'them' : 'it'), '#7FD1FF', 0);
+	}
+	return s;
+}
+/* Why a search point is off limits, or null. */
+function crSearchBlocked(p, run, st, now) {
+	if (crInZone(p, run)) return 'zone';
+	if (p.x >= CRYPT_RUN.lineX) return 'line';
+	const k = crKills(run), cl = run.cleared || {}, gu = run.givenUp || {};
+	for (const t in CRYPT_RUN.homes) {
+		if (st.types.indexOf(t) >= 0 || cl[t] || gu[t] || (k[t] || 0) >= (CRYPT_RUN.need[t] || 1)) continue;
+		for (const h of CRYPT_RUN.homes[t]) if (Math.hypot(p.x - h[0], p.y - h[1]) <= CRYPT_RUN.homeAvoid) return t + "'s home";
+	}
+	for (const id in crAvoid) {
+		const a = crAvoid[id];
+		if (st.types.indexOf(a.mtype) >= 0 || now - a.t > CRYPT_RUN.avoidMs) continue;
+		if (Math.hypot(p.x - a.x, p.y - a.y) <= CRYPT_RUN.avoidR) return a.mtype + ' near it';
+	}
+	return null;
+}
+/* Where to look next, best first: where a member last saw it, where a member
+   died to it, its home, then the tour from the point nearest the leader. A
+   point already reached this pass, or whose walk failed searchFailSkip times,
+   is left out; once a pass has nothing left it starts again. */
+function cryptSearchPoints(run, st, bs, now) {
+	const s = crSightings(bs, run), out = [];
+	for (const t of st.types) if (s.seen[t]) out.push({ x: s.seen[t].x, y: s.seen[t].y, key: 'seen-' + t + '-' + s.seen[t].t, why: 'last seen' });
+	for (const d of s.died) if (d.by && st.types.indexOf(d.by) >= 0) out.push({ x: d.x, y: d.y, key: 'died-' + d.who + '-' + d.t, why: d.who + ' died to it' });
+	for (const t in CRYPT_RUN.homes) if (st.types.indexOf(t) >= 0) CRYPT_RUN.homes[t].forEach((h, i) => out.push({ x: h[0], y: h[1], key: 'home-' + t + '-' + i, why: 'its home' }));
+	const T = CRYPT_RUN.tour, me = crPos(character);
+	let start = 0, bd = Infinity;
+	T.forEach((p, i) => { const d = Math.hypot(p[0] - me.x, p[1] - me.y); if (d < bd) { bd = d; start = i; } });
+	for (let j = 0; j < T.length; j++) { const i = (start + j) % T.length; out.push({ x: T[i][0], y: T[i][1], key: 'tour-' + i, why: 'tour' }); }
+	if (!crSearch.done) crSearch.done = {};
+	const ok = (p) => !((navFails['crs-' + p.key] || 0) >= CRYPT_RUN.searchFailSkip) && !crSearchBlocked(p, run, st, now);
+	let left = out.filter((p) => ok(p) && !crSearch.done[p.key]);
+	if (!left.length && out.some(ok)) { crSearch.done = {}; left = out.filter(ok); }
+	return left;
 }
 
 /* ---- inside: a follower. True while this owns the move. ---- */
@@ -4893,13 +5118,13 @@ function cryptTick() {
 	const now = Date.now();
 	if (!character.rip) crHoldSince = 0;
 	if (now - crAutoAt >= 60000) cryptAutoStamp(now);
-	cryptSeeTick();
+	cryptSeeTick(now);
 	if (isLeader() && character.map === 'crypt' && character.in) {
 		const r = crunRead();
 		if (!r || r.id !== character.in) {
 			crunWrite({ id: character.in, at: now, leader: character.name, dead: {}, cleared: {}, done: false, regroupAll: false });
 			try { send_cm(followers(), { cave: { crypt: character.in } }); } catch (e) {}
-			crSearch = { stage: -1, i: 0, since: now };
+			crSearch = { stage: -1, i: 0, since: now, done: {} };
 			crSay('published', 'in - instance published to ' + followers().join(', '), '#7FD98A', 0);
 		}
 	}

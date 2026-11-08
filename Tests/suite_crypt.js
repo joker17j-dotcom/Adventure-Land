@@ -17,7 +17,8 @@ const LIFT = ['CRYPT', 'CRYPT_RUN', 'cryptAutoStamp', 'cryptAutoSaved', 'cryptNe
 	'crStraysOnMe', 'cryptKitePoint', 'cryptKiteTick', 'cryptPartyHold', 'crNearest', 'crOnParty', 'cryptLeaderInside',
 	'cryptFollowerInside', 'crHoldPlace', 'cryptLeave', 'cryptEnter', 'cryptEnterFailed', 'cryptGate', 'cryptOutside',
 	'cryptSelfBeacon', 'cryptMuleList', 'cryptFree', 'cryptMluckLacking', 'cryptTick', 'cryptMoveTick',
-	'cryptMuleTick', 'cryptRoomTick', 'cryptMluckTick', 'cryptAskMerchant', 'crSendAll'];
+	'cryptMuleTick', 'cryptRoomTick', 'cryptMluckTick', 'cryptAskMerchant', 'crSendAll',
+	'crZone', 'crInZone', 'crSightings', 'cryptLeaderBook', 'crSearchBlocked', 'cryptSearchPoints'];
 
 function mkStorage(init) {
 	const m = Object.assign({}, init || {});
@@ -33,7 +34,8 @@ function cw(o) {
 	if (o.run) ls.m.crypt_run = JSON.stringify(o.run);
 	const w = world({ TEAM: TEAM, mode: 'crypt', stopped: false, cryptAuto: true, cryptNavOn: true, cryptRelayId: null, crAutoAt: 0,
 		crunRaw: null, crunMemo: null, crSaid: {}, crSeen: {}, crKite: null, crHolding: false, crHoldSince: 0,
-		crSearch: { stage: -1, i: 0, since: 0 }, crVbatEmptySince: 0, crWalkFlight: null, crEnterFlight: 0,
+		crSearch: { stage: -1, i: 0, since: 0, done: {} }, crVbatEmptySince: 0,
+		crCs: { run: null, seen: {}, died: [], zav: [] }, crAvoid: {}, crOnMe: null, crWasRip: false, crHoldGapSince: 0, crHoldWaived: false, crWalkFlight: null, crEnterFlight: 0,
 		crMuled: false, crMuleRun: undefined, crMuleSince: 0, crMuleAt: 0, crRoom: true, crPushAt: 0, crAskAt: {}, crMluckSince: 0,
 		CRUN_KEY: 'crypt_run', CRYPT_ID_KEY: 'crypt_instance', CRYPT_AUTO_KEY: 'crypt_auto',
 		navFlight: null, navManualUntil: 0, navFails: {}, engagedUntil: 0, recovering: false, aim: null,
@@ -219,16 +221,22 @@ name: 'v32 crypt: a stray is walked right of the line, then town, then rejoin', 
 	const w0 = cw({});
 	t.eq('from a2’s room the middle crossing', w0.cryptKitePoint(1110, -630), w0.CRYPT_RUN.kiteMid);
 	t.eq('from the vbat box the middle crossing', w0.cryptKitePoint(1190, -380), w0.CRYPT_RUN.kiteMid);
-	t.eq('from a7’s hall the top', w0.cryptKitePoint(700, -1076), w0.CRYPT_RUN.kiteTop);
+	t.eq('from a7’s spawn the middle - nearer by path on the level-0 grid', w0.cryptKitePoint(730, -1080), w0.CRYPT_RUN.kiteMid);
+	t.eq('from the west end of a7’s hall the top', w0.cryptKitePoint(380, -1100), w0.CRYPT_RUN.kiteTop);
+	t.eq('from the top hall the top', w0.cryptKitePoint(1240, -1480), w0.CRYPT_RUN.kiteTop);
+	t.ok('v34: the line is past the zone’s edge, x 1850 - R6', w0.CRYPT_RUN.lineX > w0.CRYPT_RUN.zone.x);
 	t.eq('from the entrance corridor the top', w0.cryptKitePoint(0, -450), w0.CRYPT_RUN.kiteTop);
 	t.ok('both crossings are right of the line', w0.CRYPT_RUN.kiteTop.x >= w0.CRYPT_RUN.lineX && w0.CRYPT_RUN.kiteMid.x >= w0.CRYPT_RUN.lineX);
 	const stray = { id: 's1', mtype: 'a5', target: 'MageofOz', x: 1000, y: -600 };
 	const w = cw({ me: 'MageofOz', x: 1100, y: -620, run: R(), monsters: [stray], ents: { s1: stray } });
 	return (async () => {
 		t.eq('a stray on me starts the kite', await w.cryptKiteTick(Date.now()), true);
-		t.eq('toward the middle crossing', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([1800, -900]));
+		t.eq('toward the middle crossing', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([1880, -880]));
 		t.eq('no town yet', w.skills.length, 0);
-		w.character.real_x = 1790;
+		w.character.real_x = 1850;
+		await w.cryptKiteTick(Date.now());
+		t.eq('v34: at x 1850 - the old line - still walking', w.skills.length, 0);
+		w.character.real_x = 1870;
 		await w.cryptKiteTick(Date.now());
 		t.eq('right of the line: use_town', w.skills, ['use_town']);
 		w.character.real_x = 0; w.character.real_y = 0;
@@ -283,7 +291,12 @@ name: 'v32 crypt: the leader drives - regroup, hold for the party, pull a2, sear
 		w = cw({ me: 'FatherToken', x: 1050, y: -680, run: R({ dead: dead2 }), monsters: [a2], allies: [{ hp: 900, max_hp: 1000 }],
 			beacons: { Dexon: near('Dexon', { x: 1050, y: -680 }), MageofOz: near('MageofOz', { x: 1050, y: -680 }) } });
 		await w.cryptLeaderInside(w.crunRead(), now);
-		t.eq('a2 on the party: pull him to the hall', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([570, -1080]));
+		t.eq('a2 on the party: pull him to the left wing - R2', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([-270, -465]));
+		w = cw({ me: 'FatherToken', x: 1050, y: -680, run: R({ dead: dead2 }), monsters: [a2], allies: [{ hp: 900, max_hp: 1000 }],
+			beacons: { Dexon: near('Dexon', { x: 1500, y: -680 }), MageofOz: near('MageofOz', { rip: true }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('R1: a follower 450 back and one dead - the pull goes on', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([-270, -465]));
+		t.eq('and nothing says holding', w.said.some((m) => /holding/.test(m)), false);
 		w = cw({ me: 'FatherToken', x: 1050, y: -680, run: R({ dead: dead2 }), monsters: [a2], allies: [{ hp: 300, max_hp: 1000 }],
 			beacons: { Dexon: near('Dexon', { x: 1050, y: -680 }), MageofOz: near('MageofOz', { x: 1050, y: -680 }) } });
 		await w.cryptLeaderInside(w.crunRead(), now);
@@ -291,10 +304,15 @@ name: 'v32 crypt: the leader drives - regroup, hold for the party, pull a2, sear
 
 		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
 		await w.cryptLeaderInside(w.crunRead(), now);
-		t.eq('nothing in view: search a7’s spawn first', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([727, -1076]));
+		t.eq('nothing in view: search a7’s home first', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([730, -1080]));
 		w.crSearch.since = now - w.CRYPT_RUN.searchMaxMs - 1;
 		await w.cryptLeaderInside(w.crunRead(), now);
-		t.eq('searched too long: the driving goes back', w.cryptNavOn, false);
+		t.eq('R6: searched too long - given up, both of the stage', Object.keys(w.crunRead().givenUp || {}).sort().join(','), 'a3,a7');
+		t.eq('and the driving is NOT handed back', w.cryptNavOn, true);
+		t.ok('said in red words', w.said.some((m) => /given up, moving on/.test(m)));
+		w.moves.length = 0;
+		await w.cryptLeaderInside(w.crunRead(), now + 1);
+		t.eq('and the next stage is a2: his home next', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([1110, -630]));
 
 		const all = { m1: 'a3', m2: 'a7', m3: 'a2' };
 		for (let i = 0; i < 7; i++) all['v' + i] = 'vbat';
@@ -415,4 +433,170 @@ name: 'v33 crypt: crypt_auto lapses after the run goes quiet, and cryptNew() aba
 	t.eq('precondition: an undone run is re-entered, not replaced', JSON.stringify(w.enters), JSON.stringify([['crypt', 'INST1']]));
 	w = cw({ storage: {} });
 	t.eq('nothing on record: cryptNew says so', w.cryptNew(), null);
+}}, {
+
+name: 'v34 crypt: every fixed point is a level-0 cell - the server grid counts cells past a wall too', fn(t) {
+	/* precomputed_map_data.js smap_data.crypt holds levels 0-7, and only level 0
+	   is reachable: server_bfs pushes level+1 for a step can_move refuses.
+	   v32 read every key as walkable, so (1470,-1400) - a level-5 cell - was a
+	   search point inside a sealed pocket, retried ~104 times live. These are
+	   level-0 cells read off upstream a5c133dc; a point moved off one fails here. */
+	const C = cw({}).CRYPT_RUN;
+	const L0 = { '0|0': 1, '-270|-460': 1, '1190|-380': 1, '1900|-1760': 1, '1880|-880': 1, '730|-1080': 1, '1790|-1480': 1, '1110|-630': 1,
+		'-40|-460': 1, '-180|-520': 1, '-180|-1040': 1, '380|-1100': 1, '600|-1080': 1, '740|-660': 1, '1100|-440': 1, '1140|-340': 1,
+		'1440|-560': 1, '1500|-860': 1, '420|-1480': 1, '940|-1480': 1, '1240|-1480': 1, '1760|-1520': 1 };
+	const cell = (x, y) => (Math.round(x / 10) * 10) + '|' + (Math.round(y / 10) * 10);
+	const pts = [['entrance', C.entrance.x, C.entrance.y], ['pullSpot', C.pullSpot.x, C.pullSpot.y], ['vbatSpot', C.vbatSpot.x, C.vbatSpot.y],
+		['kiteTop', C.kiteTop.x, C.kiteTop.y], ['kiteMid', C.kiteMid.x, C.kiteMid.y]];
+	for (const t2 in C.homes) C.homes[t2].forEach((h) => pts.push(['home ' + t2, h[0], h[1]]));
+	C.tour.forEach((p, i) => pts.push(['tour ' + i, p[0], p[1]]));
+	for (const p of pts) t.ok(p[0] + ' at ' + p[1] + ',' + p[2] + ' is a level-0 cell', !!L0[cell(p[1], p[2])]);
+	t.ok('the sealed pocket is gone from every list', !pts.some((p) => p[1] === 1470 && p[2] === -1400));
+	t.ok('no tour point is in the zone or past the line', C.tour.every((p) => !(p[0] > C.zone.x && p[1] > C.zone.y) && p[0] < C.lineX));
+}}, {
+
+name: 'v34 crypt: what a member sees goes in its beacon, and the leader merges it', fn(t) {
+	const now = Date.now();
+	const a3 = { id: 'm3', mtype: 'a3', target: 'Dexon', x: 1500, y: -1480 };
+	const a8 = { id: 'm8', mtype: 'a8', x: 1700, y: -900 };
+	let w = cw({ me: 'Dexon', x: 1450, y: -1480, run: R(), monsters: [a3, a8] });
+	w.cryptSeeTick(now);
+	t.eq('a plan monster: last seen where it stands', JSON.stringify(w.crCs.seen.a3), JSON.stringify({ x: 1500, y: -1480, t: now }));
+	t.eq('a zone monster outside the zone is reported', w.crCs.zav.map((z) => z.mtype + '@' + z.x).join(), 'a8@1700');
+	t.eq('and anything not friendly is a search hazard', Object.keys(w.crAvoid).sort().join(), 'm3,m8');
+	w.character.rip = true;
+	w.cryptSeeTick(now + 1000);
+	t.eq('dying to a3: the death point carries a3', JSON.stringify(w.crCs.died), JSON.stringify([{ x: 1450, y: -1480, t: now + 1000, by: 'a3' }]));
+	w.cryptSeeTick(now + 2000);
+	t.eq('once per death', w.crCs.died.length, 1);
+	t.ok('the beacon carries it', /cs: character\.map === 'crypt' \? crCs : null/.test(src()));
+	const cs = JSON.parse(JSON.stringify(w.crCs));
+	const s = w.crSightings({ Dexon: { cs: cs }, MageofOz: { cs: { run: 'OTHER', seen: { a7: { x: 1, y: 1, t: now } }, died: [], zav: [] } } }, R());
+	t.eq('merged: this run only', Object.keys(s.seen).join(), 'a3');
+	t.eq('with who died', s.died[0].who, 'Dexon');
+}}, {
+
+name: 'v34 crypt: the search - last seen, died-to, home, then the tour; blocked points skipped', fn(t) {
+	const now = Date.now();
+	const near = (n, over) => B(n, Object.assign({ x: 10, y: 10 }, over || {}));
+	const first = async (o) => {
+		const w = cw(Object.assign({ me: 'FatherToken', run: R() }, o));
+		if (o.pre) o.pre(w);
+		await w.cryptLeaderInside(w.crunRead(), now);
+		return { w: w, at: w.moves[0] ? [w.moves[0].x, w.moves[0].y].join(',') : null };
+	};
+	return (async () => {
+		let r = await first({ beacons: { Dexon: near('Dexon', { cs: { run: 'INST1', seen: { a3: { x: 1500, y: -1480, t: now - 5000 } }, died: [], zav: [] } }), MageofOz: near('MageofOz') } });
+		t.eq('R5: where a member last saw it, first', r.at, '1500,-1480');
+		r = await first({ run: R({ dead: { m1: 'a3', m2: 'a7' } }), beacons: { Dexon: near('Dexon', { cs: { run: 'INST1', seen: {}, died: [{ x: -270, y: -465, t: now - 9000, by: 'a2' }], zav: [] } }), MageofOz: near('MageofOz') } });
+		t.eq('R5: where a member died to it, when nobody saw it since', r.at, '-270,-465');
+		r = await first({ beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') }, pre: (w) => { w.crAvoid.x = { x: 720, y: -1060, t: now, mtype: 'a6' }; } });
+		t.eq('another monster by a7’s home: skipped, a3’s home next', r.at, '1790,-1480');
+		r = await first({ beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') }, pre: (w) => { w.crAvoid.x = { x: 720, y: -1060, t: now, mtype: 'a7' }; } });
+		t.eq('a monster of THIS stage is not a hazard', r.at, '730,-1080');
+		r = await first({ beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') }, pre: (w) => { w.navFails['crs-home-a7-0'] = 2; } });
+		t.eq('a point whose walk failed twice: skipped', r.at, '1790,-1480');
+		r = await first({ x: 300, y: -1050, beacons: { Dexon: near('Dexon', { x: 300, y: -1050 }), MageofOz: near('MageofOz', { x: 300, y: -1050 }) },
+			pre: (w) => { w.crSearch = { stage: 0, i: 0, since: now, done: { 'home-a7-0': true, 'home-a3-0': true } }; } });
+		t.eq('homes done: the tour, from the point nearest the leader', r.at, '380,-1100');
+		const w = r.w;
+		const run = R(), st = { i: 0, types: ['a3', 'a7'] };
+		t.eq('the vbat box is off the search while vbat is still to come', w.crSearchBlocked({ x: 1140, y: -340 }, run, st, now), "vbat's home");
+		t.eq('and a2’s room', w.crSearchBlocked({ x: 1100, y: -440 }, run, st, now), "a2's home");
+		t.eq('not once a2 is dead', w.crSearchBlocked({ x: 740, y: -660 }, R({ dead: { b: 'a2' } }), st, now), null);
+		t.eq('the zone', w.crSearchBlocked({ x: 1900, y: -1000 }, run, st, now), 'zone');
+		t.eq('past the line', w.crSearchBlocked({ x: 1870, y: -1760 }, run, st, now), 'line');
+		const pts = w.cryptSearchPoints(run, st, {}, now);
+		t.ok('every point of a whole pass is offered once', new Set(pts.map((p) => p.key)).size === pts.length);
+		w.crSearch.done = {};
+		for (const p of w.cryptSearchPoints(run, st, {}, now)) w.crSearch.done[p.key] = true;
+		t.ok('a finished pass starts again rather than stopping', w.cryptSearchPoints(run, st, {}, now).length > 0);
+	})();
+}}, {
+
+name: 'v34 crypt: the zone grows over a zone monster seen outside it; a given-up monster seen again is taken back', fn(t) {
+	const now = Date.now();
+	let w = cw({ me: 'FatherToken', run: R() });
+	w.cryptLeaderBook(w.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 1700, y: -900, t: now }] } } }, now);
+	t.eq('a8 at 1700,-900: the zone covers it, plus the margin', JSON.stringify(w.crunRead().zone), JSON.stringify({ x: 1600, y: -1235 }));
+	t.eq('and the zone test reads it', w.crInZone({ x: 1650, y: -900 }, w.crunRead()), true);
+	t.eq('a sighting inside the zone changes nothing', (() => {
+		const v = cw({ me: 'FatherToken', run: R() });
+		v.cryptLeaderBook(v.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 2040, y: -880, t: now }] } } }, now);
+		return v.crunRead().zone;
+	})(), undefined);
+	w = cw({ me: 'FatherToken', run: R({ givenUp: { a3: now - 60000 } }) });
+	t.eq('precondition: a given-up a3 is out of the stages', w.cryptStage(w.crunRead()).types.join(), 'a7');
+	w.cryptLeaderBook(w.crunRead(), { MageofOz: { cs: { run: 'INST1', seen: { a3: { x: 1, y: 1, t: now - 120000 } }, died: [], zav: [] } } }, now);
+	t.eq('a sighting from BEFORE the give-up does not bring it back', !!w.crunRead().givenUp.a3, true);
+	w.cryptLeaderBook(w.crunRead(), { MageofOz: { cs: { run: 'INST1', seen: { a3: { x: 1, y: 1, t: now } }, died: [], zav: [] } } }, now);
+	t.eq('seen since: taken back', !!w.crunRead().givenUp.a3, false);
+	t.eq('and it is a stage again', w.cryptStage(w.crunRead()).types.join(), 'a3,a7');
+	const inZ = { id: 'z3', mtype: 'a3', x: 1950, y: -1000 };
+	let v = cw({ me: 'FatherToken', monsters: [inZ] });
+	t.eq('a stage target inside the zone is not gone after', v.crNearest(['a3'], R()), null);
+	inZ.target = 'Dexon';
+	t.eq('unless it is already on the party', (v.crNearest(['a3'], R()) || {}).id, 'z3');
+	const vb = { id: 'v', mtype: 'vbat', x: 1190, y: -380 };
+	w = cw({ me: 'FatherToken', x: 1190, y: -380, run: R({ dead: { m3: 'a3', m2: 'a2' }, givenUp: { a7: now - 1 } }), monsters: [vb],
+		beacons: { Dexon: B('Dexon', { x: 1190, y: -380 }), MageofOz: B('MageofOz', { x: 1190, y: -380 }) } });
+	t.eq('precondition: on vbat with a7 given up', w.cryptStage(w.crunRead()).types.join(), 'vbat');
+	const all = { m1: 'a3', m3: 'a2' };
+	for (let i = 0; i < 7; i++) all['v' + i] = 'vbat';
+	w = cw({ me: 'FatherToken', run: R({ dead: all, givenUp: { a7: now } }), beacons: { Dexon: B('Dexon'), MageofOz: B('MageofOz') } });
+	return (async () => {
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('every stage killed or given up: done', w.crunRead().done, true);
+		t.ok('and the log names what was given up', w.said.some((m) => /given up: a7/.test(m)));
+	})();
+}}, {
+
+name: 'v34 crypt: the leader never holds through a fight, and a gap hold gives up', fn(t) {
+	const now = Date.now();
+	const vb = { id: 'v1', mtype: 'vbat', target: 'Dexon', x: 1190, y: -380 };
+	const dead = { m1: 'a3', m2: 'a7', m3: 'a2' };
+	let w = cw({ me: 'FatherToken', x: 1190, y: -380, run: R({ dead: dead }), monsters: [vb],
+		beacons: { Dexon: B('Dexon', { x: 1190, y: -380 }), MageofOz: B('MageofOz', { x: 1190, y: -700 }) } });
+	return (async () => {
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('vbat on Dexon, MageofOz 320 back: no hold - fight', w.said.some((m) => /holding/.test(m)), false);
+		t.ok('and the leader stands', w.stops >= 0 && w.moves.length === 0);
+		const later = now + 60000;   // beacons fresh for the whole test
+		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: B('Dexon', { x: 10, y: 10, t: later }), MageofOz: B('MageofOz', { x: 135, y: 0, t: later }) } });
+		w.crHolding = true;
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('the live case: 135 back, holding', w.moves.length, 0);
+		await w.cryptLeaderInside(w.crunRead(), now + w.CRYPT_RUN.holdMaxMs + 1);
+		t.eq('past holdMaxMs: going on', w.moves.length, 1);
+		t.ok('said once', w.said.filter((m) => /going on/.test(m)).length === 1);
+		w.cryptPartyHold(w.crunRead(), { Dexon: B('Dexon', { t: later }), MageofOz: B('MageofOz', { t: later }) }, now + w.CRYPT_RUN.holdMaxMs + 2);
+		t.eq('the gap closed: re-armed', w.crHoldWaived, false);
+		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: B('Dexon', { rip: true, t: later }), MageofOz: B('MageofOz', { t: later }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		await w.cryptLeaderInside(w.crunRead(), now + w.CRYPT_RUN.holdMaxMs + 1);
+		t.eq('a dead follower is still held for, however long', w.moves.length, 0);
+	})();
+}}, {
+
+name: 'v34 crypt: a walk still moving is not re-sent, and its own replacement is not reported', fn(t) {
+	const rejects = [];
+	const w = cw({ me: 'Dexon', map: 'cave' });
+	w.smart_move = (p) => { w.moves.push(p); return new Promise((res, rej) => rejects.push(rej)); };
+	return (async () => {
+		w.crWalk({ map: 'cave', x: -193, y: -1296 }, 'door');
+		w.character.moving = true;
+		w.crWalkFlight.at -= 31000;
+		w.crWalk({ map: 'cave', x: -193, y: -1296 }, 'door');
+		t.eq('moving after 31s: not re-sent', w.moves.length, 1);
+		w.character.moving = false;
+		w.crWalk({ map: 'cave', x: -193, y: -1296 }, 'door');
+		t.eq('stopped after 31s: re-sent', w.moves.length, 2);
+		rejects[0]({ reason: 'interrupted' });
+		await new Promise((r) => setTimeout(r, 0));
+		t.eq('the replaced walk’s "interrupted" is not reported', w.said.some((m) => /failed/.test(m)), false);
+		rejects[1]({ reason: 'failed' });
+		await new Promise((r) => setTimeout(r, 0));
+		t.eq('a real failure still is', w.said.some((m) => /path to door failed: failed/.test(m)), true);
+		t.eq('nothing in the crypt smart_moves to a name - coordinates only', /smart_move\(\s*['"]/.test(src()), false);
+	})();
 }}];
