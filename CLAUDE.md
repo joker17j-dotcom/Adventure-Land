@@ -3994,6 +3994,12 @@ reading.
   **`noKite` ALSO SWITCHES OFF THE FOLLOWERS' COURAGE DISENGAGE FOR THAT
   MONSTER**, because both kiters flee only from a candidate type. The design is
   in the Ranger v161 changelog entry.
+  **FEAR IS ON NO OTHER PLAYER'S ENTITY** - `fear` is in the server's
+  self-only property list - so Dexon sends his fear-free speed as `sD`, and a
+  follower's radius scales by the two fear-free speeds (Ranger v162 / Priest v90
+  / Mage v113). Before that a frightened follower's ring shrank into the pack.
+  The same builds keep the party circling between waves rather than parking on
+  the entry centre (`circleHoldsSpot()`).
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from

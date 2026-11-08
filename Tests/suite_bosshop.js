@@ -2452,6 +2452,7 @@ module.exports = [
 		FARM_SPOT: { audience: ['FatherToken'] },
 		farmSpotLast: null, farmSpotSentAt: 0, farmBootBossEval: false, farmBootAchvTick: false,
 		circleWord: () => ({ v: 1, on: false }),   // the circle override's own suite covers it
+		circleWordKey: () => JSON.stringify({ v: 1, on: false }),
 	});
 	lift(ws, RANGER, ['farmSpotBootReady', 'farmSpotKey', 'sendFarmSpot']);
 	t.eq('leader: no broadcast before either latch', ws.sendFarmSpot('x'), false);

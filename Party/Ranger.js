@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v161
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v162
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -555,7 +555,7 @@ const CONFIG = {
 		focusFire: {
 			enabled: TOGGLES.focusFire,
 			preferSingleTarget: TOGGLES.focusFirePreferSingleTarget,
-			singleTargetMobs: ['cgoo', 'bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer', 'boar', 'cutebee', 'mole'],
+			singleTargetMobs: ['bigbird', 'mummy', 'prat', 'plantoid', 'fireroamer', 'boar', 'cutebee', 'mole'],
 			leaderPicksLowestHp: TOGGLES.focusFireLeaderPicksLowestHp
 		},
 		targetPriority: ['FatherToken'],
@@ -1513,7 +1513,8 @@ async function mainLoop() {
 			return setTimeout(mainLoop, 250);   // farm not decided yet; events above still ran
 		}
 		else if (CONFIG.movement.enabled) {
-			if (!get_nearest_monster({ type: home })) {
+			/* Between waves an active circle entry holds the ring - circleHoldsSpot(). */
+			if (!get_nearest_monster({ type: home }) && !circleHoldsSpot()) {
 				handleReturnHome();
 			} else if (CONFIG.movement.rangedKiting.enabled) {
 				/* Chained, not exclusive. rangedKite() returns false when nothing
@@ -5757,6 +5758,37 @@ function circleNoKiteTypes() {
 	return [p.entry.m];
 }
 
+/* Fear subtracts a fixed amount from speed by fear level - the server's own
+   table, `sredux` in node/server.js, read at upstream a5c133dc:
+   player.speed -= sredux[min(len - 1, fear)]. The browser session measured
+   63, 43 and 23 at fear 0, 1 and 2. Adding it back gives the speed this
+   character moves at when nothing frightens it, which is what a ring radius
+   scales with: a radius from live speed shrinks into the pack the moment the
+   pack frightens us. Not exact where something applies after the subtraction
+   (winterland x0.95; a stand or hardshell sets speed to 10). Fear is sent only
+   to the character itself, never on another player's entity. */
+const FEAR_SPEED_REDUX = [0, 20, 40, 70, 80, 90, 100];
+function speedWithoutFear(speed, fear) {
+	if (!(typeof speed === 'number' && speed > 0)) return speed;
+	const f = (typeof fear === 'number' && fear > 0) ? Math.floor(fear) : 0;
+	return speed + FEAR_SPEED_REDUX[Math.min(FEAR_SPEED_REDUX.length - 1, f)];
+}
+
+/* Between waves nothing of the home type is alive, and the movement chain sent
+   everyone to handleReturnHome(), which parks on the destination - the entry's
+   centre, where the next wave spawns on top of the party. While an entry on
+   this map is active and we stand within its wall limit plus CIRCLE_HOLD_SLACK
+   of the centre, that branch is skipped and the circle goes on. Further out,
+   handleReturnHome() still runs: it is the path that pathfinds back. */
+const CIRCLE_HOLD_SLACK = 40;
+function circleHoldsSpot() {
+	const p = circlePlan();
+	if (!p || !p.on || !p.entry || p.entry.map !== character.map || typeof p.wall !== 'number') return false;
+	const x = typeof character.real_x === 'number' ? character.real_x : character.x;
+	const y = typeof character.real_y === 'number' ? character.real_y : character.y;
+	return Math.hypot(x - p.entry.x, y - p.entry.y) <= p.wall + CIRCLE_HOLD_SLACK;
+}
+
 /* Dexon's side. The stored choice (circleOn/circleOff/circleR) outranks the
    CONFIG default and survives a hop; circleForget() drops it. */
 const CIRCLE_KEY = 'circle_override';
@@ -5803,16 +5835,27 @@ function circlePlan() {
 	return { on: true, entry: e, rD: rD, wall: wall };
 }
 
-/* What the followers are told, on every farm_spot message. */
+/* What the followers are told, on every farm_spot message. sD is Dexon's
+   speed with fear removed, because fear is not on his entity and a follower
+   scales its radius by the two speeds. */
 function circleWord() {
 	const p = circlePlan();
 	if (!p.on) return { v: 1, on: false };
 	if (!p.entry) return { v: 1, on: true };
 	const e = p.entry;
 	return {
-		v: 1, on: true, rD: p.rD,
+		v: 1, on: true, rD: p.rD, sD: Math.round(speedWithoutFear(character.speed, character.fear)),
 		entry: { m: e.m, map: e.map, x: e.x, y: e.y, r: e.r, rBy: e.rBy || null, noKite: !!e.noKite },
 	};
+}
+
+/* What the farm-spot key holds: the word without sD, which moves with every
+   speed buff and would otherwise restart the minute of 5s re-sends each time.
+   sD still rides every send, at most 30s apart. */
+function circleWordKey() {
+	const w = Object.assign({}, circleWord());
+	delete w.sD;
+	return JSON.stringify(w);
 }
 
 /* The farm destination for a search result: an active entry's centre first,
@@ -9852,7 +9895,7 @@ function farmSpotKey() {
 	if (!home || !mobMap || !destination) return null;
 	/* The circle word is part of the key, so turning the override on or off,
 	   or changing a radius, is sent as promptly as a new spot. */
-	return `${home}|${mobMap}|${Math.round(destination.x)}|${Math.round(destination.y)}|${JSON.stringify(circleWord())}`;
+	return `${home}|${mobMap}|${Math.round(destination.x)}|${Math.round(destination.y)}|${circleWordKey()}`;
 }
 
 /* Who is in the party that we care about, right now. */

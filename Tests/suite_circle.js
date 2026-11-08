@@ -1,4 +1,6 @@
-/* The circle-walk override - Ranger v161 / Priest v89 / Mage v112.
+/* The circle-walk override - Ranger v161 / Priest v89 / Mage v112, with the
+   fear-free radius and the between-waves hold in Ranger v162 / Priest v90 /
+   Mage v113.
 
    Dexon owns the plan (CONFIG.movement.circleOverride) and sends it on the
    farm_spot message; the followers phase-lock to his angle on a ring scaled
@@ -13,15 +15,17 @@ const RANGER = 'Party/Ranger.js', PRIEST = 'Party/Priest.js', MAGE = 'Party/Mage
 const src = (f) => fs.readFileSync(path.join(ROOT, f), 'utf8');
 
 const SHARED = ['circleWallLimit', 'circleEntryKey', 'circleWall', 'circleWalkWanted',
-	'circleNoKiteTypes', 'kiteCandidateTypes'];
+	'circleNoKiteTypes', 'speedWithoutFear', 'circleHoldsSpot', 'kiteCandidateTypes'];
 const FOLLOWER = ['circleOnWord', 'circlePlan', 'circleFollowerRadius', 'circleIntercept',
 	'circleAngleDiff', 'circleFollowStep', 'circleStep'];
 /* Scalar consts are not liftable (lift() brace-matches from the first `{`),
    so they are supplied to each world and pinned here from the source text. */
-const SHARED_CONSTS = ['const CIRCLE_RAYS = 36;', 'const CIRCLE_RAY_STEP = 5;', 'const CIRCLE_RAY_MAX = 300;'];
+const SHARED_CONSTS = ['const CIRCLE_RAYS = 36;', 'const CIRCLE_RAY_STEP = 5;', 'const CIRCLE_RAY_MAX = 300;',
+	'const CIRCLE_HOLD_SLACK = 40;', 'const FEAR_SPEED_REDUX = [0, 20, 40, 70, 80, 90, 100];'];
 const FOLLOWER_CONSTS = ['const CIRCLE_TRUST_MS = 75000;', 'const CIRCLE_BODY_MARGIN = 5;',
 	'const CIRCLE_MIN_R = 10;', 'const CIRCLE_ARRIVE = 6;', 'const CIRCLE_T_MIN = 0.5;', 'const CIRCLE_T_MAX = 6;'];
-const CONSTS = { CIRCLE_RAYS: 36, CIRCLE_RAY_STEP: 5, CIRCLE_RAY_MAX: 300 };
+const CONSTS = { CIRCLE_RAYS: 36, CIRCLE_RAY_STEP: 5, CIRCLE_RAY_MAX: 300, CIRCLE_HOLD_SLACK: 40,
+	FEAR_SPEED_REDUX: [0, 20, 40, 70, 80, 90, 100] };
 const FCONSTS = { CIRCLE_TRUST_MS: 75000, CIRCLE_BODY_MARGIN: 5, CIRCLE_MIN_R: 10,
 	CIRCLE_ARRIVE: 6, CIRCLE_T_MIN: 0.5, CIRCLE_T_MAX: 6 };
 
@@ -47,12 +51,12 @@ function rangerWorld(over = {}) {
 		spotKey: (h, m) => h + '@' + m,
 		can_move: room(34, 503, 150),
 		circleStore: undefined, farmSearchResult: null, CIRCLE_KEY: 'circle_override',
-		character: { name: 'Dexon', map: 'level2s', base: { h: 8, v: 7, vn: 2 } },
+		character: { name: 'Dexon', map: 'level2s', base: { h: 8, v: 7, vn: 2 }, speed: 66 },
 	}, CONSTS, over));
 	w.scopedGet = (k) => w.get(k + '_Dexon');
 	w.scopedSet = (k, v) => w.set(k + '_Dexon', v);
 	lift(w, RANGER, ['circleWallCache', 'circleRefused', ...SHARED.filter((n) => n !== 'kiteCandidateTypes'),
-		'circleCfg', 'circleStored', 'circleOverrideOn', 'circleMatch', 'circlePlan', 'circleWord',
+		'circleCfg', 'circleStored', 'circleOverrideOn', 'circleMatch', 'circlePlan', 'circleWord', 'circleWordKey',
 		'farmDestinationFor', 'circleReapply', 'circleSave', 'circleOn', 'circleOff', 'circleR',
 		'circleForget', 'circleStatus', 'kiteCandidateTypes']);
 	return w;
@@ -256,6 +260,69 @@ module.exports = [
 	t.eq('an unknown Dexon speed keeps the radius', followerWorld(MAGE).circleFollowerRadius({ entry: CGOO, rD: 40, wall: 140 }, 0), 40);
 } },
 
+{ name: 'fear does not shrink the ring: both speeds are taken with fear removed', fn(t) {
+	const w = followerWorld(PRIEST);
+	t.eq('the server table: -20 a level to 2, then 70, 80, 90, 100', [0, 1, 2, 3, 4, 5, 6, 9].map((f) => w.speedWithoutFear(10, f)),
+		[10, 30, 50, 80, 90, 100, 110, 110]);
+	t.eq('no fear field is no fear', w.speedWithoutFear(43, undefined), 43);
+	t.eq('an unknown speed is passed through, not invented', w.speedWithoutFear(0, 2), 0);
+	/* The browser session's FatherToken: 63 clean, 43 at fear 1, 23 at fear 2. */
+	w.character = Object.assign(w.character, { name: 'FatherToken', speed: 63, fear: 0 });
+	w.circleOnWord(Object.assign({}, WORD, { sD: 67 }));
+	const p = w.circlePlan();
+	t.eq('the word carries sD through to the plan', p.sD, 67);
+	const clean = w.circleFollowerRadius(p, 67);
+	w.character.speed = 43; w.character.fear = 1;
+	t.eq('fear 1: the same radius', w.circleFollowerRadius(p, 67), clean);
+	w.character.speed = 23; w.character.fear = 2;
+	t.eq('fear 2: the same radius', w.circleFollowerRadius(p, 67), clean);
+	t.eq('Dexon frightened too: his live entity speed is not used while sD is known', w.circleFollowerRadius(p, 47), clean);
+	const old = followerWorld(PRIEST);
+	old.character = Object.assign(old.character, { name: 'FatherToken', speed: 43, fear: 1 });
+	old.circleOnWord(WORD);
+	t.eq('a word without sD: his entity speed stands in', old.circlePlan().sD, null);
+	t.eq('and the follower side is still fear-free', Math.round(old.circleFollowerRadius(old.circlePlan(), 63) * 100) / 100, 40);
+	const bad = followerWorld(PRIEST);
+	bad.circleOnWord(Object.assign({}, WORD, { sD: 'fast' }));
+	t.eq('a malformed sD is dropped, not used', bad.circlePlan().sD, null);
+	const r = rangerWorld();
+	r.character.speed = 46; r.character.fear = 1;
+	t.eq('Dexon sends his own speed with fear removed', r.circleWord().sD, 66);
+	const k1 = r.circleWordKey();
+	r.character.speed = 86;
+	t.eq('the farm-spot key ignores sD, so a speed buff does not restart the re-sends', r.circleWordKey(), k1);
+	t.ok('but the word itself carries the new value', r.circleWord().sD === 106);
+	t.ok('and the key still holds the entry', /"rD":40/.test(k1) && k1.indexOf('sD') < 0);
+} },
+
+{ name: 'between waves an active entry holds the ring rather than parking on the centre', fn(t) {
+	const w = followerWorld(MAGE);
+	t.eq('no word: nothing held', w.circleHoldsSpot(), false);
+	w.circleOnWord(WORD);
+	Object.assign(w.character, { real_x: 34 + 35, real_y: 503 });
+	t.eq('on the ring: held', w.circleHoldsSpot(), true);
+	Object.assign(w.character, { real_x: 34 + 140 + 40, real_y: 503 });
+	t.eq('at wall + slack: held', w.circleHoldsSpot(), true);
+	Object.assign(w.character, { real_x: 34 + 140 + 41, real_y: 503 });
+	t.eq('beyond it: handleReturnHome() takes us back', w.circleHoldsSpot(), false);
+	Object.assign(w.character, { real_x: 34, real_y: 503, map: 'main' });
+	t.eq('another map: not held', w.circleHoldsSpot(), false);
+	w.character.map = 'level2s';
+	w.circleOnWord({ v: 1, on: true });
+	t.eq('on with no entry: not held', w.circleHoldsSpot(), false);
+	const r = rangerWorld();
+	Object.assign(r.character, { x: 74, y: 503 });
+	t.eq('Dexon on his ring: held', r.circleHoldsSpot(), true);
+	r.CONFIG.movement.circleOverride.enabled = false;
+	t.eq('Dexon with the override off: not held', r.circleHoldsSpot(), false);
+	const gate = 'if (!get_nearest_monster({ type: home }) && !circleHoldsSpot()) {\n\t\t\t\thandleReturnHome();';
+	for (const f of [RANGER, PRIEST, MAGE]) {
+		const s = src(f);
+		t.eq(f + ': the return-home branch is gated on circleHoldsSpot()', s.split(gate).length - 1, 1);
+		t.eq(f + ': and no ungated copy remains', s.split('if (!get_nearest_monster({ type: home })) {\n\t\t\t\thandleReturnHome();').length - 1, 0);
+	}
+} },
+
 { name: 'the intercept: ahead on the ring when in phase, a chord when behind', fn(t) {
 	const w = followerWorld(MAGE);
 	const c = { x: 0, y: 0 }, R = 40, wd = 66 / 40;
@@ -312,7 +379,7 @@ module.exports = [
 	t.ok('Ranger: walkInCircle centres on an active entry', extract(RANGER, 'walkInCircle').indexOf('const center = ent || destination, r = ent ? p.rD : CONFIG.movement.circleRadius') >= 0);
 	t.ok('Ranger: the farm search goes through farmDestinationFor', extract(RANGER, 'runFarmSearch').indexOf('destination = farmDestinationFor(result);') >= 0);
 	t.ok('Ranger: the farm_spot payload carries the word', extract(RANGER, 'sendFarmSpot').indexOf('circle: circleWord(),') >= 0);
-	t.ok('Ranger: and the key includes it, so a change is sent at once', extract(RANGER, 'farmSpotKey').indexOf('JSON.stringify(circleWord())') >= 0);
+	t.ok('Ranger: and the key includes it, so a change is sent at once', extract(RANGER, 'farmSpotKey').indexOf('|${circleWordKey()}`') >= 0);
 	t.ok('Ranger: the cgoo entry as designed', r.indexOf("{ m: 'cgoo', map: 'level2s', x: 34, y: 503, r: 40, rBy: { FatherToken: null, MageofOz: null }, noKite: true },") >= 0);
 	for (const f of [PRIEST, MAGE]) {
 		const s = src(f);

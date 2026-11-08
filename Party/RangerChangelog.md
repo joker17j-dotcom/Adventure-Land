@@ -21,6 +21,43 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v162
+
+**THE OPERATOR'S cgoo EDIT, AND TWO CIRCLE DEFECTS FROM THE FIRST LIVE LAPS.**
+
+- **`'cgoo'` is out of `CONFIG.combat.focusFire.singleTargetMobs`.** The
+  operator's hand edit to the live slot on 2026-11-08 (slot blob 80c54950,
+  502,400 bytes, which this file reproduces byte for byte at v161), committed
+  here so the next deploy does not restore single-target on cgoo. Dexon now
+  multi-shots the cgoo pack. The `crowded` clause still switches him to focus
+  fire whenever as many monsters target him as his courage.
+- **FEAR NO LONGER SHRINKS A FOLLOWER'S RING (Priest v90 / Mage v113).** Reported by the browser
+  session from a live lap on the cgoo ring: fear takes a fixed amount off
+  speed, and the radius scaled from live speed, so a frightened priest's ring
+  shrank into the pack that frightened him (37.6, then 25.7, then 13.7, then the
+  floor of 10). The server's table is `sredux = [0, 20, 40, 70, 80, 90, 100]`
+  in node/server.js, `player.speed -= sredux[min(len - 1, fear)]`, read at
+  upstream a5c133dc and matching the browser's 63 / 43 / 23 at fear 0 / 1 / 2.
+  `speedWithoutFear()` adds it back. Fear is sent only to the character itself,
+  never on another player's entity, so Dexon sends his own fear-free speed as
+  `sD` in the circle word and the follower scales by the two fear-free speeds.
+  A word without `sD` (an older Dexon) falls back to his live entity speed. The
+  intercept still uses real speed, because that is how fast she actually moves.
+  Not exact where something applies after the subtraction: winterland x0.95,
+  or a stand or hardshell setting speed to 10.
+  Dexon's side is the `sD` in `circleWord()`. The farm-spot key strips it
+  (`circleWordKey()`), so a speed buff does not restart the minute of 5s
+  re-sends; `sD` still rides every send, at most 30s apart.
+- **BETWEEN WAVES THE PARTY KEEPS CIRCLING.** Also from the browser
+  session: with nothing of the home type alive, the movement chain sent
+  everyone to `handleReturnHome()`, which parks on the destination - the entry
+  centre, where the next wave spawns on top of them. `circleHoldsSpot()` skips
+  that branch while an entry on this map is active and the character is within
+  its wall limit plus 40 of the centre, so the chain falls through to the
+  circle (and on the followers, cohesion and kiting first, as before). Further
+  out, `handleReturnHome()` still runs, because it is the path that pathfinds
+  back. Same gate in all three scripts.
+
 ## v161
 
 **THE CIRCLE-WALK OVERRIDE, OWNED BY DEXON.** The design is the operator's, 2026-11-08, relayed by the browser session:

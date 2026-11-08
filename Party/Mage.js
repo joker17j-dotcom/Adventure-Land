@@ -1,5 +1,5 @@
 // ==========================================================================
-// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v112
+// MageofOz (Mage) - Mainframe slot CH_VEKJb9RqL1IoBTK8llTtOmRMcuNom - v113
 //
 // CHANGELOG: read Party/MageChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1510,7 +1510,8 @@ async function mainLoop() {
 			   how the 2026-09-26 cascades actually happened. */
 			/* TRAVEL OUTRANKS COHESION, reversing the v34-era order.
 			   -> MageComments.md#travel-outranks-cohesion-reversing-the-v34-era */
-			if (!get_nearest_monster({ type: home })) {
+			/* Between waves an active circle entry holds the ring - circleHoldsSpot(). */
+			if (!get_nearest_monster({ type: home }) && !circleHoldsSpot()) {
 				handleReturnHome();
 			} else if (await noHang(holdCohesion(), 'holdCohesion')) {
 			} else if (CONFIG.movement.kiting && CONFIG.movement.kiting.enabled) {
@@ -4364,6 +4365,37 @@ function circleNoKiteTypes() {
 	return [p.entry.m];
 }
 
+/* Fear subtracts a fixed amount from speed by fear level - the server's own
+   table, `sredux` in node/server.js, read at upstream a5c133dc:
+   player.speed -= sredux[min(len - 1, fear)]. The browser session measured
+   63, 43 and 23 at fear 0, 1 and 2. Adding it back gives the speed this
+   character moves at when nothing frightens it, which is what a ring radius
+   scales with: a radius from live speed shrinks into the pack the moment the
+   pack frightens us. Not exact where something applies after the subtraction
+   (winterland x0.95; a stand or hardshell sets speed to 10). Fear is sent only
+   to the character itself, never on another player's entity. */
+const FEAR_SPEED_REDUX = [0, 20, 40, 70, 80, 90, 100];
+function speedWithoutFear(speed, fear) {
+	if (!(typeof speed === 'number' && speed > 0)) return speed;
+	const f = (typeof fear === 'number' && fear > 0) ? Math.floor(fear) : 0;
+	return speed + FEAR_SPEED_REDUX[Math.min(FEAR_SPEED_REDUX.length - 1, f)];
+}
+
+/* Between waves nothing of the home type is alive, and the movement chain sent
+   everyone to handleReturnHome(), which parks on the destination - the entry's
+   centre, where the next wave spawns on top of the party. While an entry on
+   this map is active and we stand within its wall limit plus CIRCLE_HOLD_SLACK
+   of the centre, that branch is skipped and the circle goes on. Further out,
+   handleReturnHome() still runs: it is the path that pathfinds back. */
+const CIRCLE_HOLD_SLACK = 40;
+function circleHoldsSpot() {
+	const p = circlePlan();
+	if (!p || !p.on || !p.entry || p.entry.map !== character.map || typeof p.wall !== 'number') return false;
+	const x = typeof character.real_x === 'number' ? character.real_x : character.x;
+	const y = typeof character.real_y === 'number' ? character.real_y : character.y;
+	return Math.hypot(x - p.entry.x, y - p.entry.y) <= p.wall + CIRCLE_HOLD_SLACK;
+}
+
 /* The follower's side, identical in Priest.js and Mage.js. Dexon re-sends the
    plan on every farm_spot message - at least every 30s, every 5s for a minute
    after a change - so a word older than CIRCLE_TRUST_MS means he has stopped
@@ -4388,11 +4420,12 @@ function circleOnWord(w) {
 		entry = { m: e.m, map: e.map, x: e.x, y: e.y, r: e.r,
 			rBy: (e.rBy && typeof e.rBy === 'object') ? e.rBy : null, noKite: !!e.noKite };
 	}
-	circleHeard = { on: w.on, entry: entry, rD: entry ? w.rD : null, at: Date.now() };
+	const sD = (entry && num(w.sD) && w.sD > 0) ? w.sD : null;
+	circleHeard = { on: w.on, entry: entry, rD: entry ? w.rD : null, sD: sD, at: Date.now() };
 }
 
 /* null while nothing fresh has been heard - own settings. Otherwise
-   {on, entry, rD, wall}, where entry survives only if this character can
+   {on, entry, rD, sD, wall}, where entry survives only if this character can
    measure the wall limit around its centre. */
 function circlePlan() {
 	const h = circleHeard;
@@ -4408,16 +4441,21 @@ function circlePlan() {
 		}
 		return { on: true, entry: null, refused: true };
 	}
-	return { on: true, entry: h.entry, rD: h.rD, wall: wall };
+	return { on: true, entry: h.entry, rD: h.rD, sD: h.sD, wall: wall };
 }
 
 /* rBy[name] when set, else Dexon's radius scaled by speed so both cover the
-   same angle per second; capped at the wall limit. Speed is live and buffed,
-   so this is recomputed every tick. */
+   same angle per second; capped at the wall limit. Both speeds are taken with
+   fear removed - ours from character.fear, his from the sD he sends - or a
+   frightened follower's ring shrinks into the pack it is frightened of. A word
+   without sD falls back to his live entity speed. Buffs still count, so this
+   is recomputed every tick. */
 function circleFollowerRadius(p, dexSpeed) {
 	const by = p.entry.rBy ? p.entry.rBy[character.name] : null;
+	const mine = speedWithoutFear(character.speed || 0, character.fear);
+	const his = (typeof p.sD === 'number' && p.sD > 0) ? p.sD : dexSpeed;
 	let r = (typeof by === 'number' && by > 0) ? by
-		: p.rD * ((character.speed || 0) / (dexSpeed > 0 ? dexSpeed : (character.speed || 1)));
+		: p.rD * (mine / (his > 0 ? his : (mine || 1)));
 	if (!(r > 0)) r = p.rD;
 	return Math.max(CIRCLE_MIN_R, Math.min(r, p.wall));
 }
