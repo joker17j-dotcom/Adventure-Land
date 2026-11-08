@@ -1,4 +1,15 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v31 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v32 (TEST BUILD)
+// v32 2026-11-08 THE CRYPT RUN - the operator's spec of 2026-11-08. cryptRun()
+//                on the leader starts all three: at the crypt door the party
+//                waits for mluck (Dexon asks Meltymerch), a cryptkey in the
+//                leader's bag and Dexon's room; the leader opens the instance
+//                and publishes its id, and the others enter it. A death holds
+//                the instance; after a wipe the leader respawns last and the
+//                party regroups at the entrance. The leader drives a3/a7, then
+//                a2 (pulled back to the hall), then the vbat; a stray is walked
+//                right of the line by the one it is on, who then towns. Absorb
+//                and scare only for a2 on someone low. After a run the loot goes
+//                to Dexon and the next run opens. caveCrypt() is unchanged.
 // v31 2026-10-30 THE HAND-BACK ENGAGES THE MAIN SLOT, NOT ONLY RUNS IT. The
 //                runner's load_code() evaluates a slot inside this iframe and
 //                leaves the page's engaged slot on the Cave slot, so every later
@@ -344,6 +355,8 @@
 //            caveGo()    restock potions, THEN gather at Dorr for a real run
 //            caveEnter() leader only, cave mode only
 //            caveLead(name) caveStatus() caveStop() caveDump()
+//            cryptRun()  the automated crypt (v32), on the leader for all three
+//            cryptStop() cryptNav(on) cryptStatus() cryptSpot('pull'|'vbat', x, y)
 //
 // ENTRY IS MANUAL BY DESIGN. One visit per account per day; an accidental
 // enter() burns it. Combat is also held while staged, because the gate refuses
@@ -772,6 +785,14 @@ function beaconWrite() {
 			   leader leaving, which the followers follow. */
 			wait: !!(deathLoop || (resting && restSaid)),
 			exit: !!exitForce,
+			/* v32, the crypt run: the instance this member is in, its mluck, whether
+			   it is walking a stray off, and the after-run state the leader's gate
+			   reads - its loot handed over, and (the mule) room for another run. */
+			inst: character.map === 'crypt' ? (character.in || null) : null,
+			mluck: mluckLeft(),
+			kite: !!crKite,
+			muled: !!crMuled,
+			room: !!crRoom,
 		}));
 	} catch (e) { bump('beaconWriteFail'); }
 }
@@ -1063,6 +1084,7 @@ function mayAttack(t) {
 	if (mode !== 'crypt') return true;
 	if (!t || !t.mtype) return false;
 	if (CRYPT.never.indexOf(t.mtype) >= 0) return false;
+	if (cryptAuto && character.map === 'crypt') return cryptMayAttack(t, crunEffective());
 	if (CRYPT.only.indexOf(t.mtype) >= 0) return true;
 	return attackingUs(t);
 }
@@ -1301,7 +1323,12 @@ async function priestSkills(target) {
 	if (target && haveSkill('curse') && inRangeFor(target, 'curse') && !(target.s && target.s.cursed)) {
 		try { await telUse('curse', target); return true; } catch (e) {}
 	}
-	if (haveSkill('absorb')) {
+	if (cryptRunHere()) {
+		/* A crypt run absorbs only for a member a2 has brought low - the
+		   operator's ruling: otherwise the whole party fights him. */
+		const to = haveSkill('absorb') ? cryptAbsorbTarget() : null;
+		if (to) { try { await telUse('absorb', to); bump('absorbs'); return true; } catch (e) {} }
+	} else if (haveSkill('absorb')) {
 		const le = leaderEntity();
 		if (here(le) && inRangeFor(le, 'absorb') && threats().filter((m) => m.target === leaderName()).length >= 3) {
 			try { await telUse('absorb', le); return true; } catch (e) {}
@@ -1312,7 +1339,10 @@ async function priestSkills(target) {
 async function mageSkills(target) {
 	/* Scare first: it is a survival action and its whole point is shedding the
 	   pack already on her. haveSkill() has verified the jacko is equipped. */
-	if (haveSkill('scare')) {
+	if (cryptRunHere()) {
+		/* A crypt run scares only when a2 is on her and she is low. */
+		if (haveSkill('scare') && cryptScareWanted()) { try { await telUse('scare'); bump('scares'); return true; } catch (e) {} }
+	} else if (haveSkill('scare')) {
 		const n = attackersOnMe();
 		if (n >= CFG.scareAt || (n >= 1 && character.hp / character.max_hp < CFG.scareHpAt)) {
 			try { await telUse('scare'); bump('scares'); return true; } catch (e) {}
@@ -1510,6 +1540,9 @@ async function moveTick() {
 		return;
 	}
 	restTick();
+	/* v32: a crypt run owns the move outside the crypt, inside it for the
+	   leader, and for a follower while the leader is down or away. */
+	if (cryptAuto && mode === 'crypt' && active() && await cryptMoveTick()) return;
 	if (isLeader()) {
 		/* The leader never reaches noteLeaderMotion below, so without this its
 		   own leaderMovedAt stays 0 and computeLeash would report the
@@ -1967,6 +2000,8 @@ function deathTick() {
 		return;
 	}
 	if (!CFG.autoRespawn) return;
+	/* v32: in a crypt run a death holds the instance - see cryptMayRespawn(). */
+	if (mode === 'crypt' && !cryptMayRespawn(Date.now())) return;
 	/* NOT WHILE A VOTE IS OPEN IN THE CAVE. The server offers the revival vote
 	   - revive here for Amber, or at the doorway free - only once no other vote
 	   is open, and a bare respawn() would take the free doorway before that vote
@@ -3522,7 +3557,7 @@ function navLanded(f, e) {
 	if (/interrupt/i.test(why)) {
 		navManualUntil = Date.now() + NAV.manualPauseMs;
 		bump('navManual');
-		clog('a move I did not make - the autopilot waits ' + Math.round(NAV.manualPauseMs / 1000) + 's (caveNav(true) resumes now)', '#FFD700');
+		clog('a move I did not make - the autopilot waits ' + Math.round(NAV.manualPauseMs / 1000) + 's (' + (mode === 'crypt' ? 'cryptNav' : 'caveNav') + '(true) resumes now)', '#FFD700');
 		ev('navManual', {});
 		return;
 	}
@@ -4247,6 +4282,682 @@ function caveEnter() {
 	try { return enter('dreams'); } catch (e) { ev('enterThrew', String(e)); clog('enter threw: ' + e, 'red'); }
 }
 
+/* ============================================================ CRYPT RUN ====
+   v32, the operator's spec of 2026-11-08. caveCrypt() is unchanged: the
+   operator drives the leader and the followers cohere and shoot. cryptRun()
+   is that mode plus the parts the spec automates, on all three at once:
+
+   ROLES. The cave leader (FatherToken by default) holds the cryptkey, opens
+   the instance and drives. Dexon is the mule: the other two hand him their
+   loot after each run, and he calls the merchant when he is short of room.
+
+   BEFORE ENTRY, at the crypt door. Each member publishes its mluck in its
+   beacon; while any of the three lacks it, Dexon asks Meltymerch - Dexon,
+   because the merchant takes a `location` request from Dexon only
+   (CONFIG.mluck.targets in Party/Merchant.js), and the party standing at the
+   door puts the other two inside the merchant's 320 for his opportunistic
+   pass. The leader enters only with a cryptkey already in HIS bag; with none
+   he says so in red and waits. Nothing here ever touches the bank.
+
+   ENTRY AND REJOIN. The leader writes the instance id the moment he is in, to
+   `crypt_instance` and to the run record below, and sends it over cm as well.
+   Anyone else at the door enters that instance at once. A death in the crypt
+   respawns at the crypt door (G.maps.crypt.on_death is cave spawn 2, the same
+   point the server measures entry from), so the respawned member re-enters at
+   once. use_town inside the instance lands at the instance's own spawn, the
+   entrance.
+
+   THE RESPAWN RULE - cryptMayRespawn(). A member who is in the crypt, alive
+   or dead, holds the instance. A dead member respawns only while another
+   member is still inside. If all three are dead the leader respawns LAST:
+   the other two respawn, re-enter and wait at the entrance, and only when
+   both are back inside alive does the leader respawn, re-enter and regroup
+   with them before re-engaging. The operator measured an instance staying
+   open with only dead members in it. The server source agrees and goes
+   further: a crypt instance is never destroyed, only paused 50s after its
+   last live player leaves (upstream a5c133dc, create_instance and the pause
+   loop). So the rule costs a little time and loses nothing.
+
+   FIGHT ORDER - CRYPT_RUN.stages. a3 and a7 first, then a2, then the seven
+   vbat. Crypt monsters never respawn (respawn -1), so a kill is final for the
+   instance; kills are recorded by monster id from the game's death event,
+   shared through the run record so all three tabs agree. Only the current
+   stage is hunted; any plan monster that starts a fight is answered. a2 is
+   pulled: once he is on the party the leader walks back toward pullSpot, in
+   the hall between his room and the entrance, unless someone is low.
+
+   STRAYS - anything that is not a2, a3, a7 or vbat. Never hunted. If one
+   comes at a member, that member alone keeps it: it walks it right of the
+   operator's line (x >= lineX), then casts use_town back to the entrance and
+   rejoins, or dies and the respawn rule takes over. The others leave it
+   alone, and nobody ever swings at a6, a8 or a1 (CRYPT.never).
+
+   DEFENCE ONLY WHEN SOMEONE IS LOW. The priest absorbs only when a2 is on
+   another member at or below absorbAt; the mage scares only when a2 is on her
+   at or below scareHpAt. Neither fires otherwise in a crypt run.
+
+   AFTER EACH RUN the party leaves to the crypt door, the other two send Dexon
+   their loot, and Dexon asks the merchant to take the overflow while he has
+   fewer than muleMinFree slots. The leader opens the next run once everyone is
+   at the door, muled, mlucked and roomy, and he holds a key.
+
+   THE MAP. Every point below is a walkable cell in the server's own
+   reachability grid for the crypt (precomputed_map_data.js smap_data.crypt,
+   upstream a5c133dc). Path lengths from the entrance, read off that grid:
+   a7 1,900, a2 2,430, the vbat box 2,610, a3 3,130. a7's hall leads to a2's
+   room, and a2's room to the vbat box, so the order is also the route. */
+const CRYPT_RUN = {
+	mule: 'Dexon',
+	merchant: 'Meltymerch',
+	door: { map: 'cave', x: -193, y: -1296 },   // G.maps.cave.spawns[2]; enter() is refused beyond 120
+	doorReach: 100,
+	entrance: { x: 0, y: 0 },                    // the crypt's spawn: entry, re-entry and use_town all land here
+	stages: [['a3', 'a7'], ['a2'], ['vbat']],
+	need: { a3: 1, a7: 1, a2: 1, vbat: 7 },
+	/* Where to look for a roamer not in view. a7's own spawn, then the top
+	   hall a3 roams in and his spawn at its east end. */
+	search: { a7: [[727, -1076]], a3: [[1470, -1400], [1790, -1480]], a2: [[1110, -630]] },
+	searchMaxMs: 240000,        // a stage with nothing found this long hands the driving back
+	/* a2's fight spot: the hall junction west of his room, 1,740 by path from
+	   the entrance, so a respawned member can regroup at the entrance and walk
+	   in. The operator's to move - cryptSpot('pull', x, y). */
+	pullSpot: { x: 570, y: -1080 },   // clear of walls for 40 units each way in the grid
+	pullHpStop: 0.40,           // anyone this low and the pull stops where it is
+	vbatSpot: { x: 1190, y: -380 },
+	vbatClearMs: 20000,         // standing at vbatSpot with no vbat in view this long, after one kill, is a clear box
+	lineX: 1780,                // right of the operator's line everywhere
+	kiteTop: { x: 1800, y: -1480 },
+	kiteMid: { x: 1800, y: -900 },
+	kiteLostMs: 4000,           // the stray off me this long and the kiter goes home anyway
+	kiteMaxMs: 60000,
+	regroupWithin: 150,
+	fightWithin: 250,
+	holdAt: 180,
+	holdReleaseAt: 120,
+	absorbAt: 0.45,
+	scareHpAt: 0.40,
+	mluckMinMs: 10 * 60 * 1000, // less than this left counts as lacking it
+	askMs: 60000,               // a merchant request is repeated this often
+	mluckLongMs: 5 * 60 * 1000, // after this the wait is reported in red
+	keyItem: 'cryptkey',
+	keep: ['hpot0', 'mpot0', 'hpot1', 'mpot1', 'tracker', 'xptome', 'mmhat', 'luckbooster', 'goldbooster',
+		'xpbooster', 'elixirluck', 'essenceoflife', 'pumpkinspice', 'cryptkey', 'jacko'],
+	muleRange: 350,
+	muleWaitMs: 60000,          // Dexon not in range this long and the loot is kept
+	muleMinFree: 10,
+	chestWaitMs: 20000,
+	mateStaleMs: 10000,
+	holdInstanceMaxMs: 300000,  // a respawn held this long goes ahead anyway
+	sayMs: 30000,
+	bridge: 'http://127.0.0.1:8787',
+};
+const CRUN_KEY = 'crypt_run';
+const CRYPT_ID_KEY = 'crypt_instance';
+const CRYPT_AUTO_KEY = 'crypt_auto';
+let cryptAuto = false, cryptNavOn = true, cryptRelayId = null;
+let crunRaw = null, crunMemo = null;
+let crSaid = {}, crSeen = {}, crKite = null, crHolding = false, crHoldSince = 0;
+let crSearch = { stage: -1, i: 0, since: 0 }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
+let crMuled = false, crMuleRun = undefined, crMuleSince = 0, crMuleAt = 0, crRoom = true, crPushAt = 0, crAskAt = {}, crMluckSince = 0;
+
+/* The run record, shared by every tab: {id, at, leader, dead: {monster id:
+   mtype}, cleared: {mtype: true}, done, doneAt, regroupAll, lost}. */
+function crunRead() {
+	let raw = null;
+	try { raw = parent.localStorage.getItem(CRUN_KEY); } catch (e) { return null; }
+	if (raw === crunRaw) return crunMemo;
+	crunRaw = raw;
+	try { const v = JSON.parse(raw); crunMemo = (v && typeof v.id === 'string') ? v : null; } catch (e) { crunMemo = null; }
+	return crunMemo;
+}
+function crunWrite(r) {
+	try {
+		parent.localStorage.setItem(CRUN_KEY, JSON.stringify(r));
+		if (r && r.id) parent.localStorage.setItem(CRYPT_ID_KEY, r.id);
+	} catch (e) { bump('crunWriteFail'); }
+}
+function crunPatch(fn) {
+	const r = crunRead();
+	if (!r) return null;
+	const c = JSON.parse(JSON.stringify(r));
+	fn(c);
+	crunWrite(c);
+	return c;
+}
+/* A run this tab heard of only over cm, for a tab whose storage lost it. */
+function crunEffective() {
+	const r = crunRead();
+	if (r) return r;
+	return cryptRelayId ? { id: cryptRelayId, dead: {}, cleared: {}, done: false } : null;
+}
+function crSay(key, msg, color, everyMs) {
+	const now = Date.now();
+	if (crSaid[key] && now - crSaid[key] < (everyMs === undefined ? CRYPT_RUN.sayMs : everyMs)) return;
+	crSaid[key] = now;
+	clog('[crypt] ' + msg, color || '#FFD700');
+	ev('crypt', { key: key, msg: msg });
+}
+function crPos(e) { return { x: e.real_x !== undefined ? e.real_x : e.x, y: e.real_y !== undefined ? e.real_y : e.y }; }
+function crDist(p, q) { return Math.hypot(p.x - q.x, p.y - q.y); }
+function mluckLeft() {
+	try { const m = character.s && character.s.mluck; return m ? (Number(m.ms) || 0) : 0; } catch (e) { return 0; }
+}
+function crInside(st, run) {
+	return !!(st && st.map === 'crypt' && (!run || !st.inst || st.inst === run.id));
+}
+function crMate(bs, name, now) {
+	const st = bs[name];
+	return (st && now - st.t <= CRYPT_RUN.mateStaleMs) ? st : null;
+}
+
+/* ---- kills and stages ---- */
+function crKills(run) {
+	const k = {};
+	const d = (run && run.dead) || {};
+	for (const id in d) k[d[id]] = (k[d[id]] || 0) + 1;
+	return k;
+}
+/* The first stage with anything left: {i, types}, or null once all are done. */
+function cryptStage(run) {
+	const k = crKills(run), cl = (run && run.cleared) || {};
+	for (let i = 0; i < CRYPT_RUN.stages.length; i++) {
+		const left = CRYPT_RUN.stages[i].filter((t) => !cl[t] && (k[t] || 0) < (CRYPT_RUN.need[t] || 1));
+		if (left.length) return { i: i, types: left };
+	}
+	return null;
+}
+function cryptSeeTick() {
+	if (character.map !== 'crypt') return;
+	for (const m of threats()) if (m.id && m.mtype) crSeen[m.id] = m.mtype;
+}
+/* Every tab that saw it records it, keyed by the monster's id, so three
+   reports of one death count once. */
+function cryptOnDeath(d) {
+	if (!cryptAuto || !d || character.map !== 'crypt') return;
+	const mt = crSeen[d.id];
+	if (!mt || !CRYPT_RUN.need[mt]) return;
+	let first = false;
+	const r = crunPatch((c) => {
+		if (c.id !== character.in) return;
+		c.dead = c.dead || {};
+		if (!c.dead[d.id]) { c.dead[d.id] = mt; first = true; }
+	});
+	if (r && first) {
+		const k = crKills(r);
+		crSay('kill-' + d.id, mt + ' down (' + k[mt] + '/' + CRYPT_RUN.need[mt] + ')', '#7FD98A', 0);
+	}
+}
+
+/* ---- who may be hit, inside a crypt run ---- */
+/* The current stage is hunted. A plan monster out of turn is answered once it
+   is on the party. A stray is hit only by the member it is on - the kiter. */
+function cryptMayAttack(t, run) {
+	const st = run ? cryptStage(run) : null;
+	if (st && st.types.indexOf(t.mtype) >= 0) return true;
+	if (CRYPT_RUN.need[t.mtype]) return attackingUs(t);
+	return t.target === character.name;
+}
+function cryptRunHere() { return cryptAuto && mode === 'crypt' && character.map === 'crypt'; }
+
+/* ---- defence ---- */
+function cryptAbsorbTarget() {
+	for (const m of threats()) {
+		if (m.mtype !== 'a2' || !m.target || m.target === character.name) continue;
+		if (partyNames().indexOf(m.target) < 0) continue;
+		const e = (parent.entities || {})[m.target];
+		if (!here(e) || !e.max_hp) continue;
+		if (e.hp / e.max_hp <= CRYPT_RUN.absorbAt && inRangeFor(e, 'absorb')) return e;
+	}
+	return null;
+}
+function cryptScareWanted() {
+	const low = character.max_hp && character.hp / character.max_hp <= CRYPT_RUN.scareHpAt;
+	return !!(low && threats().some((m) => m.mtype === 'a2' && m.target === character.name));
+}
+
+/* ---- the respawn rule ---- */
+function cryptMayRespawn(now) {
+	if (!cryptAuto || character.map !== 'crypt') { crHoldSince = 0; return true; }
+	const run = crunRead();
+	if (!run || run.done) return true;
+	if (!crHoldSince) crHoldSince = now;
+	if (now - crHoldSince > CRYPT_RUN.holdInstanceMaxMs) {
+		crSay('holdMax', 'held my respawn ' + Math.round(CRYPT_RUN.holdInstanceMaxMs / 60000) + ' min - respawning anyway', 'red', 60000);
+		return true;
+	}
+	const bs = beacons();
+	const mates = TEAM.filter((n) => n !== character.name).map((n) => crMate(bs, n, now));
+	const inside = mates.filter((st) => crInside(st, run));
+	if (inside.length === TEAM.length - 1 && inside.every((st) => st.rip) && !run.regroupAll) {
+		crunPatch((c) => { c.regroupAll = true; });
+		run.regroupAll = true;
+		crSay('wipe', 'all three down - followers respawn first, ' + leaderName() + ' last, then regroup at the entrance', 'red', 0);
+	}
+	if (!inside.length) {
+		crSay('holdInst', 'dead, and nobody else is inside - holding the instance', 'orange');
+		return false;
+	}
+	if (isLeader() && run.regroupAll) {
+		const back = followers().every((n) => { const st = crMate(bs, n, now); return crInside(st, run) && !st.rip; });
+		if (!back) { crSay('leaderLast', 'leader respawns last - waiting for both followers to be back inside', 'orange'); return false; }
+	}
+	return true;
+}
+
+/* ---- moving: shared helpers ---- */
+/* smart_move without awaiting it, so the tick keeps fighting and checking
+   deaths while the walk runs. One walk per key; a failed one retries in 10s. */
+function crWalk(p, key) {
+	const now = Date.now();
+	if (crWalkFlight && crWalkFlight.key === key && now - crWalkFlight.at < 30000) return;
+	const f = { key: key, at: now };
+	crWalkFlight = f;
+	try {
+		const pr = smart_move({ map: p.map || character.map, x: p.x, y: p.y });
+		if (pr && typeof pr.then === 'function') pr.then(() => { if (crWalkFlight === f) crWalkFlight = null; }, (e) => {
+			if (crWalkFlight === f) crWalkFlight = { key: key, at: Date.now() - 20000 };
+			crSay('walk-' + key, 'path to ' + key + ' failed: ' + String((e && (e.reason || e.message)) || e), 'orange', 15000);
+		});
+		else crWalkFlight = null;
+	} catch (e) { crWalkFlight = null; }
+}
+/* Inside the crypt: the cave autopilot's own navGo, so its interrupt
+   detection - a move the script did not make pauses it - covers this too. */
+function crGo(p, id) {
+	const now = Date.now();
+	if (navFlight && Math.hypot(navFlight.x - p.x, navFlight.y - p.y) <= 60 && now - navFlight.at < NAV.smartMaxMs) return;
+	navGo({ x: p.x, y: p.y, id: id || null });
+}
+function crHalt(why) { if (navFlight) navHalt(why); }
+
+/* ---- strays ---- */
+function crStraysOnMe() {
+	return threats().filter((m) => m.target === character.name && !CRYPT_RUN.need[m.mtype] && !caveFriendly(m));
+}
+/* From a2's room or the vbat box the middle crossing is nearest; from
+   anywhere else - the entrance corridor, a7's hall, the top hall - the top
+   one, which also keeps a stray out of a2's room. */
+function cryptKitePoint(x, y) { return (x >= 400 && y > -950) ? CRYPT_RUN.kiteMid : CRYPT_RUN.kiteTop; }
+async function cryptKiteTick(now) {
+	if (character.map !== 'crypt' || character.rip) { crKite = null; return false; }
+	if (!crKite) {
+		const s = crStraysOnMe()[0];
+		if (!s) return false;
+		crKite = { id: s.id, mtype: s.mtype, at: now, lastOn: now, phase: 'out', to: cryptKitePoint(character.real_x, character.real_y), townAt: 0 };
+		recovering = false; aim = null;
+		crSay('kite', 'a stray ' + s.mtype + ' is on me - taking it right of the line, then town', 'orange', 0);
+	}
+	const k = crKite;
+	if (k.phase === 'out') {
+		const s = (parent.entities || {})[k.id];
+		if (s && !s.dead && s.target === character.name) k.lastOn = now;
+		if (character.real_x >= CRYPT_RUN.lineX || now - k.lastOn > CRYPT_RUN.kiteLostMs || now - k.at > CRYPT_RUN.kiteMaxMs) {
+			k.phase = 'town';
+			crHalt('kite-town');
+		} else { crGo(k.to, 'kite'); return true; }
+	}
+	if (crDist(crPos(character), CRYPT_RUN.entrance) <= 150 && k.townAt) {
+		crKite = null;
+		crSay('kiteDone', 'back at the entrance - rejoining', '#7FD98A', 0);
+		if (!isLeader()) { recovering = true; aim = null; }
+		return false;
+	}
+	if (now - k.townAt > 5000) {
+		k.townAt = now;
+		try { const pr = use_skill('use_town'); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); } catch (e) {}
+	}
+	return true;
+}
+
+/* ---- inside: the leader ---- */
+/* Why the leader should not advance, or null. */
+function cryptPartyHold(run, bs, now) {
+	let worst = 0, who = null;
+	for (const n of followers()) {
+		const st = crMate(bs, n, now);
+		if (!st) return 'no word from ' + n;
+		if (st.rip) return n + ' is dead';
+		if (!crInside(st, run)) return n + ' is outside';
+		if (st.kite) return n + ' is kiting';
+		const g = Math.hypot(st.x - character.real_x, st.y - character.real_y);
+		if (g > worst) { worst = g; who = n; }
+	}
+	crHolding = crHolding ? worst > CRYPT_RUN.holdReleaseAt : worst > CRYPT_RUN.holdAt;
+	return crHolding ? who + ' is ' + Math.round(worst) + 'u back' : null;
+}
+function crNearest(types) {
+	let best = null, bd = Infinity;
+	for (const m of threats()) {
+		if (types.indexOf(m.mtype) < 0 || caveFriendly(m)) continue;
+		const d = dist(character, m);
+		if (d < bd) { bd = d; best = m; }
+	}
+	return best;
+}
+function crOnParty(m) { return !!(m && m.target && partyNames().indexOf(m.target) >= 0); }
+async function cryptLeaderInside(run, now) {
+	if (!cryptNavOn || now < navManualUntil) return;
+	const bs = beacons(), E = CRYPT_RUN.entrance;
+	if (run.regroupAll) {
+		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) { crGo(E, 'entrance'); return; }
+		crHalt('regroup');
+		const ok = followers().every((n) => {
+			const st = crMate(bs, n, now);
+			return crInside(st, run) && !st.rip && crDist(st, E) <= CRYPT_RUN.regroupWithin;
+		});
+		if (!ok) { crSay('regroup', 'regrouping at the entrance before re-engaging', '#8b98ab'); return; }
+		crunPatch((c) => { c.regroupAll = false; });
+		crSay('regrouped', 'regrouped - re-engaging', '#7FD98A', 0);
+		return;
+	}
+	const why = cryptPartyHold(run, bs, now);
+	if (why) { crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return; }
+	const st = cryptStage(run);
+	if (!st) {
+		crunPatch((c) => { if (!c.done) { c.done = true; c.doneAt = Date.now(); } });
+		crSay('done', 'crypt cleared - leaving', '#7FD98A', 0);
+		return;
+	}
+	if (crSearch.stage !== st.i) {
+		crSearch = { stage: st.i, i: 0, since: now };
+		crSay('stage-' + st.i, 'stage ' + (st.i + 1) + ': ' + st.types.join(', '), '#7FD1FF', 0);
+	}
+	const tgt = crNearest(st.types);
+	const pulling = st.types.indexOf('a2') >= 0 && tgt && tgt.mtype === 'a2' && crOnParty(tgt);
+	/* A plan monster already on the party is fought where it is - except a2,
+	   who is pulled. */
+	const fight = threats().some((m) => CRYPT_RUN.need[m.mtype] && crOnParty(m) && !caveFriendly(m)
+		&& dist(character, m) <= CRYPT_RUN.fightWithin && !(pulling && m.mtype === 'a2'));
+	if (fight) { engagedUntil = now + CFG.engageHoldMs; crHalt('fight'); return; }
+	if (tgt) {
+		crSearch.since = now;
+		engagedUntil = now + CFG.engageHoldMs;
+		if (pulling) {
+			const low = allies().some((a) => a.max_hp && a.hp / a.max_hp < CRYPT_RUN.pullHpStop);
+			if (low || crDist(crPos(character), CRYPT_RUN.pullSpot) <= NAV.arriveAt) { crHalt('pull-stop'); return; }
+			crSay('pull', 'a2 is on us - pulling him back to the hall', '#7FD1FF', 20000);
+			crGo(CRYPT_RUN.pullSpot, 'pull');
+			return;
+		}
+		if (crOnParty(tgt)) { crHalt('fight'); return; }
+		const reach = Math.max(60, (character.range || 100) * 0.8);
+		if (dist(character, tgt) > reach) crGo(crPos(tgt), 'tgt-' + tgt.mtype);
+		else crHalt('in-range');
+		return;
+	}
+	if (st.types.indexOf('vbat') >= 0) {
+		if (crDist(crPos(character), CRYPT_RUN.vbatSpot) > NAV.arriveAt) { crVbatEmptySince = 0; crGo(CRYPT_RUN.vbatSpot, 'vbat'); return; }
+		if (!crVbatEmptySince) crVbatEmptySince = now;
+		if (now - crVbatEmptySince >= CRYPT_RUN.vbatClearMs && (crKills(run).vbat || 0) >= 1) {
+			crunPatch((c) => { c.cleared = c.cleared || {}; c.cleared.vbat = true; });
+			crSay('vbatClear', 'no vbat in view for ' + Math.round(CRYPT_RUN.vbatClearMs / 1000) + 's at the box - counting it clear at ' + (crKills(run).vbat || 0) + '/7', '#FFD700', 0);
+		}
+		return;
+	}
+	/* Nothing of this stage in view: search. */
+	if (now - crSearch.since > CRYPT_RUN.searchMaxMs) {
+		cryptNavOn = false;
+		crHalt('search');
+		crSay('searchGaveUp', 'no ' + st.types.join('/') + ' found in ' + Math.round(CRYPT_RUN.searchMaxMs / 60000) + ' min - the driving is yours; cryptNav(true) resumes', 'red', 0);
+		return;
+	}
+	const pts = [];
+	/* In the order CRYPT_RUN.search lists them, not the stage's: a7's hall is
+	   on the way to the top hall, so a7 is looked for first. */
+	for (const t in CRYPT_RUN.search) if (st.types.indexOf(t) >= 0) for (const p of CRYPT_RUN.search[t]) pts.push({ x: p[0], y: p[1] });
+	if (!pts.length) return;
+	const p = pts[crSearch.i % pts.length];
+	if (crDist(crPos(character), p) <= NAV.arriveAt) { crSearch.i++; return; }
+	crGo(p, 'search');
+}
+
+/* ---- inside: a follower. True while this owns the move. ---- */
+function cryptFollowerInside(run, now) {
+	const bs = beacons(), lb = crMate(bs, leaderName(), now), E = CRYPT_RUN.entrance;
+	if (run.regroupAll) {
+		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) crGo(E, 'entrance');
+		else crHoldPlace();
+		return true;
+	}
+	if (!crInside(lb, run) || lb.rip || lb.kite) { crHoldPlace(); return true; }
+	return false;
+}
+function crHoldPlace() {
+	recovering = false; aim = null;
+	const k = kiteStep(null);
+	if (k) { try { move(k.x, k.y); bump('kiteSteps'); } catch (e) {} }
+}
+function cryptLeave(run, now) {
+	let chests = 0;
+	try { chests = Object.keys((typeof get_chests === 'function' && get_chests()) || {}).length; } catch (e) {}
+	if (chests && now - (run.doneAt || now) < CRYPT_RUN.chestWaitMs) { crSay('chests', 'waiting for ' + chests + ' chest(s)', '#8b98ab', 10000); return; }
+	crWalk(CRYPT_RUN.door, 'leave');
+}
+
+/* ---- outside ---- */
+function cryptEnter(id, now) {
+	if (crEnterFlight && now - crEnterFlight < 10000) return;
+	crEnterFlight = now;
+	crSay('enter', id ? 'entering the crypt' : 'opening a new crypt with a ' + CRYPT_RUN.keyItem, '#FFD700', 5000);
+	let pr = null;
+	try { pr = id ? enter('crypt', id) : enter('crypt'); } catch (e) { cryptEnterFailed(id, e); return; }
+	if (pr && typeof pr.then === 'function') pr.then(() => {}, (e) => cryptEnterFailed(id, e));
+}
+function cryptEnterFailed(id, e) {
+	const why = String((e && (e.reason || e.message)) || e);
+	crSay('enterFail', 'enter refused: ' + why, 'orange', 0);
+	if (id && /invalid/.test(why)) {
+		crunPatch((c) => { if (c.id === id && !c.done) { c.done = true; c.lost = true; c.doneAt = Date.now(); } });
+		if (cryptRelayId === id) cryptRelayId = null;
+		crSay('lost', 'that instance is gone - the run is over', 'red', 0);
+	}
+}
+/* What stops the leader opening the next run. bs carries every member's
+   beacon, this tab's own included. */
+function cryptGate(bs, now, hasKey) {
+	const out = [];
+	for (const n of TEAM) {
+		const st = n === character.name ? bs[n] : crMate(bs, n, now);
+		if (!st) { out.push('no word from ' + n); continue; }
+		if (st.rip) { out.push(n + ' is dead'); continue; }
+		if (st.map !== CRYPT_RUN.door.map || crDist(st, CRYPT_RUN.door) > CRYPT_RUN.doorReach) out.push(n + ' is not at the door');
+		if (n === CRYPT_RUN.mule) { if (!st.room) out.push(n + ' has no room'); }
+		else if (!st.muled) out.push(n + ' is still muling');
+		if (!(st.mluck >= CRYPT_RUN.mluckMinMs)) out.push(n + ' lacks mluck');
+	}
+	if (!hasKey) out.push('no ' + CRYPT_RUN.keyItem + ' in ' + character.name + "'s bag");
+	return out;
+}
+function cryptOutside(run, now) {
+	if (character.map !== CRYPT_RUN.door.map || crDist(crPos(character), CRYPT_RUN.door) > CRYPT_RUN.doorReach) {
+		crWalk(CRYPT_RUN.door, 'door');
+		return;
+	}
+	if (run && !run.done) { cryptEnter(run.id, now); return; }
+	if (!isLeader()) return;
+	const bs = beacons();
+	bs[character.name] = cryptSelfBeacon();
+	let hasKey = false;
+	try { hasKey = locate_item(CRYPT_RUN.keyItem) >= 0; } catch (e) {}
+	const b = cryptGate(bs, now, hasKey);
+	if (!b.length) { cryptEnter(null, now); return; }
+	const red = !hasKey || (crMluckSince && now - crMluckSince > CRYPT_RUN.mluckLongMs && b.some((x) => /mluck/.test(x)));
+	crSay('gate', 'waiting at the door - ' + b.join(' | ') + (!hasKey ? ' - put a ' + CRYPT_RUN.keyItem + ' in his bag; the bank is never touched' : ''),
+		red ? 'red' : '#8b98ab');
+}
+function cryptSelfBeacon() {
+	return { name: character.name, t: Date.now(), map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y),
+		rip: !!character.rip, mluck: mluckLeft(), muled: crMuled, room: crRoom };
+}
+
+/* ---- the mule, the room and the mluck ---- */
+function cryptMuleList(items) {
+	const out = [];
+	(items || []).forEach((it, i) => {
+		if (!it || it.l || it.s) return;
+		if (CRYPT_RUN.keep.indexOf(it.name) >= 0) return;
+		out.push({ i: i, name: it.name, q: it.q || 1 });
+	});
+	return out;
+}
+function cryptFree() {
+	if (typeof character.esize === 'number') return character.esize;
+	return (character.items || []).filter((x) => !x).length;
+}
+function cryptAskMerchant(payload) {
+	const body = Object.assign({ _plid: character.name + '-crypt-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6) }, payload);
+	try { body._plshard = { region: parent.server_region, name: parent.server_identifier }; } catch (e) {}
+	try { send_cm(CRYPT_RUN.merchant, body); } catch (e) {}
+	try {
+		if (typeof fetch === 'function') fetch(CRYPT_RUN.bridge + '/msg', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ from: character.name, to: [CRYPT_RUN.merchant], id: body._plid, payload: body }) }).catch(() => {});
+	} catch (e) {}
+}
+function crSendAll(to, list) {
+	for (const it of list) { try { send_item(to, it.i, it.q); } catch (e) {} }
+}
+/* The other two, outside after a run: hand Dexon everything but the keep list. */
+function cryptMuleTick(run, now) {
+	if (character.name === CRYPT_RUN.mule) { cryptRoomTick(now); return; }
+	const key = run ? run.id : null;
+	if (crMuleRun !== key) { crMuleRun = key; crMuled = false; crMuleSince = now; }
+	if (crMuled || character.map === 'crypt' || character.rip || (run && !run.done)) return;
+	if (now - crMuleAt < 2000) return;
+	crMuleAt = now;
+	const list = cryptMuleList(character.items);
+	if (!list.length) { crMuled = true; crSay('muled', 'loot handed to ' + CRYPT_RUN.mule, '#7FD98A', 0); return; }
+	let m = null;
+	try { m = get_player(CRYPT_RUN.mule); } catch (e) {}
+	if (!m || m.rip || dist(character, m) > CRYPT_RUN.muleRange) {
+		if (now - crMuleSince > CRYPT_RUN.muleWaitMs) {
+			crMuled = true;
+			crSay('muleGaveUp', CRYPT_RUN.mule + ' never came in range - keeping ' + list.length + ' item(s)', 'orange', 0);
+		}
+		return;
+	}
+	crSendAll(m.name || CRYPT_RUN.mule, list);
+}
+/* Dexon: short of room, ask the merchant and hand him the overflow when he
+   comes. Asked only outside the crypt - nobody could reach him inside. */
+function cryptRoomTick(now) {
+	const free = cryptFree();
+	crRoom = free >= CRYPT_RUN.muleMinFree;
+	if (crRoom || character.map === 'crypt' || character.rip) return;
+	if (now - (crAskAt.room || 0) >= CRYPT_RUN.askMs) {
+		crAskAt.room = now;
+		cryptAskMerchant({ message: 'inventory_almost_full', emptySlots: free, x: character.x, y: character.y, map: character.map });
+		crSay('room', free + ' slot(s) free - asked ' + CRYPT_RUN.merchant + ' to take the overflow', 'orange');
+	}
+	let m = null;
+	try { m = get_player(CRYPT_RUN.merchant); } catch (e) {}
+	if (m && dist(character, m) <= CRYPT_RUN.muleRange && now - crPushAt >= 2000) {
+		crPushAt = now;
+		crSendAll(m.name || CRYPT_RUN.merchant, cryptMuleList(character.items));
+	}
+}
+function cryptMluckLacking(bs, now) {
+	return TEAM.filter((n) => {
+		const st = n === character.name ? { t: now, mluck: mluckLeft() } : crMate(bs, n, now);
+		return !st || !(st.mluck >= CRYPT_RUN.mluckMinMs);
+	});
+}
+/* Dexon asks for everyone: the merchant's mluck trips answer his requests
+   only, and the party is at the door with him. */
+function cryptMluckTick(run, now) {
+	if (character.map === 'crypt' || character.rip || (run && !run.done)) { crMluckSince = 0; return; }
+	const lacking = cryptMluckLacking(beacons(), now);
+	if (!lacking.length) { crMluckSince = 0; return; }
+	if (!crMluckSince) crMluckSince = now;
+	if (character.name !== CRYPT_RUN.mule) return;
+	if (now - (crAskAt.mluck || 0) < CRYPT_RUN.askMs) return;
+	crAskAt.mluck = now;
+	cryptAskMerchant({ message: 'location', needsMluck: true, x: character.x, y: character.y, map: character.map });
+	crSay('mluck', 'asked ' + CRYPT_RUN.merchant + ' for mluck - lacking: ' + lacking.join(', '),
+		now - crMluckSince > CRYPT_RUN.mluckLongMs ? 'red' : 'orange');
+}
+
+/* ---- the tick ---- */
+/* Bookkeeping, every tick, before anything moves. */
+function cryptTick() {
+	if (!cryptAuto || mode !== 'crypt') return;
+	const now = Date.now();
+	if (!character.rip) crHoldSince = 0;
+	cryptSeeTick();
+	if (isLeader() && character.map === 'crypt' && character.in) {
+		const r = crunRead();
+		if (!r || r.id !== character.in) {
+			crunWrite({ id: character.in, at: now, leader: character.name, dead: {}, cleared: {}, done: false, regroupAll: false });
+			try { send_cm(followers(), { cave: { crypt: character.in } }); } catch (e) {}
+			crSearch = { stage: -1, i: 0, since: now };
+			crSay('published', 'in - instance published to ' + followers().join(', '), '#7FD98A', 0);
+		}
+	}
+	const run = crunEffective();
+	cryptMuleTick(run, now);
+	cryptMluckTick(run, now);
+}
+/* Movement. True while the crypt run owns this tick's move. */
+async function cryptMoveTick() {
+	const now = Date.now();
+	const run = crunEffective();
+	if (character.map === 'crypt') {
+		if (await cryptKiteTick(now)) return true;
+		if (run && run.done) { cryptLeave(run, now); return true; }
+		if (!run) return false;
+		if (isLeader()) { noteLeaderMotion({ x: character.real_x, y: character.real_y }); await cryptLeaderInside(run, now); return true; }
+		return cryptFollowerInside(run, now);
+	}
+	crKite = null;
+	cryptOutside(run, now);
+	return true;
+}
+
+/* ---- commands ---- */
+function cryptRun() {
+	launcher.handBackAt = 0;
+	cryptAuto = true; cryptNavOn = true; navManualUntil = 0;
+	try { parent.localStorage.setItem(CRYPT_AUTO_KEY, '1'); } catch (e) {}
+	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
+	if (isLeader()) caveSay('cryptrun');
+	clog('CRYPT RUN as ' + role() + ' - leader ' + leaderName() + ', mule ' + CRYPT_RUN.mule
+		+ '. cryptStop() hands everything back; cryptNav(false) hands back the driving only.', '#FFD700');
+	ev('cryptRun', { role: role() });
+	return cryptStatus();
+}
+function cryptStop() {
+	cryptAuto = false; crKite = null;
+	try { parent.localStorage.removeItem(CRYPT_AUTO_KEY); } catch (e) {}
+	if (navFlight) navHalt('off');
+	if (isLeader()) caveSay('cryptstop');
+	clog('crypt run OFF - plain crypt mode, the leader is yours to drive', 'orange');
+	return false;
+}
+function cryptNav(on) {
+	cryptNavOn = on === undefined ? !cryptNavOn : !!on;
+	navManualUntil = 0;
+	if (!cryptNavOn && navFlight) navHalt('off');
+	clog('crypt autopilot ' + (cryptNavOn ? 'ON' : 'OFF'), '#FFD700');
+	return cryptNavOn;
+}
+function cryptSpot(name, x, y) {
+	const k = { pull: 'pullSpot', vbat: 'vbatSpot' }[name];
+	if (!k) { clog('cryptSpot(pull|vbat, x, y)', 'orange'); return null; }
+	if (typeof x === 'number' && typeof y === 'number') CRYPT_RUN[k] = { x: x, y: y };
+	clog('crypt ' + name + ' spot: ' + CRYPT_RUN[k].x + ',' + CRYPT_RUN[k].y, '#FFD700');
+	return CRYPT_RUN[k];
+}
+function cryptStatus() {
+	const run = crunEffective(), st = run ? cryptStage(run) : null;
+	const info = { auto: cryptAuto, nav: cryptNavOn, role: role(), leader: leaderName(), map: character.map,
+		run: run ? { done: !!run.done, lost: !!run.lost, regroupAll: !!run.regroupAll, kills: crKills(run), cleared: run.cleared || {} } : null,
+		stage: st ? st.types : null, kiting: crKite ? crKite.mtype : null, holding: crHolding,
+		mluckMin: Math.round(mluckLeft() / 60000), muled: crMuled, room: crRoom, free: cryptFree() };
+	clog(JSON.stringify(info));
+	return info;
+}
+function cryptAutoSaved() { try { return parent.localStorage.getItem(CRYPT_AUTO_KEY) === '1'; } catch (e) { return false; } }
+try { game.on('death', function (d) { if (!alive()) return; try { cryptOnDeath(d); } catch (e) {} }); } catch (e) {}
+
 try {
 	character.on('cm', function (d) {
 		try {
@@ -4255,6 +4966,9 @@ try {
 			ev('cm', { from: d.name, msg: d.message.cave });
 			if (d.message.cave === 'go') { if (phase === 'idle') caveGo(); }
 			else if (d.message.cave === 'stop') caveStop();
+			else if (d.message.cave === 'cryptrun') { if (!cryptAuto) cryptRun(); }
+			else if (d.message.cave === 'cryptstop') { if (cryptAuto) cryptStop(); }
+			else if (d.message.cave.crypt && typeof d.message.cave.crypt === 'string') cryptRelayId = d.message.cave.crypt;
 		} catch (e) {}
 	});
 } catch (e) { clog('could not hook cm: ' + e, 'red'); }
@@ -4266,6 +4980,8 @@ try {
 	window.caveDump = caveDump; window.caveLeash = caveLeash; window.caveVotePreview = caveVotePreview;
 	window.caveExit = caveExit; window.caveStay = caveStay; window.caveResume = caveResume;
 	window.caveNav = caveNav; window.caveNavStatus = caveNavStatus;
+	window.cryptRun = cryptRun; window.cryptStop = cryptStop; window.cryptNav = cryptNav;
+	window.cryptStatus = cryptStatus; window.cryptSpot = cryptSpot;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
@@ -4296,6 +5012,7 @@ async function tick() {
 		partyTick();
 		lootTick();
 		exitTick();
+		cryptTick();            // v32 - bookkeeping only; the move is in moveTick
 		dieTick();
 		launcherTick();
 		senseTick();            // beacon out, trouble + leash in - before anything moves
@@ -4314,6 +5031,9 @@ telHook();
 hookPartyInvite();
 ev('load', { ver: caveVersion(), build: caveBuild(), leader: leaderName(), role: role(), speed: character.speed, range: character.range,
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
+/* v32: a crypt run survives a reload; the cave launcher then stays out of
+   it, since launcherStart() only runs in cave mode. */
+if (cryptAutoSaved()) cryptRun();
 tick();
 voteLoop();
 launcherStart();

@@ -5336,6 +5336,42 @@ a day.
   the runner's pathfinder only plans by moving - and every leg logs `navLeg`
   with its measured time so the factor can be refined. NOT YET RUN LIVE.
 
+## The crypt run
+
+**Both sessions.** CaveRun v32, on the operator's spec of 2026-11-08. The
+design is in the CRYPT RUN block of `CaveRun.js`; this records what is not
+obvious from it. NOT YET RUN LIVE.
+
+- **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
+  The leader is the cave leader (`leaderName()`, FatherToken by default). It
+  persists in `crypt_auto`, so a reload resumes the run and the cave launcher,
+  which runs only in cave mode, stays out. `cryptStop()` hands everything
+  back; `cryptNav(false)` hands back the driving only; an operator's own move
+  pauses the autopilot 45s, as in the cave.
+- **THE CRYPT'S GEOMETRY IS IN THE SERVER SOURCE, SO NO SPOT WAS GUESSED.**
+  `node/precomputed_map_data.js` carries `smap_data.crypt`, the server's
+  reachability grid at 10 units, 31,401 cells (upstream `a5c133dc`). Every
+  point in `CRYPT_RUN` is a walkable cell in it. Path lengths from the
+  entrance (0,0): a7 1,900, a2 2,430, the vbat box 2,610, a3 3,130. a7's hall
+  leads to a2's room and a2's room to the vbat box, so the fight order is also
+  the route. Read the grid before choosing a new spot.
+- **ENTRY AND RESPAWN, FROM SOURCE.** `enter("crypt")` is refused beyond 120
+  of cave spawn 2 (-193,-1296), consumes one `cryptkey` when no instance name
+  is given, and the instance name is the opener's `character.in`. A death in
+  the crypt respawns at that same point (`G.maps.crypt.on_death` is
+  `["cave", 2]`), and `use_town` inside the instance lands at its spawn, the
+  entrance. **A crypt instance is never destroyed**: only a `solo` instance is,
+  and the crypt is paused 50s after its last live player leaves. So the
+  operator's leader-last rule costs a little time and can lose nothing.
+- **THE MERCHANT TAKES A MLUCK REQUEST FROM DEXON ONLY** (`CONFIG.mluck.targets`
+  in `Party/Merchant.js`), so Dexon asks for the whole party while the party
+  waits at the door, and the other two depend on the merchant's opportunistic
+  pass while he is within 320 of them. No merchant change was made, per the
+  operator. If FatherToken or MageofOz keep waiting, that is why.
+- **KILLS ARE KEYED BY MONSTER ID IN THE SHARED RUN RECORD** (`crypt_run`),
+  because every tab in view receives the same `death` event. Crypt monsters
+  have `respawn: -1`, so a kill is final for the instance.
+
 ## The published event schedule - upstream's new mechanism
 
 **Both sessions.** Read from upstream source 2026-10-21 at `43b2c8fc`, after
