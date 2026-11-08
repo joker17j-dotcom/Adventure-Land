@@ -3992,8 +3992,10 @@ reading.
   radius, and followers scale theirs by speed and phase-lock to his angle from
   `parent.entities`. A follower with no word for 75s runs its own settings.
   **`noKite` ALSO SWITCHES OFF THE FOLLOWERS' COURAGE DISENGAGE FOR THAT
-  MONSTER**, because both kiters flee only from a candidate type. The design is
-  in the Ranger v161 changelog entry.
+  MONSTER**, because both kiters flee only from a candidate type. **RULED
+  2026-11-08: KEEP IT THAT WAY** - the operator chose no kiting and no disengage
+  on a `noKite` monster over splitting the two. The design is in the Ranger
+  v161 changelog entry.
   **FEAR IS ON NO OTHER PLAYER'S ENTITY** - `fear` is in the server's
   self-only property list - so Dexon sends his fear-free speed as `sD`, and a
   follower's radius scales by the two fear-free speeds (Ranger v162 / Priest v90
