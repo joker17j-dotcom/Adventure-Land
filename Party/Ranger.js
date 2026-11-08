@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v160
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v161
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -493,6 +493,7 @@ const TOGGLES = {
 	combatUseSupershot:              true,   // CONFIG.combat.useSupershot
 	movement:                        true,   // CONFIG.movement.enabled
 	movementCircleWalk:              true,   // CONFIG.movement.circleWalk
+	movementCircleOverride:          true,   // CONFIG.movement.circleOverride.enabled
 	rangedKiting:                    true,   // CONFIG.movement.rangedKiting.enabled
 	rangedKitingAutoBySpeed:         false,  // CONFIG.movement.rangedKiting.autoBySpeed
 	rangedKitingDisengageOnCourage:  true,   // CONFIG.movement.rangedKiting.disengageOnCourage
@@ -608,6 +609,25 @@ const CONFIG = {
 		   of fire to the spawn centre. Free at a respawn-capped spot. */
 		anchors: {
 			'cgoo@level2s': { x: -86, y: 683 }
+		},
+		/* CIRCLE-WALK OVERRIDE, owned here and sent to Priest and Mage on the
+		   farm_spot message. On: the whole party circle-walks, each at its own
+		   circleRadius - except where a whitelist entry matches the farm target
+		   (monster + map). Then the entry governs: x/y is the ring centre and
+		   replaces any anchor above for that spot, r is Dexon's radius, rBy sets
+		   a follower's (null = Dexon's scaled by speed, so both keep his angle),
+		   and noKite takes that monster out of kiting while it is active. Dexon's
+		   radius must pass a wall check around the centre or the entry is
+		   dropped with a red line. Off: each follower runs its own settings.
+		   Console: circleOn() circleOff() circleR(r) circleForget() circleStatus(). */
+		circleOverride: {
+			enabled: TOGGLES.movementCircleOverride,
+			bodyMargin: 5,
+			whitelist: [
+				/* Operator's design 2026-11-08. Measured live at this centre: radius
+				   140 clear, 145 hits the north-east wall. */
+				{ m: 'cgoo', map: 'level2s', x: 34, y: 503, r: 40, rBy: { FatherToken: null, MageofOz: null }, noKite: true },
+			],
 		},
 		rangedKiting: {
 			enabled: TOGGLES.rangedKiting,
@@ -1501,8 +1521,8 @@ async function mainLoop() {
 				   enabling kiting would have retired walkInCircle() altogether and
 				   left him standing still at every ordinary farm spot. */
 				const kited = await noHang(rangedKite(), 'rangedKite');
-				if (!kited && CONFIG.movement.circleWalk) walkInCircle();
-			} else if (CONFIG.movement.circleWalk) {
+				if (!kited && circleWalkWanted()) walkInCircle();
+			} else if (circleWalkWanted()) {
 				walkInCircle();
 			}
 		}
@@ -5657,11 +5677,201 @@ function handleReturnHome() {
 
 async function walkInCircle() {
 	if (smart.moving || !destination) return;
-	const center = destination, r = CONFIG.movement.circleRadius, now = performance.now();
+	/* An active whitelist entry sets the centre and Dexon's radius; the
+	   followers phase-lock to his angle from parent.entities. */
+	const p = circlePlan();
+	const ent = (p.entry && p.entry.map === character.map) ? p.entry : null;
+	const center = ent || destination, r = ent ? p.rD : CONFIG.movement.circleRadius, now = performance.now();
 	const dt = Math.min((now - state.lastAngleUpdate) / 1000, 0.5);
 	state.lastAngleUpdate = now;
 	state.angle = (state.angle + (character.speed / r) * dt) % (2 * Math.PI);
 	if (!character.moving) await safeMove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
+}
+
+/* ---------------------------------------------------------------------------
+   CIRCLE-WALK OVERRIDE - shared helpers, identical in Ranger.js / Priest.js /
+   Mage.js and pinned so by Tests/suite_circle.js. Dexon owns the plan
+   (CONFIG.movement.circleOverride in Ranger.js) and sends it on the farm_spot
+   message; circlePlan() is per file - Dexon computes it, a follower reads
+   what he last heard.
+
+   The wall check exists because walkInCircle() has no wall avoidance: it
+   moves straight to the next ring point, so a radius that reaches a wall
+   looks like a character standing stuck, not like an error. */
+const CIRCLE_RAYS = 36;
+const CIRCLE_RAY_STEP = 5;
+const CIRCLE_RAY_MAX = 300;
+const circleWallCache = {};
+
+/* Clear distance from a ring centre to the nearest wall: the shortest of
+   CIRCLE_RAYS straight rays, each tested with the game's own can_move (which
+   carries the character's hitbox), less `margin`. null when it cannot be
+   measured - can_move absent, or the centre itself blocked - and every caller
+   treats null as a failed check. Rays only: a ring whose chord clips a corner
+   lying between two clear rays is not caught. */
+function circleWallLimit(map, x, y, margin) {
+	if (typeof can_move !== 'function') return null;
+	const base = character.base;
+	const ok = (x2, y2) => {
+		try { return !!can_move({ map: map, x: x, y: y, going_x: x2, going_y: y2, base: base }); }
+		catch (e) { return false; }
+	};
+	if (!ok(x, y)) return null;
+	let best = CIRCLE_RAY_MAX;
+	for (let i = 0; i < CIRCLE_RAYS; i++) {
+		const a = (2 * Math.PI * i) / CIRCLE_RAYS, c = Math.cos(a), s = Math.sin(a);
+		let clear = 0;
+		for (let d = CIRCLE_RAY_STEP; d <= best; d += CIRCLE_RAY_STEP) {
+			if (!ok(x + c * d, y + s * d)) break;
+			clear = d;
+		}
+		if (clear < best) best = clear;
+	}
+	return Math.max(0, best - (margin || 0));
+}
+
+function circleEntryKey(e) { return e.map + '|' + e.x + '|' + e.y; }
+
+/* Cached per centre and margin; a null is not cached, so a check that could
+   not run is tried again rather than remembered as a failure. */
+function circleWall(e, margin) {
+	const k = circleEntryKey(e) + '|' + (margin || 0);
+	if (typeof circleWallCache[k] === 'number') return circleWallCache[k];
+	const v = circleWallLimit(e.map, e.x, e.y, margin);
+	if (typeof v === 'number') circleWallCache[k] = v;
+	return v;
+}
+
+/* While a plan is on, the party circle-walks whatever its own toggle says. */
+function circleWalkWanted() {
+	const p = circlePlan();
+	return (p && p.on) ? true : !!CONFIG.movement.circleWalk;
+}
+
+/* The monster types the active entry takes out of kiting - and with them out
+   of the courage disengage, which flees only from a candidate type. Empty
+   unless a plan is on with an entry for this map that asks for it. */
+function circleNoKiteTypes() {
+	const p = circlePlan();
+	if (!p || !p.on || !p.entry || !p.entry.noKite || p.entry.map !== character.map) return [];
+	return [p.entry.m];
+}
+
+/* Dexon's side. The stored choice (circleOn/circleOff/circleR) outranks the
+   CONFIG default and survives a hop; circleForget() drops it. */
+const CIRCLE_KEY = 'circle_override';
+let circleStore;            // undefined until first read; null when nothing is stored
+const circleRefused = {};   // entry+radius pairs already reported as failing the wall check
+
+function circleCfg() { return (CONFIG.movement && CONFIG.movement.circleOverride) || {}; }
+function circleStored() {
+	if (circleStore === undefined) {
+		try { circleStore = scopedGet(CIRCLE_KEY) || null; } catch (e) { circleStore = null; }
+	}
+	return circleStore || {};
+}
+function circleOverrideOn() {
+	const s = circleStored();
+	return typeof s.on === 'boolean' ? s.on : !!circleCfg().enabled;
+}
+function circleMatch(h, m) {
+	return (circleCfg().whitelist || []).find((e) => e && e.m === h && e.map === m) || null;
+}
+
+/* {on, entry, rD, wall}. An entry is returned only if Dexon's own radius
+   passes the wall check; otherwise the plan is on with no entry - the default
+   circle - and the failure is logged red once per entry and radius. */
+function circlePlan() {
+	if (!circleOverrideOn()) return { on: false, entry: null };
+	const e = circleMatch(home, mobMap);
+	if (!e) return { on: true, entry: null };
+	const s = circleStored();
+	const k = circleEntryKey(e);
+	const rD = (s.r && typeof s.r[k] === 'number') ? s.r[k]
+		: (e.rBy && typeof e.rBy.Dexon === 'number') ? e.rBy.Dexon : e.r;
+	const wall = circleWall(e, circleCfg().bodyMargin || 0);
+	if (typeof wall !== 'number' || wall < rD) {
+		const rk = k + '|' + rD;
+		if (!circleRefused[rk]) {
+			circleRefused[rk] = true;
+			game_log('[circle] ' + e.m + '@' + e.map + ' (' + e.x + ',' + e.y + ') radius ' + rD
+				+ ' fails the wall check (clear ' + (typeof wall === 'number' ? wall : 'unmeasured')
+				+ ') - circling as default', 'red');
+		}
+		return { on: true, entry: null, refused: true };
+	}
+	return { on: true, entry: e, rD: rD, wall: wall };
+}
+
+/* What the followers are told, on every farm_spot message. */
+function circleWord() {
+	const p = circlePlan();
+	if (!p.on) return { v: 1, on: false };
+	if (!p.entry) return { v: 1, on: true };
+	const e = p.entry;
+	return {
+		v: 1, on: true, rD: p.rD,
+		entry: { m: e.m, map: e.map, x: e.x, y: e.y, r: e.r, rBy: e.rBy || null, noKite: !!e.noKite },
+	};
+}
+
+/* The farm destination for a search result: an active entry's centre first,
+   then a configured anchor, then the spawn centre. The entry has to win over
+   the anchor - cgoo's anchor (-86,683) is a wall pocket. */
+let farmSearchResult = null;
+function farmDestinationFor(result) {
+	const p = circlePlan();
+	if (p.entry && p.entry.m === result.home && p.entry.map === result.mobMap) {
+		return { map: result.mobMap, x: p.entry.x, y: p.entry.y };
+	}
+	const anchor = (CONFIG.movement.anchors || {})[spotKey(result.home, result.mobMap)];
+	return anchor
+		? { map: result.mobMap, x: anchor.x, y: anchor.y }
+		: { map: result.mobMap, x: result.x, y: result.y };
+}
+/* After a console change: re-derive the destination for the spot we are on.
+   farmSpotTick sees the key change and tells the followers within a second. */
+function circleReapply() {
+	const r = farmSearchResult;
+	if (r && r.home === home && r.mobMap === mobMap) destination = farmDestinationFor(r);
+}
+
+// ---- console helpers -------------------------------------------------------
+function circleSave(patch) {
+	circleStore = Object.assign({}, circleStored(), patch);
+	try { scopedSet(CIRCLE_KEY, circleStore); } catch (e) { }
+	circleReapply();
+}
+function circleOn() { circleSave({ on: true }); game_log('[circle] override ON - it stays on across a hop', '#7FD98A'); return circleStatus(); }
+function circleOff() { circleSave({ on: false }); game_log('[circle] override OFF - each follower runs its own settings', '#FFD700'); return circleStatus(); }
+/* Dexon's radius for the entry matching the current farm target; null drops
+   the stored radius back to the entry's own. */
+function circleR(r) {
+	const e = circleMatch(home, mobMap);
+	if (!e) { game_log('[circle] no whitelist entry matches ' + home + '@' + mobMap, 'orange'); return circleStatus(); }
+	const rs = Object.assign({}, circleStored().r || {});
+	if (r == null) delete rs[circleEntryKey(e)];
+	else if (typeof r === 'number' && r > 0) rs[circleEntryKey(e)] = r;
+	else { game_log('[circle] radius must be a positive number', 'orange'); return circleStatus(); }
+	circleSave({ r: rs });
+	return circleStatus();
+}
+function circleForget() {
+	circleStore = null;
+	try { scopedSet(CIRCLE_KEY, null); } catch (e) { }
+	circleReapply();
+	game_log('[circle] stored choice cleared - following CONFIG.movement.circleOverride again', '#FFD700');
+	return circleStatus();
+}
+function circleStatus() {
+	const p = circlePlan(), s = circleStored();
+	return {
+		on: p.on, from: typeof s.on === 'boolean' ? 'stored' : 'config',
+		spot: home + '@' + mobMap,
+		entry: p.entry ? p.entry.m + '@' + p.entry.map + ' (' + p.entry.x + ',' + p.entry.y + ')' : null,
+		rD: p.entry ? p.rD : null, wall: p.entry ? p.wall : null, refused: !!p.refused,
+		destination: destination ? Math.round(destination.x) + ',' + Math.round(destination.y) : null,
+	};
 }
 
 /* ---------------------------------------------------------------------------
@@ -5683,10 +5893,12 @@ function kiteThreatRadius(mdef) {
 }
 
 function kiteCandidateTypes(cfg) {
+	const skip = circleNoKiteTypes();
+	const done = (s) => [...s].filter((t) => skip.indexOf(t) < 0);
 	const out = new Set(cfg.targets || cfg.avoidTypes || []);
-	if (!cfg.autoBySpeed) return [...out];
+	if (!cfg.autoBySpeed) return done(out);
 	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
-	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return [...out];
+	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return done(out);
 	const mySpeed = character.speed || 0;
 	const reach = (character.range || 0) - (cfg.attackMargin || 0);
 	const ratio = cfg.speedRatio || 1.3;
@@ -5701,7 +5913,7 @@ function kiteCandidateTypes(cfg) {
 		if (kiteThreatRadius(mdef) + buffer > reach) continue;
 		out.add(e.mtype);
 	}
-	return [...out];
+	return done(out);
 }
 
 function kiteBand(mtype, cfg) {
@@ -7548,11 +7760,10 @@ function runFarmSearch() {
 		mobMap = result.mobMap;
 		/* An anchor, where one is configured, replaces the spawn-boundary centre.
 		   Standing in the middle of the spawn is what makes 24-lane surrounds
-		   possible; see CONFIG.movement.anchors. */
-		const anchor = (CONFIG.movement.anchors || {})[spotKey(result.home, result.mobMap)];
-		destination = anchor
-			? { map: result.mobMap, x: anchor.x, y: anchor.y }
-			: { map: result.mobMap, x: result.x, y: result.y };
+		   possible; see CONFIG.movement.anchors. An active circle-override entry
+		   outranks the anchor - see farmDestinationFor(). */
+		farmSearchResult = result;
+		destination = farmDestinationFor(result);
 		if (changed) {
 			const tag = manualOverride ? '(manual override)' : '(auto)';
 			game_log(
@@ -9639,7 +9850,9 @@ let farmSpotKnownParty = new Set();
 
 function farmSpotKey() {
 	if (!home || !mobMap || !destination) return null;
-	return `${home}|${mobMap}|${Math.round(destination.x)}|${Math.round(destination.y)}`;
+	/* The circle word is part of the key, so turning the override on or off,
+	   or changing a radius, is sent as promptly as a new spot. */
+	return `${home}|${mobMap}|${Math.round(destination.x)}|${Math.round(destination.y)}|${JSON.stringify(circleWord())}`;
 }
 
 /* Who is in the party that we care about, right now. */
@@ -9659,6 +9872,7 @@ function sendFarmSpot(reason) {
 		y: destination.y,
 		also: rageAlso,
 		pullConcurrent: rageCfg().concurrent,
+		circle: circleWord(),
 	});
 	farmSpotLast = farmSpotKey();
 	farmSpotSentAt = Date.now();

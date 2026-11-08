@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v88
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v89
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1300,9 +1300,9 @@ async function mainLoop() {
 				   is in danger range, and this was an `else if`, so enabling kiting would
 				   have retired walkInCircle() everywhere. */
 				const kited = await noHang(kiter(), 'kiter');
-				if (!kited && CONFIG.movement.circleWalk) walkInCircle();
-			} else if (CONFIG.movement.circleWalk) {
-				walkInCircle();
+				if (!kited && circleWalkWanted()) circleStep();
+			} else if (circleWalkWanted()) {
+				circleStep();
 			}
 		}
 
@@ -3881,6 +3881,188 @@ async function walkInCircle() {
 	if (!character.moving) await safeMove(center.x + Math.cos(state.angle) * r, center.y + Math.sin(state.angle) * r);
 }
 
+/* ---------------------------------------------------------------------------
+   CIRCLE-WALK OVERRIDE - shared helpers, identical in Ranger.js / Priest.js /
+   Mage.js and pinned so by Tests/suite_circle.js. Dexon owns the plan
+   (CONFIG.movement.circleOverride in Ranger.js) and sends it on the farm_spot
+   message; circlePlan() is per file - Dexon computes it, a follower reads
+   what he last heard.
+
+   The wall check exists because walkInCircle() has no wall avoidance: it
+   moves straight to the next ring point, so a radius that reaches a wall
+   looks like a character standing stuck, not like an error. */
+const CIRCLE_RAYS = 36;
+const CIRCLE_RAY_STEP = 5;
+const CIRCLE_RAY_MAX = 300;
+const circleWallCache = {};
+
+/* Clear distance from a ring centre to the nearest wall: the shortest of
+   CIRCLE_RAYS straight rays, each tested with the game's own can_move (which
+   carries the character's hitbox), less `margin`. null when it cannot be
+   measured - can_move absent, or the centre itself blocked - and every caller
+   treats null as a failed check. Rays only: a ring whose chord clips a corner
+   lying between two clear rays is not caught. */
+function circleWallLimit(map, x, y, margin) {
+	if (typeof can_move !== 'function') return null;
+	const base = character.base;
+	const ok = (x2, y2) => {
+		try { return !!can_move({ map: map, x: x, y: y, going_x: x2, going_y: y2, base: base }); }
+		catch (e) { return false; }
+	};
+	if (!ok(x, y)) return null;
+	let best = CIRCLE_RAY_MAX;
+	for (let i = 0; i < CIRCLE_RAYS; i++) {
+		const a = (2 * Math.PI * i) / CIRCLE_RAYS, c = Math.cos(a), s = Math.sin(a);
+		let clear = 0;
+		for (let d = CIRCLE_RAY_STEP; d <= best; d += CIRCLE_RAY_STEP) {
+			if (!ok(x + c * d, y + s * d)) break;
+			clear = d;
+		}
+		if (clear < best) best = clear;
+	}
+	return Math.max(0, best - (margin || 0));
+}
+
+function circleEntryKey(e) { return e.map + '|' + e.x + '|' + e.y; }
+
+/* Cached per centre and margin; a null is not cached, so a check that could
+   not run is tried again rather than remembered as a failure. */
+function circleWall(e, margin) {
+	const k = circleEntryKey(e) + '|' + (margin || 0);
+	if (typeof circleWallCache[k] === 'number') return circleWallCache[k];
+	const v = circleWallLimit(e.map, e.x, e.y, margin);
+	if (typeof v === 'number') circleWallCache[k] = v;
+	return v;
+}
+
+/* While a plan is on, the party circle-walks whatever its own toggle says. */
+function circleWalkWanted() {
+	const p = circlePlan();
+	return (p && p.on) ? true : !!CONFIG.movement.circleWalk;
+}
+
+/* The monster types the active entry takes out of kiting - and with them out
+   of the courage disengage, which flees only from a candidate type. Empty
+   unless a plan is on with an entry for this map that asks for it. */
+function circleNoKiteTypes() {
+	const p = circlePlan();
+	if (!p || !p.on || !p.entry || !p.entry.noKite || p.entry.map !== character.map) return [];
+	return [p.entry.m];
+}
+
+/* The follower's side, identical in Priest.js and Mage.js. Dexon re-sends the
+   plan on every farm_spot message - at least every 30s, every 5s for a minute
+   after a change - so a word older than CIRCLE_TRUST_MS means he has stopped
+   saying it and this character goes back to its own settings. */
+const CIRCLE_TRUST_MS = 75000;
+const CIRCLE_BODY_MARGIN = 5;
+const CIRCLE_MIN_R = 10;
+const CIRCLE_ARRIVE = 6;     // within this of the ring point counts as there
+const CIRCLE_T_MIN = 0.5;    // s: never aim at a point Dexon reaches sooner than this
+const CIRCLE_T_MAX = 6;      // s: how far ahead of him to search
+let circleHeard = null;
+let circleRefusedAt = null;
+
+/* The receiver validates: a malformed word is ignored rather than half-used. */
+function circleOnWord(w) {
+	if (!w || typeof w !== 'object' || typeof w.on !== 'boolean') return;
+	const e = w.entry;
+	const num = (v) => typeof v === 'number' && isFinite(v);
+	let entry = null;
+	if (w.on && e && typeof e === 'object' && typeof e.m === 'string' && typeof e.map === 'string'
+		&& num(e.x) && num(e.y) && num(e.r) && e.r > 0 && num(w.rD) && w.rD > 0) {
+		entry = { m: e.m, map: e.map, x: e.x, y: e.y, r: e.r,
+			rBy: (e.rBy && typeof e.rBy === 'object') ? e.rBy : null, noKite: !!e.noKite };
+	}
+	circleHeard = { on: w.on, entry: entry, rD: entry ? w.rD : null, at: Date.now() };
+}
+
+/* null while nothing fresh has been heard - own settings. Otherwise
+   {on, entry, rD, wall}, where entry survives only if this character can
+   measure the wall limit around its centre. */
+function circlePlan() {
+	const h = circleHeard;
+	if (!h || Date.now() - h.at > CIRCLE_TRUST_MS) return null;
+	if (!h.on) return { on: false, entry: null };
+	if (!h.entry) return { on: true, entry: null };
+	const wall = circleWall(h.entry, CIRCLE_BODY_MARGIN);
+	if (typeof wall !== 'number') {
+		const k = circleEntryKey(h.entry);
+		if (circleRefusedAt !== k) {
+			circleRefusedAt = k;
+			game_log('[circle] cannot measure the walls around ' + h.entry.m + '@' + h.entry.map + ' - circling as default', 'red');
+		}
+		return { on: true, entry: null, refused: true };
+	}
+	return { on: true, entry: h.entry, rD: h.rD, wall: wall };
+}
+
+/* rBy[name] when set, else Dexon's radius scaled by speed so both cover the
+   same angle per second; capped at the wall limit. Speed is live and buffed,
+   so this is recomputed every tick. */
+function circleFollowerRadius(p, dexSpeed) {
+	const by = p.entry.rBy ? p.entry.rBy[character.name] : null;
+	let r = (typeof by === 'number' && by > 0) ? by
+		: p.rD * ((character.speed || 0) / (dexSpeed > 0 ? dexSpeed : (character.speed || 1)));
+	if (!(r > 0)) r = p.rD;
+	return Math.max(CIRCLE_MIN_R, Math.min(r, p.wall));
+}
+
+/* The earliest point on a ring of radius R that this character can reach no
+   later than Dexon's angle does: Dexon at angle th0 now, turning at w rad/s.
+   Searched from tMin to tMax in 0.1s steps; if nothing qualifies, the point at
+   tMax. A point behind is reached by a chord across the middle. */
+function circleIntercept(c, R, th0, w, me, speed, tMin, tMax) {
+	let last = null;
+	for (let i = 0; ; i++) {
+		const t = tMin + i * 0.1;
+		if (t > tMax + 1e-9) break;
+		const a = th0 + w * t;
+		const x = c.x + Math.cos(a) * R, y = c.y + Math.sin(a) * R;
+		last = { x: x, y: y, t: t, ok: false };
+		if (Math.hypot(x - me.x, y - me.y) / speed <= t) { last.ok = true; return last; }
+	}
+	return last;
+}
+
+/* Signed angle from b to a, in (-PI, PI]. */
+function circleAngleDiff(a, b) {
+	let d = (a - b) % (2 * Math.PI);
+	if (d <= -Math.PI) d += 2 * Math.PI;
+	if (d > Math.PI) d -= 2 * Math.PI;
+	return d;
+}
+
+/* One step of the phase lock. Dexon's position comes from parent.entities -
+   live - and never from parent.party, whose x/y can be minutes stale. Out of
+   sight, this falls back to the plain circle around the destination, which is
+   the entry's centre. */
+async function circleFollowStep(p) {
+	if (smart.moving || character.moving) return;
+	const D = (typeof parent !== 'undefined' && parent.entities) ? parent.entities.Dexon : null;
+	if (!D || D.dead || D.rip) return walkInCircle();
+	const e = p.entry;
+	const dx = typeof D.real_x === 'number' ? D.real_x : D.x;
+	const dy = typeof D.real_y === 'number' ? D.real_y : D.y;
+	const th = Math.atan2(dy - e.y, dx - e.x);
+	const ds = D.speed > 0 ? D.speed : (character.speed || 1);
+	const R = circleFollowerRadius(p, ds);
+	const me = { x: character.real_x, y: character.real_y };
+	/* On my ring and ahead of him: wait for him to come round. */
+	const onRing = Math.abs(Math.hypot(me.x - e.x, me.y - e.y) - R) <= CIRCLE_ARRIVE;
+	if (onRing && circleAngleDiff(Math.atan2(me.y - e.y, me.x - e.x), th) > 0.05) return;
+	const pick = circleIntercept(e, R, th, ds / p.rD, me, Math.max(1, character.speed || 0), CIRCLE_T_MIN, CIRCLE_T_MAX);
+	if (!pick || Math.hypot(pick.x - me.x, pick.y - me.y) <= CIRCLE_ARRIVE) return;
+	await safeMove(pick.x, pick.y);
+}
+
+/* What the movement branch calls in place of walkInCircle(). */
+function circleStep() {
+	const p = circlePlan();
+	if (p && p.on && p.entry && p.entry.map === character.map) return circleFollowStep(p);
+	return walkInCircle();
+}
+
 // ============================================================================
 // TEMPORAL SURGE COORDINATION
 // ============================================================================
@@ -3973,10 +4155,12 @@ function kiteThreatRadius(mdef) {
 }
 
 function kiteCandidateTypes(cfg) {
+	const skip = circleNoKiteTypes();
+	const done = (s) => [...s].filter((t) => skip.indexOf(t) < 0);
 	const out = new Set(cfg.targets || cfg.avoidTypes || []);
-	if (!cfg.autoBySpeed) return [...out];
+	if (!cfg.autoBySpeed) return done(out);
 	const G = (typeof parent !== 'undefined' && parent.G) ? parent.G : null;
-	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return [...out];
+	if (!G || !G.monsters || typeof parent === 'undefined' || !parent.entities) return done(out);
 	const mySpeed = character.speed || 0;
 	const reach = (character.range || 0) - (cfg.attackMargin || 0);
 	const ratio = cfg.speedRatio || 1.3;
@@ -3991,7 +4175,7 @@ function kiteCandidateTypes(cfg) {
 		if (kiteThreatRadius(mdef) + buffer > reach) continue;
 		out.add(e.mtype);
 	}
-	return [...out];
+	return done(out);
 }
 
 
@@ -5426,6 +5610,7 @@ function on_cm(name, data) {
 			destination = { map: data.mobMap, x: data.x, y: data.y };
 			rageAlso = Array.isArray(data.also) ? data.also.slice() : [];
 			ragePullShared = (typeof data.pullConcurrent === 'number') ? data.pullConcurrent : null;
+			circleOnWord(data.circle);
 			if (changed) {
 				updateHomeDependentSets();
 				game_log(`Farm spot set: ${data.home} @ ${data.mobMap} (${data.x}, ${data.y})`, '#00FF00');

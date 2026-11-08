@@ -3985,6 +3985,15 @@ reading.
   picker was pricing a state the hop itself destroys. **A COST ESTIMATED
   BEFORE AN ACTION MUST USE THE STATE AFTER IT.** `sickOnArrival()` is that
   state, and with it the picker is the stricter of the two again.
+- **THE CIRCLE-WALK OVERRIDE IS DEXON'S, AND IT RIDES THE FARM_SPOT MESSAGE**
+  (Ranger v161 / Priest v89 / Mage v112, the operator's design 2026-11-08).
+  `CONFIG.movement.circleOverride` holds the toggle and a whitelist keyed by
+  monster + map. A matching entry's centre replaces the anchor, `r` is Dexon's
+  radius, and followers scale theirs by speed and phase-lock to his angle from
+  `parent.entities`. A follower with no word for 75s runs its own settings.
+  **`noKite` ALSO SWITCHES OFF THE FOLLOWERS' COURAGE DISENGAGE FOR THAT
+  MONSTER**, because both kiters flee only from a candidate type. The design is
+  in the Ranger v161 changelog entry.
 - **A SHARED PREDICATE READ FROM ONLY ONE CALL SITE IS NOT YET SHARED.** The
   cooldown comparison was a single inline expression inside `bossEligible()`, so
   nothing had drifted and nothing looked wrong; it was simply unreachable from

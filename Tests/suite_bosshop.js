@@ -2239,7 +2239,8 @@ module.exports = [
   const KEYS = {
     'Party/Ranger.js': {
       scoped: ['PL_ACTED_KEY', 'TAXI_PROBE_KEY', 'BOSS_KEY', 'CRABXX_KEY',
-        'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY', 'CIPHER_STOCK_KEY'],
+        'BLACKLIST_STORAGE_KEY', 'FEAR_STORE', 'ACHV_KEY', 'MH_KEY', 'CIPHER_STOCK_KEY',
+        'CIRCLE_KEY'],
       /* TOT_STAND_KEY is shared ON PURPOSE: a door's stand point is a fact
          about the map, and the merchant and the ranger knock the same doors. */
       shared: ['PL_CURSOR_KEY', 'CHEST_STORAGE_KEY', 'TOT_STAND_KEY'],
@@ -2450,6 +2451,7 @@ module.exports = [
 		rageCfg: () => ({ concurrent: 1 }), plSend: (a, m) => sent.push(m), plLog: () => {},
 		FARM_SPOT: { audience: ['FatherToken'] },
 		farmSpotLast: null, farmSpotSentAt: 0, farmBootBossEval: false, farmBootAchvTick: false,
+		circleWord: () => ({ v: 1, on: false }),   // the circle override's own suite covers it
 	});
 	lift(ws, RANGER, ['farmSpotBootReady', 'farmSpotKey', 'sendFarmSpot']);
 	t.eq('leader: no broadcast before either latch', ws.sendFarmSpot('x'), false);

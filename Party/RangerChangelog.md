@@ -21,6 +21,65 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v161
+
+**THE CIRCLE-WALK OVERRIDE, OWNED BY DEXON.** The design is the operator's, 2026-11-08, relayed by the browser session:
+maximise cgoo kills per minute by holding the party on a small ring the whole
+spawn can reach.
+
+- **Dexon owns it.** `CONFIG.movement.circleOverride` in Ranger.js holds the
+  toggle and a whitelist keyed by monster + map. Dexon sends the plan on the
+  `farm_spot` message as `circle`. The message key now includes the plan, so a
+  change goes out within a second, with the minute of 5s re-sends a new spot
+  gets, and then every 30s.
+- **On, no matching entry**: the whole party circle-walks, each at its own
+  `circleRadius`, whatever its own circleWalk toggle says.
+- **On, entry matches the farm target**: the entry governs. Its x/y is the ring
+  centre and replaces the anchor for that spot. cgoo's anchor (-86,683) is a
+  wall pocket, and 35 of 36 rays from it hit a wall inside 76 units. `r` is
+  Dexon's radius, `rBy` sets a follower's (null = auto), and `noKite` takes that
+  monster out of kiting.
+- **Off, or no word for 75s** (2.5 of Dexon's 30s keepalives): each follower
+  runs its own settings, as before.
+- **Wall check.** walkInCircle() moves straight to the next ring point, so a
+  radius that reaches a wall shows up as a stuck character, not an error. The
+  check casts 36 rays from the centre with the game's `can_move`, which
+  carries the hitbox, and subtracts `bodyMargin` (5). If Dexon's radius does
+  not fit, the entry is dropped with one red line and the party circles as
+  default. A follower's radius is capped at the same limit. Rays only: a chord
+  that clips a corner between two clear rays is not caught.
+- **Followers phase-lock.** Radius = Dexon's x (own speed / Dexon's speed),
+  recomputed every tick from live speeds, so both cover the same angle per
+  second. Dexon's position comes from `parent.entities.Dexon`, never
+  `parent.party`. On her own ring and ahead of him, a follower waits.
+  Otherwise she walks to the earliest point on her ring she can reach no later
+  than his angle does, searched 0.5-6s ahead in 0.1s steps, which is a chord
+  across the middle when she is behind. Out of sight, she walks the plain
+  circle around the destination, which is the entry centre.
+- **Order is unchanged.** Boss events, then (followers) cohesion, then kiting,
+  then the circle.
+- **noKite also removes the courage disengage for that monster on the
+  followers.** Both their kiters flee only from a candidate type. This is what
+  lets the whitelist work at cgoo at all; fear itself is unchanged.
+- The shared helpers are byte-identical in the three scripts and pinned by
+  `Tests/suite_circle.js`, along with the follower-only ones in Priest and
+  Mage. kiteCandidateTypes and walkInCircle were NOT pinned before this.
+
+- Console: `circleOn()`, `circleOff()`, `circleR(r)` (Dexon's radius for the
+  entry matching the current farm target; `null` drops back to the entry's
+  own), `circleForget()`, `circleStatus()`. The stored choice is per character
+  (`CIRCLE_KEY`, scoped) and survives a hop; it outranks the CONFIG default.
+  Each command re-derives the destination at once.
+- One entry: `{ m: 'cgoo', map: 'level2s', x: 34, y: 503, r: 40, rBy:
+  { FatherToken: null, MageofOz: null }, noKite: true }`. The operator measured
+  radius 140 clear and 145 into the north-east wall at that centre.
+
+## v160
+
+**The operator's edit, 2026-11-05 (1345928), recorded here because it carried
+no entry:** the achievement queue's `bat` row moved from `batcave` (66,8) to
+`cave` (1201,-782).
+
 ## v159
 
 **A HOP IS PRICED AT THE SICKNESS IT LEAVES** - from the browser session's read
