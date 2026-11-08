@@ -10,7 +10,7 @@ const { lift, world, ROOT } = require('./lift');
 const src = () => fs.readFileSync(path.join(ROOT, 'CaveRun.js'), 'utf8');
 
 const TEAM = ['Dexon', 'FatherToken', 'MageofOz'];
-const LIFT = ['CRYPT', 'CRYPT_RUN', 'NAV', 'navGo', 'navHalt', 'navLanded',
+const LIFT = ['CRYPT', 'CRYPT_RUN', 'cryptAutoStamp', 'cryptAutoSaved', 'cryptNew', 'NAV', 'navGo', 'navHalt', 'navLanded',
 	'mayAttack', 'attackingUs', 'crunRead', 'crunWrite', 'crunPatch', 'crunEffective', 'crSay', 'crPos', 'crDist',
 	'mluckLeft', 'crInside', 'crMate', 'crKills', 'cryptStage', 'cryptSeeTick', 'cryptOnDeath', 'cryptMayAttack',
 	'cryptRunHere', 'cryptAbsorbTarget', 'cryptScareWanted', 'cryptMayRespawn', 'crWalk', 'crGo', 'crHalt',
@@ -31,7 +31,7 @@ function cw(o) {
 	const leader = o.leader || 'FatherToken';
 	const ls = mkStorage(o.storage);
 	if (o.run) ls.m.crypt_run = JSON.stringify(o.run);
-	const w = world({ TEAM: TEAM, mode: 'crypt', stopped: false, cryptAuto: true, cryptNavOn: true, cryptRelayId: null,
+	const w = world({ TEAM: TEAM, mode: 'crypt', stopped: false, cryptAuto: true, cryptNavOn: true, cryptRelayId: null, crAutoAt: 0,
 		crunRaw: null, crunMemo: null, crSaid: {}, crSeen: {}, crKite: null, crHolding: false, crHoldSince: 0,
 		crSearch: { stage: -1, i: 0, since: 0 }, crVbatEmptySince: 0, crWalkFlight: null, crEnterFlight: 0,
 		crMuled: false, crMuleRun: undefined, crMuleSince: 0, crMuleAt: 0, crRoom: true, crPushAt: 0, crAskAt: {}, crMluckSince: 0,
@@ -347,7 +347,7 @@ name: 'v32 crypt: the leader publishes the instance id the moment he is in', fn(
 	t.eq('a follower inside publishes nothing', f.crunRead(), null);
 	const s = src();
 	t.ok('a follower takes a relayed id from the leader', /d\.message\.cave\.crypt && typeof d\.message\.cave\.crypt === 'string'\) cryptRelayId = d\.message\.cave\.crypt/.test(s));
-	t.ok('a reload resumes the run before the cave launcher runs', /if \(cryptAutoSaved\(\)\) cryptRun\(\);\ntick\(\);\nvoteLoop\(\);\nlauncherStart\(\);/.test(s));
+	t.ok('a reload resumes the run before the cave launcher runs', /if \(cryptAutoSaved\(Date\.now\(\)\)\) cryptRun\(\);\ntick\(\);\nvoteLoop\(\);\nlauncherStart\(\);/.test(s));
 	t.ok('and the launcher only runs in cave mode', /if \(!L \|\| !L\.enabled \|\| mode !== 'cave'/.test(s));
 	t.ok('moveTick gives the crypt run the move first', /restTick\(\);\n[\s\S]{0,200}if \(cryptAuto && mode === 'crypt' && active\(\) && await cryptMoveTick\(\)\) return;\n\tif \(isLeader\(\)\) \{/.test(s));
 }}, {
@@ -393,4 +393,26 @@ name: 'v32 crypt: after a run - the loot goes to Dexon, Dexon asks for room, Dex
 	w = cw({ me: 'Dexon', map: 'cave', run: R(), beacons: bs });
 	w.cryptMluckTick(w.crunRead(), now);
 	t.eq('not while a run is on', w.cms.length, 0);
+}}, {
+
+name: 'v33 crypt: crypt_auto lapses after the run goes quiet, and cryptNew() abandons an instance', fn(t) {
+	const now = Date.now();
+	let w = cw({});
+	t.eq('nothing saved: no resume', w.cryptAutoSaved(now), false);
+	w.cryptTick();
+	t.eq('a crypt tick stamps the time', Number(w.ls.m.crypt_auto) > 0, true);
+	t.eq('a fresh stamp resumes', w.cryptAutoSaved(now), true);
+	t.eq('two hours on it does not', w.cryptAutoSaved(Number(w.ls.m.crypt_auto) + w.CRYPT_RUN.autoKeepMs + 1), false);
+	t.eq('and the lapsed key is cleared', 'crypt_auto' in w.ls.m, false);
+	t.ok('saying so on load', w.said.some((m) => /NOT resumed/.test(m)));
+	w = cw({ storage: { crypt_auto: '1' } });
+	t.eq('the v32 form ("1") reads as lapsed', w.cryptAutoSaved(now), false);
+	w = cw({ run: R() });
+	t.eq('cryptNew marks the run done', w.cryptNew().done, true);
+	t.eq('as abandoned', w.crunRead().abandoned, true);
+	w = cw({ me: 'FatherToken', map: 'cave', x: -193, y: -1296, run: R() });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('precondition: an undone run is re-entered, not replaced', JSON.stringify(w.enters), JSON.stringify([['crypt', 'INST1']]));
+	w = cw({ storage: {} });
+	t.eq('nothing on record: cryptNew says so', w.cryptNew(), null);
 }}];

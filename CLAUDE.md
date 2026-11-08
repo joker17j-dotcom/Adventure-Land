@@ -3207,6 +3207,22 @@ Claude Code session stops after `browser_code_eval`.
   the tab. Theirs came back ABSENT on the wrong browser and PRESENT at 6s after
   switching. Same class as the `None`-tolerating accessor rule - distinguish
   "absent" from "could not see" mechanically rather than by remembering.
+- **A HOPPING MERCHANT CAN STILL BE PROBED - operator's direction
+  2026-11-08.** While scouting he reloads a page roughly every 10s, so a probe
+  lands before CODE is up or is wiped by the next load. Tools, in order:
+  (1) the `browser_code_eval` relay with a `localStorage` readback, retried
+  until CODE is up;
+  (2) `mainframe_*` only while he has a live Mainframe assignment - measured
+  2026-11-08, every party assignment reads `desired_state` stopped
+  (`explicit_disconnect`, since September), so for now this route is closed;
+  (3) PREFERRED when the relay keeps missing him: `arbProbeHold(true)`, review,
+  then `arbProbeHold(false)`. It survives reloads (stored as `probe_hold`), and
+  it also stops gear spending, `sellTrash` and arbitrage and blocks the cipher
+  hold (`cipherHoldBlocked()` answers "the probe hold"). Keep it short, never
+  across a witchcipher round, and read it back cleared afterwards;
+  (4) last resort, pause the script - no script function exists while stopped,
+  and `start_runner()` saves the editor buffer into the viewed slot, so read
+  `get_code_slot()` and the buffer first.
 - **The VALUE side is still unpredictable, so keep it out of the payload.**
   Measured 2026-10-12: a 24-character instance id came back
   `[BLOCKED: Base64 encoded data]`. His attack and frequency are still
@@ -5371,6 +5387,22 @@ obvious from it. NOT YET RUN LIVE.
 - **KILLS ARE KEYED BY MONSTER ID IN THE SHARED RUN RECORD** (`crypt_run`),
   because every tab in view receives the same `death` event. Crypt monsters
   have `respawn: -1`, so a kill is final for the instance.
+- **A RUN RECORD NOT MARKED DONE IS RESUMED, NOT REPLACED** - the next entry
+  goes back into that instance and no new key is spent while it stands. That is
+  right after a wipe or a reload. `cryptNew()` (CaveRun v33) marks it abandoned
+  so the next run opens a new instance; a server restart does the same by
+  itself, since re-entry is then refused invalid. `cryptStop()` deliberately
+  leaves the record alone, so stop-and-start resumes.
+- **`crypt_auto` LAPSES 2 HOURS AFTER THE LAST CRYPT TICK** (v33), because slot
+  11 is also the daily cave slot: left on, it would boot every later engage into
+  crypt mode instead of the cave launcher. A lapsed key says so on load.
+- **START IT ON THE LEADER FIRST** - the browser session's read of v32. A
+  follower engaged before `cryptRun()` reaches it runs the cave launcher, which
+  after 05:00Z walks it to Dorr for the cave; the leader's `cryptrun` message
+  then switches it over.
+- **WHETHER THE PARKED MERCHANT ANSWERS DEXON'S `needsMluck` IS UNMEASURED**
+  (`CONFIG.scout.parked` holds the shard; its jobs should still run). Until a
+  run shows it, mluck the three by hand before entering.
 
 ## The published event schedule - upstream's new mechanism
 

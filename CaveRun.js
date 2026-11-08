@@ -1,4 +1,9 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v32 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v33 (TEST BUILD)
+// v33 2026-11-08 crypt_auto LAPSES 2 HOURS AFTER THE LAST CRYPT TICK, so a
+//                crypt run left on cannot turn a later cave day in slot 11 into
+//                crypt mode; a lapsed one says so on load. cryptNew() abandons
+//                the current instance - a run not marked done is resumed, and
+//                no new key is spent while it stands.
 // v32 2026-11-08 THE CRYPT RUN - the operator's spec of 2026-11-08. cryptRun()
 //                on the leader starts all three: at the crypt door the party
 //                waits for mluck (Dexon asks Meltymerch), a cryptkey in the
@@ -357,6 +362,7 @@
 //            caveLead(name) caveStatus() caveStop() caveDump()
 //            cryptRun()  the automated crypt (v32), on the leader for all three
 //            cryptStop() cryptNav(on) cryptStatus() cryptSpot('pull'|'vbat', x, y)
+//            cryptNew()  abandon the current instance so the next run opens a new one
 //
 // ENTRY IS MANUAL BY DESIGN. One visit per account per day; an accidental
 // enter() burns it. Combat is also held while staged, because the gate refuses
@@ -4388,13 +4394,17 @@ const CRYPT_RUN = {
 	chestWaitMs: 20000,
 	mateStaleMs: 10000,
 	holdInstanceMaxMs: 300000,  // a respawn held this long goes ahead anyway
+	/* How long crypt_auto outlives the last tick of a crypt run. Slot 11 is
+	   also the daily CAVE slot, so a crypt run left on would otherwise boot
+	   every later engage into crypt mode instead of the cave launcher. */
+	autoKeepMs: 2 * 60 * 60 * 1000,
 	sayMs: 30000,
 	bridge: 'http://127.0.0.1:8787',
 };
 const CRUN_KEY = 'crypt_run';
 const CRYPT_ID_KEY = 'crypt_instance';
 const CRYPT_AUTO_KEY = 'crypt_auto';
-let cryptAuto = false, cryptNavOn = true, cryptRelayId = null;
+let cryptAuto = false, cryptNavOn = true, cryptRelayId = null, crAutoAt = 0;
 let crunRaw = null, crunMemo = null;
 let crSaid = {}, crSeen = {}, crKite = null, crHolding = false, crHoldSince = 0;
 let crSearch = { stage: -1, i: 0, since: 0 }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
@@ -4882,6 +4892,7 @@ function cryptTick() {
 	if (!cryptAuto || mode !== 'crypt') return;
 	const now = Date.now();
 	if (!character.rip) crHoldSince = 0;
+	if (now - crAutoAt >= 60000) cryptAutoStamp(now);
 	cryptSeeTick();
 	if (isLeader() && character.map === 'crypt' && character.in) {
 		const r = crunRead();
@@ -4916,11 +4927,11 @@ async function cryptMoveTick() {
 function cryptRun() {
 	launcher.handBackAt = 0;
 	cryptAuto = true; cryptNavOn = true; navManualUntil = 0;
-	try { parent.localStorage.setItem(CRYPT_AUTO_KEY, '1'); } catch (e) {}
+	cryptAutoStamp(Date.now());
 	mode = 'crypt'; stopped = false; phase = 'active'; recovering = false; aim = null;
 	if (isLeader()) caveSay('cryptrun');
 	clog('CRYPT RUN as ' + role() + ' - leader ' + leaderName() + ', mule ' + CRYPT_RUN.mule
-		+ '. cryptStop() hands everything back; cryptNav(false) hands back the driving only.', '#FFD700');
+		+ '. cryptStop() hands everything back; cryptNav(false) hands back the driving only; cryptNew() abandons the current instance.', '#FFD700');
 	ev('cryptRun', { role: role() });
 	return cryptStatus();
 }
@@ -4931,6 +4942,19 @@ function cryptStop() {
 	if (isLeader()) caveSay('cryptstop');
 	clog('crypt run OFF - plain crypt mode, the leader is yours to drive', 'orange');
 	return false;
+}
+/* A run record not marked done is RESUMED: the next entry goes back into that
+   instance, and no new key is spent while it stands. That is right after a
+   wipe or a reload, since the server never destroys a crypt instance and its
+   kills are final. When the operator wants a fresh instance instead, this
+   marks the current one done; a server restart does the same by itself, as the
+   re-entry is refused invalid. cryptStop() deliberately does not, so stopping
+   and restarting resumes. */
+function cryptNew() {
+	const r = crunPatch((c) => { if (!c.done) { c.done = true; c.abandoned = true; c.doneAt = Date.now(); } });
+	cryptRelayId = null;
+	clog(r ? 'crypt run abandoned - the next entry opens a new instance with a ' + CRYPT_RUN.keyItem : 'no crypt run on record', '#FFD700');
+	return r ? { done: true, abandoned: !!r.abandoned } : null;
 }
 function cryptNav(on) {
 	cryptNavOn = on === undefined ? !cryptNavOn : !!on;
@@ -4955,7 +4979,23 @@ function cryptStatus() {
 	clog(JSON.stringify(info));
 	return info;
 }
-function cryptAutoSaved() { try { return parent.localStorage.getItem(CRYPT_AUTO_KEY) === '1'; } catch (e) { return false; } }
+/* crypt_auto holds the time of the last crypt tick, refreshed once a minute,
+   so it lapses autoKeepMs after the run goes quiet - see CRYPT_RUN.autoKeepMs. */
+function cryptAutoStamp(now) {
+	crAutoAt = now;
+	try { parent.localStorage.setItem(CRYPT_AUTO_KEY, String(now)); } catch (e) {}
+}
+function cryptAutoSaved(now) {
+	let v = null;
+	try { v = parent.localStorage.getItem(CRYPT_AUTO_KEY); } catch (e) { return false; }
+	if (v === null) return false;
+	const at = Number(v);
+	if (at > 0 && now - at <= CRYPT_RUN.autoKeepMs) return true;
+	try { parent.localStorage.removeItem(CRYPT_AUTO_KEY); } catch (e) {}
+	clog('crypt run NOT resumed - last active ' + (at > 0 ? Math.round((now - at) / 60000) + ' min ago' : 'at an unknown time')
+		+ '; cryptRun() on ' + leaderName() + ' starts it again', 'orange');
+	return false;
+}
 try { game.on('death', function (d) { if (!alive()) return; try { cryptOnDeath(d); } catch (e) {} }); } catch (e) {}
 
 try {
@@ -4981,7 +5021,7 @@ try {
 	window.caveExit = caveExit; window.caveStay = caveStay; window.caveResume = caveResume;
 	window.caveNav = caveNav; window.caveNavStatus = caveNavStatus;
 	window.cryptRun = cryptRun; window.cryptStop = cryptStop; window.cryptNav = cryptNav;
-	window.cryptStatus = cryptStatus; window.cryptSpot = cryptSpot;
+	window.cryptStatus = cryptStatus; window.cryptSpot = cryptSpot; window.cryptNew = cryptNew;
 } catch (e) {}
 
 // ---------------------------------------------------------------- loop -----
@@ -5033,7 +5073,7 @@ ev('load', { ver: caveVersion(), build: caveBuild(), leader: leaderName(), role:
 	missing: Object.keys(tel.helpers).filter((k) => tel.helpers[k] === 'undefined') });
 /* v32: a crypt run survives a reload; the cave launcher then stays out of
    it, since launcherStart() only runs in cave mode. */
-if (cryptAutoSaved()) cryptRun();
+if (cryptAutoSaved(Date.now())) cryptRun();
 tick();
 voteLoop();
 launcherStart();
