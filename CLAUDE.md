@@ -5370,7 +5370,9 @@ v34 on the first live run's defects and rulings R1-R6. The design is in the
 CRYPT RUN block of `CaveRun.js`; this records what is not obvious from it. FIRST
 RUN LIVE on v33, 2026-11-08 17:59-18:28 EST: cleared, one wipe, two manual
 interventions. Run 2 (18:30-~19:00, v33) cleared too, with nine MageofOz deaths;
-v35 is built on both. v34 went into slot 11 mid-run; v35 is not yet run live.
+v35 is built on both. v34 went into slot 11 mid-run; v35 was verified in slot 11
+at 19:36 EST. v36 carries the operator's rulings of 19:16-19:39 EST and is not yet
+run live.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5473,11 +5475,22 @@ v35 is built on both. v34 went into slot 11 mid-run; v35 is not yet run live.
   - **CURSE (P2) IS KEPT ON HIM**, and from source (`calculate_monster_stats`
     applies a monster's conditions with `apply_stats`) cursed on a monster is
     output -20, speed -20 (his charge 96 to 76) and +20% damage taken, 5s.
-  - **ABSORB (P3) IS RIGHT AFTER A TICK, NOT JUST BEFORE ONE**, off the lowest
-    member and onto the priest. From source, absorb redirects him until the next
-    tick, and the tick re-picks at random, so a cast just before one buys almost
-    nothing. That reverses the wording of the ruling and is flagged to the
-    operator.
+  - **ABSORB (P3) IS DECIDED EACH TIME FROM HP** (v36, the operator's answer of
+    19:37-19:39 EST, after v35's after-a-tick rule; absorb holds him only until
+    the next tick, which re-picks at random). Each tab keeps every member's
+    hp for `rateWindowMs`; a member's loss rate is NET hp lost per second, so
+    heals, curse, crits and other attackers are in it. The priest absorbs AT ONCE
+    when the member a2 is on will not last until the next tick plus a margin and
+    he will - before any heal, whatever the clock. He ABSORBS TO SOAK when that
+    member is clearly the lowest (`lowestGap`), he is clearly healthier
+    (`absorbGap`) and `absorbMinLeftMs` of the window is left. He NEVER absorbs
+    when he would not last the window: his own heals count for nothing (poison
+    cuts them to a quarter), and a2's rate on him is the victim's measured rate,
+    with a FLOOR of G's attack x frequency x `priestTakeFrac` (x0.8 cursed),
+    because a victim healed to a standstill reads zero. He leaves a2 alone while
+    a2 is on a mage whose beacon says scare or blink is ready (`esc`). The mage
+    scares or blinks at once when she will not last until the tick. **The floor is
+    the most consequential guess**: each absorb line carries both survival times.
   - **POSITIONING (P4)**: each member stands at its own range less 20 on the
     priest's side, the priest nearest - never in the zone or by the vbat box.
   - **THE PULL NO LONGER STOPS AT 40% (Q1)**: the disengage replaces it.
@@ -5497,6 +5510,42 @@ v35 is built on both. v34 went into slot 11 mid-run; v35 is not yet run live.
   through a wipe, timed out at the entrance and turned the autopilot off, and
   `cryptNav(true)` could not turn it back on. A pause adds at most a second; a
   death, a regroup, the leader's own death and `cryptNav(true)` reset it.
+- **EVERY MEMBER MULES TO MELTYMERCH WHENEVER HE IS IN SEND RANGE** (v36, the
+  operator's ruling of 19:16): Dexon too, any time outside the crypt, whether or
+  not a run is on. Dexon stays the fallback after a run when the merchant is not
+  in range. The keep list is unchanged. The server's send range is `B.dist` 400;
+  `muleRange` keeps 350.
+- **OUT OF KEYS, ALL THREE HAND BACK** (v36, ruling of 19:20). The leader does it
+  at the door once his run is done, he holds no cryptkey, and everyone is out,
+  alive and muled. It sends a `crypthandback` cm and writes `crypt_handback` to
+  localStorage, which a follower outside reads as its fallback. Each tab then
+  clears `crypt_auto` and `crypt_started` and runs the cave's `handBack`, which
+  ends in `engageMainSlot`. An unfinished instance still resumes, since re-entry
+  needs no key. A run counts only if it began after `crypt_started`, which the
+  leader's `cryptRun()` writes when it is absent. A reload keeps it; a stop, a
+  hand-back or a lapse clears it. So `cryptRun()` with no key and no run done
+  keeps the red wait rather than handing straight back. No tab re-stamps
+  `crypt_auto` while a hand-back stands.
+- **THE PARTY RESTS BEFORE EACH STAGE** (v36, ruling of 19:30): every member at
+  `restHpAt` hp and `restMpAt` mp, by beacon. Before a2, the jacko holder must
+  also have one scare's mp (G's 50). The leader waits where he is when nothing
+  hostile is within `restSafeR`, else at the entrance. After `restMaxMs` he goes
+  on, said in orange. Never during the a2 pull. A beacon with no `mpFrac`, from
+  an older build, is not held for mp.
+- **A CRYPT DUMP ROW PER RUN** (v36, ruling of 19:30), written by the leader once
+  when a run is cleared, lost or abandoned. Its `dump` field holds time per stage
+  (`run.stages`), every death with who, where and by what (`run.deaths`, written
+  by the tab that died), `keysUsed` (a new instance spends one), `keysLeft`,
+  `givenUp` with why, the kills and `a2log`.
+- **EACH a2 TARGET SWITCH IS LOGGED** (v36, ruling of 19:30). The member he
+  switched onto logs it, since that tab sees him for certain; the leader logs a
+  drop to no target. Each line gives from, to, `anger.ms`, every member's
+  distance (from a beacon when out of view) and an `absorb` tag when the priest
+  cast one in the last 1.5s. The last 60 go into `run.a2log` for the dump.
+- **STAGE ORDER AND THE vbat ENGAGEMENT STAY AS THEY ARE** (rulings of 19:30 and
+  19:33): a7 and a3, in either order, before a2, so they are less likely to roam
+  into the zone. Dexon is single-target in the crypt, since CaveRun calls no
+  3shot or 5shot.
 
 ## The published event schedule - upstream's new mechanism
 

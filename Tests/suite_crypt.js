@@ -13,7 +13,9 @@ const TEAM = ['Dexon', 'FatherToken', 'MageofOz'];
 const LIFT = ['CRYPT', 'CRYPT_RUN', 'cryptAutoStamp', 'cryptAutoSaved', 'cryptNew', 'NAV', 'navGo', 'navHalt', 'navLanded',
 	'mayAttack', 'attackingUs', 'crunRead', 'crunWrite', 'crunPatch', 'crunEffective', 'crSay', 'crPos', 'crDist',
 	'mluckLeft', 'crInside', 'crMate', 'crKills', 'cryptStage', 'cryptSeeTick', 'cryptOnDeath', 'cryptMayAttack',
-	'cryptRunHere', 'cryptAbsorbTarget', 'cryptScareWanted', 'cryptMayRespawn', 'crWalk', 'crGo', 'crHalt',
+	'cryptRunHere', 'cryptAbsorbPick', 'cryptAbsorb', 'crHpTrack', 'crLossRate', 'crLastsMs', 'crWindowMs', 'crDoomed', 'crA2Nominal',
+	'crA2Watch', 'cryptRestShort', 'cryptRestSafe', 'crStageClose', 'crStageOpen', 'cryptDumpOf', 'cryptDump', 'cryptOutOfKeys',
+	'cryptHandBackAll', 'cryptHandBackPending', 'cryptHandBack', 'cryptMerchantTick', 'crHasJacko', 'cryptRun', 'cryptStop', 'cryptStatus', 'cryptScareWanted', 'cryptMayRespawn', 'crWalk', 'crGo', 'crHalt',
 	'crStraysOnMe', 'cryptKitePoint', 'cryptKiteTick', 'cryptPartyHold', 'crNearest', 'crOnParty', 'cryptLeaderInside',
 	'cryptFollowerInside', 'crHoldPlace', 'cryptLeave', 'cryptEnter', 'cryptEnterFailed', 'cryptGate', 'cryptOutside',
 	'cryptSelfBeacon', 'cryptMuleList', 'cryptFree', 'cryptMluckLacking', 'cryptTick', 'cryptMoveTick',
@@ -40,6 +42,8 @@ function cw(o) {
 		crSearch: { stage: -1, i: 0, since: 0, done: {} }, crVbatEmptySince: 0,
 		crCs: { run: null, seen: {}, died: [], zav: [] }, crAvoid: {}, crOnMe: null, crWasRip: false, crHoldGapSince: 0, crHoldWaived: false,
 		resting: false, deathLoop: false, crRejoin: false, CRYPT_A2_KEY: 'crypt_a2', crWalkFlight: null, crEnterFlight: 0,
+		CRYPT_START_KEY: 'crypt_started', CRYPT_HANDBACK_KEY: 'crypt_handback', crHpHist: {}, crA2Last: null, crAbsorbAt: 0,
+		launcher: { handBackAt: 0 }, phase: 'idle',
 		crMuled: false, crMuleRun: undefined, crMuleSince: 0, crMuleAt: 0, crRoom: true, crPushAt: 0, crAskAt: {}, crMluckSince: 0,
 		CRUN_KEY: 'crypt_run', CRYPT_ID_KEY: 'crypt_instance', CRYPT_AUTO_KEY: 'crypt_auto',
 		navFlight: null, navManualUntil: 0, navFails: {}, engagedUntil: 0, recovering: false, aim: null,
@@ -85,6 +89,14 @@ function cw(o) {
 	w.get_player = (n) => (o.players || {})[n] || null;
 	w.use_skill = (n) => { w.skills.push(n); return Promise.resolve({}); };
 	w.get_chests = () => o.chests || {};
+	w.telUse = (n, a) => { w.skills.push([n, a && a.name]); return Promise.resolve({}); };
+	w.caveVersion = () => 36;
+	w.handBacks = []; w.handBack = (why) => { w.handBacks.push(why); };
+	w.caveSay = (m) => { w.cms.push(['party', m]); };
+	w.haveSkill = (n) => (o.skills || []).indexOf(n) >= 0;
+	w.navFlight = null; w.navHalt = () => {};
+	w.parent.__gamelog = o.gamelog === false ? undefined : { buf: [], capture(m, c, src) { this.buf.push({ message: m, color: c, source: src }); } };
+	w.parent.G = { monsters: { a2: { attack: 2240, frequency: 1.4 } }, skills: { scare: { mp: 50 } } };
 	lift(w, 'CaveRun.js', LIFT);
 	return w;
 }
@@ -100,6 +112,9 @@ name: 'v32 crypt: the scalars the suite supplies match the source', fn(t) {
 	t.ok('CRYPT_ID_KEY is the key the operator reads', /^const CRYPT_ID_KEY = 'crypt_instance';$/m.test(s));
 	t.ok('CRYPT_AUTO_KEY', /^const CRYPT_AUTO_KEY = 'crypt_auto';$/m.test(s));
 	t.ok('CRYPT_A2_KEY', /^const CRYPT_A2_KEY = 'crypt_a2';$/m.test(s));
+	t.ok('CRYPT_START_KEY', /^const CRYPT_START_KEY = 'crypt_started';$/m.test(s));
+	t.ok('CRYPT_HANDBACK_KEY', /^const CRYPT_HANDBACK_KEY = 'crypt_handback';$/m.test(s));
+	t.ok('the v36 scalars start empty', /^let crHpHist = \{\}, crA2Last = null, crAbsorbAt = 0;$/m.test(s));
 }}, {
 
 name: 'v32 crypt: the stages go a3/a7, then a2, then the seven vbat', fn(t) {
@@ -258,47 +273,128 @@ name: 'v32 crypt: a stray is walked right of the line, then town, then rejoin', 
 	})();
 }}, {
 
-name: 'v35 crypt: a2 - absorb after a tick off the lowest, scare after a tick, blink before one', fn(t) {
-	const a2 = (target, ms) => ({ id: 'b', mtype: 'a2', target: target, x: 0, y: 0, s: ms === undefined ? {} : { anger: { ms: ms } } });
-	const DX = (hp) => ({ name: 'Dexon', hp: hp, max_hp: 1000, x: 0, y: 0 });
-	const FT = { name: 'FatherToken', hp: 900, max_hp: 1000 }, MO = { name: 'MageofOz', hp: 950, max_hp: 1000 };
-	const pw = (o) => cw(Object.assign({ me: 'FatherToken', character: { hp: 900, max_hp: 1000 } }, o));
-	let w = pw({ monsters: [a2('Dexon', 7000)], ents: { Dexon: DX(500) }, allies: [FT, MO, DX(500)] });
-	t.eq('P3: a2 on Dexon, the lowest, just after a tick: absorb him', (w.cryptAbsorbTarget() || {}).name, 'Dexon');
-	w = pw({ monsters: [a2('Dexon', 1000)], ents: { Dexon: DX(500) }, allies: [FT, MO, DX(500)] });
-	t.eq('just BEFORE a tick: no - the tick re-picks at random', w.cryptAbsorbTarget(), null);
-	w = pw({ monsters: [a2('Dexon', 7000)], ents: { Dexon: DX(500) }, allies: [FT, { name: 'MageofOz', hp: 300, max_hp: 1000 }, DX(500)] });
-	t.eq('Dexon is not the lowest: no', w.cryptAbsorbTarget(), null);
-	w = pw({ monsters: [a2('Dexon', 7000)], ents: { Dexon: DX(880) }, allies: [FT, MO, DX(880)] });
-	t.eq('no lower than the priest by absorbGap: no - no fixed line, but a real gap', w.cryptAbsorbTarget(), null);
-	w = pw({ monsters: [{ id: 'v', mtype: 'vbat', target: 'Dexon', s: { anger: { ms: 7000 } } }], ents: { Dexon: DX(100) }, allies: [FT, DX(100)] });
-	t.eq('not for another monster', w.cryptAbsorbTarget(), null);
-	w = pw({ monsters: [a2('FatherToken', 7000)] });
-	t.eq('not for himself', w.cryptAbsorbTarget(), null);
+name: 'v36 crypt: a2 - absorb decided from hp, scare and blink also on survival time', fn(t) {
+	const now = Date.now();
+	const a2 = (target, ms, s) => ({ id: 'b', mtype: 'a2', target: target, x: 0, y: 0, s: Object.assign(ms === undefined ? {} : { anger: { ms: ms } }, s || {}) });
+	const M = (n, hp) => ({ name: n, hp: hp, max_hp: 10000, x: 0, y: 0 });
+	/* hist: name -> [hp 1.5s ago, hp now] */
+	const pw = (o) => {
+		const w = cw(Object.assign({ me: 'FatherToken', character: { hp: o.php === undefined ? 9000 : o.php, max_hp: o.pmax || 10000 } }, o));
+		for (const n in (o.hist || {})) w.crHpHist[n] = [{ t: now - 1500, hp: o.hist[n][0] }, { t: now, hp: o.hist[n][1] }];
+		return w;
+	};
+	const P = (o) => { const w = pw(o); return w.cryptAbsorbPick(now) || {}; };
+	const dexLow = (hp, extra) => Object.assign({ ents: { Dexon: M('Dexon', hp) }, allies: [M('FatherToken', 9000), M('MageofOz', 9500), M('Dexon', hp)] }, extra);
+	/* Emergency: Dexon losing 1000/s at 1500 lasts 1.5s; the tick is 6s off. */
+	let p = P(dexLow(1500, { monsters: [a2('Dexon', 6000)], hist: { Dexon: [3000, 1500] } }));
+	t.eq('EMERGENCY: he will not last to the tick and I will - absorb', [p.kind, p.e && p.e.name].join(), 'emergency,Dexon');
+	t.ok('said with both survival times', /Dexon lasts 1\.5s, the tick is 6\.0s off, I last 9\.0s/.test(p.why));
+	p = P(dexLow(1500, { monsters: [a2('Dexon', 1000)], hist: { Dexon: [3000, 1500] } }));
+	t.eq('the emergency ignores the tick clock: 1s off and still absorb', p.kind, 'emergency');
+	p = P(dexLow(1500, { php: 3000, monsters: [a2('Dexon', 6000)], hist: { Dexon: [3000, 1500] } }));
+	t.eq('but NOT when I would not last the window myself (3000 hp at 1000/s, 7.5s needed)', [p.kind, p.e].join(), 'refuse,');
+	p = P(dexLow(1500, { php: 3000, monsters: [a2('Dexon', 1000)], hist: { Dexon: [3000, 1500] } }));
+	t.eq('the same 3000 hp lasts a 1s window plus the margin: absorb', p.kind, 'emergency');
+	/* Soak: Dexon low but steady, clearly the lowest; I am clearly healthier. */
+	p = P(dexLow(4000, { monsters: [a2('Dexon', 6000)], hist: { Dexon: [4075, 4000] } }));
+	t.eq('SOAK: clearly the lowest, I am clearly healthier, the window is long - absorb', [p.kind, p.e && p.e.name].join(), 'soak,Dexon');
+	p = P(dexLow(4000, { monsters: [a2('Dexon', 2000)], hist: { Dexon: [4075, 4000] } }));
+	t.eq('the soak with 2s left: no - the tick re-picks soon', p.kind, undefined);
+	p = P(Object.assign(dexLow(4000, { monsters: [a2('Dexon', 6000)] }), { allies: [M('FatherToken', 9000), M('MageofOz', 4500), M('Dexon', 4000)] }));
+	t.eq('not CLEARLY the lowest (the mage 5 points above): no', p.kind, undefined);
+	p = P(dexLow(4000, { php: 10000, pmax: 20000, monsters: [a2('Dexon', 6000)] }));
+	t.eq('I am not CLEARLY healthier (10 points, though I would last): no', p.kind, undefined);
+	p = P(dexLow(4000, { monsters: [a2('Dexon', 6000)] }));
+	t.eq('no history yet: no rate, so the soak rules alone decide', p.kind, 'soak');
+	p = P(dexLow(9000, { monsters: [a2('Dexon', 6000)], hist: { Dexon: [9100, 9000] } }));
+	t.eq('everyone healthy: nothing', p.kind, undefined);
+	/* The scare holder first. */
+	const mageOn = (esc) => ({ ents: { MageofOz: M('MageofOz', 1500) }, allies: [M('FatherToken', 9000), M('MageofOz', 1500), M('Dexon', 9500)],
+		monsters: [a2('MageofOz', 6000)], hist: { MageofOz: [3000, 1500] }, beacons: { MageofOz: B('MageofOz', { esc: esc }) } });
+	p = P(mageOn(true));
+	t.eq('a2 on the mage with her escape ready: hers comes first, even in an emergency', [p.kind, p.e].join(), 'defer,');
+	p = P(mageOn(false));
+	t.eq('her escape not ready: the emergency absorb', p.kind, 'emergency');
+	p = P({ monsters: [{ id: 'v', mtype: 'vbat', target: 'Dexon', s: { anger: { ms: 7000 } } }], ents: { Dexon: M('Dexon', 100) }, allies: [M('Dexon', 100)], hist: { Dexon: [3000, 100] } });
+	t.eq('not for another monster', p.kind, undefined);
+	p = P({ monsters: [a2('FatherToken', 7000)] });
+	t.eq('not for himself', p.kind, undefined);
+	/* a2's nominal floor: an unhurt victim does not make me immortal. */
+	p = P(dexLow(4000, { php: 2000, monsters: [a2('Dexon', 6000)], hist: { Dexon: [4000, 4000] } }));
+	t.eq('the victim losing nothing: a2 still deals me at least the floor (2000 hp lasts 2.6s < 7.5s)', p.kind, 'refuse');
+	let w = pw(dexLow(4000, { php: 2000, monsters: [a2('Dexon', 6000, { cursed: { ms: 3000 } })] }));
+	t.eq('cursed, the floor is 0.8 of it', Math.round(w.crA2Nominal(w.crA2())), Math.round(2240 * 1.4 * 0.8));
 
-	const mw = (hp, ms, allies) => cw({ me: 'MageofOz', monsters: [a2('MageofOz', ms)], character: { hp: hp, max_hp: 1000 },
-		allies: allies || [FT, { name: 'MageofOz', hp: hp, max_hp: 1000 }, DX(1000)] });
-	t.eq('P1: on her at 40%, the clock just reset: scare', mw(400, 7000).cryptScareWanted(mw(400, 7000).crA2()), true);
-	w = mw(400, 3000);
-	t.eq('the same with 3s left: wait for the next tick', w.cryptScareWanted(w.crA2()), false);
-	w = mw(250, 1000);
-	t.eq('critical: scare whatever the clock', w.cryptScareWanted(w.crA2()), true);
-	w = mw(800, 7000, [{ name: 'FatherToken', hp: 400, max_hp: 1000 }, { name: 'MageofOz', hp: 800, max_hp: 1000 }, DX(500)]);
-	t.eq('she is fine but the party mean is low: scare (the trigger is the party, not one line)', w.cryptScareWanted(w.crA2()), true);
-	w = mw(800, 7000);
-	t.eq('everyone fine: no scare', w.cryptScareWanted(w.crA2()), false);
-	w = cw({ me: 'MageofOz', monsters: [{ id: 'v', mtype: 'vbat', target: 'MageofOz', s: {} }], character: { hp: 100, max_hp: 1000 } });
-	t.eq('not for vbat, however low', w.cryptScareWanted(w.monsters[0]), false);
-	w = mw(400, 1000);
-	t.eq('P5: low, 1s before a tick: blink', w.cryptBlinkWanted(w.crA2()), true);
-	w = mw(400, 6000);
-	t.eq('6s before one: not yet', w.cryptBlinkWanted(w.crA2()), false);
+	w = pw(dexLow(1500, { monsters: [a2('Dexon', 6000)], hist: { Dexon: [3000, 1500] } }));
+	return (async () => {
+		t.eq('cast: true', await w.cryptAbsorb(w.cryptAbsorbPick(now), now), true);
+		t.eq('absorb on Dexon', JSON.stringify(w.skills), JSON.stringify([['absorb', 'Dexon']]));
+		t.ok('stamped for the switch log', w.crAbsorbAt > 0);
+		t.ok('and said with its kind', w.said.some((m) => /absorbed a2 off Dexon \(emergency\)/.test(m)));
+		t.eq('a refusal casts nothing', await w.cryptAbsorb({ e: null, kind: 'refuse' }, now), false);
 
-	const s = src();
-	t.ok('the priest curses a2 in a crypt run, absorbs first, and neither while holding fire',
-		/const a2 = crA2\(\), hold = crA2HoldFire\(Date\.now\(\)\);\n\t\tconst to = !hold && haveSkill\('absorb'\) \? cryptAbsorbTarget\(\) : null;[\s\S]{0,200}if \(a2 && !hold && crOnParty\(a2\) && haveSkill\('curse'\)/.test(s));
-	t.ok('the mage scares first, blinks only with scare unavailable, and both disengage',
-		/haveSkill\('scare'\) && cryptScareWanted\(a2\)\) \{\n\t\t\ttry \{ await telUse\('scare'\); bump\('scares'\); crA2Disengage\(a2, [^\n]*\n\t\t\} else if \(a2 && !haveSkill\('scare'\) && haveSkill\('blink'\) && cryptBlinkWanted\(a2\)\)/.test(s));
+		/* The member he is on: scare and blink when it will not last to the tick. */
+		const mw = (hp, ms, hist, allies) => {
+			const x = cw({ me: 'MageofOz', monsters: [a2('MageofOz', ms)], character: { hp: hp, max_hp: 1000 },
+				allies: allies || [{ name: 'FatherToken', hp: 900, max_hp: 1000 }, { name: 'MageofOz', hp: hp, max_hp: 1000 }, { name: 'Dexon', hp: 1000, max_hp: 1000 }] });
+			if (hist) x.crHpHist.MageofOz = [{ t: Date.now() - 1500, hp: hist }, { t: Date.now(), hp: hp }];
+			return x;
+		};
+		let x = mw(400, 7000);
+		t.eq('P1: on her at 40%, the clock just reset: scare', x.cryptScareWanted(x.crA2()), true);
+		x = mw(400, 3000);
+		t.eq('the same with 3s left: wait for the next tick', x.cryptScareWanted(x.crA2()), false);
+		x = mw(250, 1000);
+		t.eq('critical: scare whatever the clock', x.cryptScareWanted(x.crA2()), true);
+		x = mw(800, 7000, null, [{ name: 'FatherToken', hp: 400, max_hp: 1000 }, { name: 'MageofOz', hp: 800, max_hp: 1000 }, { name: 'Dexon', hp: 500, max_hp: 1000 }]);
+		t.eq('she is fine but the party mean is low: scare', x.cryptScareWanted(x.crA2()), true);
+		x = mw(800, 7000);
+		t.eq('everyone fine: no scare', x.cryptScareWanted(x.crA2()), false);
+		x = mw(600, 3000, 1050);
+		t.eq('v36: not low, 3s left, but losing 300/s - she will not last 4.5s: scare now', x.cryptScareWanted(x.crA2()), true);
+		x = mw(600, 3000, 650);
+		t.eq('losing 33/s she will: no scare', x.cryptScareWanted(x.crA2()), false);
+		x = cw({ me: 'MageofOz', monsters: [{ id: 'v', mtype: 'vbat', target: 'MageofOz', s: {} }], character: { hp: 100, max_hp: 1000 } });
+		t.eq('not for vbat, however low', x.cryptScareWanted(x.monsters[0]), false);
+		x = mw(400, 1000);
+		t.eq('P5: low, 1s before a tick: blink', x.cryptBlinkWanted(x.crA2()), true);
+		x = mw(400, 6000);
+		t.eq('6s before one: not yet', x.cryptBlinkWanted(x.crA2()), false);
+		x = mw(600, 6000, 1500);
+		t.eq('v36: 6s before one but losing 600/s: blink now', x.cryptBlinkWanted(x.crA2()), true);
+
+		const s = src();
+		t.ok('the emergency absorb goes before any heal',
+			/async function priestSkills\(target\) \{[\s\S]{0,400}absorbPick = cryptAbsorbPick\(Date\.now\(\)\);\n\t\tif \(absorbPick && absorbPick\.kind === 'emergency' && await cryptAbsorb\(absorbPick, Date\.now\(\)\)\) return true;[\s\S]{0,300}const hurtCount = /.test(s));
+		t.ok('and none while the party holds fire on him', /if \(cryptRunHere\(\) && haveSkill\('absorb'\) && !crA2HoldFire\(Date\.now\(\)\)\) \{/.test(s));
+		t.ok('the soak absorb after the heals, the curse after it',
+			/if \(!hold && absorbPick && absorbPick\.kind === 'soak' && await cryptAbsorb\(absorbPick, Date\.now\(\)\)\) return true;\n\t\tif \(a2 && !hold && crOnParty\(a2\) && haveSkill\('curse'\)/.test(s));
+		t.ok('the mage scares first, blinks only with scare unavailable, and both disengage',
+			/haveSkill\('scare'\) && cryptScareWanted\(a2\)\) \{\n\t\t\ttry \{ await telUse\('scare'\); bump\('scares'\); crA2Disengage\(a2, [^\n]*\n\t\t\} else if \(a2 && !haveSkill\('scare'\) && haveSkill\('blink'\) && cryptBlinkWanted\(a2\)\)/.test(s));
+		t.ok('the beacon says when a mage can escape', /esc: character\.map === 'crypt' && character\.ctype === 'mage' && \(haveSkill\('scare'\) \|\| haveSkill\('blink'\)\),/.test(s));
+	})();
+}}, {
+
+name: 'v36 crypt: hp-loss rates', fn(t) {
+	const w = cw({ allies: [{ name: 'Dexon', hp: 5000, max_hp: 10000 }] });
+	const now = Date.now();
+	w.crHpTrack(now - 2000);
+	t.eq('one sample: no rate', w.crLossRate('Dexon', now - 2000), null);
+	w.o = null;
+	w.allies = () => [{ name: 'Dexon', hp: 3000, max_hp: 10000 }];
+	w.crHpTrack(now);
+	t.eq('2000 lost in 2s: 1000/s', w.crLossRate('Dexon', now), 1000);
+	w.allies = () => [{ name: 'Dexon', hp: 4000, max_hp: 10000 }];
+	w.crHpTrack(now + 500);
+	t.eq('net over the window: 1000 lost in 2.5s', w.crLossRate('Dexon', now + 500), 400);
+	w.allies = () => [{ name: 'Dexon', hp: 6000, max_hp: 10000 }];
+	w.crHpTrack(now + 600);
+	t.eq('healed past the oldest reading: 0, never negative', w.crLossRate('Dexon', now + 600), 0);
+	w.crHpTrack(now + 9000);
+	t.eq('the window drops old samples: one left, no rate', w.crLossRate('Dexon', now + 9000), null);
+	t.eq('lasts at no loss: forever', w.crLastsMs(100, 0), Infinity);
+	t.eq('the window with no clock is 8s plus the margin', w.crWindowMs(null), 8000 + w.CRYPT_RUN.a2.absorbMarginMs);
+	t.eq('my own hp is tracked under my name', (w.allies = () => [w.character], w.crHpTrack(now), w.crHpHist.FatherToken.length), 1);
 }}, {
 
 name: 'v35 crypt: the disengage - one member or all, hold fire, re-engage healed with the mage opening', fn(t) {
@@ -598,7 +694,8 @@ name: 'v32 crypt: after a run - the loot goes to Dexon, Dexon asks for room, Dex
 	w.cryptRoomTick(now);
 	t.eq('four free: no room', w.crRoom, false);
 	t.ok('the merchant is asked to take the overflow', w.cms.some((c) => c[0] === 'Meltymerch' && c[1].message === 'inventory_almost_full' && c[1].emptySlots === 4 && c[1]._plid));
-	t.eq('and handed it when he is in range', JSON.stringify(w.sent), JSON.stringify([['Meltymerch', 1, 1]]));
+	t.eq('v36: the room tick only asks', w.sent.length, 0);
+	t.eq('the merchant tick hands it over when he is in range', w.cryptMerchantTick(now) && JSON.stringify(w.sent), JSON.stringify([['Meltymerch', 1, 1]]));
 	w = cw({ me: 'Dexon', map: 'cave', esize: 12 });
 	w.cryptRoomTick(now);
 	t.eq('twelve free: room, and nobody asked', w.crRoom && w.cms.length === 0, true);
@@ -804,4 +901,221 @@ name: 'v34 crypt: a walk still moving is not re-sent, and its own replacement is
 		t.eq('a real failure still is', w.said.some((m) => /path to door failed: failed/.test(m)), true);
 		t.eq('nothing in the crypt smart_moves to a name - coordinates only', /smart_move\(\s*['"]/.test(src()), false);
 	})();
+}}, {
+
+name: 'v36 crypt: each a2 target switch is logged once, by the member he switched onto', fn(t) {
+	const now = Date.now();
+	const a2 = (target, ms) => ({ id: 'b', mtype: 'a2', target: target, x: 0, y: 0, real_x: 0, real_y: 0, s: { anger: { ms: ms } } });
+	const ents = { Dexon: { name: 'Dexon', x: 100, y: 0, real_x: 100, real_y: 0 } };
+	let w = cw({ me: 'MageofOz', x: 0, y: 200, run: R(), monsters: [a2('Dexon', 7900)], ents: ents,
+		beacons: { FatherToken: B('FatherToken', { x: 0, y: -300 }) } });
+	w.crA2Watch(now);
+	t.eq('first sight, on someone else: nothing said here', w.said.length, 0);
+	w.monsters[0] = a2('MageofOz', 7950);
+	w.crA2Watch(now + 100);
+	t.eq('onto me: one line', w.said.length, 1);
+	t.ok('naming from, to and anger.ms', /a2 Dexon -> MageofOz, anger\.ms 7950/.test(w.said[0]));
+	t.ok('and every member\'s distance - from the beacon when out of view', /Dexon 100, FatherToken 300, MageofOz 200/.test(w.said[0]));
+	const log = w.crunRead().a2log;
+	t.eq('in the run record for the dump', [log.length, log[0].from, log[0].to, log[0].ms, log[0].d.MageofOz].join(), '1,Dexon,MageofOz,7950,200');
+	w.crA2Watch(now + 200);
+	t.eq('no switch: nothing more', w.said.length, 1);
+	w.monsters[0] = a2('Dexon', 7900);
+	w.crA2Watch(now + 300);
+	t.eq('off me onto Dexon: his tab logs it, not mine', w.said.length, 1);
+
+	w = cw({ me: 'FatherToken', run: R(), monsters: [a2('FatherToken', 7000)], ents: ents });
+	w.crA2Watch(now);
+	t.eq('first sight, on me: logged', w.said.length, 1);
+	w.crAbsorbAt = now + 50;
+	w.monsters[0] = a2('Dexon', 7000); w.crA2Watch(now + 60);
+	w.monsters[0] = a2('FatherToken', 6900); w.crA2Watch(now + 100);
+	t.ok('back onto me just after my absorb: tagged absorb', /a2 Dexon -> FatherToken \(absorb\)/.test(w.said[1]));
+	w.monsters[0] = a2(null, 6000); w.crA2Watch(now + 200);
+	t.ok('the leader logs a drop to no target', /a2 FatherToken -> no target/.test(w.said[2]));
+	w = cw({ me: 'Dexon', run: R(), monsters: [a2('Dexon', 7000)], ents: ents });
+	w.crA2Watch(now); w.monsters[0] = a2(null, 6000); w.crA2Watch(now + 100);
+	t.eq('a follower does not', w.said.length, 1);
+	t.ok('the watch runs every tick inside', /crHpTrack\(now\);\n\tcrA2Watch\(now\);/.test(src()));
+}}, {
+
+name: 'v36 crypt: the party rests to near full before each stage, and before a2 the scare holder has a scare', fn(t) {
+	const now = Date.now();
+	const near = (n, over) => B(n, Object.assign({ x: 10, y: 10, hpFrac: 1, mpFrac: 1 }, over || {}));
+	return (async () => {
+		let w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon', { mpFrac: 0.5 }), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('Dexon at 50% mp: no search yet', w.moves.length, 0);
+		t.ok('said why', w.said.some((m) => /resting before stage 1 - Dexon mp 50%/.test(m)));
+		w = cw({ me: 'FatherToken', x: 500, y: 0, run: R(), monsters: [{ id: 'z', mtype: 'a6', x: 600, y: 0, real_x: 600, real_y: 0 }],
+			beacons: { Dexon: near('Dexon', { mpFrac: 0.5, x: 500, y: 0 }), MageofOz: near('MageofOz', { x: 500, y: 0 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now + 10);
+		t.eq('something hostile near: rest at the entrance instead', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([0, 0]));
+		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon', { hpFrac: 0.95, mpFrac: 0.85 }), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('near full (95% hp, 85% mp): go on', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([730, -1080]));
+		w = cw({ me: 'FatherToken', run: R(), character: { mp: 300, max_mp: 1000 }, beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('the leader himself at 30% mp: wait', w.moves.length, 0);
+		w.crSearch.restAt = now - w.CRYPT_RUN.restMaxMs - 1;
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('rested past the cap: go on anyway', w.moves.length, 1);
+		t.ok('said in orange words', w.said.some((m) => /still FatherToken mp 30% - going on/.test(m)));
+		w.moves.length = 0; w.navFlight = null;
+		w.character.mp = 0;
+		await w.cryptLeaderInside(w.crunRead(), now + 1);
+		t.eq('and not again inside the same stage', w.moves.length, 1);
+
+		const dead2 = { m1: 'a3', m2: 'a7' };
+		w = cw({ me: 'FatherToken', run: R({ dead: dead2 }), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz', { jacko: true, mp: 40 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('before a2: the scare holder short of one scare - wait', w.moves.length, 0);
+		t.ok('naming it', w.said.some((m) => /MageofOz short of one scare \(40\/50 mp\)/.test(m)));
+		w = cw({ me: 'FatherToken', run: R({ dead: dead2 }), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz', { jacko: true, mp: 60 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('60 mp: go', w.moves.length, 1);
+		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz', { jacko: true, mp: 40 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('the scare rule is for a2 only', w.moves.length, 1);
+		w = cw({ me: 'FatherToken', run: R({ dead: dead2 }), x: 1050, y: -680, monsters: [{ id: 'b', mtype: 'a2', target: 'FatherToken', x: 1000, y: -700 }],
+			allies: [{ hp: 900, max_hp: 1000 }], beacons: { Dexon: near('Dexon', { mpFrac: 0.1, x: 1050, y: -680 }), MageofOz: near('MageofOz', { x: 1050, y: -680 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('never in the way of the a2 pull', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([-270, -465]));
+		t.ok('the self beacon carries hp, mp and the jacko', /hpFrac: character\.max_hp \? character\.hp \/ character\.max_hp : 1,\n\t\tmpFrac: character\.max_mp \? character\.mp \/ character\.max_mp : 1,\n\t\tmp: Math\.round\(character\.mp \|\| 0\), jacko: crHasJacko\(\) \};/.test(src()));
+	})();
+}}, {
+
+name: 'v36 crypt: the CRYPT DUMP - one row per run with stages, deaths, keys and what was given up', fn(t) {
+	const now = Date.now();
+	const near = (n) => B(n, { x: 10, y: 10 });
+	return (async () => {
+		let w = cw({ me: 'FatherToken', inst: 'K1' });
+		w.cryptTick();
+		t.eq('a new instance records the key it cost', w.crunRead().keyUsed, true);
+		w = cw({ me: 'FatherToken', run: R({ at: now - 600000 }), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now - 500000);
+		t.eq('stage 1 opened with its time', JSON.stringify(w.crunRead().stages.map((x) => [x.i, x.types, x.at])), JSON.stringify([[0, ['a3', 'a7'], now - 500000]]));
+		await w.cryptLeaderInside(w.crunRead(), now - 499000);
+		t.eq('not opened twice', w.crunRead().stages.length, 1);
+		w.crSearch.stage = -1;
+		await w.cryptLeaderInside(w.crunRead(), now - 498000);
+		t.eq('nor after a reload forgets the stage', w.crunRead().stages.length, 1);
+		w.crunPatch((c) => { c.dead = { m1: 'a3', m2: 'a7' }; });
+		await w.cryptLeaderInside(w.crunRead(), now - 300000);
+		const st = w.crunRead().stages;
+		t.eq('the next stage closes the last', [st.length, st[0].ms, st[1].types[0]].join(), '2,200000,a2');
+		w.crSearch.spent = w.CRYPT_RUN.searchMaxMs + 1;
+		await w.cryptLeaderInside(w.crunRead(), now - 200000);
+		t.eq('a give-up records why', w.crunRead().givenWhy.a2, 'not found in 5 min of searching');
+		await w.cryptLeaderInside(w.crunRead(), now - 100000);
+		t.eq('the vbat stage opens after it', w.crunRead().stages[2].types[0], 'vbat');
+		w.crunPatch((c) => {
+			for (let i = 0; i < 7; i++) c.dead['v' + i] = 'vbat';
+			c.deaths = [{ who: 'MageofOz', x: 1100, y: -600, by: 'a2', t: now - 350000 }, { who: 'MageofOz', x: 0, y: 0, by: null, t: now - 340000 }];
+		});
+		w.character.items = [{ name: 'cryptkey', q: 2 }];
+		await w.cryptLeaderInside(w.crunRead(), now);
+		const row = w.parent.__gamelog.buf.find((r) => /^CRYPT DUMP/.test(r.message));
+		t.ok('one CRYPT DUMP row, cleared', row && /^CRYPT DUMP \(cleared\) - FatherToken - \d+ min, 2 death\(s\), given up a2$/.test(row.message));
+		const d = row && row.dump;
+		t.eq('deaths with where and by what', JSON.stringify(d.deaths[0]), JSON.stringify({ who: 'MageofOz', x: 1100, y: -600, by: 'a2', t: now - 350000 }));
+		t.eq('per member', JSON.stringify(d.deathsBy), JSON.stringify({ MageofOz: 2 }));
+		t.eq('keys left in the bag', d.keysLeft, 2);
+		t.eq('given up, with why', JSON.stringify(d.givenUp.map((g) => [g.mtype, g.why])), JSON.stringify([['a2', 'not found in 5 min of searching']]));
+		t.eq('three stages timed, all closed', d.stages.map((x) => x.ms !== null).join(), 'true,true,true');
+		t.ok('a total time', d.totalMs >= 600000);
+		t.eq('the kills', d.kills.vbat, 7);
+		await w.cryptLeaderInside(w.crunRead(), now + 1000);
+		t.eq('written once', w.parent.__gamelog.buf.filter((r) => /^CRYPT DUMP/.test(r.message)).length, 1);
+		w = cw({ me: 'Dexon', run: R({ done: true, doneAt: now }) });
+		t.eq('only the leader writes it', w.cryptDump(w.crunRead(), 'cleared'), false);
+		w = cw({ me: 'FatherToken', run: R() });
+		w.cryptNew();
+		t.ok('an abandoned run is dumped too', w.parent.__gamelog.buf.some((r) => /^CRYPT DUMP \(abandoned\)/.test(r.message)));
+		w = cw({ me: 'FatherToken', map: 'cave', run: R() });
+		w.cryptEnterFailed('INST1', { reason: 'invalid' });
+		t.ok('and a lost one', w.parent.__gamelog.buf.some((r) => /^CRYPT DUMP \(lost\)/.test(r.message)));
+
+		w = cw({ me: 'MageofOz', run: R(), character: { rip: true, real_x: 50, real_y: 60 } });
+		w.crCs.run = 'INST1'; w.crOnMe = { mtype: 'a2', t: now };
+		w.cryptSeeTick(now);
+		t.eq('a death goes in the run record, by the one who died', JSON.stringify(w.crunRead().deaths), JSON.stringify([{ who: 'MageofOz', x: 50, y: 60, t: now, by: 'a2' }]));
+	})();
+}}, {
+
+name: 'v36 crypt: when the keys run out after a run, all three hand back', fn(t) {
+	const now = Date.now();
+	const door = (n, over) => B(n, Object.assign({ map: 'cave', x: -190, y: -1290, inst: null }, over || {}));
+	const at = { map: 'cave', x: -193, y: -1296 };
+	const mk0 = (o) => cw(Object.assign({ me: 'FatherToken', map: 'cave', x: -193, y: -1296, hasKey: false, storage: { crypt_started: String(now - 3600000), crypt_auto: String(now) },
+		run: R({ done: true, at: now - 1800000 }), beacons: { Dexon: door('Dexon'), MageofOz: door('MageofOz') } }, o));
+	const mk = (o) => { const x = mk0(o); x.character.s = { mluck: { ms: 3600000 } }; x.crMuled = true; return x; };
+	let w = mk();
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('done, all out and muled, no key: the leader hands back', JSON.stringify(w.handBacks), JSON.stringify(['crypt: no cryptkey left after the last run']));
+	t.ok('tells the others', w.cms.some((c) => c[1] === 'crypthandback'));
+	t.ok('writes the shared key for any tab that misses it', JSON.parse(w.ls.m.crypt_handback).at > 0);
+	t.eq('and clears crypt_auto and the start', ['crypt_auto' in w.ls.m, 'crypt_started' in w.ls.m].join(), 'false,false');
+	t.eq('crypt mode off', w.cryptAuto, false);
+	w = mk({ beacons: { Dexon: door('Dexon'), MageofOz: door('MageofOz', { muled: false }) } });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('the mage still muling: wait', w.handBacks.length, 0);
+	t.ok('saying for what', w.said.some((m) => /no cryptkey left - handing everyone back once MageofOz has muled/.test(m)));
+	w = mk({ beacons: { Dexon: door('Dexon', { map: 'crypt' }), MageofOz: door('MageofOz') } });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('Dexon still inside: wait', w.handBacks.length, 0);
+	w = mk({ run: R({ done: true, at: now - 7200000 }) });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('no run done since cryptRun: the red wait, no hand-back', w.handBacks.length + (w.said.some((m) => /put a cryptkey in his bag/.test(m)) ? 0 : 1), 0);
+	w = mk({ run: R({ done: false, at: now - 1800000 }) });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('an unfinished run with no key: re-entered, it needs none', JSON.stringify([w.handBacks.length, w.enters]), JSON.stringify([0, [['crypt', 'INST1']]]));
+	w = mk({ hasKey: true });
+	w.cryptOutside(w.crunRead(), now);
+	t.eq('a key left: the next run opens', JSON.stringify([w.handBacks.length, w.enters]), JSON.stringify([0, [['crypt', null]]]));
+
+	/* A follower that missed the cm. */
+	w = cw({ me: 'Dexon', map: 'cave', storage: { crypt_started: String(now - 3600000), crypt_handback: JSON.stringify({ at: now - 5000, why: 'x' }) } });
+	w.cryptTick();
+	t.eq('a follower outside follows the shared key', JSON.stringify(w.handBacks), JSON.stringify(['crypt: the leader handed back - no keys left']));
+	w = cw({ me: 'Dexon', map: 'cave', storage: { crypt_started: String(now - 3600000), crypt_handback: JSON.stringify({ at: now - 7200000, why: 'x' }) } });
+	w.cryptTick();
+	t.eq('not a key from before this run began', w.handBacks.length, 0);
+	w = cw({ me: 'Dexon', map: 'cave', storage: { crypt_handback: JSON.stringify({ at: now - 5000, why: 'x' }) } });
+	w.cryptAutoStamp(now);
+	t.eq('and no tab re-stamps crypt_auto after a hand-back', 'crypt_auto' in w.ls.m, false);
+	w = cw({ me: 'FatherToken', storage: { crypt_handback: JSON.stringify({ at: now - 5000, why: 'x' }) } });
+	w.cryptRun();
+	t.eq('a new cryptRun clears the hand-back', 'crypt_handback' in w.ls.m, false);
+	const st0 = w.ls.m.crypt_started;
+	t.ok('and stamps the start', Number(st0) > 0);
+	w.cryptRun();
+	t.eq('a resume keeps the start', w.ls.m.crypt_started, st0);
+	w.cryptStop();
+	t.eq('a stop clears it', 'crypt_started' in w.ls.m, false);
+	t.ok('the follower hears the cm', /d\.message\.cave === 'crypthandback'\) \{ if \(cryptAuto\) cryptHandBack\(/.test(src()));
+}}, {
+
+name: 'v36 crypt: every member mules straight to the merchant whenever he is in range', fn(t) {
+	const now = Date.now();
+	const melty = { Meltymerch: { name: 'Meltymerch', x: -150, y: -1290, real_x: -150, real_y: -1290 } };
+	const loot = [{ name: 'hpot1', q: 9 }, { name: 'vitring' }, { name: 'cryptkey' }];
+	for (const me of ['Dexon', 'FatherToken', 'MageofOz']) {
+		const w = cw({ me: me, map: 'cave', x: -193, y: -1296, run: R(), items: loot, players: melty });
+		t.eq(me + ': in range, run still on - the loot goes to him', w.cryptMerchantTick(now) && JSON.stringify(w.sent), JSON.stringify([['Meltymerch', 1, 1]]));
+	}
+	let w = cw({ me: 'MageofOz', map: 'crypt', items: loot, players: melty });
+	t.eq('not from inside the crypt', w.cryptMerchantTick(now) || w.sent.length, 0);
+	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, items: loot, players: { Meltymerch: { name: 'Meltymerch', x: 400, y: -1290, real_x: 400, real_y: -1290 } } });
+	t.eq('out of range: nothing', w.cryptMerchantTick(now) || w.sent.length, 0);
+	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, items: loot, players: melty });
+	w.cryptMerchantTick(now); w.cryptMerchantTick(now + 500);
+	t.eq('once every 2s', w.sent.length, 1);
+	const dex = { name: 'Dexon', x: -180, y: -1290, real_x: -180, real_y: -1290 };
+	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, run: R({ done: true }), items: loot, players: Object.assign({ Dexon: dex }, melty) });
+	w.cryptTick();
+	t.eq('both in range after a run: the merchant gets it, not Dexon', JSON.stringify(w.sent), JSON.stringify([['Meltymerch', 1, 1]]));
+	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, run: R({ done: true }), items: loot, players: { Dexon: dex } });
+	w.cryptTick();
+	t.eq('the merchant away: Dexon is the fallback', JSON.stringify(w.sent), JSON.stringify([['Dexon', 1, 1]]));
 }}];
