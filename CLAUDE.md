@@ -5369,7 +5369,8 @@ a day.
 v34 on the first live run's defects and rulings R1-R6. The design is in the
 CRYPT RUN block of `CaveRun.js`; this records what is not obvious from it. FIRST
 RUN LIVE on v33, 2026-11-08 17:59-18:28 EST: cleared, one wipe, two manual
-interventions. v34 is not yet run live.
+interventions. Run 2 (18:30-~19:00, v33) cleared too, with nine MageofOz deaths;
+v35 is built on both. v34 went into slot 11 mid-run; v35 is not yet run live.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5389,7 +5390,9 @@ interventions. v34 is not yet run live.
   builder pushes before treating a key as a cell. Level-0 path lengths from the
   entrance (0,0): pull spot 730, a7 2,170, a2 2,980, the vbat box 3,310, a3
   3,630; a7 to a2 830, a2 to the box 330, a7 to a3 2,140. Every fixed point in
-  `CRYPT_RUN` is a level-0 cell, asserted in `Tests/suite_crypt.js`.
+  `CRYPT_RUN` is a level-0 cell, asserted in `Tests/suite_crypt.js`. **CONFIRMED
+  FROM THE CLIENT**: the browser session's in-page `can_move` flood fill from the
+  entrance at 10u counts exactly 13,222 cells, so client and server agree.
 - **ENTRY AND RESPAWN, FROM SOURCE.** `enter("crypt")` is refused beyond 120
   of cave spawn 2 (-193,-1296), consumes one `cryptkey` when no instance name
   is given, and the instance name is the opener's `character.in`. A death in
@@ -5449,8 +5452,51 @@ interventions. v34 is not yet run live.
   dead, outside or kiting follower does not.
 - **A STATIONARY LEADER OUT OF COMBAT IS JOINED ON HIS EXACT SPOT** (R3, cave
   and crypt, `MOVE.joinStationary`). "Out of combat" is that nothing in view is
-  on a party member - deliberately not `engaged()`, whose timer counts the
-  leader's own `target`. In combat the 2026-10-23 ruling stands.
+  on a party member, nor (v35) on a mate by its own beacon's `atk` - deliberately
+  not `engaged()`, whose timer counts the leader's own `target`. In combat the
+  2026-10-23 ruling stands, except for a2 (below).
+- **a2's ANGER, MEASURED BY THE BROWSER SESSION ON THE RUN-2 FIGHT** (500ms, 327s,
+  16 resets): the client sees the clock as `s.anger.ms`, counting down from about
+  8,000; it fires in or out of combat with no facing test, onto a random live
+  player within 300, the current target included; with nobody inside 300 it does
+  nothing. That matches the source (`anger`: `random_one` over players in the
+  radius, not rip, not invis). The tactics below are the operator's rulings of
+  2026-11-08 19:02-19:08 EST, built in v35; every number in `CRYPT_RUN.a2` is
+  provisional.
+  - **SCARE AND DISENGAGE (P1).** The member a2 is on scares right after a tick
+    and gets past 300 before the next; nobody touches him meanwhile, so he stays
+    untargeted. Alone when only that member is low; the whole party when the
+    party's mean hp is low, re-engaging once healed with no poison, MageofOz
+    opening. The shared record is `crypt_a2` in localStorage, scoped to the
+    instance and cleared when a2 dies. Scare needs the jacko, so it is the mage's.
+  - **BLINK (P5)**, with scare unavailable: just before a tick.
+  - **CURSE (P2) IS KEPT ON HIM**, and from source (`calculate_monster_stats`
+    applies a monster's conditions with `apply_stats`) cursed on a monster is
+    output -20, speed -20 (his charge 96 to 76) and +20% damage taken, 5s.
+  - **ABSORB (P3) IS RIGHT AFTER A TICK, NOT JUST BEFORE ONE**, off the lowest
+    member and onto the priest. From source, absorb redirects him until the next
+    tick, and the tick re-picks at random, so a cast just before one buys almost
+    nothing. That reverses the wording of the ruling and is flagged to the
+    operator.
+  - **POSITIONING (P4)**: each member stands at its own range less 20 on the
+    priest's side, the priest nearest - never in the zone or by the vbat box.
+  - **THE PULL NO LONGER STOPS AT 40% (Q1)**: the disengage replaces it.
+- **A RESPAWN IN A CRYPT RUN RESTS AT THE ENTRANCE** (v35). deathTick rested
+  only in cave mode, so a respawn walked straight back across the floor alone:
+  MageofOz died nine times on run 2, mostly into Bill. Rested, a follower joins
+  only a stationary leader out of combat; a death loop holds at the entrance and
+  the leader walks back to collect it; the regroup after a wipe waits for the
+  resting.
+- **A TICK LOOP CAN END SILENTLY ON AN AWAIT THAT NEVER SETTLES, AND ONE DID**
+  (run 2: MageofOz's tick counter stood at 8,595 while she lay dead, no exception).
+  Since v35 both awaits in `tick()` resolve after `CFG.awaitMaxMs` whatever they
+  wait on, a rejection still reaching the catch, and a watchdog restarts the loop
+  after `CFG.tickStallMs` with no tick, a generation number keeping a resumed
+  stalled tick from running a second loop. Merchant v141 is the same remedy.
+- **THE SEARCH CLOCK COUNTS ONLY WHILE THE PARTY SEARCHES** (v35). On v33 it ran
+  through a wipe, timed out at the entrance and turned the autopilot off, and
+  `cryptNav(true)` could not turn it back on. A pause adds at most a second; a
+  death, a regroup, the leader's own death and `cryptNav(true)` reset it.
 
 ## The published event schedule - upstream's new mechanism
 

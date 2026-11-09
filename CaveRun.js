@@ -1,4 +1,18 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v34 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v35 (TEST BUILD)
+// v35 2026-11-09 THE SECOND LIVE CRYPT RUN'S DEFECTS AND THE OPERATOR'S a2
+//                RULINGS. A member respawned in a crypt run rests at the
+//                entrance and rejoins only onto a stationary leader out of
+//                combat; a death loop holds there until collected, and the
+//                leader comes for it. Every awaited call in tick() is bounded,
+//                and a watchdog restarts a stalled tick loop with a red line.
+//                The search clock counts only while the party is actually
+//                searching. a2: the member he is on scares right after an
+//                anger tick (or the mage blinks just before one) and gets past
+//                the 300 anger radius - alone, or the whole party when its hp
+//                is low, re-engaging once healed with the mage opening; the
+//                priest keeps him cursed and absorbs him off the lowest member
+//                right after a tick; each member stands at its own range on
+//                the priest's side. The pull no longer stops at 40%.
 // v34 2026-11-08 THE FIRST LIVE CRYPT RUN'S DEFECTS AND THE OPERATOR'S RULINGS.
 //                The crypt map is now the server grid's LEVEL-0 cells only -
 //                levels 1-7 are cells past a wall, which is why (1470,-1400)
@@ -428,6 +442,8 @@ const CFG = {
 	healAt: 0.78,
 	partyHealAt: 0.6,
 	tickMs: 250,
+	awaitMaxMs: 15000,      // v35: no awaited call holds a tick longer than this
+	tickStallMs: 30000,     // v35: no tick for this long and the watchdog restarts the loop
 	voteTickMs: 400,
 	doorNear: 40,
 	stageWithin: 120,
@@ -1358,10 +1374,15 @@ async function priestSkills(target) {
 		try { await telUse('curse', target); return true; } catch (e) {}
 	}
 	if (cryptRunHere()) {
-		/* A crypt run absorbs only for a member a2 has brought low - the
-		   operator's ruling: otherwise the whole party fights him. */
-		const to = haveSkill('absorb') ? cryptAbsorbTarget() : null;
+		/* v35: a2 is kept cursed the whole fight (P2) and absorbed off the
+		   lowest member right after a tick (P3) - never while the party is
+		   holding fire on him. */
+		const a2 = crA2(), hold = crA2HoldFire(Date.now());
+		const to = !hold && haveSkill('absorb') ? cryptAbsorbTarget() : null;
 		if (to) { try { await telUse('absorb', to); bump('absorbs'); return true; } catch (e) {} }
+		if (a2 && !hold && crOnParty(a2) && haveSkill('curse') && inRangeFor(a2, 'curse') && !(a2.s && a2.s.cursed)) {
+			try { await telUse('curse', a2); bump('a2Curses'); return true; } catch (e) {}
+		}
 	} else if (haveSkill('absorb')) {
 		const le = leaderEntity();
 		if (here(le) && inRangeFor(le, 'absorb') && threats().filter((m) => m.target === leaderName()).length >= 3) {
@@ -1374,8 +1395,15 @@ async function mageSkills(target) {
 	/* Scare first: it is a survival action and its whole point is shedding the
 	   pack already on her. haveSkill() has verified the jacko is equipped. */
 	if (cryptRunHere()) {
-		/* A crypt run scares only when a2 is on her and she is low. */
-		if (haveSkill('scare') && cryptScareWanted()) { try { await telUse('scare'); bump('scares'); return true; } catch (e) {} }
+		/* v35: a2 on her - scare right after a tick (P1), else blink just
+		   before one (P5); either way past 300 before the next. */
+		const a2 = crA2(), now = Date.now();
+		if (a2 && haveSkill('scare') && cryptScareWanted(a2)) {
+			try { await telUse('scare'); bump('scares'); crA2Disengage(a2, 'scared a2 off', now); return true; } catch (e) {}
+		} else if (a2 && !haveSkill('scare') && haveSkill('blink') && cryptBlinkWanted(a2)) {
+			const p = crA2AwayPoint(a2, crunEffective());
+			if (p) { try { await telUse('blink', [p.x, p.y]); bump('blinks'); crA2Disengage(a2, 'blinked clear of a2', now); return true; } catch (e) {} }
+		}
 	} else if (haveSkill('scare')) {
 		const n = attackersOnMe();
 		if (n >= CFG.scareAt || (n >= 1 && character.hp / character.max_hp < CFG.scareHpAt)) {
@@ -1547,7 +1575,18 @@ async function followFloor() {
    suspected of keeping the followers in the combat band. */
 function partyFighting() {
 	const names = partyNames();
-	return threats().some((m) => m.target && names.indexOf(m.target) >= 0 && !caveFriendly(m));
+	if (threats().some((m) => m.target && names.indexOf(m.target) >= 0 && !caveFriendly(m))) return true;
+	/* v35: and a mate out of my view with something on it, from its beacon - a
+	   rested member at the crypt entrance cannot see the fight it would join. */
+	try {
+		const bs = beacons(), now = Date.now();
+		for (const n in bs) {
+			const b = bs[n];
+			if (n === character.name || !b || now - b.t > TROUBLE.staleMs || b.map !== character.map) continue;
+			if (b.atk > 0) return true;
+		}
+	} catch (e) {}
+	return false;
 }
 function joinWanted(gap) {
 	return !!MOVE.joinStationary && gap > MOVE.joinAt && !leaderMoving() && !partyFighting();
@@ -2048,10 +2087,12 @@ function deathTick() {
 			const now = Date.now();
 			const recent = myDeaths.filter((t) => now - t <= REGROUP.deathLoopMs).length;
 			ev('respawned', { map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y), recent: recent });
-			if (mode === 'cave' && inCave()) {
+			/* v35: a crypt run rests too - at the crypt entrance, once re-entered
+			   (cryptFollowerInside / cryptLeaderInside hold it there). */
+			if ((mode === 'cave' && inCave()) || (mode === 'crypt' && cryptAuto)) {
 				/* REST AT THE LANDING FIRST - the operator's ruling. The old latch sent
 				   a respawned character straight back across the floor, alone. */
-				resting = true; restSince = now; restSaid = false; recovering = false; aim = null;
+				resting = true; restSince = now; restSaid = false; recovering = false; aim = null; crRejoin = false;
 				if (recent >= 2) {
 					deathLoop = true;
 					clog('DEATH LOOP - ' + recent + ' deaths inside ' + Math.round(REGROUP.deathLoopMs / 60000)
@@ -2151,7 +2192,11 @@ function restTick() {
 	}
 	resting = false;
 	ev('restDone', { hp: Math.round(hp * 100), mp: Math.round(mp * 100), aged: aged });
-	if (!isLeader()) { recovering = true; aim = null; bump('recoveries'); clog('rested - rejoining the party', '#7FD98A'); }
+	if (isLeader()) return;
+	/* v35: in a crypt run a rested follower joins only a stationary leader out
+	   of combat (R3) - see cryptFollowerInside. */
+	if (mode === 'crypt' && cryptAuto) { crRejoin = true; clog('rested - rejoining once the leader stops out of combat', '#7FD98A'); return; }
+	recovering = true; aim = null; bump('recoveries'); clog('rested - rejoining the party', '#7FD98A');
 }
 function leaderDown() {
 	if (isLeader()) return false;
@@ -4403,9 +4448,28 @@ function caveEnter() {
    rejoins, or dies and the respawn rule takes over. The others leave it
    alone, and nobody ever swings at a6, a8 or a1 (CRYPT.never).
 
-   DEFENCE ONLY WHEN SOMEONE IS LOW. The priest absorbs only when a2 is on
-   another member at or below absorbAt; the mage scares only when a2 is on her
-   at or below scareHpAt. Neither fires otherwise in a crypt run.
+   a2 - v35, the operator's rulings of 2026-11-08 19:02-19:08 EST, from the
+   browser session's probe of the run-2 fight (CRYPT_RUN.a2). His anger fires
+   every 8s, in or out of combat and regardless of facing, onto a random live
+   player within 300 - the current target included - and the client sees the
+   clock as s.anger.ms. Nobody inside 300, the tick does nothing. So:
+     SCARE AND DISENGAGE (P1). The member he is on scares right after a tick
+     and gets past 300 before the next one, and nobody touches him meanwhile,
+     so he stays untargeted. Alone when only that member is low; the whole
+     party when its hp is low, re-engaging once healed with no poison left,
+     the mage opening. Scare needs the jacko, so in practice it is the mage's.
+     BLINK (P5). With scare unavailable, the mage blinks past 300 just before
+     a tick, so the tick cannot pick her.
+     CURSE (P2) is kept on him the whole fight: from source, cursed is output
+     -20 and speed -20 on a monster as on a player, and +20% damage taken.
+     ABSORB (P3) pulls him off the lowest member onto the priest right AFTER a
+     tick - absorb lasts until the next tick, which re-picks at random, so
+     one cast just before a tick would buy almost nothing.
+     POSITIONING (P4). Each member stands at its own range from him on the
+     priest's side - the priest nearest, the damage dealers behind, all inside
+     heal range - so after an anger switch he has the most ground to cover.
+     No station is taken in the zone or by the vbat box.
+   The pull no longer stops where it is at 40% (Q1): the disengage replaces it.
 
    AFTER EACH RUN the party leaves to the crypt door, the other two send Dexon
    their loot, and Dexon asks the merchant to take the overflow while he has
@@ -4450,7 +4514,6 @@ const CRYPT_RUN = {
 	   sides, 730 by path from the entrance and 2,430 from a2's spawn. The
 	   operator's to move - cryptSpot('pull', x, y). */
 	pullSpot: { x: -270, y: -465 },
-	pullHpStop: 0.40,           // anyone this low and the pull stops where it is
 	vbatSpot: { x: 1190, y: -380 },
 	vbatClearMs: 20000,         // standing at vbatSpot with no vbat in view this long, after one kill, is a clear box
 	/* THE NO-GO ZONE - R6. x > zone.x and y > zone.y; it holds a8, a5, a4 and
@@ -4469,8 +4532,25 @@ const CRYPT_RUN = {
 	holdAt: 180,
 	holdReleaseAt: 120,
 	holdMaxMs: 20000,           // a hold for a follower's gap alone gives up after this
-	absorbAt: 0.45,
-	scareHpAt: 0.40,
+	/* a2's fight - v35, see the block comment. Every number here is
+	   provisional and the operator's to move. */
+	a2: {
+		selfAt: 0.45,           // the member he is on, this low, disengages
+		partyMeanAt: 0.65,      // the party's mean hp this low and EVERYONE disengages
+		criticalAt: 0.30,       // this low and the scare goes at once, whatever the clock
+		scareAfterTickMs: 5000, // scare only with at least this much of the 8s cycle left
+		blinkBeforeTickMs: 1500,// blink only this close before the next tick
+		absorbMinLeftMs: 2500,  // absorb only with this much of the cycle left
+		absorbGap: 0.05,        // the member must be this much lower than the priest
+		clearOf: 340,           // past the 300 anger radius, with a margin
+		tickPadMs: 1500,        // the next tick is taken to have passed this long after it was due
+		reengageMeanAt: 0.85,   // the whole party back to this, and no poison, before re-engaging
+		reengageMaxMs: 20000,   // or this long after the disengage, whatever
+		opener: 'MageofOz',     // she re-engages first; the others wait for him to take a target
+		stationSlack: 20,       // stand this far inside one's own range
+		stationMoveAt: 25,
+		vbatAvoid: 250,
+	},
 	mluckMinMs: 10 * 60 * 1000, // less than this left counts as lacking it
 	askMs: 60000,               // a merchant request is repeated this often
 	mluckLongMs: 5 * 60 * 1000, // after this the wait is reported in red
@@ -4496,12 +4576,14 @@ const CRYPT_AUTO_KEY = 'crypt_auto';
 let cryptAuto = false, cryptNavOn = true, cryptRelayId = null, crAutoAt = 0;
 let crunRaw = null, crunMemo = null;
 let crSaid = {}, crSeen = {}, crKite = null, crHolding = false, crHoldSince = 0;
-let crSearch = { stage: -1, i: 0, since: 0, done: {} }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
+let crSearch = { stage: -1, i: 0, spent: 0, lastAt: 0, done: {} }, crVbatEmptySince = 0, crWalkFlight = null, crEnterFlight = 0;
 let crMuled = false, crMuleRun = undefined, crMuleSince = 0, crMuleAt = 0, crRoom = true, crPushAt = 0, crAskAt = {}, crMluckSince = 0;
 /* v34: what this tab has seen, published in its beacon as `cs` so the leader
    can merge all three without anyone writing the shared run record for it. */
 let crCs = { run: null, seen: {}, died: [], zav: [] }, crAvoid = {}, crOnMe = null, crWasRip = false;
 let crHoldGapSince = 0, crHoldWaived = false;
+let crRejoin = false;   // v35: a rested follower waiting to join a stationary leader out of combat
+const CRYPT_A2_KEY = 'crypt_a2';
 
 /* The run record, shared by every tab: {id, at, leader, dead: {monster id:
    mtype}, cleared: {mtype: true}, done, doneAt, regroupAll, lost}. v34 adds
@@ -4632,6 +4714,7 @@ function cryptOnDeath(d) {
 		c.dead = c.dead || {};
 		if (!c.dead[d.id]) { c.dead[d.id] = mt; first = true; }
 	});
+	if (first && mt === 'a2') crA2Clear();
 	if (r && first) {
 		const k = crKills(r);
 		crSay('kill-' + d.id, mt + ' down (' + k[mt] + '/' + CRYPT_RUN.need[mt] + ')', '#7FD98A', 0);
@@ -4642,6 +4725,7 @@ function cryptOnDeath(d) {
 /* The current stage is hunted. A plan monster out of turn is answered once it
    is on the party. A stray is hit only by the member it is on - the kiter. */
 function cryptMayAttack(t, run) {
+	if (t.mtype === 'a2' && crA2HoldFire(Date.now())) return false;
 	const st = run ? cryptStage(run) : null;
 	if (st && st.types.indexOf(t.mtype) >= 0) return true;
 	if (CRYPT_RUN.need[t.mtype]) return attackingUs(t);
@@ -4649,20 +4733,176 @@ function cryptMayAttack(t, run) {
 }
 function cryptRunHere() { return cryptAuto && mode === 'crypt' && character.map === 'crypt'; }
 
-/* ---- defence ---- */
+/* ---- a2 - v35, see the block comment and CRYPT_RUN.a2 ---- */
+function crA2() {
+	for (const m of threats()) if (m.mtype === 'a2' && !caveFriendly(m)) return m;
+	return null;
+}
+/* Milliseconds to his next anger tick, or null when the client has no clock. */
+function crAngerMs(m) {
+	try { const a = m && m.s && m.s.anger; return a && typeof a.ms === 'number' ? a.ms : null; } catch (e) { return null; }
+}
+function crHpFrac(e) { return e && e.max_hp ? e.hp / e.max_hp : 1; }
+function crPartyMean() {
+	const a = allies();
+	return a.length ? a.reduce((s, e) => s + crHpFrac(e), 0) / a.length : 1;
+}
+function crPoisoned() { return allies().some((e) => !!(e.s && e.s.poisoned)); }
+/* The member he is on wants out: it is low, or the party is. */
+function crA2Low() {
+	return crHpFrac(character) < CRYPT_RUN.a2.selfAt || crPartyMean() < CRYPT_RUN.a2.partyMeanAt;
+}
+/* The shared disengage, {mode: 'all'|'one', who, at, tickAt, reopen}, in
+   localStorage so all three tabs read one record. 'one' covers its `who`
+   until the tick after the scare has passed; 'all' covers everyone until the
+   party is healed, then `reopen` lets the opener back in first. */
+function crA2Read() {
+	try {
+		const v = JSON.parse(parent.localStorage.getItem(CRYPT_A2_KEY));
+		return v && v.mode && v.run === (character.in || null) ? v : null;
+	} catch (e) { return null; }
+}
+function crA2Write(s) { try { parent.localStorage.setItem(CRYPT_A2_KEY, JSON.stringify(s)); } catch (e) {} }
+function crA2Clear(why) {
+	try { if (parent.localStorage.getItem(CRYPT_A2_KEY) === null) return; parent.localStorage.removeItem(CRYPT_A2_KEY); } catch (e) { return; }
+	if (why) crSay('a2end-' + Date.now(), why, '#7FD98A', 0);
+}
+/* The state as it applies now, advancing it: null, or {away, holdFire}. */
+function crA2State(now) {
+	const s = crA2Read();
+	if (!s) return null;
+	const a = CRYPT_RUN.a2, past = now >= (s.tickAt || 0) + a.tickPadMs;
+	if (s.mode === 'one') {
+		if (past) { crA2Clear(s.who + ' is clear of a2 - back in'); return null; }
+		return s.who === character.name ? { away: true, holdFire: true } : null;
+	}
+	if (!s.reopen) {
+		const healed = crPartyMean() >= a.reengageMeanAt && !crPoisoned();
+		if (past && (healed || now - s.at >= a.reengageMaxMs)) {
+			s.reopen = true; s.reopenAt = now; crA2Write(s);
+			crSay('a2reopen-' + s.at, 'healed - re-engaging a2, ' + a.opener + ' opens', '#7FD1FF', 0);
+		} else return { away: true, holdFire: true };
+	}
+	const m = crA2();
+	if (m && m.target) { crA2Clear('a2 has a target again - everyone back in'); return null; }
+	/* The opener dead or away must not keep the other two holding fire. */
+	if (now - (s.reopenAt || s.at) > a.reengageMaxMs) { crA2Clear('nobody opened on a2 - everyone back in'); return null; }
+	return { away: false, holdFire: character.name !== a.opener };
+}
+function crA2HoldFire(now) { const s = crA2State(now); return !!(s && s.holdFire); }
+function crA2Away(now) { const s = crA2State(now); return !!(s && s.away); }
+/* Scare (P1): he is on me, I am low or the party is, and the clock has just
+   reset - or I am about to die. */
+function cryptScareWanted(m) {
+	if (!m || m.mtype !== 'a2' || m.target !== character.name || !crA2Low()) return false;
+	const ms = crAngerMs(m);
+	return ms === null || ms >= CRYPT_RUN.a2.scareAfterTickMs || crHpFrac(character) < CRYPT_RUN.a2.criticalAt;
+}
+/* Who disengages: everyone when the party is low, else the member alone. */
+function crA2Disengage(m, how, now) {
+	const all = crPartyMean() < CRYPT_RUN.a2.partyMeanAt;
+	const ms = crAngerMs(m);
+	crA2Write({ run: character.in || null, mode: all ? 'all' : 'one', who: character.name, at: now, tickAt: now + (ms === null ? 8000 : ms), reopen: false, how: how });
+	crSay('a2off-' + now, how + ' - ' + (all ? 'the party is low, everyone' : character.name + ' alone') + ' clears 300 of a2 before his next tick', 'orange', 0);
+}
+/* Blink (P5): the same, without the scare, just before a tick. */
+function cryptBlinkWanted(m) {
+	if (!m || m.mtype !== 'a2' || m.target !== character.name || !crA2Low()) return false;
+	const ms = crAngerMs(m);
+	return ms !== null && ms <= CRYPT_RUN.a2.blinkBeforeTickMs;
+}
+/* Absorb (P3): off the lowest member, onto the priest, right after a tick. */
 function cryptAbsorbTarget() {
-	for (const m of threats()) {
-		if (m.mtype !== 'a2' || !m.target || m.target === character.name) continue;
-		if (partyNames().indexOf(m.target) < 0) continue;
-		const e = (parent.entities || {})[m.target];
-		if (!here(e) || !e.max_hp) continue;
-		if (e.hp / e.max_hp <= CRYPT_RUN.absorbAt && inRangeFor(e, 'absorb')) return e;
+	const m = crA2();
+	if (!m || !m.target || m.target === character.name || partyNames().indexOf(m.target) < 0) return null;
+	const ms = crAngerMs(m);
+	if (ms !== null && ms < CRYPT_RUN.a2.absorbMinLeftMs) return null;
+	const e = (parent.entities || {})[m.target];
+	if (!here(e) || !e.max_hp) return null;
+	const low = allies().every((o) => o === e || crHpFrac(o) >= crHpFrac(e));
+	if (!low || crHpFrac(e) > crHpFrac(character) - CRYPT_RUN.a2.absorbGap) return null;
+	return inRangeFor(e, 'absorb') ? e : null;
+}
+function crNearVbat(p, run) {
+	const k = crKills(run || {}), cl = (run && run.cleared) || {};
+	if (cl.vbat || (k.vbat || 0) >= (CRYPT_RUN.need.vbat || 7)) return false;
+	return CRYPT_RUN.homes.vbat.some((h) => Math.hypot(p.x - h[0], p.y - h[1]) <= CRYPT_RUN.a2.vbatAvoid);
+}
+function crPriestPos() {
+	for (const n of partyNames()) {
+		const e = n === character.name ? character : (parent.entities || {})[n];
+		if (here(e) && e.ctype === 'priest') return crPos(e);
 	}
 	return null;
 }
-function cryptScareWanted() {
-	const low = character.max_hp && character.hp / character.max_hp <= CRYPT_RUN.scareHpAt;
-	return !!(low && threats().some((m) => m.mtype === 'a2' && m.target === character.name));
+/* Positioning (P4): my own range from him, on the priest's side; rotated off a
+   wall, the zone or the vbat box; null when nothing fits. */
+function crA2Station(m, run) {
+	const a = crPos(m), me = crPos(character);
+	const anchor = character.ctype === 'priest' ? me : (crPriestPos() || me);
+	let ux = anchor.x - a.x, uy = anchor.y - a.y, n = Math.hypot(ux, uy);
+	if (n < 1) { ux = me.x - a.x; uy = me.y - a.y; n = Math.hypot(ux, uy); }
+	if (n < 1) { ux = 1; uy = 0; n = 1; }
+	ux /= n; uy /= n;
+	const r = Math.max(40, (character.range || 100) - CRYPT_RUN.a2.stationSlack);
+	for (const da of [0, 0.5, -0.5, 1.0, -1.0]) {
+		const c = Math.cos(da), s = Math.sin(da);
+		const p = { x: a.x + (ux * c - uy * s) * r, y: a.y + (ux * s + uy * c) * r };
+		if (crInZone(p, run) || crNearVbat(p, run)) continue;
+		try { if (isFn(can_move_to) && !can_move_to(p.x, p.y)) continue; } catch (e) { continue; }
+		return p;
+	}
+	return null;
+}
+/* Somewhere past clearOf from him that is not back toward him: a straight
+   step on a ring around me first, then the nearest tour point. */
+function crA2AwayPoint(m, run) {
+	const a = crPos(m), me = crPos(character), clear = CRYPT_RUN.a2.clearOf;
+	const away = (p) => (p.x - me.x) * (me.x - a.x) + (p.y - me.y) * (me.y - a.y) >= 0;
+	const ok = (p) => Math.hypot(p.x - a.x, p.y - a.y) >= clear && !crInZone(p, run) && !crNearVbat(p, run);
+	let best = null, bd = Infinity;
+	for (let i = 0; i < 16; i++) {
+		const t = (Math.PI * 2 * i) / 16, p = { x: me.x + Math.cos(t) * 380, y: me.y + Math.sin(t) * 380 };
+		if (!ok(p) || !away(p)) continue;
+		try { if (isFn(can_move_to) && !can_move_to(p.x, p.y)) continue; } catch (e) { continue; }
+		const d = -Math.hypot(p.x - a.x, p.y - a.y);
+		if (d < bd) { bd = d; best = p; }
+	}
+	if (best) return { x: best.x, y: best.y, straight: true };
+	for (const t of CRYPT_RUN.tour) {
+		const p = { x: t[0], y: t[1] };
+		if (!ok(p) || !away(p)) continue;
+		const d = Math.hypot(p.x - me.x, p.y - me.y);
+		if (d < bd) { bd = d; best = p; }
+	}
+	return best ? { x: best.x, y: best.y, straight: false } : null;
+}
+/* One move toward p: a straight move where nothing is in the way, else a
+   walk (the leader's through the autopilot, so its own pause rules hold). */
+function crStepTo(p, key) {
+	let straight = false;
+	try { straight = !isFn(can_move_to) || can_move_to(p.x, p.y); } catch (e) {}
+	if (straight) {
+		if (isLeader()) crHalt(key);
+		try { move(p.x, p.y); bump('a2Steps'); } catch (e) {}
+		return;
+	}
+	if (isLeader()) crGo(p, key); else crWalk({ map: character.map, x: p.x, y: p.y }, key);
+}
+function crA2Move(m, run, now) {
+	if (crA2Away(now)) {
+		if (crDist(crPos(character), crPos(m)) >= CRYPT_RUN.a2.clearOf) { if (isLeader()) crHalt('a2-clear'); return true; }
+		const p = crA2AwayPoint(m, run);
+		if (p) crStepTo(p, 'a2-away');
+		else crSay('a2noAway', 'no way past 300 from a2 from here - holding', 'orange');
+		return true;
+	}
+	if (!crOnParty(m)) return false;
+	const p = crA2Station(m, run);
+	if (!p) return false;
+	if (crDist(crPos(character), p) > CRYPT_RUN.a2.stationMoveAt) crStepTo(p, 'a2-station');
+	else if (isLeader()) crHalt('a2-station');
+	return true;
 }
 
 /* ---- the respawn rule ---- */
@@ -4807,18 +5047,31 @@ async function cryptLeaderInside(run, now) {
 	if (!cryptNavOn || now < navManualUntil) return;
 	const bs = beacons(), E = CRYPT_RUN.entrance;
 	if (run.regroupAll) {
+		crSearch.spent = 0; crSearch.lastAt = 0;
 		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) { crGo(E, 'entrance'); return; }
 		crHalt('regroup');
+		/* v35: and rested - a follower still resting is not ready to go. */
 		const ok = followers().every((n) => {
 			const st = crMate(bs, n, now);
-			return crInside(st, run) && !st.rip && crDist(st, E) <= CRYPT_RUN.regroupWithin;
+			return crInside(st, run) && !st.rip && !st.rest && crDist(st, E) <= CRYPT_RUN.regroupWithin;
 		});
 		if (!ok) { crSay('regroup', 'regrouping at the entrance before re-engaging', '#8b98ab'); return; }
 		crunPatch((c) => { c.regroupAll = false; });
 		crSay('regrouped', 'regrouped - re-engaging', '#7FD98A', 0);
 		return;
 	}
+	/* v35: the leader respawned rests at the entrance, as a follower does. */
+	if (resting || deathLoop) {
+		crSearch.spent = 0; crSearch.lastAt = 0;
+		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) { crGo(E, 'entrance'); return; }
+		crHalt('rest');
+		crSay('restLead', deathLoop ? 'death loop - holding at the entrance until the party collects me' : 'resting at the entrance before re-engaging', '#8b98ab');
+		return;
+	}
 	cryptLeaderBook(run, bs, now);
+	/* v35: a2 - the disengage first, then the stations (P1, P4). */
+	const a2 = crA2();
+	if (a2 && crA2Away(now)) { engagedUntil = now + CFG.engageHoldMs; crA2Move(a2, run, now); return; }
 	const st = cryptStage(run);
 	if (!st) {
 		const gu = Object.keys(run.givenUp || {});
@@ -4827,7 +5080,7 @@ async function cryptLeaderInside(run, now) {
 		return;
 	}
 	if (crSearch.stage !== st.i) {
-		crSearch = { stage: st.i, i: 0, since: now, done: {} };
+		crSearch = { stage: st.i, i: 0, spent: 0, lastAt: 0, done: {} };
 		crSay('stage-' + st.i, 'stage ' + (st.i + 1) + ': ' + st.types.join(', '), '#7FD1FF', 0);
 	}
 	const tgt = crNearest(st.types, run);
@@ -4838,17 +5091,41 @@ async function cryptLeaderInside(run, now) {
 	   leader, which is the wipe. R1: no follower hold during the pull. */
 	const fight = threats().some((m) => CRYPT_RUN.need[m.mtype] && crOnParty(m) && !caveFriendly(m)
 		&& dist(character, m) <= CRYPT_RUN.fightWithin && !(pulling && m.mtype === 'a2'));
-	if (fight) { engagedUntil = now + CFG.engageHoldMs; crHalt('fight'); return; }
+	if (fight) {
+		engagedUntil = now + CFG.engageHoldMs;
+		if (a2 && crOnParty(a2) && dist(character, a2) <= CRYPT_RUN.fightWithin && crA2Move(a2, run, now)) return;
+		crHalt('fight'); return;
+	}
+	/* v35: a death loop is collected, by the leader walking to it. */
+	if (!pulling) {
+		const loop = followers().map((n) => crMate(bs, n, now)).find((m) => crInside(m, run) && !m.rip && m.loop);
+		if (loop && crDist(crPos(character), loop) > CRYPT_RUN.regroupWithin * 0.6) {
+			crSearch.lastAt = 0;
+			crSay('collect-' + loop.name, 'collecting ' + loop.name + ' - in a death loop at ' + Math.round(loop.x) + ',' + Math.round(loop.y), '#7FD1FF', 30000);
+			crGo(loop, 'collect');
+			return;
+		}
+	}
 	if (!pulling) {
 		const why = cryptPartyHold(run, bs, now);
-		if (why) { crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return; }
+		if (why) {
+			/* The search clock runs only while the party is searching; a death or
+			   an exit resets it (C). */
+			if (/dead|outside/.test(why)) crSearch.spent = 0;
+			crSearch.lastAt = 0;
+			crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return;
+		}
 	}
 	if (tgt) {
-		crSearch.since = now;
+		crSearch.spent = 0; crSearch.lastAt = 0;
 		engagedUntil = now + CFG.engageHoldMs;
 		if (pulling) {
-			const low = allies().some((a) => a.max_hp && a.hp / a.max_hp < CRYPT_RUN.pullHpStop);
-			if (low || crDist(crPos(character), CRYPT_RUN.pullSpot) <= NAV.arriveAt) { crHalt('pull-stop'); return; }
+			/* v35, Q1: no stop at 40% - the scare-and-disengage replaces it. At
+			   the pull spot the stations take over (P4). */
+			if (crDist(crPos(character), CRYPT_RUN.pullSpot) <= NAV.arriveAt) {
+				if (!crA2Move(tgt, run, now)) crHalt('pull-stop');
+				return;
+			}
 			crSay('pull', 'a2 is on us - pulling him back to the hall', '#7FD1FF', 20000);
 			crGo(CRYPT_RUN.pullSpot, 'pull');
 			return;
@@ -4859,13 +5136,19 @@ async function cryptLeaderInside(run, now) {
 		else crHalt('in-range');
 		return;
 	}
+	/* THE SEARCH CLOCK - v35 (C). It counts only from here: the party is all
+	   alive and inside, nobody is fighting, holding or regrouping, and nothing
+	   of the stage is in view. A pause adds at most a second; a death or a
+	   regroup resets it. On v34 it ran through a wipe and gave a2 up. */
+	crSearch.spent = (crSearch.spent || 0) + (crSearch.lastAt ? Math.min(now - crSearch.lastAt, 1000) : 0);
+	crSearch.lastAt = now;
 	/* Nothing of this stage in view this long: give it up and move on - R6. */
-	if (now - crSearch.since > CRYPT_RUN.searchMaxMs) {
+	if (crSearch.spent > CRYPT_RUN.searchMaxMs) {
 		crunPatch((c) => { c.givenUp = c.givenUp || {}; for (const t of st.types) c.givenUp[t] = now; });
 		crHalt('search');
 		crSay('gaveUp-' + st.types.join('-'), 'no ' + st.types.join('/') + ' found in ' + Math.round(CRYPT_RUN.searchMaxMs / 60000)
 			+ ' min - given up, moving on; ' + (st.types.length > 1 ? 'they are' : 'it is') + ' taken back if seen again', 'red', 0);
-		crSearch = { stage: -1, i: 0, since: now, done: {} };
+		crSearch = { stage: -1, i: 0, spent: 0, lastAt: 0, done: {} };
 		return;
 	}
 	if (st.types.indexOf('vbat') >= 0) {
@@ -4954,7 +5237,27 @@ function cryptFollowerInside(run, now) {
 		else crHoldPlace();
 		return true;
 	}
-	if (!crInside(lb, run) || lb.rip || lb.kite) { crHoldPlace(); return true; }
+	/* v35 (A): respawned, rest at the entrance; a death loop waits there for
+	   the leader to collect it. On v33 a respawn walked straight back across
+	   the floor alone - MageofOz died nine times in one run that way. */
+	if (resting || deathLoop) {
+		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) crGo(E, 'entrance');
+		else crHoldPlace();
+		return true;
+	}
+	if (!crInside(lb, run) || lb.rip || lb.kite || (lb.rest && !lb.loop)) { crHoldPlace(); return true; }
+	/* Rested: join the leader only while he is stationary and nobody is
+	   fighting (R3), and hold where I am until then. */
+	if (crRejoin) {
+		const lp = { x: lb.x, y: lb.y }, gap = crDist(crPos(character), lp);
+		if (gap <= CRYPT_RUN.regroupWithin) { crRejoin = false; clog('back with the party', '#7FD98A'); return false; }
+		if (joinWanted(gap)) joinStep(lp, gap); else crHoldPlace();
+		return true;
+	}
+	/* a2 (P1, P4): away while the disengage covers me, else my station. */
+	const a2 = crA2();
+	if (a2 && !leaderMoving() && crA2Move(a2, run, now)) return true;
+	if (a2 && crA2Away(now)) return crA2Move(a2, run, now);
 	return false;
 }
 function crHoldPlace() {
@@ -5117,6 +5420,7 @@ function cryptTick() {
 	if (!cryptAuto || mode !== 'crypt') return;
 	const now = Date.now();
 	if (!character.rip) crHoldSince = 0;
+	else { crSearch.spent = 0; crSearch.lastAt = 0; }
 	if (now - crAutoAt >= 60000) cryptAutoStamp(now);
 	cryptSeeTick(now);
 	if (isLeader() && character.map === 'crypt' && character.in) {
@@ -5124,7 +5428,7 @@ function cryptTick() {
 		if (!r || r.id !== character.in) {
 			crunWrite({ id: character.in, at: now, leader: character.name, dead: {}, cleared: {}, done: false, regroupAll: false });
 			try { send_cm(followers(), { cave: { crypt: character.in } }); } catch (e) {}
-			crSearch = { stage: -1, i: 0, since: now, done: {} };
+			crSearch = { stage: -1, i: 0, spent: 0, lastAt: 0, done: {} };
 			crSay('published', 'in - instance published to ' + followers().join(', '), '#7FD98A', 0);
 		}
 	}
@@ -5184,6 +5488,8 @@ function cryptNew() {
 function cryptNav(on) {
 	cryptNavOn = on === undefined ? !cryptNavOn : !!on;
 	navManualUntil = 0;
+	/* v35: a fresh search clock, or a clock already past its limit gives up again at once. */
+	if (cryptNavOn) { crSearch.spent = 0; crSearch.lastAt = 0; }
 	if (!cryptNavOn && navFlight) navHalt('off');
 	clog('crypt autopilot ' + (cryptNavOn ? 'ON' : 'OFF'), '#FFD700');
 	return cryptNavOn;
@@ -5252,6 +5558,8 @@ try {
 // ---------------------------------------------------------------- loop -----
 let leaving = false;
 async function tick() {
+	const gen = tickGen;
+	tickAt = Date.now();
 	try {
 		const was = phase;
 		if (inCave()) phase = 'inside';
@@ -5281,11 +5589,48 @@ async function tick() {
 		dieTick();
 		launcherTick();
 		senseTick();            // beacon out, trouble + leash in - before anything moves
-		await moveTick();
-		await combatTick();
+		tickStep = 'moveTick';
+		await bounded(moveTick(), 'moveTick');
+		tickStep = 'combatTick';
+		await bounded(combatTick(), 'combatTick');
+		tickStep = 'idle';
 		telFlush();
 	} catch (e) { bump('exceptions'); ev('exception', String(e)); clog('tick: ' + e, 'red'); }
-	if (alive()) setTimeout(tick, CFG.tickMs);
+	if (alive() && gen === tickGen) setTimeout(tick, CFG.tickMs);
+}
+/* NO AWAIT HOLDS A TICK FOREVER, AND A STALLED LOOP IS RESTARTED - v35. On the
+   2026-11-08 crypt run MageofOz's tick counter stood still while she lay dead,
+   no exception and no log line: an awaited call - most likely a smart_move in
+   flight when she died - never settled, and the chain ended there. So each
+   awaited step resolves after CFG.awaitMaxMs whatever it is waiting on, and the
+   watchdog below starts a new loop when no tick has begun for tickStallMs. The
+   generation number stops a stalled tick that does resume from running a
+   second loop beside the new one. */
+let tickGen = 0, tickAt = 0, tickStep = 'idle', boundSaid = 0;
+function bounded(p, label) {
+	let timer = null;
+	const out = new Promise((res) => {
+		timer = setTimeout(() => {
+			bump('awaitTimeouts');
+			if (Date.now() - boundSaid > 60000) { boundSaid = Date.now(); clog(label + ' did not settle in ' + Math.round(CFG.awaitMaxMs / 1000) + 's - the tick goes on without it', 'red'); }
+			ev('awaitTimeout', { step: label });
+			res();
+		}, CFG.awaitMaxMs);
+	});
+	/* A rejection still reaches the tick's own catch - only a hang is cut short. */
+	return Promise.race([Promise.resolve(p), out]).then(() => { clearTimeout(timer); }, (e) => { clearTimeout(timer); throw e; });
+}
+function tickWatch() {
+	if (!alive()) return;
+	const now = Date.now();
+	if (tickAt && now - tickAt > CFG.tickStallMs) {
+		tickGen++; tickAt = now;
+		bump('tickRestarts');
+		clog('the tick loop stalled ' + Math.round(CFG.tickStallMs / 1000) + 's+ in ' + tickStep + ' - restarting it', 'red');
+		ev('tickRestart', { step: tickStep });
+		setTimeout(tick, 0);
+	}
+	setTimeout(tickWatch, 5000);
 }
 function voteLoop() { try { voteTick(); } catch (e) { clog('vote: ' + e, 'red'); } if (alive()) setTimeout(voteLoop, CFG.voteTickMs); }
 
@@ -5300,6 +5645,7 @@ ev('load', { ver: caveVersion(), build: caveBuild(), leader: leaderName(), role:
    it, since launcherStart() only runs in cave mode. */
 if (cryptAutoSaved(Date.now())) cryptRun();
 tick();
+setTimeout(tickWatch, 5000);
 voteLoop();
 launcherStart();
 

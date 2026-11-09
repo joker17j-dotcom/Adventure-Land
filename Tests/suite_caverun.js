@@ -853,7 +853,7 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 
 	const mk = (o) => {
 		const x = world(Object.assign({ resting: true, deathLoop: false, restSince: Date.now(), restSaid: false,
-			recovering: false, aim: null }, o || {}));
+			recovering: false, aim: null, mode: 'cave', cryptAuto: false, crRejoin: false }, o || {}));
 		x.character = Object.assign({ name: 'MageofOz', hp: 100, max_hp: 100, mp: 100, max_mp: 100, fear: 0, rip: false, real_x: 0, real_y: 0 }, o && o.ch);
 		x.isLeader = () => false; x.leaderEntity = () => (o && o.leader) || null;
 		x.here = (e) => !!e; const P = (o, k) => (o['real_' + k] != null ? o['real_' + k] : o[k]);
@@ -1323,6 +1323,7 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 			threats: () => o.monsters || [],
 			partyNames: () => ['Dexon', 'FatherToken', 'MageofOz'],
 			caveFriendly: (m) => !!m.friendly,
+			beacons: () => o.beacons || {}, TROUBLE: { staleMs: 10000 },
 		});
 		lift(x, 'CaveRun.js', ['MOVE', 'noteLeaderMotion', 'leaderMoving', 'partyFighting', 'joinWanted', 'joinStep']);
 		x.leaderSeen = null; x.leaderMovedAt = 0;
@@ -1339,6 +1340,10 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	t.eq('a monster near but on nobody: out of combat, join', x.joinWanted(60), true);
 	x = w({ monsters: [{ mtype: 'npc', target: 'Dexon', friendly: true }] });
 	t.eq('a friendly with a target is not combat', x.joinWanted(60), true);
+	x = w({ beacons: { FatherToken: { t: Date.now(), map: 'cave', atk: 2 } } });
+	t.eq('v35: a mate out of view with something on it, by its beacon: in combat', x.joinWanted(60), false);
+	x = w({ beacons: { FatherToken: { t: Date.now(), map: 'crypt', atk: 2 }, Dexon: { t: Date.now(), map: 'cave', atk: 3 } } });
+	t.eq('but not a mate on another map, nor my own beacon', x.joinWanted(60), true);
 	x.MOVE.joinStationary = false;
 	t.eq('the toggle turns it off', x.joinWanted(60), false);
 
@@ -1363,7 +1368,9 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		const pf = s.slice(s.indexOf('function partyFighting()'), s.indexOf('function joinWanted('));
 		t.eq('partyFighting does not read engaged()', /engaged\(\)/.test(pf), false);
 		t.ok('the crypt follower falls through to it while the leader is up inside',
-			/if \(!crInside\(lb, run\) \|\| lb\.rip \|\| lb\.kite\) \{ crHoldPlace\(\); return true; \}\n\treturn false;/.test(s));
+			/if \(!crInside\(lb, run\) \|\| lb\.rip \|\| lb\.kite \|\| \(lb\.rest && !lb\.loop\)\) \{ crHoldPlace\(\); return true; \}/.test(s));
+		t.ok('and it has no other way to the end of the function than falling through',
+			/if \(a2 && crA2Away\(now\)\) return crA2Move\(a2, run, now\);\n\treturn false;\n\}/.test(s));
 	})();
 } },
 ];
