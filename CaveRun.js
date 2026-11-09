@@ -1,4 +1,18 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v36 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v37 (TEST BUILD)
+// v37 2026-11-09 THE OPERATOR'S CRYPT RULINGS OF 2026-11-08 19:49-20:12 EST.
+//                The bats are the point of the run. The route from the entrance
+//                to them is protected: a zone monster seen outside the zone now
+//                blocks only the ground around it, never that route or the bat
+//                box. Nobody stands in the box or walks through it: the bat spot
+//                moves north of it to (950,-500), and Dexon pulls one bat at a
+//                time from his full range while the others wait there. a8 is
+//                never kited or attacked - the mage scares it off herself, and
+//                when it is on anyone else the party backs off west along the
+//                route; the bats wait while a8 is near them, for up to 5 min.
+//                Resting ends the moment something is on the party. A member in
+//                a death loop walks back by itself once the route is clear.
+//                With no way past a2's 300, the mage re-scares or blinks.
+//                A death is put down to the strongest monster on the member.
 // v36 2026-11-09 THE OPERATOR'S CRYPT RULINGS OF 2026-11-08 19:16-19:39 EST.
 //                The priest decides each absorb from hp: at once if the member
 //                a2 is on will not last until his next anger tick and the
@@ -1429,7 +1443,18 @@ async function mageSkills(target) {
 	if (cryptRunHere()) {
 		/* v35: a2 on her - scare right after a tick (P1), else blink just
 		   before one (P5); either way past 300 before the next. */
-		const a2 = crA2(), now = Date.now();
+		const a2 = crA2(), now = Date.now(), a8 = crA8();
+		/* v37, ruling 3: a8 on her - she scares it; it has no anger, so it
+		   stays off until hit or faced within 35. */
+		if (a8 && a8.target === character.name && haveSkill('scare')) {
+			try { await telUse('scare'); bump('a8Scares'); crSay('a8scare-' + now, 'a8 was on me - scared it off', '#7FD1FF', 0); return true; } catch (e) {}
+		}
+		/* v37, (f): a2 on her with no way past 300 - scare again, else blink past him. */
+		if (a2 && a2.target === character.name && now - crA2Stuck < 2000) {
+			if (haveSkill('scare')) { try { await telUse('scare'); bump('scares'); crA2Disengage(a2, 'scared a2 off again, cornered', now); return true; } catch (e) {} }
+			const bp = haveSkill('blink') ? crA2BlinkPoint(a2, crunEffective()) : null;
+			if (bp) { try { await telUse('blink', [bp.x, bp.y]); bump('blinks'); crA2Disengage(a2, 'blinked past a2, cornered', now); return true; } catch (e) {} }
+		}
 		if (a2 && haveSkill('scare') && cryptScareWanted(a2)) {
 			try { await telUse('scare'); bump('scares'); crA2Disengage(a2, 'scared a2 off', now); return true; } catch (e) {}
 		} else if (a2 && !haveSkill('scare') && haveSkill('blink') && cryptBlinkWanted(a2)) {
@@ -1495,6 +1520,8 @@ function kiteStep(lp) {
 		const nx = character.real_x + Math.cos(a) * MOVE.kiteStep;
 		const ny = character.real_y + Math.sin(a) * MOVE.kiteStep;
 		if (isFn(can_move_to) && !can_move_to(nx, ny)) continue;
+		/* v37, ruling 4: never into the bat box in a crypt run. */
+		if (cryptAuto && mode === 'crypt' && character.map === 'crypt' && crInBox({ x: nx, y: ny }, 10)) continue;
 		/* NO RATCHETING OUTWARD. The ceiling alone let the follower walk itself
 		   to the top of the dead band and park there - harness measured it
 		   settling at 177 with a mob glued 40u away, which is a hair inside the
@@ -1637,6 +1664,9 @@ async function joinStep(lp, gap) {
 }
 
 async function recoverStep(lp, gap) {
+	/* v37, ruling 4: in a crypt run, a closing step that would cross the bat
+	   box goes by the route instead. */
+	if (cryptRunHere() && crCrossesBox(crPos(character), lp)) { crSafeStep(lp, 'recover'); return; }
 	if (!aim || Math.hypot(aim.x - lp.x, aim.y - lp.y) > MOVE.staleSlack) aim = { x: lp.x, y: lp.y };
 	const direct = !isFn(can_move_to) || can_move_to(aim.x, aim.y);
 	if (direct) {
@@ -2206,6 +2236,16 @@ function restTick() {
 		}
 	}
 	if (deathLoop) return;
+	/* v37, ruling 5: the rest ends the moment something in view is on a party
+	   member, and the party fights - a2 came to the door while they rested. In
+	   view only: a fight across the map is not a reason to walk off alone. */
+	if (threats().some((m) => crOnParty(m) && !caveFriendly(m))) {
+		resting = false;
+		ev('restDone', { engaged: true });
+		clog('resting, but something is on the party - fighting', 'orange');
+		if (!isLeader() && mode === 'crypt' && cryptAuto) crRejoin = true;
+		return;
+	}
 	const hp = character.max_hp ? character.hp / character.max_hp : 1;
 	const mp = character.max_mp ? character.mp / character.max_mp : 1;
 	const full = hp >= REGROUP.hpAt && mp >= REGROUP.mpAt && !(character.fear > 0);
@@ -4479,6 +4519,17 @@ function caveEnter() {
    operator's line (x >= lineX), then casts use_town back to the entrance and
    rejoins, or dies and the respawn rule takes over. The others leave it
    alone, and nobody ever swings at a6, a8 or a1 (CRYPT.never).
+   v37, ruling 3: a8 is NEVER kited - a cursed member walks at ~45 against its
+   76. On the mage it is scared off; on anyone else the party backs off west
+   along the route, and the bats wait while it is near them.
+
+   THE BATS - v37, rulings 1, 2 and 4. They are the point of the run; a7 and
+   a3 are worked for achievements and can be missed. The route from the
+   entrance to them (CRYPT_RUN.route) is never no-go, and a zone monster seen
+   outside the zone blocks only the ground around it. Nobody stands in the
+   box or walks through it: the leader waits at vbatSpot, north of it, and
+   Dexon pulls one bat at a time from his full range and walks straight back.
+   Nobody else shoots a bat until it is on the party.
 
    a2 - v35, the operator's rulings of 2026-11-08 19:02-19:08 EST, from the
    browser session's probe of the run-2 fight (CRYPT_RUN.a2). His anger fires
@@ -4554,7 +4605,10 @@ const CRYPT_RUN = {
 	   sides, 730 by path from the entrance and 2,430 from a2's spawn. The
 	   operator's to move - cryptSpot('pull', x, y). */
 	pullSpot: { x: -270, y: -465 },
-	vbatSpot: { x: 1190, y: -380 },
+	/* v37, ruling 4: just OUTSIDE the box's north edge, by a2's room, where the
+	   leader and Dexon stood at 20:08. The old spot (1190,-380) was the middle
+	   of the box, and a follower rejoining him walked through it. */
+	vbatSpot: { x: 950, y: -500 },
 	vbatClearMs: 20000,         // standing at vbatSpot with no vbat in view this long, after one kill, is a clear box
 	/* THE NO-GO ZONE - R6. x > zone.x and y > zone.y; it holds a8, a5, a4 and
 	   a1. One of those seen outside it grows it to cover the sighting, plus
@@ -4562,6 +4616,41 @@ const CRYPT_RUN = {
 	zone: { x: 1850, y: -1235 },
 	zoneMonsters: ['a8', 'a5', 'a4', 'a1'],
 	zoneMargin: 100,
+	/* v37, rulings 1 and 2: a zone monster seen outside the zone no longer
+	   moves its edge - run 3 moved it to x > 858 and swallowed the bats. It
+	   blocks zoneLocalR around the sighting for zoneLocalMs instead, and never
+	   the bat box or the route to it. */
+	zoneLocalR: 300,
+	zoneLocalMs: 300000,
+	/* THE BATS ARE THE POINT OF THE RUN (ruling 2); a7 and a3 are worked for
+	   achievements and can be missed. The box is the vbat spawn boundary
+	   (design/maps.js crypt, upstream a5c133dc). */
+	vbatBox: { x1: 903.57, y1: -465.05, x2: 1479.2, y2: -304.03 },
+	boxMargin: 40,
+	/* THE PROTECTED ROUTE - the level-0 shortest path from the entrance to
+	   vbatSpot that keeps out of the box, cut into straight legs whose every
+	   cell is level 0, computed once offline: entrance corridor, the hall
+	   north, a7's hall, the corridor down past a2's room, the spot. 2,717
+	   long. routeBranch is the pull-spot room. Within routeR of either is
+	   never no-go, and a member walking back alone walks this. */
+	route: [[0, 0], [-30, -380], [-40, -450], [-180, -540], [-180, -940], [-170, -1020], [-130, -1050], [-50, -1070],
+		[750, -1070], [750, -740], [760, -660], [790, -640], [950, -560], [950, -500]],
+	routeBranch: [[-40, -450], [-270, -460]],
+	routeR: 150,
+	/* a8 - ruling 3. Never kited, never attacked: attack 2680 x frequency 4,
+	   a curse aura of 300 that slows a member to ~45 against its charge 76. */
+	noKite: ['a8'],
+	a8Near: 400,                // a8 this close to the bat spot or the box: the bats wait
+	a8Clear: 340,               // past its 300 aura, with a margin
+	a8RecentMs: 30000,
+	a8ChaseMs: 8000,            // the party backs off while a8 was on a member this recently
+	a8WaitMs: 300000,           // the bats wait this long for a8 to leave, then are given up
+	/* The pull - ruling 4. Dexon (range 192, single target) shoots the nearest
+	   bat from full range, outside the box, and walks straight back. */
+	puller: 'Dexon',
+	pullSlack: 20,
+	pullA8Avoid: 150,
+	pullMaxMs: 20000,
 	lineX: 1860,                // right of the operator's line everywhere - past the zone's edge, R6
 	kiteTop: { x: 1900, y: -1760 }, // the top strip, east of the corridor up from a3's spawn
 	kiteMid: { x: 1880, y: -880 },  // inside the zone, ~160 west of a8's spawn; the operator allows a stray to be dragged there
@@ -4644,6 +4733,9 @@ const CRYPT_A2_KEY = 'crypt_a2';
 const CRYPT_START_KEY = 'crypt_started';
 const CRYPT_HANDBACK_KEY = 'crypt_handback';
 let crHpHist = {}, crA2Last = null, crAbsorbAt = 0;
+/* v37: Dexon's bat pull, the leader's pull-ready stamp, a2 with no way out. */
+let crPull = null, crPullOkAt = 0, crBatRestSince = 0, crA2Stuck = 0;
+const CRYPT_A8_KEY = 'crypt_a8';
 
 /* The run record, shared by every tab: {id, at, leader, dead: {monster id:
    mtype}, cleared: {mtype: true}, done, doneAt, regroupAll, lost}. v34 adds
@@ -4713,8 +4805,74 @@ function cryptStage(run) {
 	return null;
 }
 /* ---- the no-go zone ---- */
-function crZone(run) { const z = run && run.zone; return (z && typeof z.x === 'number' && typeof z.y === 'number') ? z : CRYPT_RUN.zone; }
-function crInZone(p, run) { const z = crZone(run); return p.x > z.x && p.y > z.y; }
+/* v37: the edge is fixed. A run record from v34-v36 can carry a grown `zone`;
+   it is ignored, since the growth is what swallowed the bats. */
+function crZone(run) { return CRYPT_RUN.zone; }
+/* In the zone, or (v37) within zoneLocalR of a zone monster seen outside it -
+   but never on the protected ground. */
+function crInZone(p, run) {
+	const z = crZone(run);
+	if (p.x > z.x && p.y > z.y) return true;
+	const loc = (run && run.zoneLocal) || [];
+	if (!loc.length || crProtected(p)) return false;
+	const now = Date.now();
+	return loc.some((a) => now - a.t <= CRYPT_RUN.zoneLocalMs && Math.hypot(p.x - a.x, p.y - a.y) <= CRYPT_RUN.zoneLocalR);
+}
+/* ---- the bat box and the protected route - v37 ---- */
+function crInBox(p, margin) {
+	const b = CRYPT_RUN.vbatBox, m = margin || 0;
+	return p.x >= b.x1 - m && p.x <= b.x2 + m && p.y >= b.y1 - m && p.y <= b.y2 + m;
+}
+/* Distance from p to a polyline of [x, y] points. */
+function crPolyDist(p, poly) {
+	let best = Infinity;
+	for (let i = 1; i < poly.length; i++) {
+		const ax = poly[i - 1][0], ay = poly[i - 1][1], bx = poly[i][0], by = poly[i][1];
+		const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy;
+		const u = L ? Math.max(0, Math.min(1, ((p.x - ax) * dx + (p.y - ay) * dy) / L)) : 0;
+		best = Math.min(best, Math.hypot(p.x - (ax + u * dx), p.y - (ay + u * dy)));
+	}
+	return best;
+}
+/* Never no-go: the box itself, and the ground within routeR of the route and
+   of the pull-room branch. */
+function crProtected(p) {
+	const R = CRYPT_RUN.routeR;
+	return crInBox(p, CRYPT_RUN.boxMargin) || crPolyDist(p, CRYPT_RUN.route) <= R || crPolyDist(p, CRYPT_RUN.routeBranch) <= R;
+}
+/* True when the straight leg a -> b crosses the box (plus margin). */
+function crCrossesBox(a, b, margin) {
+	const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 10));
+	for (let i = 0; i <= n; i++) if (crInBox({ x: a.x + (b.x - a.x) * i / n, y: a.y + (b.y - a.y) * i / n }, margin === undefined ? 10 : margin)) return true;
+	return false;
+}
+/* The next point to walk to on the way from me to `to` along the route: the
+   nearest route vertex first, then vertex by vertex toward the one nearest
+   `to`, then `to` itself. Each leg is a straight level-0 leg. */
+function crRouteNext(me, to) {
+	const R = CRYPT_RUN.route;
+	const near = (p) => { let bi = 0, bd = Infinity; R.forEach((v, i) => { const d = Math.hypot(v[0] - p.x, v[1] - p.y); if (d < bd) { bd = d; bi = i; } }); return bi; };
+	const i0 = near(me), i1 = near(to);
+	if (i0 === i1) return { x: to.x, y: to.y, end: true };
+	const v0 = { x: R[i0][0], y: R[i0][1] };
+	if (crDist(me, v0) > 40) return v0;
+	const v = R[i0 + (i1 > i0 ? 1 : -1)];
+	return { x: v[0], y: v[1] };
+}
+/* Along the route toward `to`, then onto it. */
+function crRouteWalk(to, key) {
+	const p = crRouteNext(crPos(character), to);
+	crStepTo(p, key);
+	return p;
+}
+/* One step toward `to` that keeps out of the box: straight when the leg is
+   clear of it and walkable, else along the route. */
+function crSafeStep(to, key) {
+	const me = crPos(character);
+	const p = crCrossesBox(me, to) ? crRouteNext(me, to) : to;
+	crStepTo(p, key);
+	return p;
+}
 
 /* What this tab sees, every tick. The id map feeds the death count; the rest
    is published in the beacon (`cs`) for the leader to merge - R5: the last
@@ -4725,7 +4883,10 @@ function cryptSeeTick(now) {
 	if (now === undefined) now = Date.now();
 	const run = crunRead();
 	const id = character.in || null;
-	if (crCs.run !== id) { crCs = { run: id, seen: {}, died: [], zav: [] }; crAvoid = {}; crOnMe = null; }
+	if (crCs.run !== id) { crCs = { run: id, seen: {}, died: [], zav: [], str: [] }; crAvoid = {}; crOnMe = null; }
+	if (!crCs.str) crCs.str = [];
+	let onMe = null, onMeHit = -1;
+	const z = crZone(run);
 	for (const m of threats()) {
 		if (!m.id || !m.mtype) continue;
 		crSeen[m.id] = m.mtype;
@@ -4734,13 +4895,22 @@ function cryptSeeTick(now) {
 		if (CRYPT_RUN.need[m.mtype]) {
 			const o = crCs.seen[m.mtype];
 			if (!o || now - o.t >= CRYPT_RUN.seenEveryMs) crCs.seen[m.mtype] = { x: Math.round(p.x), y: Math.round(p.y), t: now };
-			if (m.target === character.name) crOnMe = { mtype: m.mtype, t: now };
+		} else if (CRYPT_RUN.zoneMonsters.indexOf(m.mtype) < 0) {
+			/* v37: strays too, for the death-loop walk-back's clear route. */
+			crCs.str = crCs.str.filter((x) => x.id !== m.id).concat([{ id: m.id, mtype: m.mtype, x: Math.round(p.x), y: Math.round(p.y), t: now }]).slice(-6);
+		}
+		/* v37: a death is put down to the strongest monster on me, not the last
+			one listed - run 3 called two a8 deaths "died to vbat". */
+		if (m.target === character.name) {
+			const hit = crMonsterDps(m.mtype);
+			if (hit > onMeHit) { onMeHit = hit; onMe = m.mtype; }
 		}
 		crAvoid[m.id] = { x: p.x, y: p.y, t: now, mtype: m.mtype };
-		if (CRYPT_RUN.zoneMonsters.indexOf(m.mtype) >= 0 && !crInZone(p, run)) {
-			crCs.zav = crCs.zav.filter((z) => z.id !== m.id).concat([{ id: m.id, mtype: m.mtype, x: Math.round(p.x), y: Math.round(p.y), t: now }]).slice(-6);
+		if (CRYPT_RUN.zoneMonsters.indexOf(m.mtype) >= 0 && !(p.x > z.x && p.y > z.y)) {
+			crCs.zav = crCs.zav.filter((x) => x.id !== m.id).concat([{ id: m.id, mtype: m.mtype, x: Math.round(p.x), y: Math.round(p.y), t: now }]).slice(-6);
 		}
 	}
+	if (onMe) crOnMe = { mtype: onMe, t: now };
 	for (const k in crAvoid) if (now - crAvoid[k].t > CRYPT_RUN.avoidMs) delete crAvoid[k];
 	crHpTrack(now);
 	crA2Watch(now);
@@ -4754,16 +4924,22 @@ function cryptSeeTick(now) {
 	}
 	crWasRip = !!character.rip;
 }
+/* What a monster deals per second, raw: G's attack x frequency, 0 unknown. */
+function crMonsterDps(mtype) {
+	try { const g = parent.G.monsters[mtype]; return g && g.attack ? g.attack * (g.frequency || 1) : 0; } catch (e) { return 0; }
+}
 /* Every member's sightings of this run, merged: the newest per type, every
-   death point, every zone sighting. bs is beacons() with this tab's own. */
+   death point, every zone sighting, every stray (v37). bs is beacons() with
+   this tab's own. */
 function crSightings(bs, run) {
-	const out = { seen: {}, died: [], zav: [] };
+	const out = { seen: {}, died: [], zav: [], str: [] };
 	for (const n in bs) {
 		const cs = bs[n] && bs[n].cs;
 		if (!cs || !run || cs.run !== run.id) continue;
 		for (const t in cs.seen || {}) { const s = cs.seen[t]; if (!out.seen[t] || s.t > out.seen[t].t) out.seen[t] = s; }
 		for (const d of cs.died || []) out.died.push(Object.assign({ who: n }, d));
 		for (const z of cs.zav || []) out.zav.push(z);
+		for (const z of cs.str || []) out.str.push(z);
 	}
 	return out;
 }
@@ -4791,6 +4967,9 @@ function cryptOnDeath(d) {
    is on the party. A stray is hit only by the member it is on - the kiter. */
 function cryptMayAttack(t, run) {
 	if (t.mtype === 'a2' && crA2HoldFire(Date.now())) return false;
+	/* v37, ruling 4: one bat at a time - only one already on the party, or the
+	   one Dexon is pulling. Everyone else's shot at the box would pull more. */
+	if (t.mtype === 'vbat') return crOnParty(t) || !!(crPull && crPull.id === t.id);
 	const st = run ? cryptStage(run) : null;
 	if (st && st.types.indexOf(t.mtype) >= 0) return true;
 	if (CRYPT_RUN.need[t.mtype]) return attackingUs(t);
@@ -4989,6 +5168,7 @@ function crA2Watch(now) {
 	crunPatch((c) => { if (c.id === character.in) c.a2log = (c.a2log || []).concat([row]).slice(-60); });
 }
 function crNearVbat(p, run) {
+	if (crInBox(p, CRYPT_RUN.boxMargin)) return true;
 	const k = crKills(run || {}), cl = (run && run.cleared) || {};
 	if (cl.vbat || (k.vbat || 0) >= (CRYPT_RUN.need.vbat || 7)) return false;
 	return CRYPT_RUN.homes.vbat.some((h) => Math.hypot(p.x - h[0], p.y - h[1]) <= CRYPT_RUN.a2.vbatAvoid);
@@ -5042,6 +5222,33 @@ function crA2AwayPoint(m, run) {
 	}
 	return best ? { x: best.x, y: best.y, straight: false } : null;
 }
+/* No way past clearOf: the straight ring point farthest from him, if it is
+   farther than here. */
+function crA2FarPoint(m, run) {
+	const a = crPos(m), me = crPos(character);
+	let best = null, bd = crDist(me, a) + 20;
+	for (let i = 0; i < 16; i++) {
+		const t = (Math.PI * 2 * i) / 16, p = { x: me.x + Math.cos(t) * 200, y: me.y + Math.sin(t) * 200 };
+		if (crInZone(p, run) || crInBox(p, 10)) continue;
+		try { if (isFn(can_move_to) && !can_move_to(p.x, p.y)) continue; } catch (e) { continue; }
+		const d = crDist(p, a);
+		if (d > bd) { bd = d; best = p; }
+	}
+	return best;
+}
+/* A blink lands anywhere walkable, so it can go past him: the nearest tour or
+   route point at least clearOf from him, out of the zone and the box. */
+function crA2BlinkPoint(m, run) {
+	const a = crPos(m), me = crPos(character);
+	let best = null, bd = Infinity;
+	for (const t of CRYPT_RUN.tour.concat(CRYPT_RUN.route)) {
+		const p = { x: t[0], y: t[1] };
+		if (crDist(p, a) < CRYPT_RUN.a2.clearOf || crInZone(p, run) || crInBox(p, 10)) continue;
+		const d = crDist(p, me);
+		if (d < bd) { bd = d; best = p; }
+	}
+	return best;
+}
 /* One move toward p: a straight move where nothing is in the way, else a
    walk (the leader's through the autopilot, so its own pause rules hold). */
 function crStepTo(p, key) {
@@ -5059,7 +5266,14 @@ function crA2Move(m, run, now) {
 		if (crDist(crPos(character), crPos(m)) >= CRYPT_RUN.a2.clearOf) { if (isLeader()) crHalt('a2-clear'); return true; }
 		const p = crA2AwayPoint(m, run);
 		if (p) crStepTo(p, 'a2-away');
-		else crSay('a2noAway', 'no way past 300 from a2 from here - holding', 'orange');
+		else {
+			/* v37: no way past 300 - the mage re-scares or blinks (mageSkills),
+			   and everyone steps to the straight point farthest from him. */
+			crA2Stuck = now;
+			const q = crA2FarPoint(m, run);
+			if (q) crStepTo(q, 'a2-far');
+			crSay('a2noAway', 'no way past 300 from a2 from here - ' + (character.ctype === 'mage' ? 'scaring or blinking' : 'getting as far as I can'), 'orange');
+		}
 		return true;
 	}
 	if (!crOnParty(m)) return false;
@@ -5070,6 +5284,158 @@ function crA2Move(m, run, now) {
 	return true;
 }
 
+/* ---- a8 - v37, ruling 3 ---- */
+function crA8() {
+	for (const m of threats()) if (m.mtype === 'a8' && !caveFriendly(m)) return m;
+	return null;
+}
+/* Where a8 was last seen near the bats - in view, or by any member - or null. */
+function crA8Near(run, bs, now) {
+	const near = (p) => crDist(p, CRYPT_RUN.vbatSpot) <= CRYPT_RUN.a8Near || crInBox(p, CRYPT_RUN.a8Near - 100);
+	const m = crA8();
+	if (m && near(crPos(m))) return crPos(m);
+	const s = crSightings(bs, run);
+	let best = null;
+	for (const a of s.zav) if (a.mtype === 'a8' && now - a.t <= CRYPT_RUN.a8RecentMs && near(a) && (!best || a.t > best.t)) best = a;
+	return best;
+}
+/* a8 on a party member - not the mage with her scare ready, who scares it
+   herself. Stamped in crypt_a8 for the tabs that cannot see it; the party
+   backs off while the stamp is fresh. */
+function crA8Chase(now) {
+	const m = crA8();
+	if (m && m.target && partyNames().indexOf(m.target) >= 0) {
+		const bs = beacons(), b = bs[m.target];
+		const scares = m.target === character.name ? (character.ctype === 'mage' && haveSkill('scare')) : !!(b && b.esc && b.jacko);
+		if (!scares) { try { parent.localStorage.setItem(CRYPT_A8_KEY, JSON.stringify({ run: character.in || null, at: now, who: m.target, x: Math.round(crPos(m).x), y: Math.round(crPos(m).y) })); } catch (e) {} }
+	}
+	let r = null;
+	try { r = JSON.parse(parent.localStorage.getItem(CRYPT_A8_KEY)); } catch (e) {}
+	return r && r.run === (character.in || null) && now - r.at <= CRYPT_RUN.a8ChaseMs ? r : null;
+}
+/* Backing off west: back along the route, vertex by vertex, until past
+   a8Clear from it. */
+function crA8Retreat(a8p) {
+	const me = crPos(character), R = CRYPT_RUN.route;
+	if (a8p && crDist(me, a8p) >= CRYPT_RUN.a8Clear) return false;
+	let bi = 0, bd = Infinity;
+	R.forEach((v, i) => { const d = Math.hypot(v[0] - me.x, v[1] - me.y); if (d < bd) { bd = d; bi = i; } });
+	let j = bi;
+	while (j > 0 && (Math.hypot(R[j][0] - me.x, R[j][1] - me.y) < 40 || (a8p && Math.hypot(R[j][0] - a8p.x, R[j][1] - a8p.y) < CRYPT_RUN.a8Clear))) j--;
+	crStepTo({ x: R[j][0], y: R[j][1] }, 'a8-back');
+	return true;
+}
+/* ---- the route back - v37, ruling 7 ---- */
+/* Why a member could not walk the route back alone, or null: a plan monster
+   that could be on it is alive and not given up, or a stray or zone monster
+   has been seen near it recently. The bats are in the box, off the route. */
+function cryptRouteBlocked(run, bs, now) {
+	const k = crKills(run), gu = run.givenUp || {}, cl = run.cleared || {};
+	for (const t of ['a2', 'a3', 'a7']) if (!gu[t] && !cl[t] && (k[t] || 0) < (CRYPT_RUN.need[t] || 1)) return t + ' is alive';
+	const s = crSightings(bs, run), R = CRYPT_RUN.route;
+	for (const a of s.zav.concat(s.str)) {
+		if (now - a.t > CRYPT_RUN.avoidMs) continue;
+		if (crPolyDist(a, R) <= CRYPT_RUN.routeR + CRYPT_RUN.avoidR) return a.mtype + ' was seen by it';
+	}
+	return null;
+}
+/* ---- the bats - v37, ruling 4 ---- */
+/* A point within my range of the bat, outside the box, reachable in a straight
+   line that keeps out of the box, clear of a8 - the nearest to the spot. */
+function crPullStand(b, a8p) {
+	const pb = crPos(b), me = crPos(character), spot = CRYPT_RUN.vbatSpot;
+	const r = Math.max(60, (character.range || 150) - CRYPT_RUN.pullSlack);
+	let best = null, bd = Infinity;
+	for (let i = 0; i < 24; i++) {
+		const t = (Math.PI * 2 * i) / 24, p = { x: pb.x + Math.cos(t) * r, y: pb.y + Math.sin(t) * r };
+		if (crInBox(p, 15) || crCrossesBox(me, p, 5)) continue;
+		if (a8p && crDist(p, a8p) < CRYPT_RUN.pullA8Avoid) continue;
+		try { if (isFn(can_move_to) && !can_move_to(p.x, p.y)) continue; } catch (e) { continue; }
+		const d = crDist(p, spot);
+		if (d < bd) { bd = d; best = p; }
+	}
+	return best;
+}
+function crBatOnParty() { return threats().some((m) => m.mtype === 'vbat' && crOnParty(m) && !caveFriendly(m)); }
+/* Dexon's half: once the leader has stamped the pull ready, one bat at a time -
+   to a stand point, one shot, straight back to the spot. True while it owns
+   his move. */
+function cryptPullTick(run, now) {
+	if (character.name !== CRYPT_RUN.puller) return false;
+	const st = cryptStage(run), spot = CRYPT_RUN.vbatSpot;
+	if (!st || st.types.indexOf('vbat') < 0) { crPull = null; return false; }
+	if (crPull) {
+		const b = (parent.entities || {})[crPull.id];
+		if (crPull.phase === 'out') {
+			if (!b || b.dead || crOnParty(b) || now - crPull.at > CRYPT_RUN.pullMaxMs) {
+				crPull.phase = 'back';
+				if (b && crOnParty(b)) crSay('pulled-' + crPull.id, 'a bat is on us - back to the spot', '#7FD1FF', 0);
+			} else {
+				if (dist(character, b) <= (character.range || 150) - 5) {
+					try { if (!isFn(can_attack) || can_attack(b)) { const pr = attack(b); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); bump('batPullShots'); } } catch (e) {}
+				} else crStepTo(crPull.stand, 'pull-out');
+				return true;
+			}
+		}
+		if (crDist(crPos(character), spot) <= NAV.arriveAt) { crPull = null; return false; }
+		crSafeStep(spot, 'pull-back');
+		return true;
+	}
+	if (!(run.pullOk && now - run.pullOk <= 3000) || crDist(crPos(character), spot) > 80 || crBatOnParty()) return false;
+	const a8 = crA8(), a8p = a8 ? crPos(a8) : null;
+	const bats = threats().filter((m) => m.mtype === 'vbat' && !caveFriendly(m) && !m.target).sort((x, y) => dist(character, x) - dist(character, y));
+	for (const b of bats) {
+		const stand = crPullStand(b, a8p);
+		if (!stand) continue;
+		crPull = { id: b.id, at: now, phase: 'out', stand: stand };
+		bump('batPulls');
+		crSay('pull-' + b.id, 'pulling a bat from ' + Math.round(stand.x) + ',' + Math.round(stand.y), '#7FD1FF', 0);
+		crStepTo(stand, 'pull-out');
+		return true;
+	}
+	return false;
+}
+/* The leader's half of the bat stage: at the spot, rested, no bat on us and
+   no a8 near - stamp the pull ready; a8 near - wait north of its aura, for at
+   most a8WaitMs, then give the bats up; clear when none is seen for
+   vbatClearMs after a kill. */
+function cryptBatStage(run, st, bs, now) {
+	const spot = CRYPT_RUN.vbatSpot, a8p = crA8Near(run, bs, now);
+	if (a8p) {
+		if (!run.a8Since) crunPatch((c) => { if (!c.a8Since) c.a8Since = now; });
+		const since = run.a8Since || now;
+		if (now - since > CRYPT_RUN.a8WaitMs) {
+			crunPatch((c) => { c.givenUp = c.givenUp || {}; c.givenWhy = c.givenWhy || {}; c.givenUp.vbat = now;
+				c.givenWhy.vbat = 'a8 stayed by the bats ' + Math.round(CRYPT_RUN.a8WaitMs / 60000) + ' min'; });
+			crSay('a8gaveUp', 'a8 stayed by the bats ' + Math.round(CRYPT_RUN.a8WaitMs / 60000) + ' min - the bats are given up', 'red', 0);
+			return;
+		}
+		crSay('a8wait', 'a8 near the bats - waiting north of it, out of its 300', 'orange', 20000);
+		if (!crA8Retreat(a8p)) crHalt('a8-wait');
+		return;
+	}
+	if (run.a8Since) { crunPatch((c) => { delete c.a8Since; }); crSay('a8gone', 'a8 is gone - back to the bats', '#7FD98A', 0); }
+	if (crDist(crPos(character), spot) > NAV.arriveAt) { crVbatEmptySince = 0; crGo(spot, 'vbat'); return; }
+	crHalt('vbat');
+	const anyBat = threats().some((m) => m.mtype === 'vbat' && !caveFriendly(m));
+	if (anyBat) crVbatEmptySince = 0;
+	else {
+		if (!crVbatEmptySince) crVbatEmptySince = now;
+		if (now - crVbatEmptySince >= CRYPT_RUN.vbatClearMs && (crKills(run).vbat || 0) >= 1) {
+			crunPatch((c) => { c.cleared = c.cleared || {}; c.cleared.vbat = true; });
+			crSay('vbatClear', 'no vbat in view for ' + Math.round(CRYPT_RUN.vbatClearMs / 1000) + 's from the spot - counting it clear at ' + (crKills(run).vbat || 0) + '/7', '#FFD700', 0);
+			return;
+		}
+	}
+	if (crBatOnParty() || partyFighting()) { crBatRestSince = 0; return; }
+	/* Between bats the party is back to near full; capped like the stage rest. */
+	const short = cryptRestShort(null, bs, now);
+	if (short.length) {
+		if (!crBatRestSince) crBatRestSince = now;
+		if (now - crBatRestSince < CRYPT_RUN.restMaxMs) { crSay('batRest', 'resting before the next bat - ' + short.join(', '), '#8b98ab', 30000); return; }
+	} else crBatRestSince = 0;
+	if (now - crPullOkAt >= 1000) { crPullOkAt = now; crunPatch((c) => { c.pullOk = now; }); }
+}
 /* ---- the respawn rule ---- */
 function cryptMayRespawn(now) {
 	if (!cryptAuto || character.map !== 'crypt') { crHoldSince = 0; return true; }
@@ -5132,7 +5498,8 @@ function crHalt(why) { if (navFlight) navHalt(why); }
 
 /* ---- strays ---- */
 function crStraysOnMe() {
-	return threats().filter((m) => m.target === character.name && !CRYPT_RUN.need[m.mtype] && !caveFriendly(m));
+	return threats().filter((m) => m.target === character.name && !CRYPT_RUN.need[m.mtype] && !caveFriendly(m)
+		&& CRYPT_RUN.noKite.indexOf(m.mtype) < 0);
 }
 /* Whichever crossing is nearer by path. Measured over every walkable cell
    left of the zone on the level-0 grid: this rule picks the nearer one for
@@ -5234,6 +5601,14 @@ async function cryptLeaderInside(run, now) {
 		return;
 	}
 	cryptLeaderBook(run, bs, now);
+	/* v37, ruling 3: a8 on a member - the party backs off west, never kites it. */
+	const ch = crA8Chase(now);
+	if (ch) {
+		const m8 = crA8();
+		crSay('a8back', 'a8 is on ' + ch.who + ' - backing off west along the route', 'orange', 15000);
+		if (!crA8Retreat(m8 ? crPos(m8) : ch)) crHalt('a8-back');
+		return;
+	}
 	/* v35: a2 - the disengage first, then the stations (P1, P4). */
 	const a2 = crA2();
 	if (a2 && crA2Away(now)) { engagedUntil = now + CFG.engageHoldMs; crA2Move(a2, run, now); return; }
@@ -5266,7 +5641,9 @@ async function cryptLeaderInside(run, now) {
 	/* v35: a death loop is collected, by the leader walking to it. */
 	if (!pulling) {
 		const loop = followers().map((n) => crMate(bs, n, now)).find((m) => crInside(m, run) && !m.rip && m.loop);
-		if (loop && crDist(crPos(character), loop) > CRYPT_RUN.regroupWithin * 0.6) {
+		/* v37, ruling 7: only while something could still be on the route -
+		   with it clear, the member walks back by itself. */
+		if (loop && crDist(crPos(character), loop) > CRYPT_RUN.regroupWithin * 0.6 && cryptRouteBlocked(run, bs, now)) {
 			crSearch.lastAt = 0;
 			crSay('collect-' + loop.name, 'collecting ' + loop.name + ' - in a death loop at ' + Math.round(loop.x) + ',' + Math.round(loop.y), '#7FD1FF', 30000);
 			crGo(loop, 'collect');
@@ -5283,8 +5660,9 @@ async function cryptLeaderInside(run, now) {
 			crHalt('hold'); crSay('hold-' + why.split(' ')[0], 'holding - ' + why, '#8b98ab', 15000); return;
 		}
 	}
-	/* v36: rested before the stage is gone after - not while a2 is being pulled. */
-	if (!pulling && !crSearch.rested) {
+	/* v36: rested before the stage is gone after - not while a2 is being pulled.
+	   v37, ruling 5: and not while anything is on the party - it fights. */
+	if (!pulling && !crSearch.rested && !partyFighting()) {
 		const short = cryptRestShort(st, bs, now);
 		if (!crSearch.restAt) crSearch.restAt = now;
 		if (short.length && now - crSearch.restAt < CRYPT_RUN.restMaxMs) {
@@ -5298,6 +5676,8 @@ async function cryptLeaderInside(run, now) {
 		crSearch.rested = true;
 		if (short.length) crSay('restCap-' + st.i, 'rested ' + Math.round(CRYPT_RUN.restMaxMs / 60000) + ' min and still ' + short.join(', ') + ' - going on', 'orange', 0);
 	}
+	/* v37, ruling 4: the bats are pulled to the spot, never walked to. */
+	if (st.types.indexOf('vbat') >= 0) { crSearch.spent = 0; crSearch.lastAt = 0; cryptBatStage(run, st, bs, now); return; }
 	if (tgt) {
 		crSearch.spent = 0; crSearch.lastAt = 0;
 		engagedUntil = now + CFG.engageHoldMs;
@@ -5334,15 +5714,6 @@ async function cryptLeaderInside(run, now) {
 		crSay('gaveUp-' + st.types.join('-'), 'no ' + st.types.join('/') + ' found in ' + Math.round(CRYPT_RUN.searchMaxMs / 60000)
 			+ ' min - given up, moving on; ' + (st.types.length > 1 ? 'they are' : 'it is') + ' taken back if seen again', 'red', 0);
 		crSearch = { stage: -1, i: 0, spent: 0, lastAt: 0, done: {} };
-		return;
-	}
-	if (st.types.indexOf('vbat') >= 0) {
-		if (crDist(crPos(character), CRYPT_RUN.vbatSpot) > NAV.arriveAt) { crVbatEmptySince = 0; crGo(CRYPT_RUN.vbatSpot, 'vbat'); return; }
-		if (!crVbatEmptySince) crVbatEmptySince = now;
-		if (now - crVbatEmptySince >= CRYPT_RUN.vbatClearMs && (crKills(run).vbat || 0) >= 1) {
-			crunPatch((c) => { c.cleared = c.cleared || {}; c.cleared.vbat = true; });
-			crSay('vbatClear', 'no vbat in view for ' + Math.round(CRYPT_RUN.vbatClearMs / 1000) + 's at the box - counting it clear at ' + (crKills(run).vbat || 0) + '/7', '#FFD700', 0);
-		}
 		return;
 	}
 	/* Nothing of this stage in view: search - R4 and R5. */
@@ -5435,13 +5806,22 @@ function cryptDump(r, why) {
    plan monster that has been seen since it was given up. */
 function cryptLeaderBook(run, bs, now) {
 	const s = crSightings(bs, run);
-	const z0 = crZone(run);
-	let z = { x: z0.x, y: z0.y };
-	for (const a of s.zav) if (!(a.x > z.x && a.y > z.y)) z = { x: Math.min(z.x, a.x - CRYPT_RUN.zoneMargin), y: Math.min(z.y, a.y - CRYPT_RUN.zoneMargin) };
-	if (z.x !== z0.x || z.y !== z0.y) {
-		crunPatch((c) => { c.zone = z; });
-		run.zone = z;
-		crSay('zone-' + z.x + ',' + z.y, 'a zone monster seen outside the zone - the no-go zone is now x > ' + z.x + ', y > ' + z.y, 'orange', 0);
+	/* v37, ruling 1: a local exclusion around each sighting, not a moved edge.
+	   One entry per monster, its newest sighting; old ones drop off. */
+	const old = (run.zoneLocal || []).filter((a) => now - a.t <= CRYPT_RUN.zoneLocalMs);
+	const loc = old.slice();
+	for (const a of s.zav) {
+		const i = loc.findIndex((x) => x.id === a.id);
+		/* Refreshed only when it has moved or every 10s - this runs every tick. */
+		if (i >= 0 && (loc[i].t >= a.t || (a.t - loc[i].t < 10000 && Math.hypot(a.x - loc[i].x, a.y - loc[i].y) < 50))) continue;
+		if (i >= 0) loc.splice(i, 1);
+		else crSay('zoneLocal-' + a.id, 'a zone monster (' + a.mtype + ') seen outside the zone at ' + a.x + ',' + a.y
+			+ ' - keeping ' + CRYPT_RUN.zoneLocalR + ' clear of it, never the bat route', 'orange', 60000);
+		loc.push({ id: a.id, mtype: a.mtype, x: a.x, y: a.y, t: a.t });
+	}
+	if (JSON.stringify(loc) !== JSON.stringify(run.zoneLocal || [])) {
+		crunPatch((c) => { c.zoneLocal = loc; });
+		run.zoneLocal = loc;
 	}
 	const back = Object.keys(run.givenUp || {}).filter((t) => s.seen[t] && s.seen[t].t > run.givenUp[t]);
 	if (back.length) {
@@ -5454,6 +5834,7 @@ function cryptLeaderBook(run, bs, now) {
 /* Why a search point is off limits, or null. */
 function crSearchBlocked(p, run, st, now) {
 	if (crInZone(p, run)) return 'zone';
+	if (crInBox(p, CRYPT_RUN.boxMargin)) return 'the bat box';
 	if (p.x >= CRYPT_RUN.lineX) return 'line';
 	const k = crKills(run), cl = run.cleared || {}, gu = run.givenUp || {};
 	for (const t in CRYPT_RUN.homes) {
@@ -5498,18 +5879,33 @@ function cryptFollowerInside(run, now) {
 	/* v35 (A): respawned, rest at the entrance; a death loop waits there for
 	   the leader to collect it. On v33 a respawn walked straight back across
 	   the floor alone - MageofOz died nine times in one run that way. */
+	/* v37, ruling 7: a death loop with the route clear walks back by itself,
+	   along the route; restTick ends the loop once the leader is beside it. */
+	if (deathLoop && crInside(lb, run) && !lb.rip && !cryptRouteBlocked(run, bs, now)) {
+		crSay('walkBack', 'death loop, the route is clear - walking back to the party', '#7FD1FF', 30000);
+		crRouteWalk({ x: lb.x, y: lb.y }, 'walk-back');
+		return true;
+	}
 	if (resting || deathLoop) {
 		if (crDist(crPos(character), E) > CRYPT_RUN.regroupWithin * 0.6) crGo(E, 'entrance');
 		else crHoldPlace();
 		return true;
 	}
 	if (!crInside(lb, run) || lb.rip || lb.kite || (lb.rest && !lb.loop)) { crHoldPlace(); return true; }
+	/* v37, ruling 3: a8 on a member - back off west; a8 within 300 - back off. */
+	const ch = crA8Chase(now), m8 = crA8();
+	if (ch || (m8 && crDist(crPos(character), crPos(m8)) < CRYPT_RUN.a8Clear)) {
+		if (!crA8Retreat(m8 ? crPos(m8) : ch)) crHoldPlace();
+		return true;
+	}
+	/* v37, ruling 4: Dexon pulls the bats. */
+	if (cryptPullTick(run, now)) return true;
 	/* Rested: join the leader only while he is stationary and nobody is
 	   fighting (R3), and hold where I am until then. */
 	if (crRejoin) {
 		const lp = { x: lb.x, y: lb.y }, gap = crDist(crPos(character), lp);
 		if (gap <= CRYPT_RUN.regroupWithin) { crRejoin = false; clog('back with the party', '#7FD98A'); return false; }
-		if (joinWanted(gap)) joinStep(lp, gap); else crHoldPlace();
+		if (joinWanted(gap)) { if (crCrossesBox(crPos(character), lp)) crSafeStep(lp, 'rejoin'); else joinStep(lp, gap); } else crHoldPlace();
 		return true;
 	}
 	/* a2 (P1, P4): away while the disengage covers me, else my station. */
@@ -5718,6 +6114,10 @@ function cryptRoomTick(now) {
 	const free = cryptFree();
 	crRoom = free >= CRYPT_RUN.muleMinFree;
 	if (crRoom || character.map === 'crypt' || character.rip) return;
+	/* v37: only at the door between runs - twice in run 3 he asked from the
+	   door on his way back in after a respawn, and the merchant came to nobody. */
+	const run = crunEffective();
+	if ((run && !run.done) || character.map !== CRYPT_RUN.door.map || crDist(crPos(character), CRYPT_RUN.door) > CRYPT_RUN.doorReach) return;
 	if (now - (crAskAt.room || 0) >= CRYPT_RUN.askMs) {
 		crAskAt.room = now;
 		cryptAskMerchant({ message: 'inventory_almost_full', emptySlots: free, x: character.x, y: character.y, map: character.map });

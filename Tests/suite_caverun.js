@@ -208,7 +208,7 @@ name: 'a travel-mode kite step may never grow the gap', fn(t) {
 	   fleeing means -x, which GROWS the gap, so the guard is the only thing that
 	   can stop it. */
 	function kite(mode, gapNow) {
-		const w = world({ character: { name: 'FatherToken', real_x: 0, real_y: 0, hp: 100, max_hp: 100, speed: 8 } });
+		const w = world({ cryptAuto: false, mode: 'cave', character: { name: 'FatherToken', real_x: 0, real_y: 0, hp: 100, max_hp: 100, speed: 8 } });
 		lift(w, 'CaveRun.js', ['MOVE', 'kiteStep', 'dist', 'noRatchetAlways']);
 		w.leash = () => mode === 'travel'
 			? { closeAt: 60, releaseAt: 30, ceiling: 135, mode: 'travel' }
@@ -859,8 +859,9 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		x.here = (e) => !!e; const P = (o, k) => (o['real_' + k] != null ? o['real_' + k] : o[k]);
 		x.dist = (a, b) => Math.hypot(P(a, 'x') - P(b, 'x'), P(a, 'y') - P(b, 'y'));
 		x.threats = () => (o && o.threats) || []; x.caveFriendly = () => false;
+		x.partyNames = () => ['Dexon', 'FatherToken', 'MageofOz'];
 		x.clog = () => {}; x.ev = () => {}; x.bump = () => {};
-		lift(x, 'CaveRun.js', ['REGROUP', 'hostileInView', 'restTick']);
+		lift(x, 'CaveRun.js', ['REGROUP', 'hostileInView', 'restTick', 'crOnParty']);
 		return x;
 	};
 	let x = mk({ ch: { hp: 50 } });
@@ -872,6 +873,18 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	x = mk({ threats: [{ mtype: 'cave_wolf', x: 100, y: 0 }] });
 	x.restTick();
 	t.eq('a hostile in view: waits for the party', [x.resting, x.recovering].join(), 'true,false');
+	x = mk({ ch: { mp: 50 }, threats: [{ mtype: 'a2', x: 100, y: 0, target: 'Dexon' }] });
+	x.restTick();
+	t.eq('v37, ruling 5: short of mp but something is on the party - the rest ends', x.resting, false);
+	x = mk({ ch: { mp: 50 }, mode: 'crypt', cryptAuto: true, threats: [{ mtype: 'a2', x: 100, y: 0, target: 'MageofOz' }] });
+	x.restTick();
+	t.eq('in a crypt run it then holds to rejoin, rather than recovering across the floor', [x.resting, x.crRejoin, x.recovering].join(), 'false,true,false');
+	x = mk({ ch: { mp: 50 }, threats: [{ mtype: 'a2', x: 100, y: 0, target: 'Someone' }] });
+	x.restTick();
+	t.eq('on somebody outside the party: still resting', x.resting, true);
+	x = mk({ ch: { mp: 50 }, deathLoop: true, threats: [{ mtype: 'a2', x: 100, y: 0, target: 'Dexon' }] });
+	x.restTick();
+	t.eq('a death loop is not ended by it', x.deathLoop, true);
 	x = mk({ deathLoop: true, leader: { x: 50, y: 0 } });
 	x.restTick();
 	t.eq('a death loop ends when the leader collects it', [x.resting, x.deathLoop].join(), 'false,false');

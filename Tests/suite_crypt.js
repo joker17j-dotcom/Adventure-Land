@@ -15,7 +15,9 @@ const LIFT = ['CRYPT', 'CRYPT_RUN', 'cryptAutoStamp', 'cryptAutoSaved', 'cryptNe
 	'mluckLeft', 'crInside', 'crMate', 'crKills', 'cryptStage', 'cryptSeeTick', 'cryptOnDeath', 'cryptMayAttack',
 	'cryptRunHere', 'cryptAbsorbPick', 'cryptAbsorb', 'crHpTrack', 'crLossRate', 'crLastsMs', 'crWindowMs', 'crDoomed', 'crA2Nominal',
 	'crA2Watch', 'cryptRestShort', 'cryptRestSafe', 'crStageClose', 'crStageOpen', 'cryptDumpOf', 'cryptDump', 'cryptOutOfKeys',
-	'cryptHandBackAll', 'cryptHandBackPending', 'cryptHandBack', 'cryptMerchantTick', 'crHasJacko', 'cryptRun', 'cryptStop', 'cryptStatus', 'cryptScareWanted', 'cryptMayRespawn', 'crWalk', 'crGo', 'crHalt',
+	'cryptHandBackAll', 'cryptHandBackPending', 'cryptHandBack', 'cryptMerchantTick', 'crHasJacko', 'cryptRun', 'cryptStop', 'cryptStatus',
+	'crInBox', 'crPolyDist', 'crProtected', 'crCrossesBox', 'crRouteNext', 'crRouteWalk', 'crSafeStep', 'crMonsterDps', 'crA8', 'crA8Near',
+	'crA8Chase', 'crA8Retreat', 'cryptRouteBlocked', 'crPullStand', 'crBatOnParty', 'cryptPullTick', 'cryptBatStage', 'crA2FarPoint', 'crA2BlinkPoint', 'cryptScareWanted', 'cryptMayRespawn', 'crWalk', 'crGo', 'crHalt',
 	'crStraysOnMe', 'cryptKitePoint', 'cryptKiteTick', 'cryptPartyHold', 'crNearest', 'crOnParty', 'cryptLeaderInside',
 	'cryptFollowerInside', 'crHoldPlace', 'cryptLeave', 'cryptEnter', 'cryptEnterFailed', 'cryptGate', 'cryptOutside',
 	'cryptSelfBeacon', 'cryptMuleList', 'cryptFree', 'cryptMluckLacking', 'cryptTick', 'cryptMoveTick',
@@ -43,7 +45,7 @@ function cw(o) {
 		crCs: { run: null, seen: {}, died: [], zav: [] }, crAvoid: {}, crOnMe: null, crWasRip: false, crHoldGapSince: 0, crHoldWaived: false,
 		resting: false, deathLoop: false, crRejoin: false, CRYPT_A2_KEY: 'crypt_a2', crWalkFlight: null, crEnterFlight: 0,
 		CRYPT_START_KEY: 'crypt_started', CRYPT_HANDBACK_KEY: 'crypt_handback', crHpHist: {}, crA2Last: null, crAbsorbAt: 0,
-		launcher: { handBackAt: 0 }, phase: 'idle',
+		launcher: { handBackAt: 0 }, phase: 'idle', crPull: null, crPullOkAt: 0, crBatRestSince: 0, crA2Stuck: 0, CRYPT_A8_KEY: 'crypt_a8',
 		crMuled: false, crMuleRun: undefined, crMuleSince: 0, crMuleAt: 0, crRoom: true, crPushAt: 0, crAskAt: {}, crMluckSince: 0,
 		CRUN_KEY: 'crypt_run', CRYPT_ID_KEY: 'crypt_instance', CRYPT_AUTO_KEY: 'crypt_auto',
 		navFlight: null, navManualUntil: 0, navFails: {}, engagedUntil: 0, recovering: false, aim: null,
@@ -95,8 +97,11 @@ function cw(o) {
 	w.caveSay = (m) => { w.cms.push(['party', m]); };
 	w.haveSkill = (n) => (o.skills || []).indexOf(n) >= 0;
 	w.navFlight = null; w.navHalt = () => {};
+	w.partyFighting = () => !!o.fighting;
+	w.attacks = []; w.attack = (b) => { w.attacks.push(b.id); return Promise.resolve(); };
+	w.can_attack = () => true;
 	w.parent.__gamelog = o.gamelog === false ? undefined : { buf: [], capture(m, c, src) { this.buf.push({ message: m, color: c, source: src }); } };
-	w.parent.G = { monsters: { a2: { attack: 2240, frequency: 1.4 } }, skills: { scare: { mp: 50 } } };
+	w.parent.G = { monsters: { a2: { attack: 2240, frequency: 1.4 }, a8: { attack: 2680, frequency: 4 }, vbat: { attack: 1240, frequency: 1.56 } }, skills: { scare: { mp: 50 } } };
 	lift(w, 'CaveRun.js', LIFT);
 	return w;
 }
@@ -621,13 +626,13 @@ name: 'v32 crypt: the leader drives - regroup, hold for the party, pull a2, sear
 		await w.cryptLeaderInside(w.crunRead(), now);
 		t.eq('every stage done: the run is done', w.crunRead().done, true);
 
-		w = cw({ me: 'FatherToken', x: 1190, y: -380, run: R({ dead: { m1: 'a3', m2: 'a7', m3: 'a2', v1: 'vbat' } }),
-			beacons: { Dexon: near('Dexon', { x: 1190, y: -380 }), MageofOz: near('MageofOz', { x: 1190, y: -380 }) } });
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: { m1: 'a3', m2: 'a7', m3: 'a2', v1: 'vbat' } }),
+			beacons: { Dexon: near('Dexon', { x: 950, y: -500 }), MageofOz: near('MageofOz', { x: 950, y: -500 }) } });
 		await w.cryptLeaderInside(w.crunRead(), now);
-		t.eq('at the box, the first look starts the clock and clears nothing', w.crunRead().cleared.vbat, undefined);
+		t.eq('at the spot, the first look starts the clock and clears nothing', w.crunRead().cleared.vbat, undefined);
 		w.crVbatEmptySince = now - w.CRYPT_RUN.vbatClearMs - 1;
 		await w.cryptLeaderInside(w.crunRead(), now);
-		t.eq('at the box, no vbat in view long enough: counted clear', w.crunRead().cleared.vbat, true);
+		t.eq('at the spot, no vbat in view long enough: counted clear', w.crunRead().cleared.vbat, true);
 	})();
 }}, {
 
@@ -690,7 +695,7 @@ name: 'v32 crypt: after a run - the loot goes to Dexon, Dexon asks for room, Dex
 	w.cryptMuleTick(w.crunRead(), now + w.CRYPT_RUN.muleWaitMs + 2001);
 	t.eq('Dexon never in range: given up on, loot kept', w.crMuled && w.sent.length === 0, true);
 
-	w = cw({ me: 'Dexon', map: 'cave', esize: 4, items: loot, players: { Meltymerch: { name: 'Meltymerch', x: 0, y: 0, real_x: 0, real_y: 0 } } });
+	w = cw({ me: 'Dexon', map: 'cave', x: -193, y: -1296, esize: 4, items: loot, players: { Meltymerch: { name: 'Meltymerch', x: -150, y: -1290, real_x: -150, real_y: -1290 } } });
 	w.cryptRoomTick(now);
 	t.eq('four free: no room', w.crRoom, false);
 	t.ok('the merchant is asked to take the overflow', w.cms.some((c) => c[0] === 'Meltymerch' && c[1].message === 'inventory_almost_full' && c[1].emptySlots === 4 && c[1]._plid));
@@ -744,7 +749,8 @@ name: 'v34 crypt: every fixed point is a level-0 cell - the server grid counts c
 	   search point inside a sealed pocket, retried ~104 times live. These are
 	   level-0 cells read off upstream a5c133dc; a point moved off one fails here. */
 	const C = cw({}).CRYPT_RUN;
-	const L0 = { '0|0': 1, '-270|-460': 1, '1190|-380': 1, '1900|-1760': 1, '1880|-880': 1, '730|-1080': 1, '1790|-1480': 1, '1110|-630': 1,
+	const L0 = { '0|0': 1, '-270|-460': 1, '1190|-380': 1, '950|-500': 1, '-30|-380': 1, '-40|-450': 1, '-180|-540': 1, '-180|-940': 1, '-170|-1020': 1,
+		'-130|-1050': 1, '-50|-1070': 1, '750|-1070': 1, '750|-740': 1, '760|-660': 1, '790|-640': 1, '950|-560': 1, '1900|-1760': 1, '1880|-880': 1, '730|-1080': 1, '1790|-1480': 1, '1110|-630': 1,
 		'-40|-460': 1, '-180|-520': 1, '-180|-1040': 1, '380|-1100': 1, '600|-1080': 1, '740|-660': 1, '1100|-440': 1, '1140|-340': 1,
 		'1440|-560': 1, '1500|-860': 1, '420|-1480': 1, '940|-1480': 1, '1240|-1480': 1, '1760|-1520': 1 };
 	const cell = (x, y) => (Math.round(x / 10) * 10) + '|' + (Math.round(y / 10) * 10);
@@ -752,6 +758,7 @@ name: 'v34 crypt: every fixed point is a level-0 cell - the server grid counts c
 		['kiteTop', C.kiteTop.x, C.kiteTop.y], ['kiteMid', C.kiteMid.x, C.kiteMid.y]];
 	for (const t2 in C.homes) C.homes[t2].forEach((h) => pts.push(['home ' + t2, h[0], h[1]]));
 	C.tour.forEach((p, i) => pts.push(['tour ' + i, p[0], p[1]]));
+	C.route.concat(C.routeBranch).forEach((p, i) => pts.push(['route ' + i, p[0], p[1]]));
 	for (const p of pts) t.ok(p[0] + ' at ' + p[1] + ',' + p[2] + ' is a level-0 cell', !!L0[cell(p[1], p[2])]);
 	t.ok('the sealed pocket is gone from every list', !pts.some((p) => p[1] === 1470 && p[2] === -1400));
 	t.ok('no tour point is in the zone or past the line', C.tour.every((p) => !(p[0] > C.zone.x && p[1] > C.zone.y) && p[0] < C.lineX));
@@ -803,8 +810,8 @@ name: 'v34 crypt: the search - last seen, died-to, home, then the tour; blocked 
 		t.eq('homes done: the tour, from the point nearest the leader', r.at, '380,-1100');
 		const w = r.w;
 		const run = R(), st = { i: 0, types: ['a3', 'a7'] };
-		t.eq('the vbat box is off the search while vbat is still to come', w.crSearchBlocked({ x: 1140, y: -340 }, run, st, now), "vbat's home");
-		t.eq('and a2’s room', w.crSearchBlocked({ x: 1100, y: -440 }, run, st, now), "a2's home");
+		t.eq('the vbat box is off the search, always (v37)', w.crSearchBlocked({ x: 1140, y: -340 }, run, st, now), 'the bat box');
+		t.eq('and a2’s room', w.crSearchBlocked({ x: 1110, y: -560 }, run, st, now), "a2's home");
 		t.eq('not once a2 is dead', w.crSearchBlocked({ x: 740, y: -660 }, R({ dead: { b: 'a2' } }), st, now), null);
 		t.eq('the zone', w.crSearchBlocked({ x: 1900, y: -1000 }, run, st, now), 'zone');
 		t.eq('past the line', w.crSearchBlocked({ x: 1870, y: -1760 }, run, st, now), 'line');
@@ -816,17 +823,34 @@ name: 'v34 crypt: the search - last seen, died-to, home, then the tour; blocked 
 	})();
 }}, {
 
-name: 'v34 crypt: the zone grows over a zone monster seen outside it; a given-up monster seen again is taken back', fn(t) {
+name: 'v37 crypt: a zone monster outside the zone blocks the ground around it, never the bat route; a given-up monster seen again is taken back', fn(t) {
 	const now = Date.now();
 	let w = cw({ me: 'FatherToken', run: R() });
 	w.cryptLeaderBook(w.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 1700, y: -900, t: now }] } } }, now);
-	t.eq('a8 at 1700,-900: the zone covers it, plus the margin', JSON.stringify(w.crunRead().zone), JSON.stringify({ x: 1600, y: -1235 }));
-	t.eq('and the zone test reads it', w.crInZone({ x: 1650, y: -900 }, w.crunRead()), true);
-	t.eq('a sighting inside the zone changes nothing', (() => {
+	t.eq('a8 at 1700,-900: a local exclusion, not a moved edge', JSON.stringify([w.crunRead().zone, w.crunRead().zoneLocal.map((a) => [a.mtype, a.x, a.y])]),
+		JSON.stringify([undefined, [['a8', 1700, -900]]]));
+	t.eq('the zone test reads it within 300', w.crInZone({ x: 1650, y: -900 }, w.crunRead()), true);
+	t.eq('and not beyond', w.crInZone({ x: 1300, y: -900 }, w.crunRead()), false);
+	w = cw({ me: 'FatherToken', run: R() });
+	w.cryptLeaderBook(w.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 958, y: -480, t: now }] } } }, now);
+	const r3 = w.crunRead();
+	t.eq('run 3: a8 by the bats - the box is NOT no-go', w.crInZone({ x: 1190, y: -380 }, r3), false);
+	t.eq('nor the bat spot', w.crInZone(w.CRYPT_RUN.vbatSpot, r3), false);
+	t.eq('nor the corridor past a2\'s room', w.crInZone({ x: 790, y: -640 }, r3), false);
+	t.eq('nor a7\'s hall', w.crInZone({ x: 750, y: -900 }, r3), false);
+	t.eq('but off the route, near it, it is', w.crInZone({ x: 1110, y: -640 }, r3), true);
+	t.eq('the base zone is untouched', [w.crInZone({ x: 1900, y: -1000 }, r3), w.crInZone({ x: 1700, y: -1000 }, r3)].join(), 'true,false');
+	t.eq('a v34-v36 record with a grown zone is ignored', w.crInZone({ x: 1000, y: -900 }, R({ zone: { x: 858, y: -1235 } })), false);
+	w.cryptLeaderBook(w.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 960, y: -481, t: now + 500 }] } } }, now + 500);
+	t.eq('a sighting that has not moved is not rewritten every tick', w.crunRead().zoneLocal[0].t, now);
+	t.eq('an exclusion lapses after zoneLocalMs', w.crInZone({ x: 1110, y: -640 }, R({ zoneLocal: [{ id: 'm8', x: 958, y: -480, t: now - w.CRYPT_RUN.zoneLocalMs - 1 }] })), false);
+	t.eq('a sighting inside the zone adds nothing', (() => {
 		const v = cw({ me: 'FatherToken', run: R() });
-		v.cryptLeaderBook(v.crunRead(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: 'm8', mtype: 'a8', x: 2040, y: -880, t: now }] } } }, now);
-		return v.crunRead().zone;
-	})(), undefined);
+		v.cryptSeeTick(now);
+		v.monsters.push({ id: 'm8', mtype: 'a8', x: 2040, y: -880 });
+		v.cryptSeeTick(now);
+		return v.crCs.zav.length;
+	})(), 0);
 	w = cw({ me: 'FatherToken', run: R({ givenUp: { a3: now - 60000 } }) });
 	t.eq('precondition: a given-up a3 is out of the stages', w.cryptStage(w.crunRead()).types.join(), 'a7');
 	w.cryptLeaderBook(w.crunRead(), { MageofOz: { cs: { run: 'INST1', seen: { a3: { x: 1, y: 1, t: now - 120000 } }, died: [], zav: [] } } }, now);
@@ -962,7 +986,7 @@ name: 'v36 crypt: the party rests to near full before each stage, and before a2 
 		t.eq('rested past the cap: go on anyway', w.moves.length, 1);
 		t.ok('said in orange words', w.said.some((m) => /still FatherToken mp 30% - going on/.test(m)));
 		w.moves.length = 0; w.navFlight = null;
-		w.character.mp = 0;
+		w.character.mp = 0; w.crSearch.restAt = now;
 		await w.cryptLeaderInside(w.crunRead(), now + 1);
 		t.eq('and not again inside the same stage', w.moves.length, 1);
 
@@ -1089,8 +1113,9 @@ name: 'v36 crypt: when the keys run out after a run, all three hand back', fn(t)
 	t.eq('a new cryptRun clears the hand-back', 'crypt_handback' in w.ls.m, false);
 	const st0 = w.ls.m.crypt_started;
 	t.ok('and stamps the start', Number(st0) > 0);
+	w.ls.m.crypt_started = '12345';
 	w.cryptRun();
-	t.eq('a resume keeps the start', w.ls.m.crypt_started, st0);
+	t.eq('a resume keeps the start', w.ls.m.crypt_started, '12345');
 	w.cryptStop();
 	t.eq('a stop clears it', 'crypt_started' in w.ls.m, false);
 	t.ok('the follower hears the cm', /d\.message\.cave === 'crypthandback'\) \{ if \(cryptAuto\) cryptHandBack\(/.test(src()));
@@ -1104,7 +1129,7 @@ name: 'v36 crypt: every member mules straight to the merchant whenever he is in 
 		const w = cw({ me: me, map: 'cave', x: -193, y: -1296, run: R(), items: loot, players: melty });
 		t.eq(me + ': in range, run still on - the loot goes to him', w.cryptMerchantTick(now) && JSON.stringify(w.sent), JSON.stringify([['Meltymerch', 1, 1]]));
 	}
-	let w = cw({ me: 'MageofOz', map: 'crypt', items: loot, players: melty });
+	let w = cw({ me: 'MageofOz', map: 'crypt', x: -193, y: -1296, items: loot, players: melty });
 	t.eq('not from inside the crypt', w.cryptMerchantTick(now) || w.sent.length, 0);
 	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, items: loot, players: { Meltymerch: { name: 'Meltymerch', x: 400, y: -1290, real_x: 400, real_y: -1290 } } });
 	t.eq('out of range: nothing', w.cryptMerchantTick(now) || w.sent.length, 0);
@@ -1118,4 +1143,238 @@ name: 'v36 crypt: every member mules straight to the merchant whenever he is in 
 	w = cw({ me: 'MageofOz', map: 'cave', x: -193, y: -1296, run: R({ done: true }), items: loot, players: { Dexon: dex } });
 	w.cryptTick();
 	t.eq('the merchant away: Dexon is the fallback', JSON.stringify(w.sent), JSON.stringify([['Dexon', 1, 1]]));
+}}, {
+
+name: 'v37 crypt: the protected route - the box, the route to it, and steps that keep out of the box', fn(t) {
+	const w = cw({ me: 'MageofOz' });
+	const C = w.CRYPT_RUN;
+	t.eq('the route ends at the bat spot', JSON.stringify(C.route[C.route.length - 1]), JSON.stringify([C.vbatSpot.x, C.vbatSpot.y]));
+	t.eq('and starts at the entrance', JSON.stringify(C.route[0]), JSON.stringify([C.entrance.x, C.entrance.y]));
+	t.eq('no route leg enters the box', C.route.slice(1).some((v, i) => w.crCrossesBox({ x: C.route[i][0], y: C.route[i][1] }, { x: v[0], y: v[1] }, 0)), false);
+	t.eq('the bat spot is outside the box', w.crInBox(C.vbatSpot, 0), false);
+	t.eq('the old spot was inside it', w.crInBox({ x: 1190, y: -380 }, 0), true);
+	t.eq('protected: the box', w.crProtected({ x: 1300, y: -400 }), true);
+	t.eq('protected: the entrance corridor, the pull room, a7\'s hall', [w.crProtected({ x: -20, y: -200 }), w.crProtected({ x: -250, y: -460 }), w.crProtected({ x: 400, y: -1070 })].join(), 'true,true,true');
+	t.eq('not protected: a3\'s hall (ruling 2 - only the bat route)', w.crProtected({ x: 1500, y: -1480 }), false);
+	t.eq('the far end of the pull room: by the branch alone', [w.crPolyDist({ x: -330, y: -430 }, C.route) > C.routeR, w.crProtected({ x: -330, y: -430 })].join(), 'true,true');
+	t.eq('a leg from south of the box to the spot crosses it', w.crCrossesBox({ x: 1200, y: -280 }, C.vbatSpot), true);
+	t.eq('a leg along the north edge does not', w.crCrossesBox({ x: 790, y: -640 }, C.vbatSpot), false);
+	t.eq('route next: from the entrance toward the spot, the next vertex', JSON.stringify(w.crRouteNext({ x: 0, y: 0 }, C.vbatSpot)), JSON.stringify({ x: -30, y: -380 }));
+	t.eq('off the route: its nearest vertex first', JSON.stringify(w.crRouteNext({ x: 400, y: -1000 }, C.vbatSpot)), JSON.stringify({ x: 750, y: -1070 }));
+	t.eq('back the other way', JSON.stringify(w.crRouteNext({ x: 750, y: -1070 }, { x: 0, y: 0 })), JSON.stringify({ x: -50, y: -1070 }));
+	t.eq('at the vertex nearest the target: straight on', w.crRouteNext({ x: 960, y: -505 }, C.vbatSpot).end, true);
+	w.character.real_x = 1200; w.character.real_y = -280;
+	t.eq('a safe step that would cross the box goes by the route', JSON.stringify(w.crSafeStep(C.vbatSpot, 'k')), JSON.stringify({ x: 950, y: -500 }) === 'x' ? 'x' : JSON.stringify(w.crRouteNext({ x: 1200, y: -280 }, C.vbatSpot)));
+	const s = src();
+	t.ok('a crypt-run kite step never lands in the box', /if \(cryptAuto && mode === 'crypt' && character\.map === 'crypt' && crInBox\(\{ x: nx, y: ny \}, 10\)\) continue;/.test(s));
+	t.ok('a closing step that would cross the box goes by the route', /if \(cryptRunHere\(\) && crCrossesBox\(crPos\(character\), lp\)\) \{ crSafeStep\(lp, 'recover'\); return; \}/.test(s));
+	t.ok('so does a rejoin', /if \(joinWanted\(gap\)\) \{ if \(crCrossesBox\(crPos\(character\), lp\)\) crSafeStep\(lp, 'rejoin'\); else joinStep\(lp, gap\); \}/.test(s));
+	t.eq('the a2 station never takes a box point', w.crNearVbat({ x: 1000, y: -420 }, R({ cleared: { vbat: true } })), true);
+}}, {
+
+name: 'v37 crypt: a death is put down to the strongest monster on the member', fn(t) {
+	const now = Date.now();
+	const w = cw({ me: 'FatherToken', run: R(), monsters: [{ id: 'v', mtype: 'vbat', target: 'FatherToken', x: 0, y: 0 }, { id: '8', mtype: 'a8', target: 'FatherToken', x: 0, y: 0 }, { id: 'v2', mtype: 'vbat', target: 'FatherToken', x: 0, y: 0 }] });
+	w.crCs.run = 'INST1';
+	w.cryptSeeTick(now);
+	t.eq('a8 and two vbat on him: a8', w.crOnMe.mtype, 'a8');
+	w.character.rip = true;
+	w.cryptSeeTick(now + 100);
+	t.eq('and his death is put down to a8', w.crunRead().deaths[0].by, 'a8');
+	t.ok('said so', w.said.some((m) => /died to a8/.test(m)));
+	const x = cw({ me: 'Dexon', run: R(), monsters: [{ id: 's', mtype: 'a6', x: 100, y: -100 }] });
+	x.cryptSeeTick(now);
+	t.eq('a stray goes in the beacon\'s str list', x.crCs.str.map((a) => a.mtype).join(), 'a6');
+}}, {
+
+name: 'v37 crypt: a8 is never kited or attacked - the mage scares it, anyone else backs off west, the bats wait', fn(t) {
+	const now = Date.now();
+	const a8 = (target, x, y) => ({ id: '8', mtype: 'a8', target: target, x: x, y: y, real_x: x, real_y: y });
+	let w = cw({ me: 'FatherToken', monsters: [a8('FatherToken', 1000, -500)] });
+	t.eq('a8 on me is not a stray to kite', w.crStraysOnMe().length, 0);
+	t.eq('and never attacked, even on me', w.mayAttack(a8('FatherToken', 0, 0)), false);
+	w = cw({ me: 'FatherToken', x: 950, y: -500, run: R(), monsters: [a8('Dexon', 1000, -480)], beacons: { Dexon: B('Dexon') } });
+	t.ok('a8 on Dexon: the chase is stamped', !!w.crA8Chase(now));
+	t.eq('for the tabs that cannot see it', JSON.parse(w.ls.m.crypt_a8).who, 'Dexon');
+	t.eq('the back-off steps west along the route, to the first vertex past its 300', w.crA8Retreat({ x: 1000, y: -480 }) && JSON.stringify(w.moved[0]), JSON.stringify([750, -740]));
+	const x = cw({ me: 'MageofOz', storage: { crypt_a8: w.ls.m.crypt_a8 } });
+	t.ok('another tab reads the stamp', !!x.crA8Chase(now + 100));
+	t.eq('and it lapses', x.crA8Chase(now + x.CRYPT_RUN.a8ChaseMs + 1), null);
+	w = cw({ me: 'FatherToken', run: R(), monsters: [a8('MageofOz', 1000, -480)], beacons: { MageofOz: B('MageofOz', { esc: true, jacko: true }) } });
+	t.eq('a8 on the mage with her scare ready: no chase - she scares it', w.crA8Chase(now), null);
+	w = cw({ me: 'MageofOz', run: R(), monsters: [a8('MageofOz', 1000, -480)], skills: [] });
+	t.ok('her scare not ready: the party backs off', !!w.crA8Chase(now));
+	t.ok('the mage scares a8 off her', /if \(a8 && a8\.target === character\.name && haveSkill\('scare'\)\) \{\n\t\t\ttry \{ await telUse\('scare'\); bump\('a8Scares'\);/.test(src()));
+
+	/* The bats wait while a8 is near them. */
+	const dead = { m1: 'a3', m2: 'a7', m3: 'a2' };
+	const near = (n) => B(n, { x: 950, y: -500, hpFrac: 1, mpFrac: 1 });
+	return (async () => {
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: dead }), monsters: [a8(null, 1150, -420)], beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.ok('a8 by the box: the bats wait', w.said.some((m) => /a8 near the bats - waiting north of it/.test(m)));
+		t.eq('no pull stamped', w.crunRead().pullOk, undefined);
+		t.eq('backing off north along the route, out of its 300', JSON.stringify(w.moved[0]), JSON.stringify([790, -640]));
+		t.eq('the wait is timed', w.crunRead().a8Since > 0, true);
+		w.crunPatch((c) => { c.a8Since = now - w.CRYPT_RUN.a8WaitMs - 1; });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('five minutes: the bats are given up', w.crunRead().givenWhy.vbat, 'a8 stayed by the bats 5 min');
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: dead, a8Since: now - 1000 }), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('a8 gone: the wait is over', w.crunRead().a8Since, undefined);
+		t.ok('and the pull stamped', w.crunRead().pullOk > 0);
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: { m1: 'a3', m2: 'a7' } }), monsters: [a8('Dexon', 1000, -480)],
+			beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('a8 on Dexon: the leader backs off west too', JSON.stringify(w.moved[0]), JSON.stringify([750, -740]));
+		t.ok('saying so', w.said.some((m) => /a8 is on Dexon - backing off west along the route/.test(m)));
+		w = cw({ me: 'FatherToken', x: 300, y: -1070, run: R({ dead: dead }), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		w.crA8Near = () => null;
+		const z = cw({ me: 'FatherToken', run: R() });
+		t.eq('a8 seen by a member near the bats, recently', !!z.crA8Near(R(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: '8', mtype: 'a8', x: 1100, y: -450, t: now }] } } }, now), true);
+		t.eq('not a stale sighting', z.crA8Near(R(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: '8', mtype: 'a8', x: 1100, y: -450, t: now - 60000 }] } } }, now), null);
+		t.eq('not one far from the bats', z.crA8Near(R(), { Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: [{ id: '8', mtype: 'a8', x: 1700, y: -900, t: now }] } } }, now), null);
+	})();
+}}, {
+
+name: 'v37 crypt: the bats are pulled one at a time by Dexon, from outside the box', fn(t) {
+	const now = Date.now();
+	const dead = { m1: 'a3', m2: 'a7', m3: 'a2' };
+	const near = (n, o) => B(n, Object.assign({ x: 950, y: -500, hpFrac: 1, mpFrac: 1 }, o || {}));
+	const bat = (id, x, y, target) => ({ id: id, mtype: 'vbat', x: x, y: y, real_x: x, real_y: y, target: target || null });
+	return (async () => {
+		let w = cw({ me: 'FatherToken', x: 1190, y: -380, run: R({ dead: dead }), beacons: { Dexon: near('Dexon', { x: 1190, y: -380 }), MageofOz: near('MageofOz', { x: 1190, y: -380 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('the leader goes to the new spot north of the box', JSON.stringify([w.moves[0].x, w.moves[0].y]), JSON.stringify([950, -500]));
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: dead }), monsters: [bat('b1', 1100, -400)], beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('at the spot, rested, no bat on us: the pull is stamped', w.crunRead().pullOk, now);
+		t.eq('and the leader does not walk to the bat', w.moves.length, 0);
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: dead }), monsters: [bat('b1', 1300, -380, 'MageofOz')], beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('a bat on us, out past the fight range: no new pull', w.crunRead().pullOk, undefined);
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: dead }), monsters: [bat('b1', 1100, -400)], beacons: { Dexon: near('Dexon', { mpFrac: 0.3 }), MageofOz: near('MageofOz') } });
+		w.crSearch = { stage: 2, i: 0, spent: 0, lastAt: 0, done: {}, rested: true, restAt: 0 };
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('Dexon at 30% mp: rest before the next bat', w.crunRead().pullOk, undefined);
+		t.ok('said', w.said.some((m) => /resting before the next bat - Dexon mp 30%/.test(m)));
+		w.crBatRestSince = now - w.CRYPT_RUN.restMaxMs - 1;
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('capped like the stage rest', w.crunRead().pullOk, now);
+
+		/* Dexon's half. */
+		const dx = (o) => cw(Object.assign({ me: 'Dexon', x: 950, y: -500, character: { range: 192 }, run: R({ dead: dead, pullOk: now }) }, o));
+		w = dx({ monsters: [bat('b1', 1300, -380), bat('b2', 1450, -350)] });
+		t.eq('Dexon pulls the nearest bat', w.cryptPullTick(w.crunRead(), now) && w.crPull.id, 'b1');
+		t.eq('from a stand point outside the box, within his range', [w.crInBox(w.crPull.stand, 0), Math.round(Math.hypot(w.crPull.stand.x - 1300, w.crPull.stand.y + 380))].join(), 'false,172');
+		t.ok('reached in a straight line that keeps out of the box', !w.crCrossesBox({ x: 950, y: -500 }, w.crPull.stand, 5));
+		t.eq('walking there in a straight line', w.moved.length, 1);
+		w.character.real_x = w.crPull.stand.x; w.character.real_y = w.crPull.stand.y;
+		w.dist = (a, b) => Math.hypot((a.real_x !== undefined ? a.real_x : a.x) - b.x, (a.real_y !== undefined ? a.real_y : a.y) - b.y);
+		w.parent.entities = { b1: w.monsters[0] };
+		t.eq('in range: one shot', w.cryptPullTick(w.crunRead(), now + 500) && JSON.stringify(w.attacks), JSON.stringify(['b1']));
+		w.monsters[0].target = 'Dexon';
+		w.cryptPullTick(w.crunRead(), now + 1000);
+		t.eq('the bat on him: straight back to the spot', [w.crPull.phase, JSON.stringify(w.moved[w.moved.length - 1])].join(), 'back,[950,-500]');
+		w.character.real_x = 950; w.character.real_y = -500;
+		t.eq('back at the spot: the pull is over', w.cryptPullTick(w.crunRead(), now + 2000) || w.crPull, null);
+		w = dx({ monsters: [bat('b1', 1100, -400)], run: R({ dead: dead, pullOk: now - 5000 }) });
+		t.eq('no fresh stamp: no pull', w.cryptPullTick(w.crunRead(), now), false);
+		w = dx({ monsters: [bat('b1', 1100, -400)], x: 700, y: -700 });
+		t.eq('not at the spot: no pull', w.cryptPullTick(w.crunRead(), now), false);
+		w = dx({ me: 'MageofOz', monsters: [bat('b1', 1100, -400)] });
+		t.eq('only Dexon pulls', w.cryptPullTick(w.crunRead(), now), false);
+		w = dx({ monsters: [bat('b1', 1300, -380)] });
+		w.cryptPullTick(w.crunRead(), now);
+		const free = w.crPull.stand;
+		w = dx({ monsters: [bat('b1', 1300, -380), { id: '8', mtype: 'a8', x: free.x, y: free.y - 20, real_x: free.x, real_y: free.y - 20 }] });
+		w.cryptPullTick(w.crunRead(), now);
+		t.ok('a8 by the best stand point: another one, at least pullA8Avoid from it', w.crPull && Math.hypot(w.crPull.stand.x - free.x, w.crPull.stand.y - free.y + 20) >= w.CRYPT_RUN.pullA8Avoid);
+		w = dx({ monsters: [bat('b1', 1300, -380)] });
+		w.cryptPullTick(w.crunRead(), now);
+		w.crPull.at = now - w.CRYPT_RUN.pullMaxMs - 1;
+		w.character.real_x = w.crPull.stand.x; w.character.real_y = w.crPull.stand.y;
+		w.parent.entities = { b1: w.monsters[0] };
+		w.cryptPullTick(w.crunRead(), now);
+		t.eq('a pull that takes too long comes back', w.crPull.phase, 'back');
+
+		/* Who may shoot a bat. */
+		w = cw({ me: 'MageofOz', run: R({ dead: dead }) });
+		t.eq('a bat not on us: nobody but the puller', w.mayAttack(bat('b1', 1100, -400)), false);
+		t.eq('a bat on us: everyone', w.mayAttack(bat('b1', 1100, -400, 'Dexon')), true);
+		w.crPull = { id: 'b1' };
+		t.eq('the bat being pulled: the puller', w.mayAttack(bat('b1', 1100, -400)), true);
+		t.ok('Dexon\'s pull runs in the follower branch', /\/\* v37, ruling 4: Dexon pulls the bats\. \*\/\n\tif \(cryptPullTick\(run, now\)\) return true;/.test(src()));
+	})();
+}}, {
+
+name: 'v37 crypt: a death loop walks back alone once the route is clear; the leader collects only otherwise', fn(t) {
+	const now = Date.now();
+	const all3 = { m1: 'a3', m2: 'a7', m3: 'a2' };
+	let w = cw({ me: 'MageofOz', run: R() });
+	t.eq('a7 alive: blocked', w.cryptRouteBlocked(R({ dead: { m1: 'a3', m3: 'a2' } }), {}, now), 'a7 is alive');
+	t.eq('a2 given up counts as gone', w.cryptRouteBlocked(R({ dead: { m1: 'a3', m2: 'a7' }, givenUp: { a2: now } }), {}, now), null);
+	t.eq('all three dead and nothing seen: clear', w.cryptRouteBlocked(R({ dead: all3 }), {}, now), null);
+	const bs = (zav, str) => ({ Dexon: { cs: { run: 'INST1', seen: {}, died: [], zav: zav || [], str: str || [] } } });
+	t.eq('a8 seen by the route: blocked', w.cryptRouteBlocked(R({ dead: all3 }), bs([{ id: '8', mtype: 'a8', x: 900, y: -600, t: now }]), now), 'a8 was seen by it');
+	t.eq('a stray seen by it: blocked', w.cryptRouteBlocked(R({ dead: all3 }), bs([], [{ id: 's', mtype: 'a6', x: 0, y: -600, t: now }]), now), 'a6 was seen by it');
+	t.eq('long ago: clear', w.cryptRouteBlocked(R({ dead: all3 }), bs([{ id: '8', mtype: 'a8', x: 900, y: -600, t: now - w.CRYPT_RUN.avoidMs - 1 }]), now), null);
+	t.eq('far from the route: clear', w.cryptRouteBlocked(R({ dead: all3 }), bs([{ id: '8', mtype: 'a8', x: 1800, y: -1500, t: now }]), now), null);
+
+	w = cw({ me: 'MageofOz', run: R({ dead: all3 }), beacons: { FatherToken: B('FatherToken', { x: 950, y: -500 }) } });
+	w.deathLoop = true;
+	t.eq('death loop, route clear: she walks back', w.cryptFollowerInside(w.crunRead(), now) && JSON.stringify(w.moved[0]), JSON.stringify([-30, -380]));
+	w = cw({ me: 'MageofOz', run: R({ dead: { m1: 'a3', m2: 'a7' } }), beacons: { FatherToken: B('FatherToken', { x: 950, y: -500 }) } });
+	w.deathLoop = true;
+	w.cryptFollowerInside(w.crunRead(), now);
+	t.eq('a2 alive: she holds at the entrance', w.moved.length + w.moves.length, 0);
+	return (async () => {
+		const loopB = (over) => B('MageofOz', Object.assign({ x: 0, y: 0, loop: true, rest: true }, over || {}));
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: { m1: 'a3', m2: 'a7' } }), beacons: { Dexon: B('Dexon', { x: 950, y: -500 }), MageofOz: loopB() } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.ok('a2 alive: the leader collects her', w.said.some((m) => /collecting MageofOz/.test(m)));
+		w = cw({ me: 'FatherToken', x: 950, y: -500, run: R({ dead: all3 }), beacons: { Dexon: B('Dexon', { x: 950, y: -500 }), MageofOz: loopB() } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('route clear: he does not leave the bats', w.said.some((m) => /collecting MageofOz/.test(m)), false);
+	})();
+}}, {
+
+name: 'v37 crypt: rest under attack, the room ask, and a2 with no way past 300', fn(t) {
+	const now = Date.now();
+	return (async () => {
+		let w = cw({ me: 'FatherToken', run: R(), fighting: true, character: { mp: 300, max_mp: 1000 },
+			beacons: { Dexon: B('Dexon', { x: 0, y: 0 }), MageofOz: B('MageofOz', { x: 0, y: 0 }) } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('ruling 5: the stage rest does not hold while the party is fighting', w.said.some((m) => /resting before stage/.test(m)), false);
+		t.eq('and is still owed afterwards', w.crSearch.rested, false);
+
+		w = cw({ me: 'Dexon', map: 'cave', x: 500, y: 500, esize: 4 });
+		w.cryptRoomTick(now);
+		t.eq('Dexon short of room away from the door: no ask', w.cms.length, 0);
+		w = cw({ me: 'Dexon', map: 'cave', x: -193, y: -1296, esize: 4, run: R() });
+		w.cryptRoomTick(now);
+		t.eq('at the door with a run still on: no ask', w.cms.length, 0);
+		w = cw({ me: 'Dexon', map: 'cave', x: -193, y: -1296, esize: 4, run: R({ done: true }) });
+		w.cryptRoomTick(now);
+		t.eq('at the door between runs: ask', w.cms.length, 1);
+
+		const a2 = { id: 'b', mtype: 'a2', target: 'MageofOz', x: 20, y: -20, real_x: 20, real_y: -20, s: { anger: { ms: 7000 } } };
+		w = cw({ me: 'MageofOz', x: 0, y: 0, run: R(), monsters: [a2], blocked: true,
+			storage: { crypt_a2: JSON.stringify({ run: 'INST1', mode: 'one', who: 'MageofOz', at: now, tickAt: now + 7000 }) } });
+		w.crA2Move(a2, w.crunRead(), now);
+		t.eq('cornered at the entrance: the stuck mark', w.crA2Stuck, now);
+		t.ok('said what she does', w.said.some((m) => /no way past 300 from a2 from here - scaring or blinking/.test(m)));
+		const bp = w.crA2BlinkPoint(a2, w.crunRead());
+		t.eq('a blink point past him, at least 340 away, outside the box and zone', [bp && Math.hypot(bp.x - 20, bp.y + 20) >= 340, bp && w.crInBox(bp, 10)].join(), 'true,false');
+		t.ok('the mage re-scares, else blinks, when cornered', /if \(a2 && a2\.target === character\.name && now - crA2Stuck < 2000\) \{\n\t\t\tif \(haveSkill\('scare'\)\)/.test(src()));
+		w = cw({ me: 'Dexon', x: 0, y: 0, run: R(), monsters: [a2] });
+		w.can_move_to = (x, y) => y > 0;
+		const fp = w.crA2FarPoint(a2, w.crunRead());
+		t.ok('anyone else: the walkable point farthest from him', fp && fp.y > 0 && Math.hypot(fp.x - 20, fp.y + 20) > 200);
+
+		/* v36's survivor: a rate needs rateMinMs of history. */
+		w = cw({ me: 'FatherToken' });
+		w.crHpHist.Dexon = [{ t: now - 500, hp: 5000 }, { t: now, hp: 4000 }];
+		t.eq('half a second of history: no rate yet', w.crLossRate('Dexon', now), null);
+	})();
 }}];

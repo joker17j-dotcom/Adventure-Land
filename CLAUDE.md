@@ -95,6 +95,13 @@ through Chrome" would stop a session that *can* push from ever trying.
   EXCHANGE, BY THEIR HEADERS**, so the receiver can check it got each one. A
   block the operator says was NOT sent is left off that list. Only blocks
   actually relayed are listed. Its content goes into the new block instead.
+- **EVERY PASTE BLOCK ENDS WITH A `CARRIED:` LINE** listing each open item still
+  owed between the sessions: what it is, who owns it, and when or at what event
+  it comes due (a date, a run, a deploy). An item stays on the list until it is
+  answered in a block. Dropping one silently is how a fix falls out of every
+  queue at once (see "The oscillation fix fell out of all three queues").
+  "CARRIED: nothing" is written out, not omitted. Operator-approved
+  2026-11-08 19:41 EST.
 
 ## Git
 
@@ -5371,7 +5378,9 @@ CRYPT RUN block of `CaveRun.js`; this records what is not obvious from it. FIRST
 RUN LIVE on v33, 2026-11-08 17:59-18:28 EST: cleared, one wipe, two manual
 interventions. Run 2 (18:30-~19:00, v33) cleared too, with nine MageofOz deaths;
 v35 is built on both. v34 went into slot 11 mid-run; v35 was verified in slot 11
-at 19:36 EST. v36 carries the operator's rulings of 19:16-19:39 EST and is not yet
+at 19:36 EST. v36 carries the operator's rulings of 19:16-19:39 EST and went into
+slot 11 at 20:17 EST. Runs 3 and 4 (19:40-20:12, v35) both cleared a2, a2 dying at
+the pull spot on run 4. v37 carries the rulings of 19:49-20:12 EST and is not yet
 run live.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
@@ -5442,12 +5451,76 @@ run live.
   (v34, R6). It goes into the run's `givenUp` and the run moves on; one seen
   again after it was given up, by any member, is taken back - the operator chose
   that over a distance rule. The done line names what was given up.
-- **THE NO-GO ZONE IS x > 1850, y > -1235, AND IT GROWS** - read from the
-  operator's screenshot and confirmed on the level-0 grid: a8, a5, a4 and a1
-  are inside it; a6 and a3 are not. A zone monster seen outside it grows it to
-  cover the sighting plus 100. Only a member kiting a stray goes in: the line
-  is now x 1860, and the middle crossing (1880,-880) is about 160 west of a8's
-  spawn, by the operator's leave.
+- **THE NO-GO ZONE IS x > 1850, y > -1235** - read from the operator's
+  screenshot and confirmed on the level-0 grid: a8, a5, a4 and a1 are inside
+  it; a6 and a3 are not. Only a member kiting a stray goes in: the line is now
+  x 1860, and the middle crossing (1880,-880) is about 160 west of a8's spawn,
+  by the operator's leave. v34-v36 GREW the edge over a zone monster seen
+  outside it, and on run 3 a8 by the bats moved it to x > 858, which swallowed
+  the bat box, a2's area and the kite route. **v37 fixes the edge** (ruling 1).
+  A sighting outside it blocks `zoneLocalR` 300 around the sighting for
+  `zoneLocalMs`, never the protected ground, and an old run record's `zone` is
+  ignored.
+- **THE BATS ARE THE POINT OF THE RUN** (ruling 2, 2026-11-08). a7 and a3 are
+  worked for achievements and can be missed; wherever a choice trades them
+  against the bats, the bats win. Only the route to the bats is protected.
+- **THE PROTECTED ROUTE** (v37, `CRYPT_RUN.route`): the level-0 shortest path
+  from the entrance to the bat spot that keeps out of the box, cut offline into
+  13 straight legs whose every cell is level 0. It runs up the entrance
+  corridor, through the hall north and a7's hall, and down past a2's room;
+  2,717 long. `routeBranch` is the pull room. Within `routeR` 150 of either,
+  and the box itself, is never no-go. The box is the vbat spawn boundary
+  (x 903.57-1479.2, y -465.05 to -304.03, `design/maps.js`).
+- **NOBODY STANDS IN THE BAT BOX OR WALKS THROUGH IT** (v37, ruling 4).
+  - The spot moved from (1190,-380), the middle of the box, to (950,-500) north
+    of it. Level-0 shortest paths to it from the entrance, a2's room, a7's hall
+    and the a8 side never touch the box.
+  - In a crypt run, a kite step never lands in the box. A closing or rejoining
+    step that would cross the box goes by the route. No search point, a2
+    station or away point is inside it.
+  - Dexon pulls one bat at a time, once the leader stamps `run.pullOk`: at the
+    spot, rested, no bat on the party, a8 not near. He walks a straight leg
+    out of the box to a stand point at his range less 20 from the nearest
+    untargeted bat, at least 150 from a8. He fires one shot and walks straight
+    back.
+  - Nobody else shoots a bat until it is on the party.
+  - Between bats the party rests to the stage-rest levels, capped the same way.
+- **a8 IS NEVER KITED OR ATTACKED** (v37, ruling 3). From source: attack 2680 x
+  frequency 4, charge 76, no anger, and a curse aura of 300 that slows a
+  member to ~45.
+  - On the mage with her scare ready, she scares it. With no anger it stays
+    off until hit or faced within 35.
+  - On anyone else, the `crypt_a8` stamp is written and everyone backs off
+    west along the route, past 340 from it.
+  - Near the bats it makes them wait north of its aura. After `a8WaitMs`
+    (5 min) the bats are given up, which ends the run - a pause with a cap,
+    not an open-ended hold.
+  - A death is now put down to the strongest monster on the member. Run 3 called
+    two a8 deaths "died to vbat".
+- **THE REST STOPS THE MOMENT THE PARTY IS ENGAGED** (v37, ruling 5). Something
+  in VIEW on a party member ends a respawn rest at once; in a crypt run the
+  member then holds to rejoin. A fight across the map does not, because walking
+  off alone to it is the run-2 death. The v36 stage rest does not hold while
+  `partyFighting()`, and stays owed. Every respawn starts at 50% mp
+  (`hp = max_hp`, `mp = round(max_mp/2)`, upstream 16881a2), which is why the
+  rest waits. Potions while dead were never drunk: `potionTick` returns on
+  `rip`.
+- **A DEATH LOOP WALKS BACK ALONE WHEN THE ROUTE IS CLEAR** (v37, ruling 7).
+  "Clear" means a2, a3 and a7 are each dead or given up, and no stray or zone
+  monster has been seen within `routeR + avoidR` of the route in `avoidMs`.
+  Strays now go in the beacon as `cs.str`. The member walks the route,
+  vertex by vertex. The leader collects only when the route is blocked; on run
+  3 he left the bats at 2/7 for a 3,000u round trip.
+- **DEXON ASKS THE MERCHANT FOR ROOM ONLY AT THE DOOR BETWEEN RUNS** (v37). Twice
+  on run 3 he asked from the door on his way back in, and the merchant walked
+  to nobody.
+- **a2 WITH NO WAY PAST 300** (v37). On run 3 Bill came to the entrance, a dead
+  end, and MageofOz died #8 holding there.
+  - Now the mage re-scares, else blinks to the nearest tour or route point at
+    least 340 from him, out of the zone and the box. A blink can go past him.
+  - Everyone else steps to the walkable point farthest from him.
+  - The empty `attackers` on that death is consistent with scare having
+    cleared his target before his last hit landed.
 - **a2 IS PULLED TO (-270,-465) WITH NO FOLLOWER HOLD ON THE WAY** (R1, R2) -
   2,430 by path from his spawn. The leader also no longer holds through any
   fight, and a hold for a follower's gap alone gives up after 20s; a hold for a
