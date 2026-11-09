@@ -903,10 +903,13 @@ function monsterSpawn(mapName, type) {
 }
 
 async function goToMonster(type) {
+	stuckNoteIntent(null);
 	try {
 		await smart_move({ to: type });
+		stuckNotePath(true);
 		return true;
 	} catch (e) {
+		stuckNotePath(false);
 		log(`smart_move to ${type} did not take (${e && e.reason ? e.reason : e}) `
 			+ `- falling back to map coordinates`, '#8b98ab');
 		return false;
@@ -915,10 +918,13 @@ async function goToMonster(type) {
 
 async function goTo(spot) {
 	if (!spot) return false;
+	stuckNoteIntent(spot);
 	try {
 		await smart_move({ map: spot.map, x: spot.x, y: spot.y });
+		stuckNotePath(true);
 		return true;
 	} catch (e) {
+		stuckNotePath(false);
 		// e is a game rejection object, not an Error - string-concatenating it
 		// prints [object Object] and throws the reason away, which is exactly
 		// what the family's logs showed while their rangers were wedged.
@@ -927,6 +933,77 @@ async function goTo(spot) {
 			+ (e && e.reason ? e.reason : (e && e.message ? e.message : JSON.stringify(e))), 'orange');
 		return false;
 	}
+}
+
+/* ------------------------------------------------------------ STUCK - USE TOWN
+   Added 2026-11-08 at the owner's request, after the rangers got wedged at
+   icegolem: "they should use_town whenever stuck similar to the other
+   scripts". The party scripts town after two pathfinder refusals in a row
+   (Ranger.js rageStuckTown); this is the same rule for one character on its
+   own shard, plus a position check, because a straight-line move() into a wall
+   (bossStandOff's back-off is one) never rejects - it just stops short.
+
+   STUCK means either of:
+     * two smart_move refusals in a row (goTo / goToMonster), or
+     * a walk was asked for in the last stuckMs and the character has not moved
+       moveEps units in stuckMs, while still more than arriveEps from where it
+       was asked to go (or the game still says it is moving).
+   Standing still at a boss, waiting for someone else to open it, is NOT stuck:
+   no walk was asked for, so nothing here fires.
+
+   Not more than once per townGapMs. The town channel is cancelled by movement,
+   so the walk is stopped first. A boss trip that got stuck is ended, which puts
+   that boss on its cooldown - otherwise the trip walks straight back into the
+   same spot. Unlike Dexon's rule this towns even with something on us: the
+   owner's report was being stuck DURING the icegolem fight. */
+const STUCK = { stuckMs: 20000, moveEps: 15, arriveEps: 25, townGapMs: 30000, pathFailsToTown: 2 };
+const stuckState = { x: null, y: null, map: null, since: 0, intentAt: 0, intent: null, pathFails: 0, townAt: 0 };
+
+function stuckNoteIntent(dest) {
+	stuckState.intentAt = Date.now();
+	stuckState.intent = dest || null;
+}
+function stuckNotePath(ok) {
+	if (ok) stuckState.pathFails = 0;
+	else stuckState.pathFails++;
+}
+
+/* Why we are stuck, or null. Pure apart from the anchor it keeps. */
+function stuckReason(now) {
+	const c = character;
+	if (!c || c.rip || typeof c.x !== 'number') return null;
+	if (stuckState.map !== c.map || stuckState.x === null
+		|| Math.hypot(c.x - stuckState.x, c.y - stuckState.y) > STUCK.moveEps) {
+		stuckState.x = c.x; stuckState.y = c.y; stuckState.map = c.map; stuckState.since = now;
+	}
+	if (stuckState.pathFails >= STUCK.pathFailsToTown) return stuckState.pathFails + ' path refusals in a row';
+	if (now - stuckState.since < STUCK.stuckMs) return null;
+	const wanted = now - stuckState.intentAt < STUCK.stuckMs;
+	if (!wanted && !c.moving) return null;
+	const d = stuckState.intent;
+	if (!c.moving && d && d.map === c.map && typeof d.x === 'number'
+		&& Math.hypot(d.x - c.x, d.y - c.y) <= STUCK.arriveEps) return null;   // arrived, not stuck
+	return 'no movement in ' + Math.round((now - stuckState.since) / 1000) + 's'
+		+ (d && d.map ? ' on the way to ' + d.map + (typeof d.x === 'number' ? ' ' + Math.round(d.x) + ',' + Math.round(d.y) : '') : '');
+}
+
+/* Returns true when it towned this tick. */
+async function stuckTick() {
+	const now = Date.now();
+	const why = stuckReason(now);
+	if (!why) return false;
+	if (now - stuckState.townAt < STUCK.townGapMs) return false;
+	if (inTown()) { stuckState.pathFails = 0; stuckState.intentAt = 0; return false; }
+	stuckState.townAt = now;
+	stuckState.pathFails = 0;
+	stuckState.intentAt = 0;
+	stuckState.since = now;
+	log('stuck (' + why + ') - using town', '#FFD700');
+	try { if (typeof stop === 'function') { stop('smart'); stop('move'); } } catch (e) { }
+	if (bossState.trip) bossEnd('stuck - used town');
+	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
+	catch (e) { log('town refused: ' + (e && (e.reason || e.message) || e), 'orange'); }
+	return true;
 }
 
 function npcSpot(mapName, npcId) {
@@ -1714,6 +1791,7 @@ async function bossStandOff(mob) {
 	const k = want / Math.max(d, 1);
 	const tx = mob.x + (character.x - mob.x) * k;
 	const ty = mob.y + (character.y - mob.y) * k;
+	stuckNoteIntent({ map: character.map, x: tx, y: ty });
 	try {
 		await move(tx, ty);
 		bossNote('backed off ' + mob.mtype + ' to ' + Math.round(want)
@@ -4012,6 +4090,9 @@ async function rangerTick() {
 	   leaving immediately, and it is ahead of the movement lock on purpose: the
 	   lock is held by whatever walked us in. -> RAGE BOXES */
 	try { if (await rageGuard()) return; } catch (e) { }
+	/* Ahead of the movement lock, because the wedged walk is what holds it.
+	   -> STUCK - USE TOWN */
+	try { if (await stuckTick()) return; } catch (e) { log('stuck check threw: ' + e, 'red'); }
 	/* In town for any reason at all, keep the beat - INCLUDING while a walk is
 	   in progress.
 
