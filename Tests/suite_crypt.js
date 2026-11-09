@@ -25,7 +25,7 @@ const LIFT = ['CRYPT', 'CRYPT_RUN', 'cryptAutoStamp', 'cryptAutoSaved', 'cryptNe
 	'crZone', 'crInZone', 'crSightings', 'cryptLeaderBook', 'crSearchBlocked', 'cryptSearchPoints',
 	'crA2', 'crAngerMs', 'crHpFrac', 'crPartyMean', 'crPoisoned', 'crA2Low', 'crA2Read', 'crA2Write', 'crA2Clear', 'crA2State',
 	'crA2HoldFire', 'crA2Away', 'cryptBlinkWanted', 'crA2Disengage', 'crNearVbat', 'crPriestPos', 'crA2Station',
-	'crA2AwayPoint', 'crStepTo', 'crA2Move'];
+	'crA2AwayPoint', 'crStepTo', 'crA2Move', 'crRestOwed', 'crRestStamp', 'potionTick'];
 
 function mkStorage(init) {
 	const m = Object.assign({}, init || {});
@@ -45,11 +45,11 @@ function cw(o) {
 		crCs: { run: null, seen: {}, died: [], zav: [] }, crAvoid: {}, crOnMe: null, crWasRip: false, crHoldGapSince: 0, crHoldWaived: false,
 		resting: false, deathLoop: false, crRejoin: false, CRYPT_A2_KEY: 'crypt_a2', crWalkFlight: null, crEnterFlight: 0,
 		CRYPT_START_KEY: 'crypt_started', CRYPT_HANDBACK_KEY: 'crypt_handback', crHpHist: {}, crA2Last: null, crAbsorbAt: 0,
-		launcher: { handBackAt: 0 }, phase: 'idle', crPull: null, crPullOkAt: 0, crBatRestSince: 0, crA2Stuck: 0, CRYPT_A8_KEY: 'crypt_a8',
+		launcher: { handBackAt: 0 }, phase: 'idle', crPull: null, crPullOkAt: 0, crBatRestSince: 0, crA2Stuck: 0, CRYPT_A8_KEY: 'crypt_a8', crRestStampAt: 0, lastPot: 0,
 		crMuled: false, crMuleRun: undefined, crMuleSince: 0, crMuleAt: 0, crRoom: true, crPushAt: 0, crAskAt: {}, crMluckSince: 0,
 		CRUN_KEY: 'crypt_run', CRYPT_ID_KEY: 'crypt_instance', CRYPT_AUTO_KEY: 'crypt_auto',
 		navFlight: null, navManualUntil: 0, navFails: {}, engagedUntil: 0, recovering: false, aim: null,
-		CFG: { engageHoldMs: 8000 } });
+		CFG: { engageHoldMs: 8000, potMs: 2100, potHpCrit: 0.50, potMpLow: 0.60, potHpTop: 0.85 } });
 	w.parent.localStorage = ls;
 	w.ls = ls;
 	w.character = Object.assign({ name: me, ctype: me === 'FatherToken' ? 'priest' : (me === 'MageofOz' ? 'mage' : 'ranger'),
@@ -100,6 +100,7 @@ function cw(o) {
 	w.partyFighting = () => !!o.fighting;
 	w.attacks = []; w.attack = (b) => { w.attacks.push(b.id); return Promise.resolve(); };
 	w.can_attack = () => true;
+	w.cavePaused = () => false; w.noteWhy = () => {};
 	w.parent.__gamelog = o.gamelog === false ? undefined : { buf: [], capture(m, c, src) { this.buf.push({ message: m, color: c, source: src }); } };
 	w.parent.G = { monsters: { a2: { attack: 2240, frequency: 1.4 }, a8: { attack: 2680, frequency: 4 }, vbat: { attack: 1240, frequency: 1.56 } }, skills: { scare: { mp: 50 } } };
 	lift(w, 'CaveRun.js', LIFT);
@@ -1376,5 +1377,71 @@ name: 'v37 crypt: rest under attack, the room ask, and a2 with no way past 300',
 		w = cw({ me: 'FatherToken' });
 		w.crHpHist.Dexon = [{ t: now - 500, hp: 5000 }, { t: now, hp: 4000 }];
 		t.eq('half a second of history: no rate yet', w.crLossRate('Dexon', now), null);
+	})();
+}}, {
+
+name: 'v38 crypt: while a rest is owed every tab drinks to the rest lines, mp first, the hp-crit drink first of all', fn(t) {
+	const now = Date.now();
+	const near = (n, over) => B(n, Object.assign({ x: 10, y: 10, hpFrac: 1, mpFrac: 1 }, over || {}));
+	const src = () => fs.readFileSync(path.join(ROOT, 'CaveRun.js'), 'utf8');
+	t.ok('the source pins the potion lines this suite stubs', /potHpCrit: 0\.50,\n\tpotMpLow: 0\.60,\n\tpotHpTop: 0\.85,/.test(src()));
+	return (async () => {
+		/* The leader resting before a stage stamps it; a done rest does not. */
+		let w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon', { mpFrac: 0.5 }), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('resting before a stage: the run carries restOwed', w.crunRead().restOwed, now);
+		t.ok('and a tab reads it as owed', w.crRestOwed(now + 4000));
+		t.ok('not once it is older than restOwedMs', !w.crRestOwed(now + w.CRYPT_RUN.restOwedMs + 1));
+		w = cw({ me: 'FatherToken', run: R(), beacons: { Dexon: near('Dexon'), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('nobody short: no stamp', w.crunRead().restOwed, undefined);
+		w = cw({ me: 'FatherToken', run: R(), fighting: true, beacons: { Dexon: near('Dexon', { mpFrac: 0.5 }), MageofOz: near('MageofOz') } });
+		await w.cryptLeaderInside(w.crunRead(), now);
+		t.eq('fighting: no rest, no stamp', w.crunRead().restOwed, undefined);
+
+		/* The stamp is at most once a second. */
+		w = cw({ me: 'FatherToken', run: R() });
+		w.crRestStamp(now); w.crRestStamp(now + 999);
+		t.eq('a second stamp inside 1s does not write', w.crunRead().restOwed, now);
+		w.crRestStamp(now + 1000);
+		t.eq('at 1s it does', w.crunRead().restOwed, now + 1000);
+
+		/* Owed only in a live crypt run, on the crypt map. */
+		w = cw({ me: 'Dexon', run: R({ restOwed: now }) });
+		t.ok('a follower on the crypt map: owed', w.crRestOwed(now));
+		w = cw({ me: 'Dexon', run: R({ restOwed: now, done: true }) });
+		t.ok('the run is done: not owed', !w.crRestOwed(now));
+		w = cw({ me: 'Dexon', map: 'cave', run: R({ restOwed: now }) });
+		t.ok('off the crypt map: not owed', !w.crRestOwed(now));
+		w = cw({ me: 'Dexon', run: R({ restOwed: now }) }); w.cryptAuto = false;
+		t.ok('no crypt run: not owed', !w.crRestOwed(now));
+
+		/* The bat rest stamps too. */
+		const spot = { x: 950, y: -500 };
+		w = cw({ me: 'FatherToken', x: spot.x, y: spot.y, run: R({ dead: { m1: 'a3', m2: 'a7', m3: 'a2' } }),
+			beacons: { Dexon: near('Dexon', { x: spot.x, y: spot.y, hpFrac: 0.5 }), MageofOz: near('MageofOz', { x: spot.x, y: spot.y }) } });
+		w.crBatRestSince = 0;
+		w.cryptBatStage(w.crunRead(), { i: 2, types: ['vbat'] }, w.beacons(), now);
+		t.eq('resting between bats: stamped', w.crunRead().restOwed, now);
+		t.eq('and no pull stamped', w.crunRead().pullOk, undefined);
+
+		/* potionTick reads it. */
+		const drink = (over, owed) => {
+			const x = cw({ me: 'Dexon', run: R(owed ? { restOwed: now } : {}), character: over });
+			x.potionTick();
+			return x.skills.slice();
+		};
+		t.eq('mp 70%, no rest: no drink', drink({ mp: 700, max_mp: 1000 }, false), []);
+		t.eq('mp 70%, rest owed: mp', drink({ mp: 700, max_mp: 1000 }, true), ['use_mp']);
+		t.eq('hp 88%, no rest: no drink', drink({ hp: 880, mp: 1000, max_mp: 1000 }, false), []);
+		t.eq('hp 88%, rest owed: hp', drink({ hp: 880, mp: 1000, max_mp: 1000 }, true), ['use_hp']);
+		t.eq('both short, rest owed: mp first', drink({ hp: 880, mp: 700, max_mp: 1000 }, true), ['use_mp']);
+		t.eq('hp under the crit line: hp first of all, owed or not', drink({ hp: 400, mp: 100, max_mp: 1000 }, true), ['use_hp']);
+		t.eq('at the rest lines: no drink', drink({ hp: 900, mp: 800, max_mp: 1000 }, true), []);
+		t.eq('below the plain mp line, no rest: mp as before', drink({ mp: 500, max_mp: 1000 }, false), ['use_mp']);
+		t.eq('dead: nothing', drink({ rip: true, hp: 0, mp: 0, max_mp: 1000 }, true), []);
+
+		/* The crypt's death-loop line. */
+		t.ok("the crypt's death-loop line names the entrance", /mode === 'crypt'\s*\? ' min\. Holding at the crypt entrance/.test(src()));
 	})();
 }}];

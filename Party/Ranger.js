@@ -1,5 +1,5 @@
 // ==========================================================================
-// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v163
+// Dexon (Ranger) - Mainframe slot CH_IVnVbKQEQ8Ec0SaiZkZTtqLJRVJZB - v164
 //
 // CHANGELOG: read Party/RangerChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -6713,6 +6713,17 @@ const scare = () => {
 	else if (!character?.afk && paused) { pause(); parent.no_graphics = false; }
 };
 
+/* THE LEADER LEAVES A PARTY HE DOES NOT LEAD - v164. Measured 2026-11-08
+   20:43 EST after a crypt hand-back: the party was led by MageofOz with Dexon
+   in it, FatherToken's partyMaker left it (not led by Dexon), and Dexon's
+   invite put him straight back - leave and rejoin every ~2s. The server's
+   party accept (node/server.js, upstream 2148cf25) leaves the accepter's
+   party and joins the INVITER'S party, so an invite from a member of someone
+   else's party only ever adds to that party. Out of it first, Dexon's next
+   invite founds a party he leads, and accepting it takes each follower out of
+   the old one. At most once per PARTY_LEAVE_GAP_MS while the server catches up. */
+const PARTY_LEAVE_GAP_MS = 5000;
+let partyLeftAt = 0;
 function partyMaker() {
 	if (!CONFIG.party.autoManage) return;
 
@@ -6722,6 +6733,14 @@ function partyMaker() {
 	const partyLead = get_entity(leaderName);
 
 	if (character.name === leaderName) {
+		if (character.party && character.party !== character.name) {
+			if (Date.now() - partyLeftAt >= PARTY_LEAVE_GAP_MS) {
+				partyLeftAt = Date.now();
+				game_log('[party] in ' + character.party + "'s party - leaving it to lead my own", '#FFD700');
+				leave_party();
+			}
+			return;
+		}
 		for (let i = 1; i < group.length; i++) {
 			const name = group[i];
 			if (name === character.name) continue;

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v143
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v144
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -3249,11 +3249,22 @@ selfHealLoop();
 // ============================================================================
 // SELF-SUSTAIN - use his own hp potion stock when in need
 // ============================================================================
+/* MP FROM THE FREE SKILL - v144, the operator's ruling of 2026-11-08 20:30-20:32
+   EST: "use the skill, any time it would fully fill". regen_mp restores
+   G.skills.regen_mp.output (100) and costs no potion; use_mp would drink one
+   of the stack. It puts the shared potion cooldown up at x2, so it waits while
+   hp is below the drink line - an hp drink must never be held up by it. */
+function regenMpAmount() {
+	try { return (parent.G.skills.regen_mp.output) || 100; } catch (e) { return 100; }
+}
 async function potionLoop() {
 	try {
 		const hpThreshold = character.max_hp - CONFIG.potions.hpThreshold;
 		if (character.hp < hpThreshold && !is_on_cooldown('use_hp')) {
 			use_skill('use_hp');
+		} else if (character.hp >= hpThreshold && character.max_mp - character.mp >= regenMpAmount()
+			&& !is_on_cooldown('regen_mp')) {
+			use_skill('regen_mp');
 		}
 	} catch (e) {
 		console.error('potionLoop error:', e);

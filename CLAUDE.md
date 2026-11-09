@@ -4070,6 +4070,18 @@ reading.
   three times in two files.** The leader's first `sendFarmSpot` now waits for
   one boss evaluation and one settled `achvTick()`, which is also called at
   boot rather than first at 30s. Pinned by position and by lift, ten mutations.
+- **FAMILYFLEET TOWNS WHEN STUCK** (`Codex/FamilyFleet.js`, the operator's
+  request of 2026-11-08 22:15 EST after the family's rangers wedged at
+  icegolem). Built by the browser-driven session and committed here from its
+  patch, blob `017cd449`. Stuck is two `smart_move` refusals in a row, or a walk
+  asked for inside `stuckMs` with under `moveEps` moved in `stuckMs`, more than
+  `arriveEps` from where it was going or with the game still reporting moving.
+  It stops the walk, ends a boss trip (its cooldown stops the walk straight back)
+  and casts `use_town`, at most once per `townGapMs`, ahead of the busy lock, and
+  unlike Ranger's `rageStuckTown` with something on us. **ONE ASK THAT IS NEVER
+  REPEATED DOES NOT FIRE**: "a walk was asked for" lapses at `stuckMs` from the
+  ask, the moment the unmoved clock could first fire, so the rule relies on the
+  loops re-asking each tick - pinned as shipped in `Tests/suite_familyfleet.js`.
 
 ## Self-chained async loops: a real hazard, but NOT what was wrong
 
@@ -5380,8 +5392,11 @@ interventions. Run 2 (18:30-~19:00, v33) cleared too, with nine MageofOz deaths;
 v35 is built on both. v34 went into slot 11 mid-run; v35 was verified in slot 11
 at 19:36 EST. v36 carries the operator's rulings of 19:16-19:39 EST and went into
 slot 11 at 20:17 EST. Runs 3 and 4 (19:40-20:12, v35) both cleared a2, a2 dying at
-the pull spot on run 4. v37 carries the rulings of 19:49-20:12 EST and is not yet
-run live.
+the pull spot on run 4. v37 carries the rulings of 19:49-20:12 EST and went into
+slot 11 MID-RUN at 21:31 EST; 21:46-22:15 was its first whole run (cleared, 13
+deaths, all in the a2 stage, 7 bats pulled in 4 min with none). v38 carries the
+browser session's 22:30 EST read of it and is not yet run live. v36 DID run live
+(20:15-20:39) and its hand-back on the last key passed.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5605,6 +5620,24 @@ run live.
   hostile is within `restSafeR`, else at the entrance. After `restMaxMs` he goes
   on, said in orange. Never during the a2 pull. A beacon with no `mpFrac`, from
   an older build, is not held for mp.
+- **WHILE A REST IS OWED EVERY TAB DRINKS TO THE REST'S LINES** (v38, the
+  operator-confirmed ask of 2026-11-08 22:30 EST). The 21:46 run spent 9 of its
+  28.7 min in rests that ran out the 3-min cap: the potions drank only below
+  `potMpLow` and `potHpTop`, the rest waited for `restMpAt` and `restHpAt`, and
+  there is no natural regen, so a member between the two pairs of lines never
+  moved. The leader stamps `run.restOwed` each second he rests (before a stage or
+  between bats); each tab reads it for `restOwedMs` and drinks mp first, then hp,
+  to the rest's lines - the hp-crit drink still ahead of both. The browser
+  session's `window.__mpTop` stopgap did the same by hand and comes off once v38
+  is verified.
+- **A PARTY ACCEPT JOINS THE INVITER'S PARTY, SO THE LEADER MUST LEAD IT** (Ranger
+  v164). After the v36 hand-back the party was MageofOz's with Dexon in it:
+  FatherToken's partyMaker left it, Dexon's invite put him back, every ~2s. The
+  server's `party` accept leaves the accepter's party and joins the inviter's
+  (`node/server.js`, upstream `2148cf25`), so an invite from a member of someone
+  else's party only adds to it. Dexon now leaves a party he does not lead before
+  inviting. Slot 11 engaged without `cryptRun()` goes to the cave launcher, which
+  is expected: `crypt_auto` is cleared by a hand-back.
 - **A CRYPT DUMP ROW PER RUN** (v36, ruling of 19:30), written by the leader once
   when a run is cleared, lost or abandoned. Its `dump` field holds time per stage
   (`run.stages`), every death with who, where and by what (`run.deaths`, written
@@ -6073,6 +6106,34 @@ scrolling away.
   the new wrapper sat directly on the game's `add_log` passed against code that
   stacked a wrapper per restart. Compare identities with `===` and assert the
   boolean.
+
+## Other players' text, and who may POST to the bridge
+
+**Both sessions.** 2026-11-08, after another player's merchant sent all three
+characters a cm whose body was an HTML `<script>` that would have pm'd from our
+characters, a probe for scripts that log a cm body as HTML.
+
+- **NONE OF OURS LOGS A CM BODY BEFORE A SENDER GATE, AND `Tests/suite_cmgate.js`
+  HOLDS IT.** Audited by the browser session at `9c199ea`. The party scripts' log
+  filter renders server `game_log` lines with `innerHTML` - server-sourced, the
+  same trust as `add_log` - so the rule is that no player string reaches a log
+  call ungated. The suite derives the handlers (every tracked `.js` declaring
+  `on_cm`, the three relay entry points, CaveRun's `character.on('cm')`) and fails
+  on a logging call or `innerHTML` that carries `data.` / `d.message` outside a
+  block or below an early return that tests the sender.
+- **THE BRIDGE REFUSES A POST FROM ANOTHER SITE.** Loopback binding stops another
+  machine, never a page in the operator's own browser, and every route answers
+  `Access-Control-Allow-Origin: *`. `/msg` took any `from`, so any open tab could
+  relay "Dexon"'s orders. `post_origin_ok()` in `Codex/market_bridge.py` allows a
+  POST with no Origin (not a browser), from `https://adventure.land`, or from
+  loopback; `Origin: null` (a page opened from a file - the watchlist's Trade
+  Ledger tab) only on `/trade`, because a sandboxed frame on any site also sends
+  `null`. Anything else is 403 before the body is read, and the console names a
+  refused origin once per 10 minutes. Needs a bridge RESTART to take effect.
+  `Tests/bridge/test_origin.py`.
+- **A TOKEN WAS CONSIDERED AND NOT BUILT.** The Origin header is set by the
+  browser and cannot be forged by a page, which is the whole threat here; a
+  token would cover a local program, which can already read the bridge's files.
 
 ## Trick or Treat
 

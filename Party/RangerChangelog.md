@@ -21,6 +21,28 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v164
+
+**DEXON LEAVES A PARTY HE DOES NOT LEAD, BEFORE HE INVITES.**
+
+- **Why.** Measured by the browser session at 20:43 EST 2026-11-08, after a
+  crypt hand-back: the party was MageofOz's (MageofOz, Dexon, Meltymerch,
+  FatherToken). FatherToken's partyMaker leaves any party not led by Dexon,
+  and Dexon's invite put him straight back - leave and rejoin every ~2s until
+  slot 11 was engaged again.
+- **The mechanism**, from the server source (`node/server.js`, the `party`
+  handler, upstream `2148cf25`): accepting an invite first leaves the
+  accepter's party, then joins the INVITER's party. An invite sent by a member
+  of someone else's party only ever adds to that party.
+- **What.** `partyMaker()` on Dexon: in a party whose leader is not himself,
+  he leaves it (at most once per `PARTY_LEAVE_GAP_MS`, 5s) and invites nobody
+  that tick. Out of it, his next invite founds a party he leads, and each
+  follower's accept takes it out of the old one.
+- **Not in CaveRun.** CaveRun forms its own party with the cave leader, and the
+  loop happens only after the hand-back, under the party scripts. The rule sits
+  where the loop is.
+- **Tests.** `Tests/suite_upkeep.js`.
+
 ## v163
 
 **THE FEAR-FREE RADIUS NO LONGER OVERSHOOTS AT THE SPEED FLOOR.**

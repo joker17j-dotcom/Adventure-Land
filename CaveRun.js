@@ -1,4 +1,11 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v37 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v38 (TEST BUILD)
+// v38 2026-11-09 THE BROWSER SESSION'S 22:30 EST READ OF THE FIRST WHOLE v37 RUN.
+//                While the leader rests the party before a stage or between bats,
+//                every tab drinks to the rest's mp and hp lines, mp first, the
+//                hp-crit drink still first of all: the potions stopped below
+//                them, there is no natural regen, so 9 of a 28.7 min run
+//                were rests running out their 3 min cap. The crypt's death-loop
+//                line names the crypt entrance rather than the cave's landing.
 // v37 2026-11-09 THE OPERATOR'S CRYPT RULINGS OF 2026-11-08 19:49-20:12 EST.
 //                The bats are the point of the run. The route from the entrance
 //                to them is protected: a zone monster seen outside the zone now
@@ -2044,16 +2051,37 @@ async function restockTick() {
 /* hpot1 gives 400 against ~7000 max hp, so potions are a trickle, not a heal -
    the ladder keeps mp topped first because a dry priest heals nobody. Proven
    live 2026-10-06: ~90% land rate, zero errors, mage 608 -> 2875 mp. */
+/* WHILE A CRYPT REST IS OWED THE POTION LINES ARE THE REST'S LINES - v38. The
+   2026-11-08 21:46 run spent 9 of its 28.7 min in capped rests: the rest waits
+   for mp restMpAt and hp restHpAt, the potions drank only below potMpLow and
+   potHpTop, there is no natural regen, and the heal did not top an 87% member
+   - so a rest that began between the two pairs of lines could only run out
+   its cap. The leader stamps run.restOwed each second it rests (stage or bat);
+   every tab reads it, so each drinks itself up. mp first, the hp-crit drink
+   still ahead of both. A browser stopgap (window.__mpTop) did this by hand. */
+function crRestOwed(now) {
+	if (!cryptAuto || character.map !== 'crypt') return false;
+	const run = crunRead();
+	return !!(run && !run.done && typeof run.restOwed === 'number' && now - run.restOwed <= CRYPT_RUN.restOwedMs);
+}
+function crRestStamp(now) {
+	if (now - crRestStampAt < 1000) return;
+	crRestStampAt = now;
+	crunPatch((c) => { c.restOwed = now; });
+}
 function potionTick() {
 	if (stopped || character.rip) return;
 	if (cavePaused()) return;
 	const now = Date.now();
 	if (now - lastPot < CFG.potMs) return;
 	const hpF = character.hp / character.max_hp, mpF = character.mp / character.max_mp;
+	const resting = crRestOwed(now);
+	const mpLine = resting ? Math.max(CFG.potMpLow, CRYPT_RUN.restMpAt) : CFG.potMpLow;
+	const hpLine = resting ? Math.max(CFG.potHpTop, CRYPT_RUN.restHpAt) : CFG.potHpTop;
 	let which = null;
 	if (hpF < CFG.potHpCrit) which = 'use_hp';
-	else if (mpF < CFG.potMpLow) which = 'use_mp';
-	else if (hpF < CFG.potHpTop) which = 'use_hp';
+	else if (mpF < mpLine) which = 'use_mp';
+	else if (hpF < hpLine) which = 'use_hp';
 	if (!which) return;
 	lastPot = now;
 	try { use_skill(which); bump(which === 'use_hp' ? 'hpPots' : 'mpPots'); }
@@ -2157,8 +2185,12 @@ function deathTick() {
 				resting = true; restSince = now; restSaid = false; recovering = false; aim = null; crRejoin = false;
 				if (recent >= 2) {
 					deathLoop = true;
+					/* v38: the crypt's own wording - the browser session's read of the
+					   2026-11-08 runs, where the cave's line named the landing. */
 					clog('DEATH LOOP - ' + recent + ' deaths inside ' + Math.round(REGROUP.deathLoopMs / 60000)
-						+ ' min. Holding at the landing, defending only, until the party collects me or caveResume().', 'red');
+						+ (mode === 'crypt'
+							? ' min. Holding at the crypt entrance, defending only, until the route is clear to walk back or the leader collects me.'
+							: ' min. Holding at the landing, defending only, until the party collects me or caveResume().'), 'red');
 					ev('deathLoop', { recent: recent });
 				} else clog('respawned at ' + Math.round(character.real_x) + ',' + Math.round(character.real_y) + ' - resting before rejoining', 'orange');
 			} else {
@@ -4668,6 +4700,7 @@ const CRYPT_RUN = {
 	restMpAt: 0.8,
 	restSafeR: 300,             // nothing hostile this close to the leader, or he rests at the entrance
 	restMaxMs: 180000,          // rested this long and the stage goes ahead anyway, said in orange
+	restOwedMs: 5000,           // a leader's rest stamp this fresh and every tab drinks to the rest lines - v38
 	/* a2's fight - v35, see the block comment. Every number here is
 	   provisional and the operator's to move. */
 	a2: {
@@ -4734,7 +4767,7 @@ const CRYPT_START_KEY = 'crypt_started';
 const CRYPT_HANDBACK_KEY = 'crypt_handback';
 let crHpHist = {}, crA2Last = null, crAbsorbAt = 0;
 /* v37: Dexon's bat pull, the leader's pull-ready stamp, a2 with no way out. */
-let crPull = null, crPullOkAt = 0, crBatRestSince = 0, crA2Stuck = 0;
+let crPull = null, crPullOkAt = 0, crBatRestSince = 0, crA2Stuck = 0, crRestStampAt = 0;
 const CRYPT_A8_KEY = 'crypt_a8';
 
 /* The run record, shared by every tab: {id, at, leader, dead: {monster id:
@@ -5432,7 +5465,7 @@ function cryptBatStage(run, st, bs, now) {
 	const short = cryptRestShort(null, bs, now);
 	if (short.length) {
 		if (!crBatRestSince) crBatRestSince = now;
-		if (now - crBatRestSince < CRYPT_RUN.restMaxMs) { crSay('batRest', 'resting before the next bat - ' + short.join(', '), '#8b98ab', 30000); return; }
+		if (now - crBatRestSince < CRYPT_RUN.restMaxMs) { crRestStamp(now); crSay('batRest', 'resting before the next bat - ' + short.join(', '), '#8b98ab', 30000); return; }
 	} else crBatRestSince = 0;
 	if (now - crPullOkAt >= 1000) { crPullOkAt = now; crunPatch((c) => { c.pullOk = now; }); }
 }
@@ -5667,6 +5700,7 @@ async function cryptLeaderInside(run, now) {
 		if (!crSearch.restAt) crSearch.restAt = now;
 		if (short.length && now - crSearch.restAt < CRYPT_RUN.restMaxMs) {
 			crSearch.lastAt = 0;
+			crRestStamp(now);
 			const E2 = CRYPT_RUN.entrance;
 			if (!cryptRestSafe() && crDist(crPos(character), E2) > CRYPT_RUN.regroupWithin * 0.6) crGo(E2, 'rest-safe');
 			else crHalt('rest');

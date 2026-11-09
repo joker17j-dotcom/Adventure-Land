@@ -1,4 +1,23 @@
 
+## v144
+
+**MP FROM THE FREE SKILL, `regen_mp`.**
+
+- **Why.** The operator's rulings of 2026-11-08 20:30-20:32 EST: Merchant.js
+  restored no mp at all, and the operator had been drinking for him by hand.
+  "Use the skill, any time it would fully fill."
+- **What.** `potionLoop()` casts `regen_mp` when hp is at or above the drink
+  line (`max_hp - CONFIG.potions.hpThreshold`), the mp missing is at least
+  what the skill restores, and the skill is off cooldown. The amount is
+  `G.skills.regen_mp.output` (100 in upstream `design/skills.js` at
+  `2148cf25`), read through `regenMpAmount()`, with 100 if G is unreadable.
+- **Why the hp guard.** `regen_mp` is in the potion cooldown group with
+  `cooldown_multiplier` 2, so it would hold up an hp drink. It goes only on a
+  tick where no hp drink is due, and an hp drink waiting on its cooldown does
+  not hand the tick to it.
+- **Not `use_mp`.** That drinks one of his potions; the skill costs nothing.
+- **Tests.** `Tests/suite_upkeep.js`, with mutations named in the commit.
+
 ## v143
 
 **THE CIPHER'S LAST ROUND COMES FROM THE PUBLISHED LINEUP, NOT FIXED HOURS - AND

@@ -1040,6 +1040,19 @@ SCHEDULE_OBSERVABLE = {e for e in SCHEDULE_EVENT_SEC
 QUIET = False
 
 
+_REFUSED_ORIGIN_SAID = {}
+
+
+def refused_origin_note(origin, path) -> None:
+    """One console line per refused origin per 10 minutes."""
+    key = str(origin)[:200]
+    now = time.time()
+    if now - _REFUSED_ORIGIN_SAID.get(key, 0) < 600:
+        return
+    _REFUSED_ORIGIN_SAID[key] = now
+    say(f"refused a POST {path} from origin {key!r} - not the game, the bridge or loopback")
+
+
 def say(msg: str) -> None:
     """One line per meaningful event.
 
@@ -3962,6 +3975,35 @@ class GameLog:
         return {"ok": True, "written": len(rows), "rejected": rejected, "file": name}
 
 
+# WHO MAY POST - 2026-11-09, the browser session's finding of 2026-11-08 21:40
+# EST. Loopback binding stops another MACHINE, never a page in the operator's
+# own browser: every route answers Access-Control-Allow-Origin *, and /msg
+# took any "from", so any site open in a tab could relay "Dexon"'s orders
+# (location, boss calls, farm_spot, blacklist_spot, merchant jobs). A browser
+# always sends Origin on a cross-origin POST, so the gate is on that header:
+#   * absent - not a browser page (python, curl): allowed, as before;
+#   * the game's own origin, where every character script runs: allowed;
+#   * the bridge's own pages and anything served from loopback: allowed;
+#   * "null" - a page opened from a file:// path, which is how the market
+#     watchlist's Trade Ledger tab is used - on /trade ONLY. A sandboxed frame
+#     on any site also sends "null", so it is never accepted on the command
+#     route.
+# Everything else is refused 403 before the body is read.
+POST_ORIGINS = ("https://adventure.land",)
+POST_NULL_ORIGIN_PATHS = ("/trade",)
+_LOOPBACK_ORIGIN = re.compile(r"^http://(127\.0\.0\.1|localhost|\[::1\])(:\d{1,5})?$")
+
+
+def post_origin_ok(path: str, origin) -> bool:
+    """May a POST to `path` carrying this Origin header be served."""
+    if origin is None:
+        return True
+    o = str(origin).strip()
+    if o in POST_ORIGINS or _LOOPBACK_ORIGIN.match(o):
+        return True
+    return o == "null" and path in POST_NULL_ORIGIN_PATHS
+
+
 class Handler(BaseHTTPRequestHandler):
     store: Store = None            # set on the server instance below
     ledger: Ledger = None
@@ -4175,6 +4217,14 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
         if path not in ("/scan", "/msg", "/trade", "/skip", "/gamelog", "/cipher"):
             self._send({"ok": False, "error": "no such endpoint"}, 404)
+            return
+        origin = self.headers.get("Origin")
+        if not post_origin_ok(path, origin):
+            # The body is never read, so this connection cannot carry another
+            # request - close it rather than parse the body as one.
+            self.close_connection = True
+            refused_origin_note(origin, path)
+            self._send({"ok": False, "error": "origin not allowed"}, 403)
             return
         try:
             n = int(self.headers.get("Content-Length") or 0)
