@@ -5395,8 +5395,9 @@ slot 11 at 20:17 EST. Runs 3 and 4 (19:40-20:12, v35) both cleared a2, a2 dying 
 the pull spot on run 4. v37 carries the rulings of 19:49-20:12 EST and went into
 slot 11 MID-RUN at 21:31 EST; 21:46-22:15 was its first whole run (cleared, 13
 deaths, all in the a2 stage, 7 bats pulled in 4 min with none). v38 carries the
-browser session's 22:30 EST read of it and is not yet run live. v36 DID run live
-(20:15-20:39) and its hand-back on the last key passed.
+browser session's 22:30 EST read of it and was verified in slot 11 at 22:53 EST
+(blob `6ddffbd3`). v36 DID run live (20:15-20:39) and its hand-back on the last
+key passed.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5627,9 +5628,17 @@ browser session's 22:30 EST read of it and is not yet run live. v36 DID run live
   there is no natural regen, so a member between the two pairs of lines never
   moved. The leader stamps `run.restOwed` each second he rests (before a stage or
   between bats); each tab reads it for `restOwedMs` and drinks mp first, then hp,
-  to the rest's lines - the hp-crit drink still ahead of both. The browser
-  session's `window.__mpTop` stopgap did the same by hand and comes off once v38
-  is verified.
+  to the rest's lines - the hp-crit drink still ahead of both. **VERIFIED LIVE
+  22:58-23:00 EST** with the browser session's `window.__mpTop` stopgap already
+  removed: a stage rest that began at mp 45-61% cleared in about 15s (Dexon mp
+  54 -> 85, MageofOz 67 -> 88), two between-bat rests cleared before the next
+  pull, and no "rested 3 min and still" line.
+- **MELTYMERCH'S SLOT CARRIES `TOGGLES.scoutParked` TRUE WHILE THE REPO SAYS
+  FALSE, AND BOTH ARE RIGHT.** Operator's ruling 2026-11-08 23:01 EST: parked is
+  his toggle for the crypt runs - on overnight, off again the next day - so the
+  repo stays as it is. Measured by slot hash at 22:53 EST: Merchant v144 with
+  that one line different. Do not "fix" either side; a slot hash that differs by
+  that line alone is this, not drift.
 - **A PARTY ACCEPT JOINS THE INVITER'S PARTY, SO THE LEADER MUST LEAD IT** (Ranger
   v164). After the v36 hand-back the party was MageofOz's with Dexon in it:
   FatherToken's partyMaker left it, Dexon's invite put him back, every ~2s. The
