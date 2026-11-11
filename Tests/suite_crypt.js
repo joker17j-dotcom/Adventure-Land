@@ -1441,6 +1441,23 @@ name: 'v38 crypt: while a rest is owed every tab drinks to the rest lines, mp fi
 		t.eq('below the plain mp line, no rest: mp as before', drink({ mp: 500, max_mp: 1000 }, false), ['use_mp']);
 		t.eq('dead: nothing', drink({ rip: true, hp: 0, mp: 0, max_mp: 1000 }, true), []);
 
+		/* v39: this tab's own respawn rest drinks to REGROUP's lines, with
+		   nothing stamped - the 2026-11-11 entrance rest at 68/68/77% mp. */
+		const own = (over, flags) => {
+			const x = cw({ me: 'Dexon', run: R({}), character: over });
+			x.REGROUP = { hpAt: 0.9, mpAt: 0.8 };
+			Object.assign(x, flags);
+			x.potionTick();
+			return x.skills.slice();
+		};
+		t.eq('precondition: mp 68%, not resting, nothing owed: no drink', own({ mp: 680, max_mp: 1000 }, {}), []);
+		t.eq('mp 68%, resting after a respawn: mp', own({ mp: 680, max_mp: 1000 }, { resting: true }), ['use_mp']);
+		t.eq('mp 68%, in a death loop: mp', own({ mp: 680, max_mp: 1000 }, { deathLoop: true }), ['use_mp']);
+		t.eq('hp 88%, resting: hp', own({ hp: 880, mp: 1000, max_mp: 1000 }, { resting: true }), ['use_hp']);
+		t.eq('resting at REGROUP\'s lines: no drink', own({ hp: 900, mp: 800, max_mp: 1000 }, { resting: true }), []);
+		const pot = (src().match(/\nfunction potionTick\(\) \{[\s\S]*?\n\}\n/) || [''])[0];
+		t.ok('it reads REGROUP\'s own lines, not the crypt rest\'s', /REGROUP\.mpAt/.test(pot) && /REGROUP\.hpAt/.test(pot));
+
 		/* The crypt's death-loop line. */
 		t.ok("the crypt's death-loop line names the entrance", /mode === 'crypt'\s*\? ' min\. Holding at the crypt entrance/.test(src()));
 	})();

@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v144
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v145
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -665,6 +665,7 @@ const CONFIG = {
 
 	deliveryAmount: 1000,
 	restockBuffer: 500, // buy a bit past the delivery amount so stock doesn't immediately dip low again
+	restockTakeoverWaitMs: 90000, // how long a restock waits for another walk of his own to let go of the move lock - ensureStock()
 
 	/* Top up while parked, rather than only when a request arrives.
 
@@ -2057,6 +2058,15 @@ async function moveNudge(fn) {
 	finally { travelEnd(); }
 }
 
+/* v145: when ANOTHER of his own walks took over - summonAndWait() stops the
+   walk in flight and holds the lock while he waits for a recipient - the trip
+   is not broken and he is not stuck. The browser session's read of 2026-11-11:
+   "smart_move to main (-179, -72) failed: interrupted", then "town() fallback
+   also failed: move_busy - Meltymerch may be stuck on halloween", ten times in
+   a day, each skipping a delivery batch's restock. So an interrupted walk with
+   the lock now held backs off, as summonAndWait()'s own comment says its
+   caller does, and stamps travelTookOverAt for ensureStock() to wait on. */
+let travelTookOverAt = 0;
 async function travelTo(map, x, y) {
 	try {
 		await moveTo({ map, x, y });
@@ -2065,13 +2075,23 @@ async function travelTo(map, x, y) {
 		// Not a broken trip - another loop is walking, and the backup would
 		// interrupt it again. Silent: a race resolving, not the fault it was
 		// being reported as.
-		if (e && e.moveBusy) return false;
+		if (e && e.moveBusy) { travelTookOverAt = Date.now(); return false; }
+		if (moveLockHeld()) {
+			travelTookOverAt = Date.now();
+			game_log(`smart_move to ${map} (${x}, ${y}) was ${e.reason || e} by another walk of mine - not falling back to town`, 'orange');
+			return false;
+		}
 		game_log(`smart_move to ${map} (${x}, ${y}) failed: ${e.reason || e} - trying town() fallback`, 'red');
 	}
 
 	try {
 		await moveTown();
 	} catch (e) {
+		if (e && e.moveBusy) {
+			travelTookOverAt = Date.now();
+			game_log(`town() fallback refused: another walk of mine holds the move lock - not stuck on ${character.map}`, 'orange');
+			return false;
+		}
 		game_log(`town() fallback also failed: ${e.reason || e} - Meltymerch may be stuck on ${character.map}`, 'red');
 		return false;
 	}
@@ -3022,7 +3042,15 @@ async function ensureStock(itemName, targetAmount) {
 	// To the town spot rather than to Ernis himself.
 	// -> MerchantComments.md#needed
 	if (!atTownSpot() && distance(character, CONFIG.npc) > 300) {
-		if (!(await goToTownSpot())) return false;
+		const t0 = Date.now();
+		if (!(await goToTownSpot())) {
+			/* v145: another walk of his own took over - wait for it to let go
+			   of the lock, then walk once more, rather than skip the batch. */
+			if (travelTookOverAt < t0) return false;
+			const waitMs = CONFIG.restockTakeoverWaitMs || 90000;
+			while (moveLockHeld() && Date.now() - t0 < waitMs) await sleep(500);
+			if (moveLockHeld() || !(await goToTownSpot())) return false;
+		}
 	}
 
 	const needed = targetAmount - quantity(itemName);
@@ -4938,6 +4966,11 @@ const MATERIAL_VENDORS = {
 const SPOT_VENDORS = new Set(['scroll0', 'scroll1', 'scroll2',
 	'cscroll0', 'cscroll1', 'cscroll2']);
 
+/* v145: set when ensureUpgradeMaterials() could not reach the town spot, so
+   a gear visit ends on the first such step instead of logging it once per
+   step - 12 in one visit at 01:33 EST 2026-11-11, every one move_busy. */
+let gearTownUnreachable = false;
+
 // Walk to ONE place and buy everything from there.
 // -> MerchantComments.md#ensureUpgradeMaterials
 async function ensureUpgradeMaterials(scrollName, offeringName) {
@@ -4949,6 +4982,7 @@ async function ensureUpgradeMaterials(scrollName, offeringName) {
 	// One walk covers every material the spot can reach.
 	if (needs.some((n) => SPOT_VENDORS.has(n))) {
 		if (!(await goToTownSpot())) {
+			gearTownUnreachable = true;
 			throw new Error(`Could not reach the town spot for ${needs.join(', ')}`);
 		}
 		for (const n of needs.filter((x) => SPOT_VENDORS.has(x))) await buy(n, 1);
@@ -5982,13 +6016,19 @@ async function gearProgressionLoop() {
 				   when nothing is affordable or available, which ends the visit. */
 				let steps = 0;
 				const cap = CONFIG.gearProgression.maxStepsPerVisit || 12;
+				gearTownUnreachable = false;
 				while (steps < cap) {
 					const combined = await autoCombineOneBaseDuplicateGroup(character.gold);
+					if (gearTownUnreachable) break;
 					const advanced = combined || await attemptBestPlanStep(character.gold);
+					/* A step that could not reach the town spot ends the visit
+					   - the next one would only fail the same way. */
+					if (gearTownUnreachable) break;
 					if (!advanced) break;
 					steps++;
 				}
 				if (steps) game_log(`Gear progression: ${steps} step(s) in one visit`, '#00FF00');
+				if (gearTownUnreachable) game_log('Gear progression: the town spot is out of reach - ending this visit', 'orange');
 
 				state.busy = false;
 			}

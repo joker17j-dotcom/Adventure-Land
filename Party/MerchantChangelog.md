@@ -1,4 +1,27 @@
 
+## v145
+
+**A GEAR VISIT ENDS ON AN UNREACHABLE TOWN SPOT, AND A WALK HIS OWN SUMMON
+TOOK OVER IS NOT "STUCK".** The browser session's read of 2026-11-11.
+
+- **(a) Gear progression.** At 01:33:15 and 01:33:20 EST one visit logged
+  "Gear progression: 12 step(s)", every step "Could not reach the town spot
+  for cscroll0" (move_busy - he was mid-walk to Dexon for mluck), because a
+  failed plan step still returns true and counts. `ensureUpgradeMaterials()`
+  now sets `gearTownUnreachable`, and the visit loop ends on it with one
+  orange line.
+- **(b) The restock walk.** "smart_move to main (-179, -72) failed:
+  interrupted", then "town() fallback also failed: move_busy - Meltymerch may
+  be stuck on halloween", ten times in a day, each skipping the delivery
+  batch's restock ("have 500, need 1000/2000 mpot1"). `summonAndWait()` stops
+  any walk in flight and holds the move lock while he waits for a recipient,
+  and its comment says the interrupted caller backs off - `travelTo()` instead
+  fell back to town and reported him stuck. Now an interrupted walk with the
+  lock held by another of his walks backs off with an orange line, a town
+  fallback refused `move_busy` says he is not stuck, and `ensureStock()` waits
+  up to `CONFIG.restockTakeoverWaitMs` for the lock and walks once more before
+  giving up on the batch's restock.
+
 ## v144
 
 **MP FROM THE FREE SKILL, `regen_mp`.**

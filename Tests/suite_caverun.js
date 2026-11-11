@@ -981,7 +981,9 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 		P.load_code = (n, log) => { P.loads.push([n, log]); P.answer = () => { buffer = '// Dexon (Ranger) - v160'; P.code_slot = ID; }; };
 		if (o.noPersist) delete P.code_persistence_logic;
 		w.cache = cache;
-		lift(w, 'CaveRun.js', ['engageMainSlot']);
+		w.TEAM = ['Dexon', 'FatherToken', 'MageofOz'];
+		P.X = { characters: [{ id: ID, name: 'Dexon' }, { id: '7022', name: 'FatherToken' }] };
+		lift(w, 'CaveRun.js', ['engageMainSlot', 'codeCacheSummary']);
 		return w;
 	};
 
@@ -995,6 +997,33 @@ name: 'leader motion picks the distances, engagement picks the kite rule', fn(t)
 	t.eq('the run flag is left alone, so a page load still runs it', w.cache.run_6011, '1');
 	t.ok('and it says so', /engaged slot is now 6011 \(was 11, via code_persistence_logic\)/.test((w.lines[w.lines.length - 1] || [])[0]));
 	t.eq('the runner is never restarted - start_runner saves the editor into the viewed slot', w.parent.started, 0);
+
+	/* v39: the re-assert. A sibling's read-modify-write of code_cache puts the
+	   old entry back after this tab recorded its own. */
+	w = mk();
+	w.engageMainSlot('Dexon'); w.flush(); w.parent.answer(); w.flush();
+	t.eq('precondition: recorded, and one check queued', [w.parent.get_code_slot(), w.q.length].join(), ID + ',1');
+	w.cache.slot_6011 = CAVE; w.cache.slot_7022 = '11';
+	w.flush();
+	t.eq('a clobbered entry is re-recorded at the next check', w.parent.get_code_slot(), ID);
+	t.ok('and that is an orange line naming what it read', (w.lines[w.lines.length - 1] || [])[1] === 'orange'
+		&& /read 11 again .* re-recorded 6011$/.test(w.lines[w.lines.length - 1][0]));
+	t.eq('the clobber is an event too', JSON.stringify((w.evs.filter((e) => e[0] === 'engageReassert')[0] || [])[1]), JSON.stringify({ read: CAVE, wanted: ID, after: ID }));
+	t.eq('checks keep coming until the list is spent', w.q.length, 1);
+	w.flush(); w.flush();
+	t.eq('then they stop', w.q.length, 0);
+	const fin = w.lines[w.lines.length - 1] || [];
+	t.ok('the last line lists every character\'s entry, by name', /code_cache now reads Dexon 6011, FatherToken 11 \(re-recorded 1x\)$/.test(fin[0]) && fin[1] === '#8b98ab');
+	t.eq('it only writes its own entry - a sibling\'s stale entry is reported, not touched', w.cache.slot_7022, '11');
+	w = mk();
+	w.engageMainSlot('Dexon'); w.flush(); w.parent.answer(); w.flush(); w.flush(); w.flush(); w.flush();
+	t.eq('with nothing clobbered there is no re-record line', w.lines.filter((l) => /re-recorded/.test(l[0])).length, 0);
+	/* the first check is offset by team order - the stagger */
+	const delays = []; w = mk(); w.setTimeout = (f, ms) => { delays.push(ms); w.q.push(f); };
+	w.character.name = 'MageofOz';
+	w.engageMainSlot('MageofOz'); w.flush(); w.parent.answer(); w.flush(); w.flush(); w.flush();
+	t.eq('MageofOz checks at 2000 + 2 x 1500, then 6000 and 15000', delays.slice(2).join(), '5000,6000,15000');
+	t.eq('an unreadable cache is said, not thrown', w.codeCacheSummary({ storage_get: () => '{' }), '(unreadable)');
 
 	w = mk();
 	w.engageMainSlot('Dexon');

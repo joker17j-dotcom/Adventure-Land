@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v91
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v92
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1246,13 +1246,15 @@ function noHang(p, label, ms) {
 
 async function mainLoop() {
 	try {
+		walkBackAndStuckTick();
 		/* Containment first, and the pull owns movement while it runs - the same
 		   stand-down shape as sellingOff and mhBusy below. ragePullTick is NOT
 		   awaited: a pull is two round trips and mainLoop is wrapped in the 10s
 		   HANG_GUARD, which is exactly the trap restockTrip was detached to avoid. */
 		if (await rageGuard()) return setTimeout(mainLoop, 250);
 		if (ragePull.busy || rageNav.busy) return setTimeout(mainLoop, 250);
-		if (ragePullActive()) ragePullTick().catch(e => rageLog('pull tick threw: ' + errText(e), 'red'));
+		/* Holding fire on the walk back means not pulling either - walkBackHoldsFire(). */
+		if (ragePullActive() && !walkBackHoldsFire()) ragePullTick().catch(e => rageLog('pull tick threw: ' + errText(e), 'red'));
 		if (is_disabled(character)) {
 			return setTimeout(mainLoop, 250);
 		}
@@ -1293,7 +1295,9 @@ async function mainLoop() {
 			/* TRAVEL OUTRANKS COHESION, reversing the v34-era order.
 			   -> PriestComments.md#travel-outranks-cohesion-reversing-the-v34-era */
 			/* Between waves an active circle entry holds the ring - circleHoldsSpot(). */
-			if (!get_nearest_monster({ type: home }) && !circleHoldsSpot()) {
+			if (walkBackMove()) {
+				/* walking back after a death, or waiting at a rally - walkBackMove() */
+			} else if (!get_nearest_monster({ type: home }) && !circleHoldsSpot()) {
 				handleReturnHome();
 			} else if (await noHang(holdCohesion(), 'holdCohesion')) {
 			} else if (CONFIG.movement.kiting.enabled) {
@@ -1335,7 +1339,7 @@ async function actionLoop() {
 			const healed = await noHang(tryHeal(), 'tryHeal');
 			if (!healed) {
 				const target = cache.target;
-				if (target && is_in_range(target) && !smart.moving) await noHang(use_skill('attack', target), 'use_skill attack');
+				if (target && is_in_range(target) && !smart.moving && !walkBackHoldsFire()) await noHang(use_skill('attack', target), 'use_skill attack');
 			}
 			return setTimeout(actionLoop, TICK_RATE.action);
 		}
@@ -1358,7 +1362,9 @@ async function skillLoop() {
 
 		const penalty = character.s?.penalty_cd?.ms || 0;
 
-		if (CONFIG.combat.curse) {
+		/* Heals and absorb go on; curse and zaps wait while walking back - walkBackHoldsFire(). */
+		const holdFire = walkBackHoldsFire();
+		if (CONFIG.combat.curse && !holdFire) {
 			await noHang(handleCurse(), 'handleCurse');
 		}
 
@@ -1388,10 +1394,10 @@ async function skillLoop() {
 			}
 		}
 
-		if (CONFIG.combat.zapper && state.current === 'idle') {
+		if (CONFIG.combat.zapper && state.current === 'idle' && !holdFire) {
 			await noHang(handleZapper(), 'handleZapper');
 		}
-		if (CONFIG.combat.zapSpam?.enabled && state.current === 'idle') {
+		if (CONFIG.combat.zapSpam?.enabled && state.current === 'idle' && !holdFire) {
 			await noHang(handleZapSpam(), 'handleZapSpam');
 		}
 
@@ -3736,6 +3742,11 @@ function travelArrived() {
    problem at the target from a spot he never got near, and reading the
    position after the town() fallback would report where town is instead. */
 function noteTravelFailure(dest, why, note) {
+	/* A death interrupted it: not a failed attempt - walkBackDeathInterrupted(). */
+	if (walkBackDeathInterrupted()) {
+		game_log(`Travel "${why}" - a death interrupted the walk, not counted (${travelState.failures}/${TRAVEL.maxAttempts})`, 'orange');
+		return;
+	}
 	/* Standing on it is not failing to reach it. -> travelAtDestination */
 	if (travelAtDestination(dest)) {
 		travelArrived();
@@ -5652,11 +5663,271 @@ function bossHopFollow(data) {
 	}
 }
 
+/* ---------------------------------------------------------------------------
+   AFTER A DEATH, AND STUCK IN A WALL - Ranger v165 / Priest v92 / Mage v115.
+   Byte-identical in all three scripts; Tests/suite_walkback.js fails if the
+   copies drift.
+
+   THE WALK BACK - the operator's ruling of 2026-11-11 11:30-11:31 EST. Dexon
+   died 24 times alone on the ghost farm that morning: he respawned, walked
+   back, and stopped to fight the first ghost spawn about 990 units short of
+   the party. A ghost barely aggroes and cannot catch him, so he died because
+   he opened fire alone.
+   (a) A respawned member holds fire on its way back until it is with the
+       party again - every living party member in view and within
+       WALKBACK.leash, the cohesion leash - and walks past what it meets
+       instead of stopping to farm it.
+   (b) If it dies again before that, the living members go to where it died
+       and wait there until it rejoins; then all move to the farm together.
+       The dead member sends the spot (walkback_rally); its rejoin ends it
+       (walkback_rally_end), and so does WALKBACK.rallyMaxMs.
+   (c) A walk a death interrupted is not a failed travel attempt - see
+       walkBackDeathInterrupted() in noteTravelFailure - so it cannot release
+       an achievement spot (10 failures) or blacklist a farm spot (3).
+   The hold ends at WALKBACK.maxHoldMs whatever the party is doing, with a
+   line saying so: an off-screen dead member it cannot see would otherwise
+   hold it for good.
+
+   STUCK IN A WALL - the browser session's read of 2026-11-09. Dexon stood
+   inside a wall from about 02:40 EST; from 02:46 the pathfinder threw
+   "RangeError: Too many properties to enumerate" (runner_functions.js 2696,
+   the smart_move search) 6,961 times in bursts every 5-6s, and at 05:29 a
+   move from inside the wall jailed him ("Line violation detected"). Three
+   signals, any one of which stops the walk and uses town (WALLSTUCK.townGapMs
+   apart): WALLSTUCK.errCount pathfinder throws inside errWindowMs; no step of
+   probeR open in any of eight directions for probeTicks checks running (the
+   server jails on its own walkable grid; this is a client-side PROXY for
+   standing on a cell it refuses, not that test); and no kill of my own for
+   noKillMs while partyKillsMin party kills were seen, the last inside
+   partyKillFreshMs (it would have fired at about 02:46). Kills come from the
+   socket's "hit" event, which carries the attacker as `hid` and `kill: true`
+   on the killing blow (node/server.js, upstream 2148cf2). The kill check
+   runs only for the classes in noKillClasses - a priest's kills are rare by
+   design - and never on a boss trip or while holding fire. */
+const WALKBACK = {
+	members: ['Dexon', 'MageofOz', 'FatherToken'],
+	leash: 150,                   // the cohesion leash
+	maxHoldMs: 6 * 60 * 1000,     // hold fire no longer than this
+	rallyMaxMs: 10 * 60 * 1000,   // a rally its member never ends lapses
+	rallyArrive: 80,              // this close to the rally spot is there
+};
+const WALLSTUCK = {
+	errWindowMs: 60000, errCount: 3,
+	probeR: 25, probeTicks: 3, everyMs: 1000,
+	townGapMs: 90000,
+	noKillMs: 6 * 60 * 1000, partyKillsMin: 5, partyKillFreshMs: 60000,
+	noKillClasses: ['ranger', 'mage'],
+};
+let walkBack = { holding: false, since: 0, wasRip: false, diedAt: 0, lastAlive: null };
+let walkRally = null;          // { for, map, x, y, at } - the party waits here for `for`
+let walkRallyFlight = false;
+let wallStuck = { hooked: false, errs: [], walled: 0, checkedAt: 0, townAt: 0, ownKillAt: 0, partyKills: 0, partyKillAt: 0 };
+
+function walkBackHoldsFire() { return !!walkBack.holding && !character.rip; }
+
+/* With the party: every living member on this shard in view and inside the
+   leash. A member not in parent.party is on another shard or offline, and a
+   dead one is not the party to rejoin. */
+function walkBackWithParty() {
+	const P = typeof parent !== 'undefined' ? parent : {};
+	const ents = P.entities || {}, party = P.party || {};
+	for (const nm of WALKBACK.members) {
+		if (nm === character.name || !party[nm]) continue;
+		const e = ents[nm];
+		if ((e && e.rip) || (!e && party[nm].rip)) continue;
+		if (!e) return false;
+		const ex = e.real_x != null ? e.real_x : e.x, ey = e.real_y != null ? e.real_y : e.y;
+		if (Math.hypot(ex - character.real_x, ey - character.real_y) > WALKBACK.leash) return false;
+	}
+	return true;
+}
+
+function walkRallyTell(payload) {
+	for (const nm of WALKBACK.members) {
+		if (nm === character.name) continue;
+		try { plSend(nm, payload); } catch (e) { }
+	}
+}
+
+function walkRallyEnd(why, tell) {
+	const r = walkRally;
+	walkRally = null;
+	if (r && tell && r.for === character.name) walkRallyTell({ message: 'walkback_rally_end', for: character.name, why: why });
+}
+
+function walkBackTick() {
+	const now = Date.now();
+	if (character.rip) {
+		if (!walkBack.wasRip) {
+			walkBack.wasRip = true;
+			walkBack.diedAt = now;
+			const p = walkBack.lastAlive;
+			/* (b): died again before rejoining - the party comes to this spot. */
+			if (walkBack.holding && p) {
+				walkRally = { for: character.name, map: p.map, x: p.x, y: p.y, at: now };
+				walkRallyTell({ message: 'walkback_rally', for: character.name, map: p.map, x: p.x, y: p.y });
+				game_log('[walkback] died again before reaching the party - asking it to wait at ' + p.map + ' ' + p.x + ',' + p.y, 'orange');
+			}
+		}
+		return;
+	}
+	walkBack.lastAlive = { map: character.map, x: Math.round(character.real_x), y: Math.round(character.real_y) };
+	if (walkRally && now - walkRally.at > WALKBACK.rallyMaxMs) {
+		game_log('[walkback] the rally for ' + walkRally.for + ' lapsed - back to the farm', 'orange');
+		walkRallyEnd('lapsed', true);
+	}
+	if (walkBack.wasRip) {
+		walkBack.wasRip = false;
+		walkBack.holding = true;
+		walkBack.since = now;
+		game_log('[walkback] respawned - holding fire until I am back with the party', '#FFD700');
+	}
+	if (!walkBack.holding) return;
+	if (walkBackWithParty()) {
+		walkBack.holding = false;
+		game_log('[walkback] back with the party - firing again', '#7FD98A');
+		if (walkRally && walkRally.for === character.name) walkRallyEnd('rejoined', true);
+		return;
+	}
+	if (now - walkBack.since > WALKBACK.maxHoldMs) {
+		walkBack.holding = false;
+		game_log('[walkback] held fire ' + Math.round(WALKBACK.maxHoldMs / 60000) + ' min without reaching the party - firing again', 'orange');
+		if (walkRally && walkRally.for === character.name) walkRallyEnd('timeout', true);
+	}
+}
+
+/* (c): a travel failure that a death caused. */
+function walkBackDeathInterrupted() {
+	if (character.rip) return true;
+	return !!(walkBack.diedAt && typeof travelState !== 'undefined' && walkBack.diedAt >= travelState.startedAt);
+}
+
+function walkRallyGo(r) {
+	if (character.map === r.map && Math.hypot(character.real_x - r.x, character.real_y - r.y) <= WALKBACK.rallyArrive) return;
+	if (walkRallyFlight) return;
+	travelCancel();                   // a farm trip would walk past it
+	if (smart.moving) return;
+	walkRallyFlight = true;
+	let p;
+	try { p = safeSmartMove({ map: r.map, x: r.x, y: r.y }); }
+	catch (e) { walkRallyFlight = false; return; }
+	Promise.resolve(p).catch(() => { }).then(() => { walkRallyFlight = false; });
+}
+
+/* Movement while walking back or waiting at a rally. True when it owns this
+   tick's movement. A member at a rally for another waits there (attacking
+   what reaches it, as the attack loops decide); a member walking back goes to
+   its own rally if there is one, else to the farm, and does not stop for a
+   farm monster on the way - the stop that killed Dexon. */
+function walkBackMove() {
+	if (character.rip) return false;
+	const me = character.name;
+	if (walkRally && walkRally.for !== me) { walkRallyGo(walkRally); return true; }
+	if (!walkBack.holding) return false;
+	if (walkRally && walkRally.for === me) { walkRallyGo(walkRally); return true; }
+	if (typeof destination === 'undefined' || !destination) return false;
+	if (character.map === destination.map && Math.hypot(character.real_x - destination.x, character.real_y - destination.y) <= WALKBACK.leash) return false;
+	handleReturnHome();
+	return true;
+}
+
+function walkBackOnCall(from, data) {
+	if (WALKBACK.members.indexOf(from) < 0 || from === character.name || !data || data.for !== from) return;
+	const sh = data._plshard;
+	if (sh && typeof parent !== 'undefined' && String(sh.region) + String(sh.name) !== String(parent.server_region) + String(parent.server_identifier)) return;
+	if (data.message === 'walkback_rally_end') {
+		if (walkRally && walkRally.for === from) {
+			walkRally = null;
+			game_log('[walkback] ' + from + ' is back with the party - back to the farm', '#7FD98A');
+		}
+		return;
+	}
+	if (typeof data.map !== 'string' || !isFinite(data.x) || !isFinite(data.y)) return;
+	walkRally = { for: from, map: data.map, x: +data.x, y: +data.y, at: Date.now() };
+	game_log('[walkback] ' + from + ' died again walking back - going to where it died to wait for it', 'orange');
+}
+
+function wallStuckOnError(ev) {
+	const m = String((ev && (ev.message || (ev.error && ev.error.message))) || '');
+	if (!/RangeError|Too many properties to enumerate/.test(m)) return;
+	wallStuck.errs.push(Date.now());
+}
+function wallStuckOnHit(d) {
+	if (!d || !d.kill || !d.hid) return;
+	if (d.hid === character.name) { wallStuck.ownKillAt = Date.now(); wallStuck.partyKills = 0; return; }
+	if (WALKBACK.members.indexOf(d.hid) >= 0) { wallStuck.partyKills++; wallStuck.partyKillAt = Date.now(); }
+}
+/* Once per page. The socket outlives a runner restart, so the previous
+   script's listener is taken off first rather than stacked. */
+function wallStuckHook() {
+	if (wallStuck.hooked) return;
+	wallStuck.hooked = true;
+	wallStuck.ownKillAt = Date.now();
+	try { if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('error', wallStuckOnError); } catch (e) { }
+	try {
+		const s = parent.socket;
+		if (parent.__wallStuckHit && s.off) s.off('hit', parent.__wallStuckHit);
+		parent.__wallStuckHit = (d) => { try { wallStuckOnHit(d); } catch (e) { } };
+		s.on('hit', parent.__wallStuckHit);
+	} catch (e) { }
+}
+
+function wallStuckTown(why, now) {
+	if (now - wallStuck.townAt < WALLSTUCK.townGapMs) return false;
+	wallStuck.townAt = now;
+	wallStuck.errs = []; wallStuck.walled = 0; wallStuck.ownKillAt = now; wallStuck.partyKills = 0;
+	game_log('[stuck] ' + why + ' - stopping the walk and using town', 'red');
+	travelCancel();
+	try { if (typeof stop === 'function') { stop('smart'); stop('move'); } } catch (e) { }
+	try { Promise.resolve(use_skill('use_town')).catch((e) => game_log('[stuck] town refused: ' + ((e && (e.reason || e.message)) || e), 'orange')); }
+	catch (e) { game_log('[stuck] town refused: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
+	return true;
+}
+
+function wallStuckTick() {
+	const now = Date.now();
+	wallStuckHook();
+	if (now - wallStuck.checkedAt < WALLSTUCK.everyMs) return;
+	wallStuck.checkedAt = now;
+	if (character.rip || character.map === 'jail') return;
+	wallStuck.errs = wallStuck.errs.filter((t) => now - t <= WALLSTUCK.errWindowMs);
+	if (wallStuck.errs.length >= WALLSTUCK.errCount) {
+		wallStuckTown('the pathfinder threw ' + wallStuck.errs.length + 'x in ' + Math.round(WALLSTUCK.errWindowMs / 1000) + 's', now);
+		return;
+	}
+	if (!smart.moving && !character.moving && typeof can_move_to === 'function') {
+		let open = false;
+		for (let i = 0; i < 8 && !open; i++) {
+			const a = i * Math.PI / 4;
+			open = !!can_move_to(character.real_x + Math.cos(a) * WALLSTUCK.probeR, character.real_y + Math.sin(a) * WALLSTUCK.probeR);
+		}
+		wallStuck.walled = open ? 0 : wallStuck.walled + 1;
+		if (wallStuck.walled >= WALLSTUCK.probeTicks) {
+			wallStuckTown('walled in: no step of ' + WALLSTUCK.probeR + ' is open at ' + Math.round(character.real_x) + ',' + Math.round(character.real_y) + ' on ' + character.map, now);
+			return;
+		}
+	} else wallStuck.walled = 0;
+	const trip = typeof bossState !== 'undefined' && bossState && bossState.trip;
+	if (WALLSTUCK.noKillClasses.indexOf(character.ctype) >= 0 && !trip && !walkBack.holding
+		&& now - wallStuck.ownKillAt >= WALLSTUCK.noKillMs && wallStuck.partyKills >= WALLSTUCK.partyKillsMin
+		&& now - wallStuck.partyKillAt <= WALLSTUCK.partyKillFreshMs) {
+		wallStuckTown('no kill of my own in ' + Math.round((now - wallStuck.ownKillAt) / 60000) + ' min while the party made ' + wallStuck.partyKills, now);
+	}
+}
+
+/* Called first in mainLoop, ahead of every early return - dead or disabled
+   included, since the death is what it watches for. */
+function walkBackAndStuckTick() {
+	try { walkBackTick(); } catch (e) { console.error('walkBackTick:', e); }
+	try { wallStuckTick(); } catch (e) { console.error('wallStuckTick:', e); }
+}
+
 function on_cm(name, data) {
 	if (!plFirstTime(data && data._plid)) return;   // same message may arrive twice: in-game and relayed
 	if (data.message === 'boss') { bossOnCall(name, data); return; }
 	if (data.message === 'rageentry') { rageEntryOnCall(name, data); return; }
 	if (data.message === 'ragetown') { rageTownOnCall(name, data); return; }
+	if (data.message === 'walkback_rally' || data.message === 'walkback_rally_end') { walkBackOnCall(name, data); return; }
 	if (name === 'Dexon' && typeof data.message === 'string' && data.message.indexOf('mh_') === 0) { mhOnMessage(data); return; }
 	if (name == "Dexon") {
 		if (data.message === 'farm_spot') {

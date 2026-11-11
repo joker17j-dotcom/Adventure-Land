@@ -21,6 +21,37 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Mage.js, and bump the version
 on that line in the same commit.
 
+## v115
+
+**THE WALK BACK AFTER A DEATH, AND STUCK IN A WALL** - a block shared
+byte-identical with Ranger v165 and Priest v92, checked by `Tests/suite_walkback.js`.
+
+- **The walk back, the operator's ruling of 2026-11-11 11:30-11:31 EST.**
+  Dexon died 24 times alone on the ghost farm that morning: he respawned,
+  walked back, and stopped to fight the first ghost spawn about 990 units
+  short of the party. (a) A respawned member holds fire - attacks, skills
+  that damage, the rage pull - until every living party member in view is
+  inside the cohesion leash, and walks past farm monsters to the farm instead
+  of stopping. Heals and absorb go on. (b) If it dies again before that, it
+  sends `walkback_rally` with where it died, the living members go there and
+  wait, and its rejoin sends `walkback_rally_end`; a rally lapses after
+  `WALKBACK.rallyMaxMs`. (c) `noteTravelFailure` does not count a failure a
+  death caused, so a death cannot release an achievement spot (10 failures)
+  or blacklist a farm spot (3). The hold ends at `WALKBACK.maxHoldMs` with an
+  orange line, because a dead member out of view could hold it for good.
+- **Stuck in a wall, the browser session's read of 2026-11-09.** Dexon stood
+  in a wall from about 02:40 EST, the smart_move search threw
+  "RangeError: Too many properties to enumerate" 6,961 times, and a move from
+  inside the wall jailed him at 05:29. Any of three signals now stops the walk
+  and uses town: `WALLSTUCK.errCount` pathfinder throws inside a minute; no
+  step of `probeR` open in eight directions for `probeTicks` checks running (a
+  client-side proxy - the server jails on its own walkable grid); or, for a
+  ranger or mage off a boss trip, no kill of its own for `noKillMs` while the
+  party made `partyKillsMin` kills, the last a minute old at most (it would
+  have fired at about 02:46). Kills are read from the socket's `hit` event,
+  whose `hid` is the attacker and whose `kill` marks the killing blow
+  (`node/server.js`, upstream `2148cf25`).
+
 ## v114
 
 **THE FEAR-FREE RADIUS NO LONGER OVERSHOOTS AT THE SPEED FLOOR (Ranger v163).**

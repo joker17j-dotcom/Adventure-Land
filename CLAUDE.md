@@ -4082,6 +4082,47 @@ reading.
   REPEATED DOES NOT FIRE**: "a walk was asked for" lapses at `stuckMs` from the
   ask, the moment the unmoved clock could first fire, so the rule relies on the
   loops re-asking each tick - pinned as shipped in `Tests/suite_familyfleet.js`.
+- **A RESPAWNED MEMBER HOLDS FIRE UNTIL IT IS BACK WITH THE PARTY** - Ranger
+  v165 / Priest v92 / Mage v115, the operator's ruling of 2026-11-11 11:30-11:31
+  EST, verbatim: "if a party member is dying even after holding fire while
+  routing back to the party the party moves to the death location until the
+  revived party member rejoins and then move together to the farm spot", and
+  "regaining full cohesion could be a way to identify this". Dexon had died 24
+  times alone on the ghost farm: he respawned, walked back, and stopped to
+  fight the first ghost spawn ~990 units short - mainLoop's
+  `get_nearest_monster({type: home})` sees a farm monster ANYWHERE and drops the
+  walk home. A ghost barely aggroes and cannot catch him; opening fire is what
+  killed him. So: (a) attacks, damage skills and the rage pull wait until every
+  living member in view is inside the cohesion leash, and the walk goes on past
+  farm monsters; (b) a second death before that sends `walkback_rally` and the
+  living members go to the death spot and wait for its `walkback_rally_end`;
+  (c) `noteTravelFailure` does not count a failure a death caused, so the
+  achievement queue's 10-failure release cannot be reached by dying, which is
+  how ghost@halloween was released for crab@main twice that morning. One block,
+  byte-identical in all three, pinned by `Tests/suite_walkback.js`.
+- **STUCK IN A WALL -> TOWN, SAME BLOCK.** Dexon stood in a wall from ~02:40 EST
+  2026-11-09; the smart_move search threw "RangeError: Too many properties to
+  enumerate" 6,961 times (runner line 2696), and a move from inside the wall
+  jailed him ("Line violation detected" - the server jails a move whose current
+  or target cell is level >= 2 on its walkable grid). Any of three signals now
+  stops the walk and uses town: repeated pathfinder throws, seen through the
+  CODE window's `error` event; no step open in eight directions, a client-side
+  proxy and not the server's grid test; or, for a ranger or mage off a boss
+  trip, no kill of its own for `WALLSTUCK.noKillMs` while the party kills. **OWN
+  KILLS COME FROM THE SOCKET'S `hit` EVENT**, which carries `hid` (the attacker)
+  and `kill: true` on the killing blow (`node/server.js`, upstream `2148cf25`) -
+  the game-log kill line is party-wide and would need the log filter's listener,
+  which removes every `game_log` listener when it installs.
+- **A WALK THE MERCHANT'S OWN SUMMON TOOK OVER IS NOT "STUCK"** (Merchant v145).
+  `summonAndWait()` stops any walk in flight and holds the move lock while he
+  waits for a recipient; its comment always said the interrupted caller "backs
+  off", and `travelTo()` instead fell back to town, was refused `move_busy`, and
+  logged "Meltymerch may be stuck" - ten times on 2026-11-11, each skipping a
+  delivery batch's restock. Now it backs off in orange and `ensureStock()` waits
+  for the lock and walks once more. The same build ends a gear visit on the
+  first step that cannot reach the town spot, which had logged twelve.
+  **A COMMENT THAT DESCRIBES THE CALLER'S BEHAVIOUR IS A CLAIM ABOUT ANOTHER
+  FUNCTION**, and nothing checked it until the symptom did.
 
 ## Self-chained async loops: a real hazard, but NOT what was wrong
 
@@ -5361,6 +5402,17 @@ a day.
   is not the character slot. **VERIFIED LIVE** by the browser session on the
   2026-11-04 and 2026-11-08 runs: all three logged the engaged slot as the
   character slot, and the boss hops of 2026-11-05 loaded no CaveRun.
+  **AND THE THREE HAND-BACKS RACE, BECAUSE `code_cache` IS ONE OBJECT.** It
+  holds every character's `slot_<id>` in one localStorage key, and each tab
+  writes it read-modify-write, so a tab whose read predates a sibling's write
+  puts that sibling's OLD entry back. The browser session's read of the
+  01:22:41 EST 2026-11-09 hand-back: FatherToken's entry read "11" while his
+  page ran Priest, and Dexon's reload at 05:37 ran slot 11. CaveRun v39
+  re-reads its own entry at `CFG.exit.reassertMs` (the first offset by place in
+  `TEAM`), writes it again if a sibling clobbered it, and logs every
+  character's entry by name (`codeCacheSummary()`) - only its OWN entry is ever
+  written, so a stale sibling entry is reported, and that sibling's own check
+  repairs it.
 - **THE CAVE LEADER DRIVES ITSELF AS OF CaveRun v27** - operator's ruling
   2026-10-24, "from leader manually driven to a fully automated cave run". It
   makes the call the objective buttons make: a stair goal's onclick is
@@ -5397,7 +5449,8 @@ slot 11 MID-RUN at 21:31 EST; 21:46-22:15 was its first whole run (cleared, 13
 deaths, all in the a2 stage, 7 bats pulled in 4 min with none). v38 carries the
 browser session's 22:30 EST read of it and was verified in slot 11 at 22:53 EST
 (blob `6ddffbd3`). v36 DID run live (20:15-20:39) and its hand-back on the last
-key passed.
+key passed. v39 (2026-11-11) carries the browser session's 11:33 EST block: the
+respawn rest drinks, and the hand-back's `code_cache` re-assert.
 
 - **`cryptRun()` ON THE LEADER STARTS ALL THREE; `caveCrypt()` IS UNCHANGED.**
   The leader is the cave leader (`leaderName()`, FatherToken by default). It
@@ -5633,6 +5686,12 @@ key passed.
   removed: a stage rest that began at mp 45-61% cleared in about 15s (Dexon mp
   54 -> 85, MageofOz 67 -> 88), two between-bat rests cleared before the next
   pull, and no "rested 3 min and still" line.
+  **THE RESPAWN REST NEVER STAMPED IT** - the browser session, 23:08 EST
+  2026-11-08: all three at the entrance on 100% hp and 68/68/77% mp, nobody
+  drinking, `restOwed` 131s old, while `REGROUP.mpAt` held them. That rest is
+  each tab's OWN (`resting`, and `deathLoop`), so since v39 `potionTick` reads
+  it locally and drinks to `REGROUP`'s lines while it lasts, rather than the
+  leader stamping a rest only the resting tab knows about.
 - **MELTYMERCH'S SLOT CARRIES `TOGGLES.scoutParked` TRUE WHILE THE REPO SAYS
   FALSE, AND BOTH ARE RIGHT.** Operator's ruling 2026-11-08 23:01 EST: parked is
   his toggle for the crypt runs - on overnight, off again the next day - so the

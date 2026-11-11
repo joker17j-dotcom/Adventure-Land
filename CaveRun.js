@@ -1,4 +1,12 @@
-// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v38 (TEST BUILD)
+// CaveRun.js - one script for Dexon / FatherToken / MageofOz - v39 (TEST BUILD)
+// v39 2026-11-11 THE BROWSER SESSION'S 11:33 EST BLOCK.
+//                A tab's own respawn rest (and a death loop) drinks to REGROUP's
+//                lines: all three sat at the entrance on 68/68/77% mp while
+//                REGROUP.mpAt held them, because that rest never stamped
+//                restOwed. The hand-back re-reads code_cache at staggered
+//                delays and writes this tab's entry again if a sibling's
+//                read-modify-write put the old one back (FatherToken read "11"
+//                after three hand-backs), then logs every character's entry.
 // v38 2026-11-09 THE BROWSER SESSION'S 22:30 EST READ OF THE FIRST WHOLE v37 RUN.
 //                While the leader rests the party before a stage or between bats,
 //                every tab drinks to the rest's mp and hp lines, mp first, the
@@ -506,8 +514,12 @@ const CFG = {
 	   dump to the game log and load this character's own main slot by name -
 	   load_code(character.name), measured by the browser session to resolve
 	   the character slot by its name. engageMs bounds the wait for the page
-	   to load that slot into its editor - see engageMainSlot(). */
-	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000, handback: true, engageMs: 15000 },
+	   to load that slot into its editor - see engageMainSlot().
+	   reassertMs are the delays at which the hand-back re-reads code_cache and
+	   writes this tab's entry again if a sibling put the old one back; the
+	   first is offset by reassertStaggerMs per place in TEAM (v39). */
+	exit: { enabled: true, settleMs: 15000, chestWaitMs: 90000, retryMs: 10000, finalMs: 60000, handback: true, engageMs: 15000,
+		reassertMs: [2000, 6000, 15000], reassertStaggerMs: 1500 },
 	/* THE LAUNCHER - v26. On load outside the cave, ask the server whether
 	   today's visit is spent (interaction `info`, which answers
 	   {visit: {available, resets, resume}}). Available: restock and walk to
@@ -2075,9 +2087,15 @@ function potionTick() {
 	const now = Date.now();
 	if (now - lastPot < CFG.potMs) return;
 	const hpF = character.hp / character.max_hp, mpF = character.mp / character.max_mp;
-	const resting = crRestOwed(now);
-	const mpLine = resting ? Math.max(CFG.potMpLow, CRYPT_RUN.restMpAt) : CFG.potMpLow;
-	const hpLine = resting ? Math.max(CFG.potHpTop, CRYPT_RUN.restHpAt) : CFG.potHpTop;
+	/* v39: this tab's OWN rest (deathTick's respawn rest, which restTick ends
+	   at REGROUP's lines) drinks to those lines too - the browser session's read
+	   of 2026-11-11, where all three sat at the entrance on 68/68/77% mp while
+	   REGROUP.mpAt held them and nobody drank, because that rest never stamped
+	   restOwed. Read locally rather than stamped: only this tab knows it rests. */
+	const owed = crRestOwed(now), own = !!(resting || deathLoop);
+	let mpLine = CFG.potMpLow, hpLine = CFG.potHpTop;
+	if (owed) { mpLine = Math.max(mpLine, CRYPT_RUN.restMpAt); hpLine = Math.max(hpLine, CRYPT_RUN.restHpAt); }
+	if (own) { mpLine = Math.max(mpLine, REGROUP.mpAt); hpLine = Math.max(hpLine, REGROUP.hpAt); }
 	let which = null;
 	if (hpF < CFG.potHpCrit) which = 'use_hp';
 	else if (mpF < mpLine) which = 'use_mp';
@@ -3416,23 +3434,70 @@ function engageMainSlot(name) {
 			return;
 		}
 		let how = 'code_persistence_logic';
-		try {
-			if (typeof P.code_persistence_logic === 'function') P.code_persistence_logic();
-			else {
-				how = 'code_cache';
-				const data = JSON.parse(P.storage_get('code_cache') || '{}');
-				data['slot_' + P.real_id] = viewed;
-				P.storage_set('code_cache', JSON.stringify(data));
-			}
-		} catch (e) { clog('hand back: recording slot ' + viewed + ' as engaged failed (' + e + ')', 'red'); }
+		const persist = () => {
+			try {
+				if (typeof P.code_persistence_logic === 'function') P.code_persistence_logic();
+				else {
+					how = 'code_cache';
+					const data = JSON.parse(P.storage_get('code_cache') || '{}');
+					data['slot_' + P.real_id] = viewed;
+					P.storage_set('code_cache', JSON.stringify(data));
+				}
+			} catch (e) { clog('hand back: recording slot ' + viewed + ' as engaged failed (' + e + ')', 'red'); }
+		};
+		persist();
 		const after = typeof P.get_code_slot === 'function' ? slotOf(() => P.get_code_slot()) : null;
 		if (after && after === viewed) clog('hand back: engaged slot is now ' + after + ' (was ' + before + ', via ' + how + ')', '#7FD98A');
 		else clog('hand back: engaged slot still reads ' + after + ' (wanted ' + viewed + ', was ' + before
 			+ ') - a hop will run it; engage ' + name + ' by hand', 'red');
 		ev('engage', { before: before, viewed: viewed, after: after, how: how });
+		/* v39: RE-ASSERT AFTER A DELAY - the browser session's read of the
+		   2026-11-11 hand-back. code_cache is ONE localStorage object holding
+		   every character's slot, and the three tabs hand back together; each
+		   writes it read-modify-write, so a tab whose read predates a sibling's
+		   write puts that sibling's OLD entry back. FatherToken's read "11" after
+		   the three hand-backs and Dexon's next load ran slot 11. So each tab
+		   checks its own entry again at staggered delays (team order offsets the
+		   first check, so the re-writes do not collide again) and writes it once
+		   more if a sibling clobbered it, then logs every character's entry. */
+		const idx = Math.max(0, TEAM.indexOf(character.name));
+		const ex = CFG.exit || {};
+		const waits = (ex.reassertMs || [2000, 6000, 15000]).slice();
+		if (waits.length) waits[0] += idx * (ex.reassertStaggerMs || 1500);
+		let fixes = 0;
+		const verify = () => {
+			const now = typeof P.get_code_slot === 'function' ? slotOf(() => P.get_code_slot()) : null;
+			if (now !== viewed) {
+				fixes++;
+				persist();
+				const again = typeof P.get_code_slot === 'function' ? slotOf(() => P.get_code_slot()) : null;
+				clog('hand back: my engaged slot read ' + now + ' again - a sibling\'s write put it back; re-recorded '
+					+ viewed + (again === viewed ? '' : ' but it still reads ' + again), again === viewed ? 'orange' : 'red');
+				ev('engageReassert', { read: now, wanted: viewed, after: again });
+			}
+			if (waits.length) { setTimeout(verify, waits.shift()); return; }
+			clog('hand back: code_cache now reads ' + codeCacheSummary(P) + (fixes ? ' (re-recorded ' + fixes + 'x)' : ''),
+				slotOf(() => P.get_code_slot()) === viewed ? '#8b98ab' : 'red');
+		};
+		setTimeout(verify, waits.shift());
 	};
 	setTimeout(poll, 250);
 	return true;
+}
+
+/* Every character's engaged slot as code_cache holds it, by name where the
+   page's character list names the id. Derived from the cache, so a tab logs
+   the others' entries too - the read that shows a clobber. */
+function codeCacheSummary(P) {
+	let data = {};
+	try { data = JSON.parse(P.storage_get('code_cache') || '{}') || {}; } catch (e) { return '(unreadable)'; }
+	const names = {};
+	try { ((P.X && P.X.characters) || []).forEach((c) => { if (c && c.id != null) names[String(c.id)] = c.name; }); } catch (e) {}
+	const out = Object.keys(data).filter((k) => /^slot_/.test(k)).sort().map((k) => {
+		const id = k.slice(5);
+		return (names[id] || id) + ' ' + data[k];
+	});
+	return out.length ? out.join(', ') : '(no slot entries)';
 }
 
 let launcher = { rid: null, askedAt: 0, answered: false, handBackAt: 0, said: false };
