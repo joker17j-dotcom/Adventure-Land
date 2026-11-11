@@ -1,5 +1,5 @@
 // ============================================================================
-// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v145
+// Meltymerch (Merchant) - slot CH_aLtHealaSgKdmOsDWpNl8scE9NhXk - v146
 //
 // CHANGELOG: read Party/MerchantChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -4629,9 +4629,13 @@ const NPC_MAX_SCROLL_GRADE = 2;
 // paid, a 12.8x gap. intamulet and intbelt by the operator's ruling of
 // 2026-10-25: their market anchors disagreed on every read for two days (ask
 // 475,000 against Ponty 36,000; ask 99,999,999,999 against Ponty 60,000), so
-// each was handed over as value_unknown on every page.
+// each was handed over as value_unknown on every page. dexamulet by the
+// operator's ruling of 2026-11-11 12:47 EST, for the same reason: bid 372,140
+// against Ponty 36,000, about 10x, so every +0/+1/+2 was "handed over for
+// manual upgrade" - 226 such lines for +0 on 2026-11-11 alone - since only
+// attemptBestPlanStep() compounds a gear-plan item (v129).
 const PONTY_PRICED_ITEMS = new Set(['harmor', 'firebow', 'dexearring', 'frankypants', 'wbook0', 'coat', 'dexbelt',
-	'intamulet', 'intbelt']);
+	'intamulet', 'intbelt', 'dexamulet']);
 
 // YOUR values, checked FIRST and beating every other source, a live market read
 // included. This table is the operator's lever, so anything in it is a decision

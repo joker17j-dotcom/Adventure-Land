@@ -27,7 +27,8 @@ function ffWorld(over = {}) {
 	w.calls = calls;
 	w.T = 1000000;
 	w.Date = { now: () => w.T };
-	lift(w, FF, ['STUCK', 'stuckState', 'stuckNoteIntent', 'stuckNotePath', 'stuckReason', 'stuckTick']);
+	w.stuckTownFrom = null;
+	lift(w, FF, ['STUCK', 'stuckState', 'stuckNoteIntent', 'stuckNotePath', 'stuckReason', 'stuckTick', 'STUCK_TOWN', 'stuckTownHeld', 'stuckTownLandCheck']);
 	return w;
 }
 
@@ -153,3 +154,32 @@ module.exports = [
 		},
 	},
 ];
+
+module.exports.push({
+	name: 'the town channel: held after the cast, said once when it did not land',
+	async fn(t) {
+		let w = ffWorld();
+		t.eq('precondition: nothing cast, not held', w.stuckTownHeld(), false);
+		w.stuckNotePath(false); w.stuckNotePath(false);
+		t.eq('precondition: it towns', await w.stuckTick(), true);
+		t.eq('held at once', w.stuckTownHeld(), true);
+		t.eq('the cast spot is stamped', JSON.stringify(w.stuckTownFrom), JSON.stringify({ at: w.T, map: 'winterland', x: 0, y: 0 }));
+		w.T += w.STUCK_TOWN.holdMs;
+		t.eq('not held at holdMs with no channel seen', w.stuckTownHeld(), false);
+		w.character.c = { town: { ms: 800 } };
+		t.eq('held while the game shows the channel', w.stuckTownHeld(), true);
+		w.T += 4000; w.stuckTownLandCheck(w.T);
+		t.eq('not judged while channelling', w.stuckTownFrom !== null, true);
+		w.character.c = {};
+		w.stuckTownLandCheck(w.T);
+		t.ok('on the cast spot past landCheckMs: an orange line', w.logs.some((m) => /town cast did not land/.test(m)));
+		t.eq('once', w.stuckTownFrom, null);
+		w = ffWorld();
+		w.stuckNotePath(false); w.stuckNotePath(false); await w.stuckTick();
+		w.character.x = 900; w.T += w.STUCK_TOWN.landCheckMs; w.stuckTownLandCheck(w.T);
+		t.eq('moved: landed, nothing said', w.logs.some((m) => /did not land/.test(m)), false);
+		const tick = extract(FF, 'rangerTick');
+		t.ok('rangerTick stands down while held, ahead of the rage guard and the stuck check',
+			/stuckTownLandCheck\(Date\.now\(\)\);\n\tif \(stuckTownHeld\(\)\) return;\n[\s\S]*rageGuard\(\)[\s\S]*stuckTick\(\)/.test(tick));
+	},
+});

@@ -18,7 +18,8 @@ const path = require('path');
 const FILES = ['Party/Ranger.js', 'Party/Priest.js', 'Party/Mage.js'];
 const NAMES = ['WALKBACK', 'WALLSTUCK', 'walkBack', 'wallStuck', 'walkBackHoldsFire', 'walkBackWithParty', 'walkRallyTell',
 	'walkRallyEnd', 'walkBackTick', 'walkBackDeathInterrupted', 'walkRallyGo', 'walkBackMove', 'walkBackOnCall',
-	'wallStuckOnError', 'wallStuckOnHit', 'wallStuckHook', 'wallStuckTown', 'wallStuckTick', 'walkBackAndStuckTick'];
+	'wallStuckOnError', 'wallStuckOnHit', 'wallStuckHook', 'wallStuckTown', 'wallStuckTick', 'walkBackAndStuckTick',
+	'TOWN_CHANNEL', 'townCast', 'useTown', 'townChannelHeld', 'townLandTick'];
 
 function src(f) { return fs.readFileSync(path.join(__dirname, '..', f), 'utf8'); }
 /* The block from its banner to on_cm, verbatim. */
@@ -309,3 +310,60 @@ module.exports = [
 		},
 	},
 ];
+
+module.exports.push(
+	{
+		name: 'v166: our own town channel holds every loop, and a cast that did not land is said',
+		fn(t) {
+			let w = mk();
+			t.eq('precondition: nothing cast, no channel: not held', w.townChannelHeld(), false);
+			w.useTown('a test');
+			t.eq('useTown casts use_town', w.skills, ['use_town']);
+			t.eq('and stamps where from', [w.townCast.at === w.T, w.townCast.map, w.townCast.why].join(), 'true,halloween,a test');
+			t.eq('held at once, before the client sees the channel', w.townChannelHeld(), true);
+			w.T += w.TOWN_CHANNEL.graceMs;
+			t.eq('not held at graceMs with no channel seen', w.townChannelHeld(), false);
+			w.character.c = { town: { ms: 1200 } };
+			t.eq('held while the game shows the channel, whatever the clock', w.townChannelHeld(), true);
+			w.character.c = {};
+
+			w = mk(); w.useTown('x');
+			w.T += w.TOWN_CHANNEL.landCheckMs - 1; w.townLandTick(w.T);
+			t.eq('not judged before landCheckMs', w.lines.length, 0);
+			w.T += 1; w.townLandTick(w.T);
+			t.ok('still on the cast spot at landCheckMs: an orange line', w.lines.length === 1 && w.lines[0][1] === 'orange' && /town cast for x did not land/.test(w.lines[0][0]));
+			w.T += 10000; w.townLandTick(w.T);
+			t.eq('said once', w.lines.length, 1);
+			w = mk(); w.useTown('x'); w.character.real_x = 500;
+			w.T += w.TOWN_CHANNEL.landCheckMs; w.townLandTick(w.T);
+			t.eq('moved: landed, nothing said', w.lines.length, 0);
+			w = mk(); w.useTown('x'); w.character.map = 'main';
+			w.T += w.TOWN_CHANNEL.landCheckMs; w.townLandTick(w.T);
+			t.eq('another map: landed', w.lines.length, 0);
+			w = mk(); w.useTown('x'); w.character.c = { town: { ms: 500 } };
+			w.T += w.TOWN_CHANNEL.landCheckMs; w.townLandTick(w.T);
+			t.eq('still channelling: not judged yet', [w.lines.length, w.townCast.at > 0].join(), '0,true');
+
+			w = mk();
+			w.wallStuckOnError({ message: 'RangeError' }); w.wallStuckOnError({ message: 'RangeError' }); w.wallStuckOnError({ message: 'RangeError' });
+			w.T += 1000; w.wallStuckTick();
+			t.eq('the wall-stuck town goes through useTown', [w.skills.join(), w.townChannelHeld()].join(), 'use_town,true');
+
+			for (const f of FILES) {
+				const s = src(f);
+				t.eq(f + ': use_skill(\'use_town\') only inside useTown', (s.match(/use_skill\('use_town'\)/g) || []).length, 1);
+				t.ok(f + ': useTown holds it', /function useTown\(why\) \{[\s\S]{0,200}return use_skill\('use_town'\);/.test(s));
+				t.ok(f + ': mainLoop stands down', /walkBackAndStuckTick\(\);\n[^\n]*\n\t\tif \(townChannelHeld\(\)\) return setTimeout\(mainLoop, 250\);/.test(s));
+				t.ok(f + ': actionLoop stands down', /if \(townChannelHeld\(\)\) return setTimeout\(actionLoop, 100\);/.test(s));
+				t.ok(f + ': skillLoop stands down', /if \(townChannelHeld\(\)\) return setTimeout\(skillLoop, 250\);/.test(s));
+				t.ok(f + ': potionLoop stands down above potionBelow', /if \(townChannelHeld\(\) && character\.hp >= character\.max_hp \* TOWN_CHANNEL\.potionBelow\) return setTimeout\(potionLoop, 250\);/.test(s));
+				t.ok(f + ': maintenanceLoop stands down, respawn excepted', /if \(townChannelHeld\(\) && !character\.rip\) return setTimeout\(maintenanceLoop, TICK_RATE\.maintenance\);/.test(s));
+				t.ok(f + ': rageStuckTown and the escape ladder use it', /await useTown\('rage stuck'\)/.test(s) && /await useTown\('rage escape'\)/.test(s));
+				t.ok(f + ': the land check rides the per-tick hook', /townLandTick\(Date\.now\(\)\)/.test(extract(f, 'walkBackAndStuckTick')));
+			}
+			const r = src('Party/Ranger.js');
+			t.ok('Ranger equipmentLoop stands down', /if \(townChannelHeld\(\)\) return setTimeout\(equipmentLoop, delay\);/.test(r));
+			t.ok('Ranger monster hunt and trick-or-treat ticks stand down', /setInterval\(\(\) => \{\n\tif \(townChannelHeld\(\)\) return;\n\tmhTick\(\)/.test(r) && /setInterval\(\(\) => \{\n\tif \(townChannelHeld\(\)\) return;\n\ttotTick\(\)/.test(r));
+		},
+	},
+);

@@ -21,6 +21,23 @@ chronological order is unchanged. Newest first.
 Prepend new entries here, never to line 2 of Ranger.js, and bump the version
 on that line in the same commit.
 
+## v166
+
+**OUR OWN TOWN CHANNEL HOLDS EVERY LOOP** - the browser session's live read
+of 2026-11-11 12:53 EST. Three scripted `use_skill('use_town')` on Dexon
+returned `in_progress` and never landed: use_town is a 3s channel
+(`player.c.town = {ms: 3000}`, `node/server.js` upstream `2148cf2`), and the
+server clears `player.c` on every attack the character makes, every hit it
+takes and every move without an action, so the circle walk's next step or his
+next shot cancelled each one. `useTown(why)` (in the shared walk-back block)
+now stamps the cast and is the only `use_town` call; `townChannelHeld()` is
+`character.c.town`, or `TOWN_CHANNEL.graceMs` after our cast. While it holds,
+mainLoop, the action, skill and maintenance loops stand down (a respawn still
+goes), the potion loop too unless hp is under `TOWN_CHANNEL.potionBelow`, and the equipment loop and the monster-hunt and trick-or-treat ticks with them.
+`townLandTick()` logs once, in orange, when a cast is still on its spot at
+`landCheckMs`. A hit on us still cancels it, which nothing here can prevent.
+`wallStuckTown`, `rageStuckTown` and `rageEscapeLadder` all go through it.
+
 ## v165
 
 **THE WALK BACK AFTER A DEATH, AND STUCK IN A WALL** - a block shared

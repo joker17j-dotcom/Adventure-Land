@@ -4123,6 +4123,26 @@ reading.
   first step that cannot reach the town spot, which had logged twelve.
   **A COMMENT THAT DESCRIBES THE CALLER'S BEHAVIOUR IS A CLAIM ABOUT ANOTHER
   FUNCTION**, and nothing checked it until the symptom did.
+  **CONFIRMED FROM THE LOG BY THE BROWSER SESSION**: 24 instances over 11-10 and
+  11-11, every one in the same second as summonAndWait's "wasn't in range -
+  asked them to come" line (15 pickups from Dexon, 9 mpot1 deliveries).
+- **A SCRIPTED TOWN IS CANCELLED BY THE CHARACTER'S OWN NEXT TICK** - measured
+  live by the browser session 2026-11-11 12:53 EST: three `use_skill('use_town')`
+  on Dexon returned `in_progress` and he never left. use_town is a 3s channel
+  (`player.c.town = {ms: 3000}`), and the server clears `player.c` on every
+  attack the character makes, every hit it takes and every move without an
+  action (`node/server.js`, upstream `2148cf2`). Only the rage guard had ever
+  checked `character.c.town`. Since Ranger v166 / Priest v93 / Mage v116 the
+  only `use_town` is `useTown(why)`, and every loop that can move, shoot, cast,
+  equip or sell stands down while `townChannelHeld()` - the game's
+  `character.c.town`, or `TOWN_CHANNEL.graceMs` after our own cast. A potion
+  still goes under `TOWN_CHANNEL.potionBelow`, a respawn always. FamilyFleet's
+  `rangerTick` does the same with `stuckTownHeld()`. **A HIT ON US STILL CANCELS
+  IT**, which is why `rageStuckTown` refuses with attackers on us and why a cast
+  that did not land is logged once at `landCheckMs`. **A STOPGAP THAT CALLS ONE
+  FUNCTION IS A CLAIM THAT NOTHING ELSE RUNS MEANWHILE**: the three town callers
+  each did their own `stop()` first and none asked what the other loops would do
+  in the next 3 seconds.
 
 ## Self-chained async loops: a real hazard, but NOT what was wrong
 
@@ -4885,6 +4905,14 @@ and the ranger. Analysis by the browser session; the figures were measured live.
   drinks an elixir by name.
 - **sbelt IS ON THE RANGER'S `SCARCE_ITEM_NAMES` (v142)**, operator 2026-10-24.
   Ruled the same day: no automatic sbelt compounding, the operator handles it.
+- **dexamulet IS VALUED AT ITS PONTY PRICE** (Merchant v146), the operator's
+  ruling of 2026-11-11 12:47 EST, beside intamulet and intbelt in
+  `PONTY_PRICED_ITEMS`. Its bid (372,140) against Ponty (36,000) is about 10x,
+  past `VALUE_DIVERGENCE_LIMIT`, so `gvBaseValue()` answered `value_unknown` and
+  every +0/+1/+2 was handed over for manual upgrade - 226 lines for +0 on
+  2026-11-11. **ANY ITEM WHOSE MARKET AND PONTY ANCHORS DISAGREE BY MORE THAN THE
+  LIMIT IS NEVER COMPOUNDED BY THE PLAN**, and the list is the operator's to grow
+  one name at a time - do not extend it from `G.items[x].g`.
 - **GEAR-PLAN ITEMS ARE COMPOUNDED ONLY BY `attemptBestPlanStep()` (Merchant
   v129)** - operator's ruling 2026-10-24; materials such as dexbelt keep the
   auto-combine. The auto-combine runs FIRST each visit and its step ignores the

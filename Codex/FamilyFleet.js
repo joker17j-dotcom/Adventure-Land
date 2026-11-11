@@ -958,6 +958,30 @@ async function goTo(spot) {
    owner's report was being stuck DURING the icegolem fight. */
 const STUCK = { stuckMs: 20000, moveEps: 15, arriveEps: 25, townGapMs: 30000, pathFailsToTown: 2 };
 const stuckState = { x: null, y: null, map: null, since: 0, intentAt: 0, intent: null, pathFails: 0, townAt: 0 };
+/* THE TOWN CHANNEL - the browser session's live read of 2026-11-11 12:53 EST,
+   on Dexon. use_town is a 3s channel (`player.c.town = {ms: 3000}`,
+   node/server.js upstream 2148cf2), and the server clears it on every attack
+   we make, every hit we take and every move without an action - so a scripted
+   town is cancelled by the next tick's own walk or shot. rangerTick stands
+   down while stuckTownHeld(): the game's `character.c.town`, or holdMs after
+   stuckTick's cast, before the client has seen the channel. A cast that did
+   not land is said once, at landCheckMs. */
+const STUCK_TOWN = { holdMs: 4000, landCheckMs: 8000, landedMoved: 100 };
+let stuckTownFrom = null;
+
+function stuckTownHeld() {
+	if (character.c && character.c.town) return true;
+	return !!(stuckState.townAt && Date.now() - stuckState.townAt < STUCK_TOWN.holdMs);
+}
+
+function stuckTownLandCheck(now) {
+	const f = stuckTownFrom;
+	if (!f || now - f.at < STUCK_TOWN.landCheckMs) return;
+	if (character.c && character.c.town) return;
+	stuckTownFrom = null;
+	if (character.rip || character.map !== f.map || Math.hypot(character.x - f.x, character.y - f.y) > STUCK_TOWN.landedMoved) return;
+	log('the town cast did not land - still at ' + Math.round(character.x) + ',' + Math.round(character.y) + ' on ' + f.map + ' (a hit cancels it)', 'orange');
+}
 
 function stuckNoteIntent(dest) {
 	stuckState.intentAt = Date.now();
@@ -1001,6 +1025,7 @@ async function stuckTick() {
 	log('stuck (' + why + ') - using town', '#FFD700');
 	try { if (typeof stop === 'function') { stop('smart'); stop('move'); } } catch (e) { }
 	if (bossState.trip) bossEnd('stuck - used town');
+	stuckTownFrom = { at: now, map: character.map, x: character.x, y: character.y };
 	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
 	catch (e) { log('town refused: ' + (e && (e.reason || e.message) || e), 'orange'); }
 	return true;
@@ -4086,6 +4111,9 @@ async function attackWithRotation(target) {
 async function rangerTick() {
 	if (character.rip) { try { await respawn(); } catch (e) { } return; }
 	useRangerPotions();
+	/* Our own town is channelling: any move or shot this tick would cancel it. */
+	stuckTownLandCheck(Date.now());
+	if (stuckTownHeld()) return;
 	/* BEFORE ANYTHING THAT MOVES. Standing in a rage box is the one state worth
 	   leaving immediately, and it is ahead of the movement lock on purpose: the
 	   lock is held by whatever walked us in. -> RAGE BOXES */

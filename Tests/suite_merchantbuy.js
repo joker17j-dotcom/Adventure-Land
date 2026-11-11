@@ -695,6 +695,7 @@ module.exports.push(
 	const m = /const PONTY_PRICED_ITEMS = new Set\(\[([\s\S]*?)\]\);/.exec(s);
 	const ponty = new Set(((m && m[1]) || '').match(/'[^']+'/g).map((x) => x.slice(1, -1)));
 	t.ok('intamulet and intbelt are Ponty-priced', ponty.has('intamulet') && ponty.has('intbelt'));
+	t.ok('v146: dexamulet is Ponty-priced, the operator\'s ruling of 2026-11-11', ponty.has('dexamulet'));
 	t.ok('xhelmet is NOT Ponty-priced - it takes the ask', !ponty.has('xhelmet'));
 	const store = {};
 	const mk = () => {
@@ -720,6 +721,11 @@ module.exports.push(
 		'[gear] intbelt is valued by the Ponty price at 60000 - an operator override']);
 	w.gvBaseValue('xhelmet', []); w.gvBaseValue('intamulet', []);
 	t.eq('not again on the same page', w.logs.length, 3);
+	/* v146: dexamulet's anchors, as read on 2026-11-11 - bid 372,140, Ponty 36,000. */
+	const d = mk();
+	d.scoutItemPrice = (it) => (it.name === 'dexamulet' ? 36000 : null);
+	d.gtQuote = (rows, name) => (name === 'dexamulet' ? { bid: 372140, ask: 428000 } : null);
+	t.eq('dexamulet: its Ponty price, not value_unknown', d.gvBaseValue('dexamulet', []).value, 36000);
 	w = mk();
 	w.gvBaseValue('xhelmet', []); w.gvBaseValue('intbelt', []);
 	t.eq('nor on the next page', w.logs.length, 0);

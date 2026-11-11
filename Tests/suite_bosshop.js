@@ -2817,7 +2817,7 @@ module.exports = [
 		w.rageAttackersOnMe = () => o.attackers || 0;
 		w.plSend = (to, d) => w.sent.push(to + ':' + d.message);
 		w.use_skill = async (n) => { if (n === 'use_town') w.towns++; return {}; };
-		lift(w, RANGER, ['bossIsLeader', 'safeSmartMove', 'RAGE_BLOCK', 'rageBlockKey', 'rageViaStaging', 'rageStuckTown', 'rageTownOnCall']);
+		lift(w, RANGER, ['bossIsLeader', 'safeSmartMove', 'RAGE_BLOCK', 'rageBlockKey', 'rageViaStaging', 'rageStuckTown', 'rageTownOnCall', 'townCast', 'useTown']);
 		w.rageBlocked = {}; w.rageTownAt = 0;
 		return w;
 	};
@@ -3296,7 +3296,7 @@ module.exports = [
 		}, over));
 		w.parent.S = over.S || { graveyard: { live: true } };
 		w.parent.socket = { emit: (ev, d) => emits.push([ev, d.name]) };
-		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'errText', 'rageEscapeEp', 'rageEscapeLadder']);
+		lift(w, RANGER, ['BOSS_JOIN_SPOTS', 'BOSS_PRESENCE_LIVE', 'bossEntryLive', 'errText', 'rageEscapeEp', 'rageEscapeLadder', 'townCast', 'useTown']);
 		Object.assign(w, { logs, moves, emits, skills });
 		return w;
 	};

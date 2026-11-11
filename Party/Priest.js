@@ -1,5 +1,5 @@
 // ==========================================================================
-// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v92
+// FatherToken (Priest) - Mainframe slot CH_hae5t3g8gBezOVTdR6ToTagikbTbF - v93
 //
 // CHANGELOG: read Party/PriestChangelog.md in this repo. Do not put version
 // history back in this file, and do not reconstruct it from git log - that
@@ -1247,6 +1247,8 @@ function noHang(p, label, ms) {
 async function mainLoop() {
 	try {
 		walkBackAndStuckTick();
+		/* Our own town is channelling: any move or shot cancels it - townChannelHeld(). */
+		if (townChannelHeld()) return setTimeout(mainLoop, 250);
 		/* Containment first, and the pull owns movement while it runs - the same
 		   stand-down shape as sellingOff and mhBusy below. ragePullTick is NOT
 		   awaited: a pull is two round trips and mainLoop is wrapped in the 10s
@@ -1333,6 +1335,7 @@ async function mainLoop() {
 async function actionLoop() {
 	try {
 		if (is_disabled(character)) return setTimeout(actionLoop, 25);
+		if (townChannelHeld()) return setTimeout(actionLoop, 100);   // a shot cancels our town
 		updateCache();
 		const ms = ms_to_next_skill('attack') - 1.5;
 		if (ms < 3) {
@@ -1357,6 +1360,7 @@ async function skillLoop() {
 		if (is_disabled(character)) {
 			return setTimeout(skillLoop, 250);
 		}
+		if (townChannelHeld()) return setTimeout(skillLoop, 250);   // a cast cancels our town
 
 		updateCache();
 
@@ -1586,6 +1590,8 @@ async function handleZapSpam() {
 // ============================================================================
 async function maintenanceLoop() {
 	try {
+		/* Equips, sells and trips cancel our town channel - townChannelHeld(). A respawn still goes. */
+		if (townChannelHeld() && !character.rip) return setTimeout(maintenanceLoop, TICK_RATE.maintenance);
 		if (CONFIG.potions.autoBuy) {
 			autoBuyPotions();
 		}
@@ -1621,6 +1627,8 @@ async function potionLoop() {
 	let delay = 100;
 
 	try {
+		/* Not while our town channels, unless hp is under TOWN_CHANNEL.potionBelow. */
+		if (townChannelHeld() && character.hp >= character.max_hp * TOWN_CHANNEL.potionBelow) return setTimeout(potionLoop, 250);
 		const hpThreshold = character.max_hp - CONFIG.potions.hpThreshold;
 		const mpThreshold = character.max_mp - CONFIG.potions.mpThreshold;
 
@@ -2318,7 +2326,7 @@ async function rageEscapeLadder(out, why) {
 	if (now - rageEscapeEp.townAt < RAGE_ESCAPE_TOWN_GAP_MS) return 'waiting';
 	rageEscapeEp.townAt = now;
 	rageLog('no way out on foot - using town', '#FFD700');
-	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
+	try { if (typeof use_skill === 'function') await useTown('rage escape'); }
 	catch (e) { rageLog('town refused: ' + errText(e), 'orange'); }
 	return 'town';
 }
@@ -2921,7 +2929,7 @@ async function rageStuckTown(map, heard) {
 			try { plSend(m, { message: 'ragetown', map: map }); } catch (e) { }
 		}
 	}
-	try { if (typeof use_skill === 'function') await use_skill('use_town'); }
+	try { if (typeof use_skill === 'function') await useTown('rage stuck'); }
 	catch (e) { rageLog('town refused: ' + ((e && (e.reason || e.message)) || e), 'orange'); return false; }
 	return true;
 }
@@ -5879,7 +5887,7 @@ function wallStuckTown(why, now) {
 	game_log('[stuck] ' + why + ' - stopping the walk and using town', 'red');
 	travelCancel();
 	try { if (typeof stop === 'function') { stop('smart'); stop('move'); } } catch (e) { }
-	try { Promise.resolve(use_skill('use_town')).catch((e) => game_log('[stuck] town refused: ' + ((e && (e.reason || e.message)) || e), 'orange')); }
+	try { Promise.resolve(useTown(why)).catch((e) => game_log('[stuck] town refused: ' + ((e && (e.reason || e.message)) || e), 'orange')); }
 	catch (e) { game_log('[stuck] town refused: ' + ((e && (e.reason || e.message)) || e), 'orange'); }
 	return true;
 }
@@ -5915,11 +5923,47 @@ function wallStuckTick() {
 	}
 }
 
+/* THE TOWN CHANNEL - Ranger v166 / Priest v93 / Mage v116, the browser
+   session's live read of 2026-11-11 12:53 EST. use_town is a 3s channel
+   (`player.c.town = {ms: 3000}`, node/server.js upstream 2148cf2), and the
+   server clears `player.c` on every attack the character makes, every hit it
+   takes, and every move without an action - so three scripted use_town calls
+   on Dexon returned `in_progress` and never landed: the circle walk's next
+   step, or his next shot, cancelled each one. useTown() stamps the cast, and
+   every loop in this file stands down while townChannelHeld(): the game's own
+   `character.c.town`, or TOWN_CHANNEL.graceMs after our cast, before the
+   client has seen the channel open. A hit on us still cancels it; nothing here
+   can stop that. townLandTick() says so, once, when a cast did not land. */
+const TOWN_CHANNEL = { graceMs: 4000, landCheckMs: 8000, landedMoved: 100, potionBelow: 0.25 };
+let townCast = { at: 0, map: null, x: 0, y: 0, why: '' };
+
+function useTown(why) {
+	townCast = { at: Date.now(), map: character.map, x: character.real_x, y: character.real_y, why: why || '' };
+	return use_skill('use_town');
+}
+
+function townChannelHeld() {
+	if (character.c && character.c.town) return true;
+	return !!(townCast.at && Date.now() - townCast.at < TOWN_CHANNEL.graceMs);
+}
+
+function townLandTick(now) {
+	if (!townCast.at || now - townCast.at < TOWN_CHANNEL.landCheckMs) return;
+	if (character.c && character.c.town) return;
+	const c = townCast;
+	townCast = { at: 0, map: null, x: 0, y: 0, why: '' };
+	if (character.rip || character.map !== c.map
+		|| Math.hypot(character.real_x - c.x, character.real_y - c.y) > TOWN_CHANNEL.landedMoved) return;
+	game_log('[town] the town cast for ' + (c.why || 'a stuck walk') + ' did not land - still at '
+		+ Math.round(character.real_x) + ',' + Math.round(character.real_y) + ' on ' + c.map + ' (a hit on me cancels it)', 'orange');
+}
+
 /* Called first in mainLoop, ahead of every early return - dead or disabled
    included, since the death is what it watches for. */
 function walkBackAndStuckTick() {
 	try { walkBackTick(); } catch (e) { console.error('walkBackTick:', e); }
 	try { wallStuckTick(); } catch (e) { console.error('wallStuckTick:', e); }
+	try { townLandTick(Date.now()); } catch (e) { console.error('townLandTick:', e); }
 }
 
 function on_cm(name, data) {

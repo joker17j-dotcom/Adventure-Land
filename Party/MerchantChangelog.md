@@ -1,4 +1,15 @@
 
+## v146
+
+**dexamulet IS VALUED AT ITS PONTY PRICE** - the operator's ruling of
+2026-11-11 12:47 EST, added to `PONTY_PRICED_ITEMS` beside intamulet and
+intbelt (ruled 2026-10-25). Since v129 a gear-plan item is compounded only by
+`attemptBestPlanStep()`, and `gvBaseValue()` answers `value_unknown` when an
+item's anchors differ by more than `VALUE_DIVERGENCE_LIMIT`; dexamulet's bid
+(372,140, asks 353k-428k) against Ponty's 36,000 is about 10x, so every +0, +1
+and +2 was handed over for manual upgrade - 226 such lines for +0 on 2026-11-11
+alone, counted by the browser session from the game-log file.
+
 ## v145
 
 **A GEAR VISIT ENDS ON AN UNREACHABLE TOWN SPOT, AND A WALK HIS OWN SUMMON
